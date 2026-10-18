@@ -48,6 +48,28 @@ test("takeover time remaining ignores host age and resets on each epoch", async 
   } finally { now.mockRestore(); await runtime.close(); }
 });
 
+test("a human takeover message reaches only its own cycle and malformed arguments cannot acquire control", async () => {
+  const { runtime, owner } = fixture();
+  const messages: (string | undefined)[] = [];
+  runtime.driver = {
+    run: async ({ message, signal }) => {
+      messages.push(message);
+      await new Promise<void>(done => signal.addEventListener("abort", () => done(), { once: true }));
+    },
+    consolidate: async () => {}, abort: async () => {}, close: async () => {},
+  };
+  const runId = runtime.status().runId;
+  try {
+    await expect(dispatch(runtime, { kind: "auto", argv: ["on", "--message"], runId })).rejects.toThrow("Usage");
+    expect(owner()).toBeUndefined();
+    await dispatch(runtime, { kind: "auto", argv: ["on", "--message", "Save before shutdown."], runId, expectedEpoch: null });
+    expect(messages).toEqual(["Save before shutdown."]);
+    await runtime.close();
+    await dispatch(runtime, { kind: "auto", argv: ["on"], runId, expectedEpoch: null });
+    expect(messages).toEqual(["Save before shutdown.", undefined]);
+  } finally { await runtime.close(); }
+});
+
 test("the same IPC host accepts non-game capability IDs and commands, then rejects a revoked owner", async () => {
   const { runtime, owner } = fixture();
   const path = `/tmp/rsa-test-${crypto.randomUUID()}.sock`;

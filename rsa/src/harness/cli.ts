@@ -1,7 +1,8 @@
 import { send } from "./transport.ts";
 
 export const HELP = `rsa status
-rsa auto on|off
+rsa auto on [--message <text>]
+rsa auto off
 rsa consolidate [--seconds <n>]
 rsa sensor list
 rsa sensor <id> --help | <arguments...>

@@ -56,9 +56,10 @@ export async function dispatch(runtime: Runtime, request: Request): Promise<unkn
       if (argv.length === 2 && argv[0] === "--seconds") return runtime.consolidate(Number(argv[1]));
       throw new Error("Usage: rsa consolidate [--seconds <n>]");
     }
-    if (argv[0] === "on") return runtime.start();
-    if (argv[0] === "off") { await runtime.stop(); return runtime.status(); }
-    throw new Error("Usage: rsa auto on|off");
+    if (argv.length === 1 && argv[0] === "on") return runtime.start();
+    if (argv.length === 3 && argv[0] === "on" && argv[1] === "--message" && argv[2]?.trim()) return runtime.start(argv[2]);
+    if (argv.length === 1 && argv[0] === "off") { await runtime.stop(); return runtime.status(); }
+    throw new Error("Usage: rsa auto on [--message <text>] | rsa auto off");
   }
   if (kind !== "sensor" && kind !== "controller") throw new Error("Unknown command; see rsa --help");
   if (id === "list") return kind === "sensor" ? runtime.list().sensors : runtime.list().controllers;

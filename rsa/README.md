@@ -25,6 +25,8 @@ rsa auto on
 
 `rsa init` 在当前工作区生成 `rsa.json`，已有配置不会覆盖。`rsa up --dry-run` 只输出启动命令和路径，不启动进程。确认计划后，`rsa up` 连接设备并启动所需的 Host、Dashboard 与 Pet；`rsa services` 汇总本工作区的后台进程、Host 状态和共享 Dashboard。新 Host 启动后保持手动，执行 `auto on` 后才查阅设备 help、发送模型请求并操作游戏。复用已在接管中的 Host 时，`up` 保留当前状态，不打断运行。
 
+接管时可附带一次用户提醒，例如 `rsa auto on --message '稍后要关闭模拟器，请先保存进度。'`。附言作为本轮第一条用户消息进入原会话，后续续轮不重复注入，也不修改技能、记忆或系统提示。
+
 配置示例：
 
 ```json

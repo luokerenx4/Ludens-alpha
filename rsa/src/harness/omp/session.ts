@@ -117,8 +117,10 @@ export async function createOmpDriver(options: {
       async run(context) {
         cycle = context;
         try {
+          let nextPrompt = context.message ? `${context.message}\n\n${continuation}` : continuation;
           while (!context.signal.aborted) {
-            await session.prompt(continuation);
+            await session.prompt(nextPrompt);
+            nextPrompt = continuation;
             const last = session.getLastAssistantMessage();
             if (last?.stopReason === "error") throw new Error(last.errorMessage ?? "Model request failed");
             if (last?.stopReason === "aborted") break;

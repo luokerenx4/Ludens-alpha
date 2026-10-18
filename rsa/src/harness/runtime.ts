@@ -2,7 +2,7 @@ import type { Capabilities, ExecutionResult, Observation, ObservationRequest } f
 import type { EventTrace, RecordEvent } from "./events.ts";
 
 export interface Driver {
-  run(context: { epoch: string; signal: AbortSignal }): Promise<void>;
+  run(context: { epoch: string; signal: AbortSignal; message?: string }): Promise<void>;
   consolidate(context: { epoch: string; signal: AbortSignal }): Promise<void>;
   abort(): Promise<void>;
   close(): Promise<void>;
@@ -43,7 +43,7 @@ export class Runtime {
     };
   }
 
-  async start() {
+  async start(message?: string) {
     if (this.mode !== "manual" || this.running) throw new Error("Previous control cycle has not finished");
     if (!this.connected) throw new Error("Provider disconnected; restart the application");
     const epoch = this.epoch = crypto.randomUUID();
@@ -64,9 +64,10 @@ export class Runtime {
     this.mode = "auto";
     this.reason = "enabled";
     this.record("control", this.status(), { epoch });
+    if (message) this.record("user_message", { text: message }, { epoch });
     this.timer = setTimeout(() => void this.stop("time budget").catch((e) => this.record("error", String(e))), this.maxSeconds * 1000);
     if (this.driver) {
-      this.running = this.driver.run({ epoch, signal: control.signal })
+      this.running = this.driver.run({ epoch, signal: control.signal, message })
         .catch((error) => { if (!control.signal.aborted) this.record("error", String(error)); })
         .finally(async () => {
           await this.stop("agent ended");
