@@ -6,15 +6,67 @@
 
 本仓库根目录包含 `rsa/`、`rsa-dashboard/`、`rsa-companion/`。下文的 `artifacts/` 指仓库同级的运行目录 `<repo>/../artifacts/`；它不属于源码，日志仍写入各自 workspace。
 
-需要 Bun 1.4、mGBA 0.10.5 和本地 ROM。ROM 不进入 Git。
+### 工作区启动入口
+
+需要 Bun 1.4、Python 3 和已准备好的设备；Dashboard、Pet 的安装步骤见[仓库 README](../README.md)。后台启动入口目前使用 macOS launchd。ROM、固件、密钥不进入 Git。
 
 ```sh
 cd rsa
 bun install --frozen-lockfile
 export PATH="$PWD/bin:$PATH"
+mkdir -p /absolute/path/to/workspace
+cd /absolute/path/to/workspace
+rsa init --provider ryubing --game /absolute/path/to/game.nsp --seconds 1800
+rsa up --dry-run
+rsa up
+rsa services
+rsa auto on
 ```
 
-在 mGBA 打开游戏，然后进入 **Tools → Scripting**。在底部输入框执行以下代码，路径换成自己 checkout 中的绝对路径（可运行 `realpath src/providers/mgba/bridge.lua` 获取）：
+`rsa init` 在当前工作区生成 `rsa.json`，已有配置不会覆盖。`rsa up --dry-run` 只输出启动命令和路径，不启动进程。确认计划后，`rsa up` 连接设备并启动所需的 Host、Dashboard 与 Pet；`rsa services` 汇总本工作区的后台进程、Host 状态和共享 Dashboard。新 Host 启动后保持手动，执行 `auto on` 后才查阅设备 help、发送模型请求并操作游戏。复用已在接管中的 Host 时，`up` 保留当前状态，不打断运行。
+
+配置示例：
+
+```json
+{
+  "provider": "ryubing",
+  "game": "/absolute/path/to/game.nsp",
+  "seconds": 1800,
+  "requests": 1000,
+  "model": "openai-codex/gpt-6.1-sol",
+  "compactionThreshold": 256000,
+  "dashboard": true,
+  "pet": true
+}
+```
+
+`provider` 为 `ryubing` 或 `mgba`。`game` 是 Ryubing 启动的游戏路径，相对路径以工作区为基准；省略时连接外部已准备好的模拟器。可选 `port` 指定桥端口，默认 mGBA 47653、Ryubing 47663。其余字段的默认值如上；`seconds` 和 `requests` 是每次接管的预算，达到任一预算即交还控制。
+
+有 `game` 时使用现有 `launch.sh` 启动已安装的带桥 Ryubing；安装及设备前提见下方 [Switch / Ryubing](#switch--ryubing)。mGBA 的 ROM 和 Lua 桥仍按下一节手动准备，再执行 `rsa init --provider mgba` 和 `rsa up`。
+
+生命周期约定：
+
+- 重复 `up` 复用本工作区已就绪的 Host 和受管理的进程，不清空会话、不重启，也不改变已有接管状态。配置修改需重启对应进程加载；原 OMP 历史和工作区文件继续保留。
+- Dashboard 使用 `http://127.0.0.1:3015`，已有服务可共用。新启动的 Pet 使用 `logs/background/pet-profile/` 保存独立设置；本工作区已经受管理的 Pet 保持原进程及设置。
+- `rsa auto off` 立即交还控制并取消在途模型与 shell，模拟器继续运行。再次接管须等本周期清理结束。
+- `rsa down` 先交还控制并等待清理，再停止本工作区管理的 Host、Pet 和模拟器；关闭模拟器会丢失未保存的游戏进度。它不关闭外部手动启动的进程，也不删除工作区或历史。
+- `rsa down --keep-emulator` 只停止 Host、Pet，保留模拟器及当前游戏状态，适合更换预算、模型或加载 Host 代码改动。更换游戏或模拟器启动配置时使用普通 `down` / `up`。
+- `down` 默认保留共享 Dashboard。确需关闭时，`rsa down --dashboard` 只关闭本工作区启动的 Dashboard；其他工作区的看板和 Pet 连接可能因此中断。`--dashboard` 与 `--keep-emulator` 可以组合使用。
+
+例如修改 `rsa.json` 中的接管预算后，保留当前游戏并加载新预算：
+
+```sh
+rsa down --keep-emulator
+rsa up
+rsa services
+rsa auto on
+```
+
+后台进程继续复用 `scripts/launch-background.py`，工作目录是当前 workspace，日志与 job 描述写入 `logs/background/`。它们独立于交互式终端，不自动重启、不注册开机启动。启动失败时先运行 `rsa services` 查看现有服务及退出状态，再检查对应日志；避免另外手动启动一组重复进程。
+
+### mGBA 设备准备
+
+在 mGBA 0.10.5 打开游戏，然后进入 **Tools → Scripting**。在底部输入框执行以下代码，路径换成自己 checkout 中的绝对路径（可在 `rsa/` 下运行 `realpath src/providers/mgba/bridge.lua` 获取）：
 
 ```lua
 dofile("/absolute/path/to/repo/rsa/src/providers/mgba/bridge.lua")
@@ -22,36 +74,18 @@ dofile("/absolute/path/to/repo/rsa/src/providers/mgba/bridge.lua")
 
 出现 `RSA bridge listening on 127.0.0.1:47653 (manual)` 即已加载。重复执行会关闭旧桥并加载新代码。脚本窗口可以关闭，游戏需要保持运行；模拟器暂停时，帧回调、采集和交接也会暂停。
 
-进入任务工作区启动宿主，等待输出 `ready: true`：
-
 ```sh
-mkdir -p /absolute/path/to/workspace
 cd /absolute/path/to/workspace
-rsa run
-```
-
-在另一个终端进入同一工作区，并设置同样的 PATH：
-
-```sh
-rsa status
+rsa init --provider mgba
+rsa up --dry-run
+rsa up
+rsa services
 rsa auto on
-rsa auto off
 ```
 
-启动默认手动。开启后 AI 查阅设备 help、接收真实图片、自行操作；关闭立即撤销设备操作权，同时取消模型与 shell。再次开启要等前一模型周期退出。
+### 独立 Host 与高级启动
 
-长时间后台运行时，在任务工作区用 macOS 临时 launchd job 启动，避免宿主和模拟器随交互式执行会话一起退出：
-
-```sh
-python3 /absolute/path/to/repo/rsa/scripts/launch-background.py emulator \
-  /absolute/path/to/repo/rsa/src/providers/ryubing/launch.sh /absolute/path/to/game.xci
-python3 /absolute/path/to/repo/rsa/scripts/launch-background.py host \
-  rsa run --provider ryubing --seconds 1800 --requests 1000
-```
-
-先确认模拟器桥已就绪，再启动宿主。脚本只负责把命令交给系统启动，cwd 是当前工作区，stdout/stderr 和 job 描述保存在 `logs/background/`。它不自动重启，也不注册开机启动；游戏接管预算仍由 `rsa` 管理。输出的 `target` 可用 `launchctl print <target>` 查看进程与退出码，停止/替换时用 `launchctl bootout <target>`。`rsa auto off` 仍是交还控制权的正常方式。
-
-2026-10-17 一轮逆转裁判在执行会话退出时与 Bun 宿主、多个 Node 进程同时消失，没有正常结束事件或对应崩溃报告。此后后台实验采用独立 launchd 生命周期；系统记录没有直接给出当时的触发信号，因此不将其归因于模型、压缩或游戏崩溃。
+`rsa run` 保留原来的前台宿主入口，以命令行参数配置；`rsa.json` 由 `init` / `up` 管理。只运行设备或调试单个组件时仍可直接使用它，启动默认手动，等待输出 `ready: true` 后从同一工作区执行 `rsa auto on`。
 
 可选参数：
 

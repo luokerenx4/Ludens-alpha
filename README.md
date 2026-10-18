@@ -23,35 +23,35 @@ RSA 写入工作区日志，Dashboard 读取日志，Pet 消费 Dashboard API。
 export PATH="$PWD/rsa/bin:$PWD/rsa-companion/bin:$PATH"
 ```
 
-在单独终端启动 Dashboard：
-
-```sh
-cd rsa-dashboard
-npm run dev
-```
-
-看板监听 `http://127.0.0.1:3015`。首次运行没有日志时显示空列表。
-
-按对应 provider 的文档准备模拟器并加载桥，然后从任务工作区启动 RSA：
+按 [Ryubing 文档](rsa/src/providers/ryubing/README.md)准备带桥的模拟器、固件与密钥，然后进入任务工作区：
 
 ```sh
 mkdir -p ../workspaces/my-task
 cd ../workspaces/my-task
-rsa run --provider ryubing --seconds 7200
+rsa init --provider ryubing --game /absolute/path/to/game.nsp --seconds 1800
+rsa up --dry-run
+rsa up
+rsa services
+rsa auto on
 ```
 
-另一个终端进入同一工作区，再执行：
+`init` 写入本工作区的 `rsa.json`；`up --dry-run` 先显示将使用的命令和路径。`up` 在 macOS 后台启动模拟器、Host、Dashboard 和 Pet，已有的本工作区服务会复用。Dashboard 共用 `http://127.0.0.1:3015`；Pet 跟随当前工作区。新 Host 启动后保持手动，执行 `auto on` 才开始模型请求与游戏操作，默认每次接管 30 分钟、最多 1000 次请求。复用已在接管中的 Host 时，`up` 保留现有状态，不打断运行。
+
+停止接管或关闭本工作区：
 
 ```sh
-rsa auto on
-rsa-companion --show-window
+rsa auto off              # 交还控制，模拟器与服务继续运行
+rsa down --keep-emulator  # 停止 Host、Pet，保留当前游戏
+rsa down                  # 停止本工作区管理的 Host、Pet、模拟器
 ```
 
-`rsa auto off` 交还控制权；到达本次接管的时间预算也会自动交还。后台启动方法见 [RSA 文档](rsa/README.md)。模型访问需要本机 OMP 登录；默认模型为 `openai-codex/gpt-6.1-sol`。Switch 提供者当前面向 Apple Silicon macOS，构建和设备前提见 [Ryubing 文档](rsa/src/providers/ryubing/README.md)。
+关闭模拟器可能丢失未保存的游戏进度。`down` 默认保留共用 Dashboard；`down --dashboard` 可关闭由本工作区启动的 Dashboard。手动在外部启动的进程不会被关闭。更换预算、模型或加载 Host 代码改动时，修改 `rsa.json` 后执行 `rsa down --keep-emulator`、`rsa up`，即可保留当前游戏并续接原会话。重复 `up` 不重启已就绪的 Host；更换游戏或模拟器启动配置则使用普通 `down` / `up`。
+
+mGBA 使用 `rsa init --provider mgba`，先按 [RSA 文档](rsa/README.md)手动打开 ROM 并加载 Lua 桥；这一入口暂不代装桥。模型访问需要本机 OMP 登录，默认模型为 `openai-codex/gpt-6.1-sol`。原来的 `rsa run` 等独立组件入口仍可用于开发和排查。
 
 ## 代码与运行数据
 
-任务工作区是任意普通目录，包含 `AGENTS.md`、`skills/`、`memory/`、`logs/` 和模型自行创建的文件。它不包含 Harness 源码，也不随这个仓库提交。
+任务工作区是任意普通目录，包含 `rsa.json` 启动配置、`AGENTS.md`、`skills/`、`memory/`、`logs/` 和模型自行创建的文件。它不包含 Harness 源码，也不随这个仓库提交。
 
 当前开发约定保留一处仓库外的集中数据目录：**仓库根的同级 `artifacts/`**，即 `<repo>/../artifacts/`。它不是 clone 的内容，首次使用时按需创建：
 
@@ -63,6 +63,8 @@ rsa-companion --show-window
 │   └── switch/                 # Ryubing 源码、SDK 和构建产物
 └── workspaces/                 # 示例工作区位置，可换成其他路径
     └── my-task/
+        ├── rsa.json
+        ├── AGENTS.md
         ├── skills/
         ├── memory/
         └── logs/<run-id>/

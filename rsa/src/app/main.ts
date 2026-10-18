@@ -12,6 +12,7 @@ import type { ObservationRequest } from "../contracts.ts";
 import { readCurrentSession, resolveWorkspaceState } from "../harness/workspace-state.ts";
 import { validateSessionWorkspace } from "../harness/omp/workspace-session.ts";
 import workspaceGuide from "../../templates/AGENTS.md" with { type: "text" };
+import { WORKSPACE_HELP, workspaceCommand } from "./workspace.ts";
 
 // Runtime state lives beside the monorepo, outside its three component directories.
 const artifactRoot = resolve(import.meta.dir, "../../../../artifacts/rsa");
@@ -33,9 +34,10 @@ async function main() {
     args.splice(0, 2);
   }
   if (!args.length || args[0] === "--help" || (args[0] === "run" && args.includes("--help"))) {
-    console.log(`${RUN_HELP}\n${HELP}`);
+    console.log(`${WORKSPACE_HELP}\n\n${RUN_HELP}\n${HELP}`);
     return;
   }
+  if (["init", "up", "services", "down"].includes(args[0]!)) return workspaceCommand(args[0]!, args.slice(1), selectedWorkspace);
   if (args[0] !== "run") {
     const socket = process.env.RSA_SOCKET ?? (await resolveWorkspaceState(selectedWorkspace, artifactRoot)).socket;
     return cli(args, socket);
