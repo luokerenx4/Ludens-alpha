@@ -1,0 +1,210 @@
+diff --git a/src/session/session-maintenance.ts b/src/session/session-maintenance.ts
+index 6cfe40635e3f152cab63bd94062249ea469b47e7..9deb8f6bca4c8c699a220000ad968b6ca164a323 100644
+--- a/src/session/session-maintenance.ts
++++ b/src/session/session-maintenance.ts
+@@ -63,7 +63,7 @@ import * as AIError from "@oh-my-pi/pi-ai/error";
+ import { resolvePromptCacheLookback } from "@oh-my-pi/pi-catalog/compat/prompt-cache-lookback";
+ import { preferredDialect } from "@oh-my-pi/pi-catalog/identity";
+ import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
+-import { isRecord, logger, prompt, Snowflake } from "@oh-my-pi/pi-utils";
++import { isRecord, logger, prompt, Snowflake, untilAborted } from "@oh-my-pi/pi-utils";
+ import * as snapcompact from "@oh-my-pi/snapcompact";
+ import { writeArtifact } from "./artifacts";
+ import type { ModelRegistry } from "../config/model-registry";
+@@ -347,7 +347,7 @@ interface ArmedSpeculation {
+ 	codexCompaction?: CodexCompactionContext;
+ 	/** Last branch entry covered by the speculated summary's source snapshot. */
+ 	snapshotLeafId: string;
+-	/** Context size when speculation started; drives refresh-on-growth. */
++	/** Context size when speculation started. */
+ 	contextTokensAtStart: number;
+ }
+ 
+@@ -364,6 +364,7 @@ type CompactionProjectionArgs = {
+ 
+ /** One background speculative-compaction run and (once resolved) its armed result. */
+ interface SpeculationRun {
++	method: "remote" | "handoff" | "soft";
+ 	controller: AbortController;
+ 	promise: Promise<void>;
+ 	contextTokensAtStart: number;
+@@ -2101,16 +2102,19 @@ export class SessionMaintenance {
+ 		const current = this.#speculation;
+ 		if (current) {
+ 			if (!current.armed) return; // one run at a time
+-			// Refresh-on-growth: the armed summary's kept tail grows with every
+-			// turn; once the growth exceeds the keep-recent budget, a fresh cut
+-			// reclaims materially more context at apply time.
+-			const growth = contextTokens - current.armed.contextTokensAtStart;
+-			const refreshBudget = Math.max(settings.keepRecentTokens, SPECULATION_LEAD_MIN_TOKENS);
+-			if (
+-				(growth <= refreshBudget || isRecord(current.armed.result.preserveData?.anthropicCompaction)) &&
+-				this.#armedSpeculationValid(current.armed, contextTokens)
+-			)
+-				return;
++			// Keep a usable result: fast-growing multimodal history can exceed
++			// keepRecentTokens while summarizing. Refreshing just for that growth
++			// throws away the ready summary right before the threshold and makes
++			// the live loop wait for another request. Validation already checks
++			// projected headroom; commit replays the full post-snapshot tail.
++			if (this.#armedSpeculationValid(current.armed, contextTokens)) return;
++			logger.debug("Speculative compaction invalidated", {
++				method: current.armed.method,
++				snapshotLeafId: current.armed.snapshotLeafId,
++				contextTokensAtStart: current.armed.contextTokensAtStart,
++				contextTokens,
++				reason: "branch-or-headroom",
++			});
+ 			this.cancelSpeculation();
+ 		}
+ 		const model = this.#model;
+@@ -2125,7 +2129,7 @@ export class SessionMaintenance {
+ 	/** Install and launch one background speculation run for `method`. */
+ 	#startSpeculationRun(contextTokens: number, method: "remote" | "handoff" | "soft"): void {
+ 		const controller = new AbortController();
+-		const run: SpeculationRun = { controller, promise: Promise.resolve(), contextTokensAtStart: contextTokens };
++		const run: SpeculationRun = { method, controller, promise: Promise.resolve(), contextTokensAtStart: contextTokens };
+ 		const model = this.#model;
+ 		// Keyed now: the session can switch before the run settles.
+ 		const nativeKey = model && this.#nativeSpeculationKey(model);
+@@ -2233,6 +2237,13 @@ export class SessionMaintenance {
+ 		if (!snapshotLeafId) return clear();
+ 		const preparation = prepareCompaction(branch, effectiveSettings, model, this.#tokenizer);
+ 		if (!preparation) return clear();
++		const startedAt = performance.now();
++		logger.debug("Speculative compaction started", {
++			method,
++			snapshotLeafId,
++			contextTokensAtStart: contextTokens,
++			thresholdTokens: resolveThresholdTokens(model.contextWindow, settings),
++		});
+ 		const signal = run.controller.signal;
+ 		let armed: ArmedSpeculation;
+ 		if (method === "handoff") {
+@@ -2285,6 +2296,7 @@ export class SessionMaintenance {
+ 					// sticky provider sessions by sessionId, and a speculation
+ 					// overlapping the live stream must never interleave with it.
+ 					sessionId: `${this.#host.sessionId()}:spec:${Snowflake.next()}`,
++					parentSessionId: this.#host.sessionId(),
+ 					preferWebsockets: false,
+ 				},
+ 				candidates,
+@@ -2306,6 +2318,8 @@ export class SessionMaintenance {
+ 		logger.debug("Speculative compaction armed", {
+ 			method,
+ 			snapshotLeafId,
++			contextTokensAtStart: contextTokens,
++			durationMs: performance.now() - startedAt,
+ 			tokensBefore: armed.result.tokensBefore,
+ 		});
+ 	}
+@@ -2402,9 +2416,12 @@ export class SessionMaintenance {
+ 		if (settings.asyncEnabled === false) return undefined;
+ 		if (this.#host.extensionRunner?.hasHandlers("session_before_compact")) return undefined;
+ 		if (!this.#armedSpeculationValid(run.armed, triggerContextTokens, pendingContextTokens)) {
+-			logger.debug("Armed speculative compaction invalidated by branch growth or headroom check", {
++			logger.debug("Speculative compaction invalidated", {
+ 				method: run.armed.method,
+ 				snapshotLeafId: run.armed.snapshotLeafId,
++				contextTokensAtStart: run.armed.contextTokensAtStart,
++				contextTokens: triggerContextTokens,
++				reason: "branch-or-headroom",
+ 			});
+ 			return undefined;
+ 		}
+@@ -3510,10 +3527,12 @@ export class SessionMaintenance {
+ 						// (xai-oauth/grok-build) don't trip requireSupportedEffort.
+ 						thinkingLevel: this.#host.thinkingLevel(),
+ 						tools: this.#host.agent.state.tools,
+-						sessionId: this.#host.sessionId(),
++						// Background speculation supplies an isolated session and disables
++						// WebSockets so it cannot interleave with the live turn's chain.
++						sessionId: options?.sessionId ?? this.#host.sessionId(),
+ 						promptCacheKey: this.#host.agent.promptCacheKey ?? this.#host.agent.sessionId,
+ 						providerSessionState: this.#host.providerSessionState,
+-						preferWebsockets: this.#host.preferWebsockets(),
++						preferWebsockets: options?.preferWebsockets ?? this.#host.preferWebsockets(),
+ 						// Route every summarization HTTP request through the
+ 						// session's side-stream transport so the provider
+ 						// concurrency cap (e.g. providers.ollama-cloud.maxConcurrency)
+@@ -4464,14 +4483,24 @@ export class SessionMaintenance {
+ 
+ 		if (!method) return COMPACTION_CHECK_NONE;
+ 
+-		// A speculative pass may have already produced this compaction's summary
+-		// in the background. Claiming consumes the slot either way: an in-flight
+-		// run is aborted (this real pass supersedes it) and an armed result is
+-		// returned only when still valid for the current branch/model/settings.
++		// At the threshold, keep a native summary already in flight. Once live
++		// turns pause, its snapshot can be committed with the appended tail after
++		// the same branch/headroom validation used for an already armed result.
++		const pendingSpec =
++			reason === "threshold" &&
++			method === "remote" &&
++			compactionSettings.asyncEnabled !== false &&
++			!this.#host.extensionRunner?.hasHandlers("session_before_compact") &&
++			this.#speculation?.method === "remote" &&
++			!this.#speculation.armed
++				? this.#speculation
++				: undefined;
+ 		// Snapcompact is local and instant, so an armed LLM summary (possible
+ 		// only when settings/model changed since arming) never overrides it.
+-		const claimedSpec = this.#claimArmedSpeculation(options.triggerContextTokens, options.pendingContextTokens);
+-		const armedSpec = method === "snapcompact" ? undefined : claimedSpec;
++		const claimedSpec = pendingSpec
++			? undefined
++			: this.#claimArmedSpeculation(options.triggerContextTokens, options.pendingContextTokens);
++		let armedSpec = method === "snapcompact" ? undefined : claimedSpec;
+ 
+ 		const effectiveSettings = resolveMethodSettings(compactionSettings, method);
+ 		const fallbackFromShake = options.fallbackFromShake === true;
+@@ -4520,6 +4549,27 @@ export class SessionMaintenance {
+ 			// queue, not the core steering queue (which handoff's agent.reset() would wipe).
+ 			const startEvent = { type: "auto_compaction_start" as const, reason, action };
+ 			await this.#emitLifecycleEvent(startEvent, false);
++			if (pendingSpec) {
++				logger.debug("Waiting for speculative compaction", {
++					method: pendingSpec.method,
++					contextTokensAtStart: pendingSpec.contextTokensAtStart,
++					contextTokens: options.triggerContextTokens,
++					reason,
++				});
++				const abortSpeculation = () => {
++					if (this.#speculation === pendingSpec) this.#speculation = undefined;
++					pendingSpec.controller.abort(autoCompactionSignal.reason);
++				};
++				autoCompactionSignal.addEventListener("abort", abortSpeculation, { once: true });
++				try {
++					if (autoCompactionSignal.aborted) abortSpeculation();
++					await untilAborted(autoCompactionSignal, pendingSpec.promise);
++					autoCompactionSignal.throwIfAborted();
++				} finally {
++					autoCompactionSignal.removeEventListener("abort", abortSpeculation);
++				}
++				armedSpec = this.#claimArmedSpeculation(options.triggerContextTokens, options.pendingContextTokens);
++			}
+ 			if (armedSpec) {
+ 				// A background speculation already produced this compaction's
+ 				// summary; splice it in instead of paying for a blocking
+@@ -4528,6 +4578,8 @@ export class SessionMaintenance {
+ 				// time.
+ 				logger.debug("Applying armed speculative compaction", {
+ 					method: armedSpec.method,
++					snapshotLeafId: armedSpec.snapshotLeafId,
++					contextTokensAtStart: armedSpec.contextTokensAtStart,
+ 					action,
+ 					reason,
+ 				});
+diff --git a/src/session/speculation-lead.ts b/src/session/speculation-lead.ts
+index 8bf314ccac7134e8091be11669777c31a7de3d91..5de9647900f47bdd317c20454844e17a2fba2f39 100644
+--- a/src/session/speculation-lead.ts
++++ b/src/session/speculation-lead.ts
+@@ -11,7 +11,7 @@
+  * annotated context gauge (boundary marker position).
+  */
+ const SPECULATION_LEAD_FRACTION = 0.125;
+-/** Floor of the speculation band; also the armed-summary refresh budget floor. */
++/** Floor of the speculation band. */
+ export const SPECULATION_LEAD_MIN_TOKENS = 8_192;
+ const SPECULATION_LEAD_MAX_TOKENS = 32_000;
+ 

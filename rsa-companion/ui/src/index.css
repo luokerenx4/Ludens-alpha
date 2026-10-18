@@ -1,0 +1,206 @@
+@import "tailwindcss";
+@import "./theme/palette.css";
+
+@font-face {
+  font-family: "Instrument Sans Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400 700;
+  src: url("./assets/fonts/instrument-sans-latin-wght-normal.woff2") format("woff2-variations");
+}
+
+/* Tailwind aliases for the semantic color card. The core names intentionally
+   mirror Orca/shadcn; this does not import or require the shadcn component
+   library. `inline` keeps utilities connected to the active runtime palette. */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  --color-accent-strong: var(--accent-strong);
+  --color-primary-muted: var(--primary-muted);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-warning-background: var(--warning-background);
+  --color-warning-border: var(--warning-border);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-ai-action: var(--ai-action);
+  --color-ai-action-foreground: var(--ai-action-foreground);
+  --color-backdrop: var(--backdrop);
+  --color-code-background: var(--code-background);
+  --color-report-canvas: var(--report-canvas);
+  --color-office-wall: var(--office-wall);
+  --color-office-wall-grain: var(--office-wall-grain);
+  --color-office-wall-crown: var(--office-wall-crown);
+  --color-office-trim: var(--office-trim);
+  --color-office-trim-shadow: var(--office-trim-shadow);
+  --color-office-floor: var(--office-floor);
+  --color-office-floor-plank: var(--office-floor-plank);
+  --color-office-floor-sheen: var(--office-floor-sheen);
+  --color-office-label: var(--office-label);
+  --color-office-label-foreground: var(--office-label-foreground);
+
+  --font-sans: "Instrument Sans Variable", "PingFang SC",
+    "Microsoft YaHei", "Hiragino Sans GB", "Noto Sans CJK SC", sans-serif;
+  --font-mono: "SF Mono", "Fira Code", "Cascadia Code", Menlo, Consolas,
+    monospace;
+
+  /* OpenAlice is a dense workbench: Tailwind's default 14px `text-sm` makes
+     shared controls and overlays compete with page titles. Keep the familiar
+     20px reading rhythm while aligning the global body/control size to the
+     semantic `.text-body` token below. */
+  --text-sm: 13px;
+  --text-sm--line-height: 20px;
+
+  /* Shared workbench geometry. Composer and drawer silhouettes keep their
+     dedicated larger radii at the component boundary. */
+  --radius-sm: 5px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+  --radius-3xl: 20px;
+}
+
+/* Base resolution (no attribute / explicit light). */
+:root {
+  --motion-fast: 110ms;
+  --motion-standard: 160ms;
+  --motion-slow: 250ms;
+  --motion-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --motion-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --motion-ease-drawer: var(--motion-ease-out);
+  --oa-control-hover-border: color-mix(in srgb, var(--foreground) 18%, transparent);
+  --oa-control-focus-border: color-mix(in srgb, var(--foreground) 28%, transparent);
+  --oa-focus-ring: color-mix(in srgb, var(--foreground) 46%, transparent);
+  --oa-focus-shadow: 0 0 0 1px var(--oa-focus-ring);
+}
+
+/* Japanese gets a JP-first sans stack so shared Han characters render in
+   Japanese glyph forms, not the Simplified-Chinese forms the default stack
+   would pick (Han unification). Scoped via <html lang="ja">, which the locale
+   store keeps in sync. */
+:root:lang(ja) {
+  --font-sans: "Instrument Sans Variable",
+    "Hiragino Kaku Gothic ProN", "Hiragino Sans", "Yu Gothic", "YuGothic",
+    "Meiryo", "Noto Sans JP", sans-serif;
+}
+
+/* Traditional Chinese (Hant script) gets a Traditional-first sans stack so
+   shared Han characters render in Traditional forms, not the Simplified ones
+   the default stack would pick. Scoped via <html lang="zh-Hant"> — region-
+   neutral (serves both Taiwan and Hong Kong Traditional readers). */
+:root:lang(zh-Hant) {
+  --font-sans: "Instrument Sans Variable",
+    "PingFang TC", "Microsoft JhengHei", "Noto Sans TC",
+    "Noto Sans CJK TC", sans-serif;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--app-background-wash), var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 20px;
+  overflow: hidden;
+  text-rendering: optimizeLegibility;
+  transition:
+    background-color var(--motion-slow) var(--motion-ease-out),
+    color var(--motion-slow) var(--motion-ease-out);
+}
+
+::selection {
+  background: color-mix(in srgb, var(--primary) 28%, transparent);
+  color: var(--foreground);
+}
+
+/* Compact notification content. Sonner remains the positioning/motion owner. */
+[data-sonner-toaster] { font-family: var(--font-sans); }
+[data-sonner-toast] { width: var(--width); }
+.oa-notification {
+  position: relative;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--popover);
+  color: var(--popover-foreground);
+  font-family: var(--font-sans);
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--foreground) 9%, transparent);
+}
+.oa-notification-header { display: flex; align-items: center; gap: 7px; padding-right: 24px; font-size: 12px; line-height: 20px; }
+.oa-notification-title { min-width: 0; font-weight: 600; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.oa-notification-icon { width: 16px; height: 16px; flex-shrink: 0; color: var(--info); }
+.oa-notification[data-status="success"] .oa-notification-icon { color: var(--success); }
+.oa-notification[data-status="warning"] .oa-notification-icon { color: var(--warning); }
+.oa-notification[data-status="error"] .oa-notification-icon { color: var(--destructive); }
+.oa-notification[data-status="neutral"] .oa-notification-icon { color: var(--muted-foreground); }
+.oa-notification-count { color: var(--muted-foreground); font-size: 11px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.oa-notification-close { position: absolute; right: 6px; top: 6px; display: grid; place-items: center; width: 28px; height: 28px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--muted-foreground); cursor: pointer; }
+.oa-notification-close:hover { background: var(--accent); color: var(--foreground); }
+.oa-notification-body { display: flex; align-items: flex-start; gap: 10px; }
+.oa-notification:has(.oa-notification-description, .oa-notification-action, .oa-notification-image) .oa-notification-body { margin-top: 8px; }
+.oa-notification-copy { min-width: 0; flex: 1; }
+.oa-notification-description { margin: 0; font-size: 13px; font-weight: 500; line-height: 20px; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.oa-notification-image { flex-shrink: 0; width: 64px; height: 48px; border-radius: 6px; object-fit: cover; border: 1px solid var(--border); }
+.oa-notification-action { display: inline-flex; align-items: center; gap: 4px; border: 0; background: transparent; color: var(--primary); font-family: inherit; font-size: 12px; font-weight: 500; line-height: 20px; margin-top: 8px; padding: 0; min-height: 24px; cursor: pointer; }
+.oa-notification-action:hover { text-decoration: underline; }
+.oa-notification-close:focus-visible, .oa-notification-action:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
+
+/* The small RSA host keeps OpenAlice's workbench palette and control geometry. */
+.app-shell { display: grid; grid-template-columns: 172px minmax(0, 1fr); height: 100%; }
+.app-sidebar { display: flex; flex-direction: column; gap: 20px; padding: 24px 12px 16px; background: var(--sidebar); border-right: 1px solid var(--sidebar-border); }
+.app-brand { padding: 0 8px; font-size: 16px; font-weight: 650; letter-spacing: -0.03em; }
+.app-brand span { display: block; margin-top: 4px; font-size: 11px; font-weight: 400; letter-spacing: 0; color: var(--muted-foreground); }
+.oa-topbar { display: flex; flex: 0 0 auto; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-height: 48px; padding: 4px 24px; border-bottom: 1px solid var(--border); color: var(--foreground); }
+.run-identifiers { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 10px 12px; }
+.run-identifiers dt { color: var(--muted-foreground); }
+.run-identifiers dd { margin: 0; overflow-wrap: anywhere; font-family: var(--font-mono); line-height: 1.6; }
+.activity-notifications { position: fixed; z-index: 20; top: 60px; right: 20px; width: min(360px, calc(100vw - 40px)); display: grid; gap: 8px; pointer-events: none; }
+.activity-notifications > * { pointer-events: auto; }
+@media (max-width: 650px) {
+  .app-shell { grid-template-columns: 132px minmax(0, 1fr); }
+  .app-sidebar { padding-inline: 8px; }
+  .oa-topbar { padding-inline: 16px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+}

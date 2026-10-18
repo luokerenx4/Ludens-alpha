@@ -1,0 +1,31 @@
+# Dependencies and generated builds
+node_modules/
+dist/
+dist-ssr/
+.next/
+*.tsbuildinfo
+coverage/
+test-results/
+playwright-report/
+
+# Local workspaces, runtime data, and games
+artifacts/
+workspaces/
+logs/
+roms/
+*.log
+
+# Local credentials and settings
+.env
+.env.*
+!.env.example
+*.local
+
+# Editor and language caches
+.DS_Store
+.idea/
+.vscode/
+__pycache__/
+*.pyc
+*.swp
+*.swo

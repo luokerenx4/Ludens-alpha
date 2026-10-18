@@ -1,0 +1,208 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { appendFile, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { gzipSync } from "node:zlib";
+import { activityBlocks, streamBlocks } from "../lib/activity";
+import { selectCycle } from "../lib/aggregate";
+import type { Event } from "../lib/types";
+
+const anchor = { at: "2026-10-17T13:00:00.000Z", atMs: 0 };
+// Both SSE and WS logs use this envelope; their raw transport annotations differ.
+const frame = (value: Record<string, unknown>, atMs = 1) => JSON.stringify({ atMs, trace: { modelCallId: "model" }, event: {
+  event: value.type ?? value.object, data: JSON.stringify(value), raw: [": ws ← event"],
+} }) + "\n";
+const event = (type: string, seq: number, data: Record<string, unknown> = {}, epoch = "cycle", toolCallId?: string): Event => ({
+  seq, type, at: new Date(Date.parse(anchor.at) + seq).toISOString(), atMs: seq,
+  trace: { epoch, modelCallId: "model", ...(toolCallId ? { toolCallId } : {}) }, data,
+});
+
+test("Responses delta, done and response snapshots produce one stable block per item", () => {
+  const reasoning = { type: "reasoning", id: "rs_1", summary: [{ type: "summary_text", text: "Check evidence." }], encrypted_content: "ENCRYPTED-SECRET" };
+  const message = { type: "message", id: "msg_1", role: "assistant", content: [{ type: "output_text", text: "Let's inspect." }] };
+  const tool = { type: "function_call", id: "fc_1", call_id: "call_1", name: "exec", arguments: '{"command":"inspect"}' };
+  const delta = { type: "response.reasoning_summary_text.delta", item_id: "rs_1", summary_index: 0, delta: "Check ", sequence_number: 2 };
+  const stream = [
+    { type: "response.create", input: [{ role: "assistant", content: "OLD-HISTORY" }] },
+    { type: "response.created", sequence_number: 0, response: { id: "resp_1", status: "in_progress" } },
+    { type: "response.output_item.added", sequence_number: 1, item: { ...reasoning, summary: [] } },
+    delta, delta, // The same sequence received/logged through both transports.
+    { type: "response.reasoning_summary_text.delta", item_id: "rs_1", summary_index: 0, delta: "evidence.", sequence_number: 3 },
+    { type: "response.reasoning_summary_text.done", item_id: "rs_1", summary_index: 0, text: "Check evidence.", sequence_number: 4 },
+    { type: "response.output_text.delta", item_id: "msg_1", content_index: 0, delta: "Let's ", sequence_number: 5 },
+    { type: "response.output_text.delta", item_id: "msg_1", content_index: 0, delta: "inspect.", sequence_number: 6 },
+    { type: "response.output_text.done", item_id: "msg_1", content_index: 0, text: "Let's inspect.", sequence_number: 7 },
+    { type: "response.output_item.added", item: { ...tool, arguments: "" }, sequence_number: 8 },
+    { type: "response.function_call_arguments.delta", item_id: "fc_1", delta: '{"command":', sequence_number: 9 },
+    { type: "response.function_call_arguments.delta", item_id: "fc_1", delta: '"inspect"}', sequence_number: 10 },
+    { type: "response.function_call_arguments.done", item_id: "fc_1", arguments: tool.arguments, sequence_number: 11 },
+    { type: "response.output_item.done", item: tool, sequence_number: 12 },
+    { type: "response.completed", sequence_number: 13, response: { id: "resp_1", output: [reasoning, message, tool] } },
+  ].map((value, i) => frame(value, i)).join("");
+  const blocks = streamBlocks(stream + '{"partial":', "model", anchor);
+  assert.deepEqual(blocks.filter(b => b.kind !== "diagnostic").map(b => [b.id, b.text, b.status]), [
+    ["model:thinking:rs_1:0", "Check evidence.", "complete"],
+    ["model:text:msg_1:0", "Let's inspect.", "complete"],
+    ["model:tool:call_1", '{\n  "command": "inspect"\n}', "complete"],
+  ]);
+  assert.equal(JSON.stringify(blocks).includes("OLD-HISTORY"), false);
+  assert.equal(JSON.stringify(blocks).includes("ENCRYPTED-SECRET"), false);
+  assert.equal(blocks.find(b => b.kind === "thinking")!.at, "2026-10-17T13:00:00.003Z");
+  assert.deepEqual(blocks.find(b => b.kind === "tool")!.tool, { args: { command: "inspect" } });
+  assert.deepEqual(blocks.find(b => b.title === "response.created")!.data,
+    { type: "response.created", sequence_number: 0, response: { id: "resp_1", status: "in_progress" } });
+});
+
+test("partial tool arguments stay source text until they form JSON", () => {
+  const start = frame({ type: "response.output_item.added", item: {
+    type: "function_call", id: "fc", call_id: "call", name: "exec", arguments: "",
+  } });
+  const partial = start + frame({ type: "response.function_call_arguments.delta", item_id: "fc", delta: '{"command":' });
+  assert.deepEqual(streamBlocks(partial, "model", anchor)[0].tool, { args: '{"command":' });
+  const complete = partial + frame({ type: "response.function_call_arguments.delta", item_id: "fc", delta: '"inspect"}' });
+  assert.deepEqual(streamBlocks(complete, "model", anchor)[0].tool, { args: { command: "inspect" } });
+});
+
+test("DeepSeek chat chunks retain readable thinking, assistant text and function arguments", () => {
+  const chunk = (delta: unknown, finish_reason: string | null = null) => frame({
+    id: "deepseek-response", object: "chat.completion.chunk", choices: [{ index: 0, delta, finish_reason }],
+  });
+  const blocks = streamBlocks([
+    chunk({ role: "assistant", content: null, reasoning_content: "Now " }),
+    chunk({ reasoning_content: "inspect the record." }),
+    chunk({ content: "Opening " }), chunk({ content: "the record." }),
+    chunk({ tool_calls: [{ index: 0, id: "call_deep", function: { name: "exec", arguments: '{"command":' } }] }),
+    chunk({ tool_calls: [{ index: 0, function: { arguments: '"open"}' } }] }), chunk({}, "tool_calls"),
+  ].join(""), "model", anchor);
+  assert.deepEqual(blocks.map(b => [b.kind, b.text, b.status]), [
+    ["thinking", "Now inspect the record.", "complete"], ["text", "Opening the record.", "complete"],
+    ["tool", '{\n  "command": "open"\n}', "complete"],
+  ]);
+  assert.deepEqual(streamBlocks(chunk({ content: "\n" }, "stop"), "model", anchor), []);
+});
+
+test("cached growing streams update the same block and tool execution/result joins the provider call", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "rsa-activity-"));
+  const root = await realpath(temporary);
+  try {
+    await mkdir(join(root, "streams")); await mkdir(join(root, "payloads"));
+    const file = join(root, "streams/model.jsonl");
+    await writeFile(file, frame({ type: "response.output_text.delta", item_id: "message", delta: "Hello" }));
+    const events = [event("model_start", 0)];
+    const first = await activityBlocks(root, events);
+    assert.equal(first.find(b => b.kind === "text")?.status, "running");
+    assert.deepEqual(await activityBlocks(root, events), first);
+    await appendFile(file, frame({ type: "response.output_text.done", item_id: "message", text: "Hello there" }));
+    const next = (await activityBlocks(root, events)).filter(b => b.kind === "text");
+    assert.equal(next.length, 1); assert.equal(next[0].id, first.find(b => b.kind === "text")?.id);
+    assert.equal(next[0].text, "Hello there"); assert.equal(next[0].status, "complete");
+    await appendFile(file, frame({ type: "response.output_item.done", item: { type: "function_call", id: "fc_1", call_id: "call_1", name: "exec", arguments: '{"command":"ls"}' } }));
+    const resultPath = `payloads/${"a".repeat(64)}.json.gz`;
+    await writeFile(join(root, resultPath), gzipSync(JSON.stringify({ content: [
+      { type: "text", text: '{"stdout":"result.txt","exitCode":0}' }, { type: "image", mimeType: "image/png", data: "IMAGE-BASE64" },
+    ] })));
+    events.push(event("tool_start", 1, { toolName: "exec", args: { command: "ls" }, intent: "List files" }, "cycle", "call_1|fc_1"));
+    events.push(event("exec_result", 2, { stdout: "result.txt", exitCode: 0 }, "cycle", "call_1|fc_1"));
+    events.push(event("tool_end", 3, { toolName: "exec", isError: false, result: { path: resultPath } }, "cycle", "call_1|fc_1"));
+    const tools = (await activityBlocks(root, events)).filter(b => b.kind === "tool");
+    assert.equal(tools.length, 1); assert.equal(tools[0].status, "complete");
+    assert.match(tools[0].text, /List files/); assert.match(tools[0].text, /result.txt/);
+    assert.deepEqual(tools[0].tool, { intent: "List files", args: { command: "ls" }, result: { stdout: "result.txt", exitCode: 0 } });
+    assert.equal(JSON.stringify(tools[0]).includes("IMAGE-BASE64"), false);
+    await assert.rejects(activityBlocks(root, [{ ...events[0], trace: { modelCallId: "../escape" } }]), /调用 ID/);
+    await symlink(file, join(root, "streams/alias.jsonl"));
+    await assert.rejects(activityBlocks(root, [{ ...events[0], trace: { modelCallId: "alias" } }]), /运行目录/);
+  } finally { await rm(temporary, { recursive: true, force: true }); }
+});
+
+test("system and diagnostic blocks preserve structured event data with the existing redactions", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "rsa-activity-data-"));
+  const root = await realpath(temporary);
+  try {
+    const blocks = await activityBlocks(root, [
+      event("control", 1, { mode: "manual", reason: "budget" }),
+      event("model_http_end", 2, { elapsedMs: 123, status: 200, signature: "HIDDEN-SIGNATURE",
+        observation: { type: "image", mimeType: "image/png", data: "IMAGE-BASE64" } }),
+    ]);
+    assert.deepEqual(blocks.map(block => [block.kind, block.data]), [
+      ["system", { mode: "manual", reason: "budget" }],
+      ["diagnostic", { elapsedMs: 123, status: 200, observation: { type: "image", mimeType: "image/png" } }],
+    ]);
+    assert.equal(JSON.stringify(blocks).includes("HIDDEN-SIGNATURE"), false);
+    assert.equal(JSON.stringify(blocks).includes("IMAGE-BASE64"), false);
+  } finally { await rm(temporary, { recursive: true, force: true }); }
+});
+
+test("cycle selection keeps other epochs' blocks out and rejects unknown epochs", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "rsa-activity-epoch-"));
+  const root = await realpath(temporary);
+  try {
+    const events = [event("control", 1, { mode: "auto" }, "old"), event("observation", 2, { id: "old-image" }, "old"),
+      event("control", 3, { mode: "auto" }, "new"), event("observation", 4, { id: "new-image" }, "new")];
+    const latest = await activityBlocks(root, selectCycle(events).events);
+    assert.equal(latest.length, 2); assert.equal(JSON.stringify(latest).includes("old-image"), false);
+    assert.throws(() => selectCycle(events, "missing"), /所选周期/);
+  } finally { await rm(temporary, { recursive: true, force: true }); }
+});
+
+test("model cancellation closes partial output without inventing a failure or completing an executing tool", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "rsa-activity-abort-"));
+  const root = await realpath(temporary);
+  try {
+    await mkdir(join(root, "streams"));
+    await writeFile(join(root, "streams/model.jsonl"), [
+      { type: "response.reasoning_summary_text.delta", item_id: "rs", delta: "Inspect" },
+      { type: "response.output_text.delta", item_id: "msg", delta: "Opening" },
+      { type: "response.output_item.added", item: { type: "function_call", id: "fc", call_id: "call", name: "exec", arguments: "" } },
+    ].map(value => frame(value)).join(""));
+    const events = [event("model_start", 0), event("model_http_error", 1, { aborted: true, error: "cancelled" }),
+      event("model_end", 2, { stopReason: "aborted" })];
+    const stopped = await activityBlocks(root, events);
+    assert.ok(stopped.every(block => block.status === "complete"));
+    events.push(event("tool_start", 3, { toolName: "exec", args: { command: "pending" } }, "cycle", "call|fc"));
+    const executing = await activityBlocks(root, events);
+    assert.equal(executing.find(block => block.kind === "tool")?.status, "running");
+    assert.ok(executing.filter(block => ["thinking", "text"].includes(block.kind)).every(block => block.status === "complete"));
+    const failed = await activityBlocks(root, [events[0], event("model_end", 2, { stopReason: "error" })]);
+    assert.ok(failed.filter(block => ["thinking", "text", "tool"].includes(block.kind)).every(block => block.status === "error"));
+  } finally { await rm(temporary, { recursive: true, force: true }); }
+});
+
+test("mixed WS/SSE runs merge tools and readable summaries without inventing assistant text", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "rsa-activity-mixed-"));
+  const root = await realpath(temporary);
+  try {
+    await mkdir(join(root, "streams"));
+    const events: Event[] = [];
+    for (const transport of ["ws", "http"]) {
+      const modelEvent = (type: string, data = {}, toolCallId?: string) => {
+        const entry = event(type, events.length, data, "cycle", toolCallId);
+        entry.trace.modelCallId = transport;
+        events.push(entry);
+      };
+      const tool = { type: "function_call", id: "fc", call_id: "call", name: "exec", arguments: '{"command":"inspect"}' };
+      const output = transport === "ws"
+        ? [{ type: "reasoning", id: "rs", summary: [{ type: "summary_text", text: "Inspect the scene." }] }, tool]
+        : [tool];
+      await writeFile(join(root, `streams/${transport}.jsonl`), [
+        frame({ type: "response.output_item.done", item: tool }),
+        frame({ type: "response.completed", response: { id: transport, output } }),
+      ].join(""));
+      modelEvent("model_start");
+      modelEvent(`model_${transport}_dispatch`);
+      modelEvent("model_end", { stopReason: "toolUse" });
+      modelEvent("tool_start", { toolName: "exec", args: { command: "inspect" } }, "call|fc");
+      modelEvent("exec_result", { stdout: "fixture result", exitCode: 0 }, "call|fc");
+      modelEvent("tool_end", { toolName: "exec", isError: false }, "call|fc");
+    }
+    const blocks = await activityBlocks(root, events);
+    assert.equal(blocks.filter(b => b.kind === "tool").length, 2);
+    assert.equal(blocks.filter(b => b.kind === "thinking").length, 1);
+    assert.equal(blocks.filter(b => b.kind === "text").length, 0);
+    assert.equal(new Set(blocks.map(b => b.id)).size, blocks.length);
+    assert.ok(blocks.filter(b => b.kind === "tool").every(b => b.text.includes("结果：")));
+    assert.ok(blocks.some(b => b.kind === "diagnostic" && b.title === "model_ws_dispatch"));
+    assert.ok(blocks.some(b => b.kind === "diagnostic" && b.title === "model_http_dispatch"));
+  } finally { await rm(temporary, { recursive: true, force: true }); }
+});

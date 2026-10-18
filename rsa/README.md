@@ -1,0 +1,333 @@
+# RSA 实验
+
+给模型原始传感器、控制器 CLI 和一个空工作区，让它自行探索并积累技能。提供者支持 mGBA 0.10.5 与 Ryubing Canary 1.3.351 RSA，通过同一份 OMP 18.9.1 循环运行。模型凭据复用本机 OMP 登录，默认 `openai-codex/gpt-6.1-sol`。
+
+## 启动
+
+本仓库根目录包含 `rsa/`、`rsa-dashboard/`、`rsa-companion/`。下文的 `artifacts/` 指仓库同级的运行目录 `<repo>/../artifacts/`；它不属于源码，日志仍写入各自 workspace。
+
+需要 Bun 1.4、mGBA 0.10.5 和本地 ROM。ROM 不进入 Git。
+
+```sh
+cd rsa
+bun install --frozen-lockfile
+export PATH="$PWD/bin:$PATH"
+```
+
+在 mGBA 打开游戏，然后进入 **Tools → Scripting**。在底部输入框执行以下代码，路径换成自己 checkout 中的绝对路径（可运行 `realpath src/providers/mgba/bridge.lua` 获取）：
+
+```lua
+dofile("/absolute/path/to/repo/rsa/src/providers/mgba/bridge.lua")
+```
+
+出现 `RSA bridge listening on 127.0.0.1:47653 (manual)` 即已加载。重复执行会关闭旧桥并加载新代码。脚本窗口可以关闭，游戏需要保持运行；模拟器暂停时，帧回调、采集和交接也会暂停。
+
+进入任务工作区启动宿主，等待输出 `ready: true`：
+
+```sh
+mkdir -p /absolute/path/to/workspace
+cd /absolute/path/to/workspace
+rsa run
+```
+
+在另一个终端进入同一工作区，并设置同样的 PATH：
+
+```sh
+rsa status
+rsa auto on
+rsa auto off
+```
+
+启动默认手动。开启后 AI 查阅设备 help、接收真实图片、自行操作；关闭立即撤销设备操作权，同时取消模型与 shell。再次开启要等前一模型周期退出。
+
+长时间后台运行时，在任务工作区用 macOS 临时 launchd job 启动，避免宿主和模拟器随交互式执行会话一起退出：
+
+```sh
+python3 /absolute/path/to/repo/rsa/scripts/launch-background.py emulator \
+  /absolute/path/to/repo/rsa/src/providers/ryubing/launch.sh /absolute/path/to/game.xci
+python3 /absolute/path/to/repo/rsa/scripts/launch-background.py host \
+  rsa run --provider ryubing --seconds 1800 --requests 1000
+```
+
+先确认模拟器桥已就绪，再启动宿主。脚本只负责把命令交给系统启动，cwd 是当前工作区，stdout/stderr 和 job 描述保存在 `logs/background/`。它不自动重启，也不注册开机启动；游戏接管预算仍由 `rsa` 管理。输出的 `target` 可用 `launchctl print <target>` 查看进程与退出码，停止/替换时用 `launchctl bootout <target>`。`rsa auto off` 仍是交还控制权的正常方式。
+
+2026-10-17 一轮逆转裁判在执行会话退出时与 Bun 宿主、多个 Node 进程同时消失，没有正常结束事件或对应崩溃报告。此后后台实验采用独立 launchd 生命周期；系统记录没有直接给出当时的触发信号，因此不将其归因于模型、压缩或游戏崩溃。
+
+可选参数：
+
+```sh
+rsa run --workspace /absolute/path/to/workspace \
+  --model openai-codex/gpt-6.1-sol --seconds 300 --requests 50
+```
+
+`--seconds` 是每次接管的最长墙钟时间，`--requests` 是每次接管的模型请求预算。达到任一预算即回到手动；下一次 `auto on` 使用新的预算，保留同一 OMP 会话及完整历史。默认 socket 为 `/tmp/playness-rsa-<uid>-<workspace-hash>.sock`，随工作区选择；`RSA_SOCKET` 可手动覆盖连接地址。
+
+持续性能观察可给一次接管设置较长的总预算（例如 `--seconds 1800`），每五分钟离线查看日志，不必关掉再接管。预算到期会取消在途响应，WS 连接可能随之重建；在长历史下，频繁硬停会反复付出完整首帧上传的成本。只有需要加载代码改动时才重启宿主。
+
+`--compaction-threshold` 设置 OMP 原生压缩的触发 token 数，默认 **256000**，不另建摘要或裁剪逻辑。2026-10-16 曾试用 100000 和 60000：压缩后部分请求变快，但这不能证明算上摘要请求、缓存重建和经验保留后的整体收益。按用户要求采用 256k，避免用反复压缩换取局部请求提速；后续性能优化优先检查请求构建和传输路径。
+
+固定的 [pi-coding-agent 18.9.1 补丁](patches/@oh-my-pi%2Fpi-coding-agent@18.9.1.patch) 让 threshold 压缩等待已经进行中的原生后台摘要，继续用 OMP 的分支有效性检查和 snapshot 后追加历史重放；失败或结果失效才重新压缩。2026-10-16 实跑曾在后台请求等待 71 秒后取消它，再发更大的摘要请求，阻塞重做约 140 秒；这些是该轮观察，不代表补丁每次能省固定时长。等待受原有自动压缩取消信号控制，不另设宽限超时，也不改变 256k 阈值。
+
+同日 `2026-10-16T13-42-36.546Z` 续玩又出现两次压缩、四次摘要请求。OMP 调试日志确认首份摘要在约 224k 启动，82–87 秒后已经完成；这时历史增长约 27–29k，超过默认 `keepRecentTokens=20000`，原有 refresh-on-growth 逻辑随即丢弃结果，发第二份摘要，最终在阈值处多等了 54.5 / 41.9 秒。补丁现在保留仍通过原生分支、模型和投影空间检查的已完成摘要，不再仅因自然增长刷新；新历史仍完整接在摘要之后。压缩阈值和 32k 后台提前量不变，不另建压缩器。离线回归覆盖超过 20k 增长时只生成一次并保留 tail，以及分支变化、空间不足时仍重新生成；随后十分钟实跑 `2026-10-16T14-43-29.202Z` 只发一份摘要：82.6 秒就绪，保留约 35 秒后到阈值采用，前台维护仅 3.351 毫秒；这是一次续玩观察，不保证每次都无等待。
+
+后台摘要仍使用 OMP 选定的 Responses Lite，与主循环的 Full Responses 不同。两者正文的 `prompt_cache_key` 相同，但之前独立 `:spec:` 会话缺少 `parentSessionId`，Codex 传输层因此用子会话设置缓存路由头。[pi-agent-core 18.9.1 补丁](patches/@oh-my-pi%2Fpi-agent-core@18.9.1.patch) 透传已有父会话字段，配合 coding-agent 调用点，让后台请求保留独立传输/metadata 身份并共享父会话缓存路由；不改 Lite、SSE 或摘要语义。真实 native V2 路径的 fake-fetch 测试验证了请求头与身份隔离，实际缓存收益需后续启动验证；这不证明过去的零缓存全由路由造成。
+
+同一补丁还保留后台摘要显式传入的独立 `:spec:` session ID 和 `preferWebsockets: false`。原 SDK 后续用宿主值覆盖它们，导致后台请求进入主会话的 WS 路径并漏过 HTTP 日志；现恢复 OMP 本身的后台隔离意图，普通压缩仍使用宿主默认值。
+
+`status` 返回宿主 `runId` 和 `maxSeconds`。控制 IPC 必须携带匹配的 `runId`，并可用 `expectedEpoch` 校验控制周期；CLI 自动读取并带上这两个字段，避免旧看板对重启后的宿主发出控制命令。
+
+更换时长预算并保留上下文时，先停止旧宿主，再用 `rsa run --workspace <原工作区> --seconds 1800` 启动，并按原配置指定模型、端口。宿主默认续接该工作区的当前 OMP 会话，保留身份、历史与压缩状态；新的事件日志与观测写入新 run。`--new-session` 开始全新上下文，保留工作区文件。`--resume <原会话.jsonl>` 用于首次绑定旧会话或显式选择历史，会话路径见旧 run 的 `session` 事件；原文件原地继续追加，不搬迁、不搜索或拼接其他历史。恢复不同工作区的会话会被拒绝。
+
+### 工作区与并行运行
+
+`workspace` 就是启动时的当前目录，保存模型自己的技能、记忆、脚本和 `logs/` 运行记录。Harness 源码、提示词和依赖留在 `rsa/`。进入工作区后直接 `rsa run`，宿主、OMP 和工具 shell 都在这个目录运行；这里不复制 runtime、不安装项目插件，也不初始化 Git。
+
+首次启动若缺少 `AGENTS.md`，写入一份简短目录说明；已有文件保留原样。OMP 使用原生 `contextFiles` 加载该工作区根目录的 `AGENTS.md`，配合 `customSystemPrompt` 保留 Harness 主提示；不隐式加载父目录或全局指令，也不把不断增长的日志目录树加入模型上下文。
+
+所有管理命令都可以通过 `--workspace` 或 `RSA_WORKSPACE` 选择工作区，显式参数优先：
+
+```sh
+cd /absolute/path/to/workspace
+rsa run
+rsa status
+rsa auto on
+# 从别处管理时：rsa --workspace /absolute/path/to/workspace status
+# 也可 export RSA_WORKSPACE=/absolute/path/to/workspace 后省略参数。
+```
+
+`rsa run --workspace ...` 同样有效。路径按 realpath 归一化，同一目录的符号链接使用同一份状态。两个工作区即使共享父目录，也有独立的会话、运行记录、内容快照和默认 socket。新目录从空经验、空会话开始；重开原目录保留原文件并续接会话，不自动继承其他工作区的内容。若显式复制了任务文件，则这些文件就是新工作区的初始内容。
+
+宿主在打开会话和连接设备前先占用工作区的固定 socket；即使另设 `RSA_SOCKET`，同一工作区也不能并发启动两个宿主。模型凭据仍共享本机 OMP 登录。这是上下文与数据的逻辑隔离，shell 仍可访问本机文件系统和网络；模拟器配置、存档和设备连接由 provider 管理，不随工作区隔离。
+
+并行游戏还需要分别启动模拟器实例并使用不同桥端口。在第二个 mGBA 实例中打开对应 ROM，再从 Scripting 执行：
+
+```lua
+RSA_BRIDGE_PORT = 47654
+dofile("/absolute/path/to/repo/rsa/src/providers/mgba/bridge.lua")
+```
+
+随后在独立 shell 中启动第二个宿主（路径按实际 checkout 替换）：
+
+```sh
+export RSA_WORKSPACE=/absolute/path/to/workspaces/second-task
+bin/rsa run \
+  --port 47654 --model deepseek/deepseek-flash --seconds 1200 --requests 1000
+```
+
+管理第二个宿主时选择相同工作区，例如 `bin/rsa --workspace /absolute/path/to/workspaces/second-task auto on`。若手动覆盖了 `RSA_SOCKET`，管理命令也使用相同覆盖值。模型执行的 shell 自动继承自己宿主的 socket 与 epoch。`--port` 必须与该实例的 `RSA_BRIDGE_PORT` 一致；mGBA 默认 47653，Ryubing 默认 47663。`--provider` 和端口选择只在应用装配层处理，标准能力接口不变。
+
+### Switch / Ryubing
+
+macOS arm64 桥接基于 Ryubing 的 `Canary-1.3.351` 标签，固定到提交 `475615f0431b4995b03c930c5089d20f6f3570e0`，本地版本为 `1.3.351-rsa.1`。唯一安装应用是 `/Applications/Ryubing.app`，手动和 RSA 使用同一份程序；界面名称是 Ryubing，上游内部可执行文件与进程仍叫 `Ryujinx`。具体构建来源及补丁说明见 [provider README](src/providers/ryubing/README.md)。
+
+准备 .NET 10 SDK、Python 3、Xcode Command Line Tools 后，在本目录执行。当前私有 SDK 为 10.0.402，不依赖全局 SDK：
+
+```sh
+# 默认查找 ../../artifacts/switch/dotnet/dotnet，也可用 RSA_DOTNET 指定 SDK。
+src/providers/ryubing/build.sh
+# 退出正在运行的模拟器，将 ../../artifacts/switch/ryubing-build/Ryujinx.app
+# 安装为 /Applications/Ryubing.app 后启动。
+src/providers/ryubing/launch.sh '/absolute/path/to/game.xci'
+```
+
+源码在 `artifacts/switch/ryubing-canary-source`，签名后的构建暂存在 `artifacts/switch/ryubing-build/Ryujinx.app`。NuGet 配置仅将上游 LibHac 源 URL 替换为 `https://nuget.ryulynx.org/v3/index.json`，其余上游配置与依赖版本保留；不再使用旧 Stable 构建的 LibHac 升版本和标题遍历兼容修改。
+
+固件、密钥、存档与设置继续使用本机 Ryujinx 数据目录；运行前退出另一个使用同一数据目录的模拟器。`launch.sh` 直接运行 `/Applications/Ryubing.app/Contents/MacOS/Ryujinx`，并显式设置 `RSA_BRIDGE_PORT`（默认 47663）启用桥接；游戏开始运行后才能连接。Finder 正常打开同一应用时不启用桥接，使用手动控制。
+
+旧 Stable 基底的火纹验证使用 Vulkan、1× 分辨率、Hypervisor 关闭、一号 Pro Controller；这是历史记录，不表示已验证新版或其他游戏的兼容性。
+
+另开终端，在本目录启动独立宿主：
+
+```sh
+export RSA_SOCKET=/tmp/playness-rsa-engage.sock
+bin/rsa run --provider ryubing \
+  --workspace "$PWD/../../artifacts/rsa/fire-emblem-engage/workspace" \
+  --model openai-codex/gpt-6.1-sol --seconds 300 --requests 12
+```
+
+第三个终端使用相同 `RSA_SOCKET`，执行 `bin/rsa auto on` 开始、`bin/rsa auto off` 交还手柄。仅验证设备时给宿主加 `--device-only`。项目工作区从空目录开始，不加载其他游戏的技能，也不注入火纹攻略；循环、事件日志、缓存策略、会话恢复与 GBA 相同。
+
+`screen capture` 请求模拟器呈现画面的原始 PNG；系统输入框弹出时，改采集该弹窗的真实界面，不采集桌面。可用 `capture --delay-ms 500` 在发送采集请求前等待固定时间；默认 0，等待可取消。这不检测动画完成，返回帧序号也不能保证画面已经呈现该次按键的结果。自动观测通过装配层配置，例如 `--auto-observe '[{"sensorId":"screen","argv":["capture","--delay-ms","500"]}]'`，Harness 只转发标准传感器请求。
+
+`pad` 提供 16 个数字按键和四个摇杆轴，原子动作参数见 `bin/rsa controller pad --help`。动作按墙钟时间执行，每段至少 16 ms、合计最多 2000 ms，输入轮询处切换完整状态。AI 模式覆盖一号手柄及其体感输入；其他玩家、触屏、模拟器快捷键不在此控制器范围内。完成/取消归零，关闭接管或 TCP 断连恢复一号原生手柄输入。桥接只监听本机回环地址，作为可信本机进程间接口，不是多用户安全隔离。
+
+实机测试会短按方向键和摇杆，请停在可安全操作的菜单。退出 RSA 宿主、保留游戏运行后：
+
+```sh
+RSA_SWITCH_TEST=1 bun test tests/switch.live.test.ts
+```
+
+系统输入框由第二个 `keyboard` 控制器负责，可 `type --text` 或 `press --key ENTER|ESCAPE|BACKSPACE|CTRL+A`，详见自身 help。火纹命名框打开且宿主停止时，可另运行 `RSA_SWITCH_KEYBOARD_TEST=1 bun test tests/switch.live.test.ts`；该检查取消测试输入，不提交角色名。
+
+实机检查覆盖新画面、组合输入、状态替换、BUSY、取消、自然结束、断连清理、设备侧旧 epoch 拒绝以及原生键盘弹窗。没有音频采集、游戏内存读取或模拟器存读档命令。
+
+## 单独使用传感器与控制器
+
+宿主使用 `rsa run --device-only` 启动，不加载 OMP、不访问模型。
+
+```sh
+bin/rsa sensor list
+bin/rsa sensor screen --help
+bin/rsa sensor screen capture
+bin/rsa controller pad --help
+bin/rsa auto on
+```
+
+把 `auto on` 输出中的 UUID 原样放入当前 shell：
+
+```sh
+export RSA_EPOCH='<刚才返回的 epoch>'
+bin/rsa controller pad apply --state '{"RIGHT":1,"A":1}' --for-ms 120
+bin/rsa controller pad state
+bin/rsa controller pad release
+unset RSA_EPOCH
+bin/rsa auto off
+```
+
+手柄有 A/B/SELECT/START/RIGHT/LEFT/UP/DOWN/R/L 十个通道。一次动作替换完整状态，省略的键为 0；结束后全部释放。`play --file /absolute/sequence.json` 接受状态序列，总时长不超过 2000 毫秒模拟时间。帧边界会带来取整。`pad release` 只中止当前按键，`auto off` 才交还操作权。
+
+传感器输出不可变 PNG 文件及采样区间。CLI 输出文件路径；OMP 的 `observe` 工具把文件转换为模型可见的图片块。命令返回的时间区间表示宿主发起请求到收到结果；提供者另返回实际执行帧数，不将宿主计时冒充设备精确采样时刻。
+
+## 边界与数据
+
+```text
+src/contracts.ts           标准能力契约
+src/harness/               能力路由、操作权、OMP、工作区
+src/providers/mgba/        原始采集、手柄命令、Lua 私有协议
+src/app/main.ts            创建 GBA 提供者并注入能力
+```
+
+Harness 不导入 GBA 提供者，不解释 GBA 按键、帧率或 ROM。`screen capture` 自动观测配置也由装配层传入。提供者内部将小型 screen/pad 实现合在一个文件中，没有另建框架。
+
+工作区就是当前目录，目录用途由根目录 `AGENTS.md` 说明：
+
+- `skills/`：模型自行生成的 `SKILL.md` 和脚本。
+- `memory/`：模型维护的当前目标、现场状态、疑问和下一步；覆盖更新工作记忆。
+- `logs/<run-id>/`：该次启动的 manifest、events.jsonl、observations 图片、payloads、streams 与复盘结果。
+- 其他任务文件由模型按需创建，不要求固定仓库模板。
+
+会话续接状态位于仓库同级运行目录 `../artifacts/rsa/ws-<basename>-<workspace-hash>/`。basename 经过安全字符处理并截取至 32 字符，hash 为工作区 canonical path 的 SHA-256 前 16 位：
+
+- `current-session.json`：当前 OMP 会话的路径；默认重启时使用。
+- `sessions/`：本实现新建的 OMP 会话；显式恢复的旧会话仍留在原路径。
+- `skill-versions/`：沿用内容 hash 存储技能和记忆的文件及独立清单；记忆变化不改变技能版本。
+- `workspace.json`：仅供看板定位工作区及其 `logs/` 的路径索引，不是项目配置。
+
+已有工作区、技能和记忆不搬迁或改写，旧运行日志也保留原处，仍可在看板查看。内容 hash 只用于运行证据，不是新增的 Git 管理或项目版本系统。
+
+宿主或模拟器的额外 stdout/stderr 重定向文件也约定放在该工作区的 `logs/` 下。做 `workspace-before/after` 快照时排除 `logs/`，避免把历史日志再次复制进本轮目录。
+
+每次 prompt 开始，以及一条模型回复中的整批工具执行结束后，采集自动观测、更新技能索引。`exec` 和 `observe` 按调用顺序执行；批次内最后一次 `exec` 后已有成功主动观测的传感器，优先复用其最近一次结果，即使参数与默认采样不同；其余默认传感器照常采样，每次 `exec` 清除此前可复用的观测。初始观测保存为 OMP 会话消息，后续观测随最后完成的工具结果保存；主动观测的图片不重复附加。模型按需读取技能正文和执行脚本。
+
+模型默认使用循环已提供的观测进行下一次决策；`observe` 保留为按需补充采样的能力，用于已有观测不足、读取其他传感器或使用不同采样参数的情况。提示词与工具说明不要求模型在每次操作后再主动采样。
+
+2026-10-17 连续运行暴露出只有 `skills/` 持久化出口的问题：模型把当前状态和可复用经验混在一起，即使提示“合并经验”，仍不断追加旧 `CURRENT`。现在用 `memory/current.md` 保存当前工作记忆，技能保存适用条件、做法、验证方式和例外；没有新规则、修正或例外就不需要改技能。两类文件只自动注入索引，正文由模型按需读取，版本共用原有内容存储。内容完全由环境 agent 维护，Harness 不预置游戏经验。
+
+`rsa consolidate [--seconds 600]` 在 manual 且空闲时，让原 OMP 会话做一次文件整理。期间只开放 `read/write/edit`，不采集传感器、不接管控制器；结束后恢复原工具。`status.consolidating` 和 `consolidation_start/end` 记录过程与完成、取消或失败，`rsa auto off` 可取消，清理完成前不接受下一次任务。它是显式的一次整理，不新增定时复盘循环、摘要服务或自动压缩机制；OMP 原生 256k 压缩不变。提示词在宿主启动时载入，修改后需重启宿主。
+
+观测图片进入会话前调用 OMP 自带的 `resizeImage`，使用其默认尺寸和编码预算；原始传感器文件保留。2026-10-15 排查发现，原先自定义 observe 直接塞入 PNG，绕开了 OMP 的常规压图路径，58 张图累积出约 74 MB JSON、54 MB 实际传输体。因此在入库时压一次，避免每次请求重新编码历史。正常轮次只追加历史，仍保留 `Infinity` 图片数量策略；上下文缩减交给 OMP 压缩。已有会话不会自动改写图片，做性能对比时须另存副本再一次性转换。认证来源由 OMP 管理。
+
+### Harness 统一图片预算与缓存
+
+OMP 18.9.1 的提供者图片预算表没有 DeepSeek，它会使用默认上限 5 张，在发送前逐轮删除最旧的图片。2026-10-13 的 12 请求实跑中，第 4 次请求首次删除历史图片，当次缓存命中率从上一轮的 71.9% 降到 19.9%；11 对相邻请求中有 9 对历史前缀被改写。此前只检查持久化会话历史，漏掉了这层发送前转换，最终由事件日志保存的实际 HTTP body 定位。
+
+因此 [OMP 适配层](src/harness/omp/session.ts) 统一通过 `createOmpSession` 创建会话，在调用 SDK 前设置 `PROVIDER_IMAGE_BUDGETS[model.provider] = Infinity`。这条策略适用于 Harness 选择的所有提供者，包括以后新增的提供者，不维护 DeepSeek、Codex 等白名单。它同时解除 DeepSeek 的默认 5 图和 Codex 的 200 图数量裁剪，让历史图片保留到上下文压缩。覆盖仅影响当前宿主进程，不修改独立 OMP CLI 的全局配置或依赖源码；token、请求体预算与服务端限制仍然生效。修改后需重启宿主才会加载。
+
+回归测试覆盖真实 OMP 的发送前转换：DeepSeek 通过本地 HTTP 服务验证超过 5 张后图片与消息前缀仍完整；Codex 累积到 208 张，验证超过原先 200 张上限后图片仍保留、增量前缀仍有效。测试不调用付费模型。
+
+Harness 的 OMP 设置采用 `providers.openaiWebsockets: auto`，Codex 使用原生 WebSocket 增量链，保持完整历史。2026-10-16 的 5 分钟实跑中，约 9.1 MB 完整首帧成功，后续 31 次增量请求中位约 250 KB、6 秒；之前 SSE 续玩一轮的请求耗时中位约 22.7 秒。场景不同，这是实际使用对比，不是严格基准。
+
+`package.json` / `bun.lock` 固定 [pi-ai 18.9.1 补丁](patches/@oh-my-pi%2Fpi-ai@18.9.1.patch)：实际序列化 WS JSON 帧超过 **15 MiB**（本地预算，非服务端上限），或收到远端 `1009`，立即改走完整 SSE；尺寸阻断期间不反复握手，等 OMP 原生压缩后再允许 WS。小的增量帧不受累计历史大小影响。其他传输故障、取消和已交付输出的防重复逻辑仍由 OMP 处理。用 `bun install --frozen-lockfile` 可重现补丁，不需要修改全局 OMP。
+
+最初的 12 MiB 本地预算曾把 13.9 MB 的合法候选首帧提前挡回 SSE。放宽后，15,112,911 字节的完整首帧实跑成功，后续回到约 260 KB 增量。完整首帧仍花费约 66 秒，因此按五分钟观察效果时复用同一宿主与连接；只有加载代码改动才重启。256k 压缩阈值保持不变。
+
+WS 握手超时、socket 错误，以及连接到期（`websocket_connection_limit_reached`）需要回退 SSE 时，采用同一个 60 秒冷却；之后由下一次正常请求重建 WS，发送完整历史，再恢复增量链。2026-10-18 六小时实跑中，到期前的空 thinking 占位触发了 OMP 的 SSE 重放和永久禁用；现将到期纳入已有临时恢复逻辑，保留当前请求的重试上限与已交付工具调用不重放规则。`model_start` / `model_end` 的 `transportDetails` 中，`sizeBlockedUntilCompaction` 表示等待原生压缩解除的尺寸阻断，`retryWebsocketAt` 是临时回退后允许重试的 Unix 毫秒时间，与永久故障标记 `websocketDisabled` 分开。
+
+2026-10-17 第十八轮出现连接已断、但 append 状态仍保留时发送旧 `previous_response_id` 的情况。OMP 原先先构造增量体，再取得连接；后一步重建连接虽清除了状态，已构造的请求却仍引用旧响应。补丁将请求体构造移到连接确定之后：新连接首帧发送完整历史，同一连接继续增量。离线回归先复现旧行为，再验证重连后的全量请求和随后恢复增量；不改变重试次数或 SSE 策略。该轮另一次无入站事件的 WS 失败随后恢复，现有日志不足以确定具体关闭原因，不将它一并归因于上述问题。
+
+此前曾统一关闭 WS：2026-10-14 恢复火纹会话时约 19 MB 首帧被拒，SSE 虽可继续，却每轮完整上传历史。下面保留这次排查依据。
+
+后续独立诊断确认了拒绝原因与 SDK 行为（原始记录位于本地 `artifacts/rsa/transport-investigation-20261014/`）：
+
+- 同一个 19,229,674 字节请求，在 OMP 18.9.1 / Bun 1.4.0 和独立 Node 22 / ws 客户端都收到远端关闭码 **1009**，即消息过大；本地放宽接收上限的 Node 服务完整接收了 Bun 发出的相同字节，SHA-256 一致。独立 Node 的 16 MiB + 1 字节合法 JSON（末尾空白填充，不增加模型上下文）也收到 1009。精确上限尚未测定，不能据此声称阈值恰好是 16 MiB。
+- 未打补丁的 OMP 18.9.1 在离线假连接每次返回 1009 时发送 **6 次**（首次加 5 次重试）才回退 SSE。`retry.enabled: false` 关闭的是 agent 层重试，未关闭这一层传输重试。对相同大包反复重发无法解决体积拒绝，这是 SDK 的错误分类/降级缺陷；底层网络事件未通过 `onSseEvent` 暴露，也是原 Harness 日志看不到拒绝原因的原因。
+- SSE 连续成功请求的压缩后上传量从约 13.5 MB 增长到 21.8 MB，响应头等待从约 54 秒增长到 111 秒。第二轮输入缓存为 96.2%，仍耗时约 58 秒；缓存不会省掉上传。日志记录的请求准备仅约 0.6～0.9 秒，观测约 0.2 秒，手柄动作约 0.1 秒。现有计时无法进一步区分上传、网络与服务端排队；诊断期间短暂请求重叠可能影响并发限流，不能据此排除用户在 Codex 侧看到的 429。
+
+当前循环在每批工具完成后提供一组观测，并复用该批显式 `observe` 的结果；模型图像在首次入历史前按 OMP 路径编码，之后保持不变。`status.thinking` 仍表示 driver 循环正在运行，细分阶段由事件日志和看板展示。确认游戏推进可同时查看 `model_end`、`execution` 与操作后的画面，传感器/控制器边界不包含游戏语义。
+
+## 事件日志
+
+每次启动默认记录到该次 run 的 `events.jsonl`。每行带 `schemaVersion: 1`、`runId`、递增 `seq`、UTC 时间 `at`、宿主单调时间 `atMs`、`type`、`trace` 和 `data`。`trace` 使用以下关联字段：
+
+- `epoch`：一次接管；`modelCallId`：一次主循环模型调用。
+- `requestId`：OMP 构造的一次提供者请求；`httpId`：一次实际 HTTP 发送。同一请求的传输重试有不同 `httpId`。
+- `toolCallId`：模型工具调用；`operationId`：一次传感器读取或控制器执行。
+
+模型调用的 `model_start` 引用本轮观测 ID 与技能版本，`model_end` 保存用量、首 token 耗时、调用耗时、结束原因及响应文件引用。`model_request` 保存经过 OMP 提供者转换和扩展处理后的完整请求，包括 messages、图片、工具定义和推理参数。`model_http_start` 另外保存 HTTP 实际发送的 body 字节，`model_http_end/error` 保存响应状态、失败正文或传输错误。HTTP 结束事件计时到收到响应头，模型结束事件计时到流结束。
+
+大对象放在 `payloads/<sha256>.json.gz` 或 `.bin.gz`，引用中的 hash 与 bytes 对应解压后的字节；不截断内容。相同内容复用文件。HTTP body 自身若启用了压缩，先解开日志的 gzip，再按该事件的 `contentEncoding` 解释。`streams/<modelCallId>.jsonl` 保存 OMP 暴露的原始 SSE 事件或 WebSocket 帧及时间，供核查服务端原始 usage；无流事件时不会创建该文件。`model_end.usage` 则是 OMP 统一后的统计格式。
+
+`tool_start/end`、`exec/exec_result`、`observation_start/end/error`、`command/execution/execution_error` 串起模型到能力边界的执行链。shell 通过 `RSA_TRACE` 将关联字段带入 CLI 请求；这只是观测元数据，控制权仍由 `RSA_EPOCH` 校验。工具正文单独保存；观测文件与技能版本沿用已有存储。
+
+为排查 2026-10-15 实跑中的动作后过早采样和技能读取漏记，日志额外记录以下信息；这些诊断字段不进入模型上下文，也不改变采样时机：
+
+- `observation.origin` 区分 `prompt_start`、`tool_batch`、`explicit` 和 `cli`。`afterExecution` 关联采样请求前最后完成的控制器调用，并记录从该调用结束到采样请求／返回的间隔；只比较同一时钟。`previousObservationId` 和可选 `sourceSequenceDelta` 关联同一传感器、同一参数的相邻采样。序号增长只能证明源序列前进，不能证明游戏已完成动作或画面已稳定。
+- `observation_context` 列出循环采用的新采样与复用的主动采样。`observation_media` 记录每张图片读取和编码耗时、原始／模型图片字节数及输出尺寸，便于确认没有重复编码历史。
+- `read` 在工具返回后记录原始路径、OMP 解析出的实际文件路径、成功／失败和读取后文件 hash，支持 `SKILL.md:19-22` 这样的选择器。hash 表示日志采集时的整份文件版本；实际返回的片段和多目标读取结果以 `tool_end` 的正文为准。
+- `model_http_dispatch` 标记检查、保存请求体后即将调用 fetch 的时刻。`model_http_end.fetchToHeadersMs` 单列 fetch 到响应头的等待，`model_ws_dispatch` 记录通过尺寸检查、即将交给 socket 的 JSON 帧大小；`model_request` 的 transport/bodyBytes/incremental 描述构建的请求。`model_stream_start` 只标记首个入站事件，忽略 OMP 混入同一回调的出站 WS 通知（不等同首个文本 token）。`model_end` 汇总请求快照、HTTP 请求体检查和流日志写入耗时，以及首事件前后时间。这里仍不能把上传、网络和服务端排队拆开，不能把首事件前的等待全算成模型推理。
+
+在 run 目录查看某轮请求与结果：
+
+```sh
+jq 'select(.type == "model_end") | {trace, data}' events.jsonl
+jq 'select(.type == "model_request") | {trace, payload: .data.payload}' events.jsonl
+# 打开第一份完整请求：
+rsa_payload=$(jq -r 'select(.type == "model_request") | .data.payload.path' events.jsonl | head -n 1)
+gzip -dc "$rsa_payload" | jq .
+```
+
+传输日志不复制认证请求头、Cookie 或模型凭据；响应头仅保存 content-type、content-encoding、request-id、retry-after、server-timing 和 cf-ray 等诊断字段。错误额外记录 code，以及 Error cause 的 name/code/message，不复制任意错误附带对象。请求与工具正文仍按实际内容保留。它们保存在 Git 忽略的本地运行目录中。
+
+当前完整模型传输记录覆盖主循环；OMP 内部压缩保存开始/结束事件和原生会话记录，其内部摘要调用不经过这个主循环拦截器。HTTP 字节一致性、错误、取消、重试与 CLI 关联由本地假服务验证；WebSocket 通过 OMP 接口记录请求 payload 与响应事件，已在 Codex 实跑中核对 `previous_response_id` 续接及服务端原始 usage，不记录底层握手或 socket 帧字节。日志提供检查事实，质量评分由后续分析实现。
+
+Codex 原生压缩另用 `compaction_http_start/end/error` 观察 HTTP 边界：只识别 Codex 端点与 `request_kind=compaction`，保留原始调用和 Response，不读取或复制请求／响应流。每次 HTTP 有独立 ID，记录已知内存请求体的字节数、响应头等待和安全错误字段。`start.body` 复用 payload 文件保存 string、ArrayBuffer 或 view 的实际字节（尊重 view 的 offset/length）；未知流不读取、不保存。2026-10-16 出现压缩缓存为 0、邻近主请求仍命中 96.8% 的情况，这份正文用于离线比较缓存标识及历史前缀。落盘完成后才开始 `fetchToHeadersMs` 计时，落盘开销包含在较大的 `durationMs` 中。`end` 只表示响应头返回，不表示摘要完成。成功压缩的 usage 从 OMP 原生结果单独读取。后台准备与最终提交可能相隔数分钟，因此不能用 `auto_compaction_start/end` 的间隔代表完整网络耗时，也不能仅凭相邻 HTTP 失败就认定下一次是重试。
+
+`compaction_speculation` 将 OMP 已有 logger 的后台生命周期接入同一事件流，stage 为 `started`、`armed`（摘要完成）、`invalidated`、`waiting`、`applied`、`failed`；仅记录白名单中的方法、snapshot leaf、上下文大小、阈值、耗时与原因。`armed.durationMs` 是从快照准备后到摘要可用的时间，`waiting` 是主循环开始等待的时刻；结合最终 `auto_compaction_end` 可区分摘要生成慢、结果失效重做和提交等待。`applied` 表示选中结果进入提交，最终是否成功以 `auto_compaction_end` 为准。
+
+`compaction_retry` 复用该 logger sink，严格匹配 OMP 原生 V2 压缩的重试警告，仅记录失败的 attempt、声明的退避毫秒、模型和字符串错误原因。2026-10-17 一次压缩先收到 HTTP 200，约 198 秒后流内返回 `server_error`，随后由原生 V2 逻辑重试；单看 HTTP 日志无法发现这类失败。分析器的 `summary.compactionRetries.announcedRetries` 统计选定接管期间明确的重试声明，`errorReasons` 汇总原因；警告发生在退避之前，不代表已经重新发出请求。没有重试事件时计数保持 `null`（包括旧日志），不从连续的 HTTP 200 推断重试，也不关联到某个摘要候选。此观测不改变上游重试行为。
+
+本地 [Next.js 观察台](../rsa-dashboard/README.md) 读取这些日志，显示逐请求延迟、请求体、缓存、动作与截图、技能证据和压缩事件。可切换环境与历史运行，并对匹配的当前宿主交还控制权；不发诊断模型请求。
+
+`python3 scripts/analyze-run.py <run目录>` 离线生成 `analysis.json`，用 `--output <路径>` 指定其他位置。同一宿主多次接管时必须用 `--epoch <UUID>` 选择周期，模型、工具和压缩 HTTP 按周期及关联 ID 隔离，保留停止后的清理事件。支持空日志、未完成请求和只有一个完成请求；成功压缩的原生 usage 与独立 HTTP 统计单列，不混入主循环缓存指标。该脚本不打开完整 payload，也不访问模型或设备。
+观测明细的 `argv` 按 epoch 和 operationId 关联 `observation_start`，缺失时为 `null`；`captureMsByOrigin` 按观测来源分组统计完整采样区间，和 `captureMs` 一样包含主动等待，不解析传感器参数来推断纯捕获耗时。
+
+分析结果中的 `compactionSpeculation` 保留后台生命周期；其 summary 统计六种阶段次数与摘要就绪耗时。`compactionMaintenance` 单独记录前台 `auto_compaction_start/end` 的窗口，汇总已结束窗口的阻塞耗时（包括失败或取消），未结束的保持 pending。两者不与 HTTP 请求强行配对：后台摘要耗时和主循环停顿是不同指标。
+
+`summary.toolErrors` 与 `toolErrorsByName` 从工具明细的 `isError: true` 汇总总数及工具名分布，与模型请求失败数 `failedRequests` 分开；工具用法错误即使随后自行纠正仍保留计数，不据此判定环境故障。
+
+mGBA 0.10.5 的 socket 析构会再次关闭未置为无效的描述符（[源码](https://github.com/mgba-emu/mgba/blob/0.10.5/src/script/socket.c#L107)）。桥只关闭一次并保留已关闭的 Lua wrapper，直到模拟器退出，避免回收时误关后来复用的连接；这会随连接次数保留少量对象，不保留打开的 socket。此处理仅属于该固定版本提供者。
+
+这是本地可信 shell 实验，不是系统级隔离环境。没有预置游戏知识、音频、RAM 读取、攻略、评分器、自改 loop 或自动重连。
+
+## 验证
+
+```sh
+bun run check
+bun test
+```
+
+真实设备测试要求已加载 Lua 桥，并在另一个终端运行 **device-only** 宿主。测试会操作当前游戏并交还控制权：
+
+```sh
+RSA_MGBA=1 bun test tests/device.live.test.ts
+```
+
+另外，关闭宿主但保留 mGBA 脚本运行，可验证连续重连和动作中断线：
+
+```sh
+RSA_BRIDGE_TEST=1 bun test tests/bridge.live.test.ts
+```
+
+覆盖不同能力词汇注入、跨轮旧操作拒绝、交接期间取消、模型退出与设备交还解耦、技能版本、OMP 工具参数适配、观测持久化与请求前缀续接、模型传输与 CLI 事件关联，以及真实 PNG、有限按键、并发拒绝和执行中交还。普通测试不调用付费模型。
+
+设计依据见 [架构文档](docs/architecture.md)，mGBA 接口见 [官方脚本文档](https://mgba.io/docs/scripting.html)。

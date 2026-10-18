@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+PET_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+exec "$PET_ROOT/node_modules/.bin/electron" "$PET_ROOT/dist/electron/main.js" "$@"

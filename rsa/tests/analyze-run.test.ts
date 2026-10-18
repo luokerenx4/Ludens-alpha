@@ -1,0 +1,303 @@
+import { expect, test } from "bun:test";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const script = new URL("../scripts/analyze-run.py", import.meta.url).pathname;
+const emptyStats = { count: 0, min: null, median: null, max: null, sum: 0 };
+const emptySpeculation = { started: 0, armed: 0, invalidated: 0, waiting: 0, applied: 0, failed: 0, armedDurationMs: emptyStats };
+
+function fixture() {
+  let seq = 0;
+  return (type: string, epoch: string, data: Record<string, unknown>, trace: Record<string, unknown> = {}) => {
+    seq++;
+    return { seq, type, atMs: seq * 1000, at: new Date(seq * 1000).toISOString(), trace: { epoch, ...trace }, data };
+  };
+}
+
+async function analyze(events: unknown[], epoch?: string) {
+  const directory = await mkdtemp(join(tmpdir(), "rsa-analysis-"));
+  try {
+    await writeFile(join(directory, "events.jsonl"), events.map(event => JSON.stringify(event)).join("\n") + "\n");
+    const result = Bun.spawnSync(["python3", script, directory, ...(epoch ? ["--epoch", epoch] : [])]);
+    if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+    return JSON.parse(await readFile(join(directory, "analysis.json"), "utf8"));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+test("analysis without speculation events has zero lifecycle counts and no model requests", async () => {
+  const event = fixture();
+  const report = await analyze([
+    event("control", "one", { mode: "auto", epoch: "one" }),
+    event("control", "one", { mode: "manual", reason: "time budget" }),
+  ]);
+  expect(report.compactionSpeculation).toEqual([]);
+  expect(report.summary.compactionSpeculation).toEqual(emptySpeculation);
+  expect(report.compactionMaintenance).toEqual([]);
+  expect(report.summary.compactionMaintenance).toEqual({ completed: 0, aborted: 0, error: 0, pending: 0, durationMs: emptyStats });
+  expect(report.compactionRetries).toEqual([]);
+  expect(report.summary.compactionRetries).toEqual({ announcedRetries: null, errorReasons: {} });
+  expect(report.summary.completedRequests).toBe(0);
+  expect(report.summary).toMatchObject({ toolErrors: 0, toolErrorsByName: {} });
+  expect(report.summary.controllerExecutionErrors).toBe(0);
+  expect(report.controllerExecutionErrors).toEqual([]);
+  expect(report.firstRequest).toBeNull();
+});
+
+test("analysis retains ready and applied boundaries and reports candidate duration separately from waiting", async () => {
+  const event = fixture();
+  const events = [
+    event("control", "one", { mode: "auto", epoch: "one" }),
+    event("compaction_speculation", "one", { stage: "started", method: "remote", snapshotLeafId: "first-leaf", contextTokensAtStart: 224_000, thresholdTokens: 256_000 }),
+    event("compaction_speculation", "one", { stage: "waiting", contextTokens: 256_500 }),
+    event("compaction_speculation", "one", { stage: "armed", snapshotLeafId: "first-leaf", durationMs: 80_000, tokensBefore: 224_100, prompt: "private-prompt", headers: { authorization: "private-token" }, reason: { nested: "private-object" } }),
+    event("compaction_speculation", "one", { stage: "applied", snapshotLeafId: "first-leaf" }),
+    event("compaction_speculation", "one", { stage: "started", snapshotLeafId: "second-leaf" }),
+    event("compaction_speculation", "one", { stage: "armed", snapshotLeafId: "second-leaf", durationMs: 86_000 }),
+    event("compaction_speculation", "one", { stage: "applied", snapshotLeafId: "second-leaf" }),
+    event("control", "one", { mode: "manual", reason: "time budget" }),
+  ];
+  const report = await analyze(events);
+  expect(report.compactionSpeculation).toHaveLength(7);
+  expect(report.compactionSpeculation[0]).toEqual({ seq: events[1]!.seq, at: events[1]!.at, atMs: events[1]!.atMs, data: events[1]!.data });
+  expect(report.compactionSpeculation[2].data).toEqual({ stage: "armed", snapshotLeafId: "first-leaf", durationMs: 80_000, tokensBefore: 224_100 });
+  expect(report.compactionSpeculation.filter((item: { data: { stage: string } }) => item.data.stage === "applied").map((item: { data: { snapshotLeafId: string } }) => item.data.snapshotLeafId)).toEqual(["first-leaf", "second-leaf"]);
+  expect(report.summary.compactionSpeculation).toEqual({ ...emptySpeculation, started: 2, armed: 2, waiting: 1, applied: 2,
+    armedDurationMs: { count: 2, min: 80_000, median: 83_000, max: 86_000, sum: 166_000 } });
+  expect(JSON.stringify(report)).not.toContain("private-");
+  expect(report.summary.compactionHttp.attempts).toBe(0);
+  expect(report.summary.compactionHttp.retryCount).toBeNull();
+});
+
+test("analysis isolates lifecycle to the chosen epoch and retains its late HTTP cleanup", async () => {
+  const event = fixture();
+  const events = [
+    event("control", "old", { mode: "auto", epoch: "old" }),
+    event("compaction_speculation", "old", { stage: "started", snapshotLeafId: "same-leaf" }),
+    event("control", "old", { mode: "manual" }),
+    event("control", "selected", { mode: "auto", epoch: "selected" }),
+    event("compaction_speculation", "selected", { stage: "started", snapshotLeafId: "same-leaf" }),
+    event("compaction_http_start", "selected", { method: "POST", bodyBytes: 123 }, { httpId: "reused-http" }),
+    event("compaction_speculation", "old", { stage: "armed", snapshotLeafId: "same-leaf", durationMs: 99_999 }),
+    event("control", "selected", { mode: "manual", reason: "time budget" }),
+    event("compaction_http_error", "selected", { aborted: true, error: "cancelled", fetchDurationMs: 3000 }, { httpId: "reused-http" }),
+    event("compaction_speculation", "selected", { stage: "failed", error: "cancelled" }),
+    event("control", "next", { mode: "auto", epoch: "next" }),
+    event("compaction_speculation", "next", { stage: "started", snapshotLeafId: "same-leaf" }),
+    event("compaction_http_start", "next", { bodyBytes: 999 }, { httpId: "reused-http" }),
+    event("compaction_http_end", "next", { status: 200, fetchToHeadersMs: 5000 }, { httpId: "reused-http" }),
+    event("compaction_speculation", "next", { stage: "armed", durationMs: 90_000 }),
+  ];
+  const report = await analyze(events, "selected");
+  expect(report.window).toMatchObject({ epoch: "selected", stopReason: "time budget", observedElapsedMs: 4000 });
+  expect(report.compactionSpeculation.map((item: { seq: number }) => item.seq)).toEqual([5]);
+  expect(report.summary.compactionSpeculation).toEqual({ ...emptySpeculation, started: 1 });
+  expect(report.summary.compactionHttp).toMatchObject({ attempts: 1, abortedAttempts: 1, responsesReceived: 0, preparedBodyBytes: 123 });
+  expect(report.compactionHttpAttempts[0]).toMatchObject({ epoch: "selected", startSeq: 6, endSeq: 9, state: "aborted", error: "cancelled" });
+  await expect(analyze(events)).rejects.toThrow("select one with --epoch");
+});
+
+test("analysis counts invalidation and failure without inventing a request pairing or duration", async () => {
+  const event = fixture();
+  const report = await analyze([
+    event("control", "one", { mode: "auto", epoch: "one" }),
+    event("compaction_speculation", "one", { stage: "started", snapshotLeafId: "leaf" }),
+    event("compaction_speculation", "one", { stage: "armed", snapshotLeafId: "leaf" }),
+    event("compaction_speculation", "one", { stage: "invalidated", snapshotLeafId: "leaf", reason: "branch-or-headroom" }),
+    event("compaction_speculation", "one", { stage: "started", snapshotLeafId: "new-leaf" }),
+    event("compaction_speculation", "one", { stage: "failed", method: "remote", error: "fixture failure" }),
+    event("control", "one", { mode: "manual" }),
+  ]);
+  expect(report.summary.compactionSpeculation).toEqual({ ...emptySpeculation, started: 2, armed: 1, invalidated: 1, failed: 1 });
+  expect(report.compactionSpeculation[2].data.reason).toBe("branch-or-headroom");
+  expect(report.compactionSpeculation[4].data).toEqual({ stage: "failed", method: "remote", error: "fixture failure" });
+  expect(report.compactionHttpAttempts).toEqual([]);
+});
+
+test("analysis measures closed foreground compaction windows and preserves unfinished maintenance", async () => {
+  const event = fixture();
+  const report = await analyze([
+    event("control", "one", { mode: "auto", epoch: "one" }),
+    event("auto_compaction_start", "one", { reason: "threshold" }),
+    event("compaction_speculation", "one", { stage: "armed", durationMs: 80_000 }),
+    event("auto_compaction_end", "one", { aborted: false }),
+    event("auto_compaction_start", "one", { reason: "threshold" }),
+    event("auto_compaction_end", "one", { aborted: true }),
+    event("auto_compaction_start", "one", { reason: "threshold" }),
+    event("auto_compaction_end", "one", { errorMessage: "fixture failure" }),
+    event("auto_compaction_start", "one", { reason: "threshold" }),
+    event("auto_compaction_end", "another-epoch", { aborted: false }),
+    event("control", "one", { mode: "manual", reason: "time budget" }),
+    event("auto_compaction_end", "one", { aborted: true }),
+  ]);
+  expect(report.compactions[0]).toMatchObject({ seq: 2, atMs: 2000, epoch: "one" });
+  expect(report.compactionMaintenance).toEqual([
+    { epoch: "one", startSeq: 2, endSeq: 4, startAtMs: 2000, endAtMs: 4000, state: "completed", durationMs: 2000 },
+    { epoch: "one", startSeq: 5, endSeq: 6, startAtMs: 5000, endAtMs: 6000, state: "aborted", durationMs: 1000 },
+    { epoch: "one", startSeq: 7, endSeq: 8, startAtMs: 7000, endAtMs: 8000, state: "error", durationMs: 1000 },
+    { epoch: "one", startSeq: 9, endSeq: null, startAtMs: 9000, endAtMs: null, state: "pending", durationMs: null },
+  ]);
+  expect(report.summary.compactionMaintenance).toEqual({ completed: 1, aborted: 1, error: 1, pending: 1,
+    durationMs: { count: 3, min: 1000, median: 1000, max: 2000, sum: 4000 } });
+  expect(report.summary.compactionStarts).toBe(4);
+  expect(report.summary.compactionEnds).toBe(3);
+  expect(report.summary.compactionSpeculation.armedDurationMs.sum).toBe(80_000);
+});
+
+test("analysis reports explicit native retry warnings despite HTTP 200 and isolates the takeover interval", async () => {
+  const event = fixture();
+  const error = "V2 compaction stream error (server_error): fixture failure";
+  const events = [
+    event("control", "one", { mode: "auto", epoch: "one" }),
+    event("compaction_http_start", "one", { bodyBytes: 123 }, { httpId: "first" }),
+    event("compaction_http_end", "one", { status: 200 }, { httpId: "first" }),
+    event("compaction_retry", "one", { attempt: 1, retryDelayMs: 1000, model: "gpt-6.1-sol", error,
+      headers: { authorization: "private-token" }, prompt: "private-prompt", snapshotLeafId: "private-leaf" }),
+    event("compaction_http_start", "one", { bodyBytes: 123 }, { httpId: "second" }),
+    event("compaction_http_end", "one", { status: 200 }, { httpId: "second" }),
+    event("compaction_retry", "one", { attempt: 2, retryDelayMs: 2000, model: { name: "private-model" }, error: { message: "private-error" } }),
+    event("compaction_retry", "other", { attempt: 1, retryDelayMs: 1000, error: "private-other-epoch" }),
+    event("control", "one", { mode: "manual", reason: "time budget" }),
+    event("compaction_retry", "one", { attempt: 1, retryDelayMs: 1000, error: "private-late-event" }),
+  ];
+  const report = await analyze(events, "one");
+  expect(report.compactionRetries).toEqual([
+    { seq: 4, at: events[3]!.at, atMs: 4000, data: { attempt: 1, retryDelayMs: 1000, model: "gpt-6.1-sol", error } },
+    { seq: 7, at: events[6]!.at, atMs: 7000, data: { attempt: 2, retryDelayMs: 2000 } },
+  ]);
+  expect(report.summary.compactionRetries).toEqual({ announcedRetries: 2, errorReasons: { [error]: 1 } });
+  expect(report.summary.compactionHttp).toMatchObject({ attempts: 2, responsesReceived: 2, failedAttempts: 0, retryCount: null });
+  expect(report.summary.retryCount).toBe(0);
+  expect(JSON.stringify(report)).not.toContain("private-");
+});
+
+test("analysis leaves native retry count unknown when old HTTP attempts have no explicit retry warnings", async () => {
+  const event = fixture();
+  const report = await analyze([
+    event("control", "one", { mode: "auto", epoch: "one" }),
+    event("compaction_http_start", "one", {}, { httpId: "first" }),
+    event("compaction_http_end", "one", { status: 200 }, { httpId: "first" }),
+    event("compaction_http_start", "one", {}, { httpId: "second" }),
+    event("compaction_http_end", "one", { status: 200 }, { httpId: "second" }),
+    event("control", "one", { mode: "manual" }),
+  ]);
+  expect(report.compactionRetries).toEqual([]);
+  expect(report.summary.compactionRetries).toEqual({ announcedRetries: null, errorReasons: {} });
+  expect(report.summary.compactionHttp).toMatchObject({ attempts: 2, responsesReceived: 2, retryCount: null });
+});
+
+test("analysis counts tool errors separately from model failures and preserves a successful correction across epochs", async () => {
+  const event = fixture();
+  const failed = { modelCallId: "first-call", toolCallId: "failed-observe" };
+  const corrected = { modelCallId: "next-call", toolCallId: "corrected-observe" };
+  const events = [
+    event("control", "old", { mode: "auto", epoch: "old" }),
+    event("tool_start", "old", { toolName: "observe" }, corrected),
+    event("tool_end", "old", { toolName: "observe", isError: true }, corrected),
+    event("control", "old", { mode: "manual" }),
+    event("control", "selected", { mode: "auto", epoch: "selected" }),
+    event("tool_start", "selected", { toolName: "observe", args: { sensorId: "screen", argv: ["--delay-ms", "1800"] } }, failed),
+    event("tool_end", "selected", { toolName: "observe", isError: true }, failed),
+    event("tool_start", "selected", { toolName: "observe", args: { sensorId: "screen", argv: ["capture", "--delay-ms", "2000"] } }, corrected),
+    event("tool_end", "selected", { toolName: "observe", isError: false }, corrected),
+    event("tool_start", "selected", { toolName: "exec" }, { modelCallId: "pending-call", toolCallId: "pending-exec" }),
+    event("control", "selected", { mode: "manual", reason: "time budget" }),
+    event("control", "next", { mode: "auto", epoch: "next" }),
+    event("tool_start", "next", { toolName: "observe" }, corrected),
+    event("tool_end", "next", { toolName: "observe", isError: true }, corrected),
+    event("control", "next", { mode: "manual" }),
+  ];
+  const report = await analyze(events, "selected");
+  expect(report.summary).toMatchObject({
+    toolCounts: { observe: 2, exec: 1 }, toolErrors: 1, toolErrorsByName: { observe: 1 },
+    failedRequests: 0, httpErrors: 0,
+  });
+  expect(report.tools.map((tool: { toolName: string; state: string; isError: boolean | null }) => ({
+    toolName: tool.toolName, state: tool.state, isError: tool.isError,
+  }))).toEqual([
+    { toolName: "observe", state: "error", isError: true },
+    { toolName: "observe", state: "completed", isError: false },
+    { toolName: "exec", state: "pending", isError: null },
+  ]);
+});
+
+test("analysis links observation arguments by operation and epoch while retaining samples without starts", async () => {
+  const event = fixture();
+  const sample = (id: string, origin: string | undefined, durationMs: number) => ({
+    id, sensorId: "screen", path: `${id}.png`, origin,
+    timing: { clock: "fixture", requestedAtMs: 1000, receivedAtMs: 1000 + durationMs },
+  });
+  const events = [
+    event("control", "old", { mode: "auto", epoch: "old" }),
+    event("observation_start", "old", { argv: ["old-epoch"] }, { operationId: "missing-start" }),
+    event("observation", "old", sample("old", "explicit", 99_999), { operationId: "missing-start" }),
+    event("control", "old", { mode: "manual" }),
+    event("control", "selected", { mode: "auto", epoch: "selected" }),
+    event("observation_start", "selected", { argv: ["capture", "--delay-ms", "18000"] }, { operationId: "explicit" }),
+    event("observation_start", "selected", { argv: ["capture"] }, { operationId: "automatic" }),
+    event("observation_start", "old", { argv: ["wrong-epoch"] }, { operationId: "explicit" }),
+    event("observation", "selected", sample("automatic", "tool_batch", 130), { operationId: "automatic" }),
+    event("observation", "selected", sample("explicit", "explicit", 18_131), { operationId: "explicit" }),
+    event("observation", "selected", sample("missing", "explicit", 9131), { operationId: "missing-start" }),
+    event("observation_start", "selected", { argv: ["unidentified-start"] }),
+    event("observation", "selected", sample("unidentified", undefined, 120)),
+    event("control", "selected", { mode: "manual" }),
+  ];
+  const report = await analyze(events, "selected");
+  expect(report.observations.map((observation: { id: string; argv: string[] | null }) => ({
+    id: observation.id, argv: observation.argv,
+  }))).toEqual([
+    { id: "automatic", argv: ["capture"] },
+    { id: "explicit", argv: ["capture", "--delay-ms", "18000"] },
+    { id: "missing", argv: null },
+    { id: "unidentified", argv: null },
+  ]);
+  expect(report.summary.captureMs).toEqual({ count: 4, min: 120, median: 4630.5, max: 18_131, sum: 27_512 });
+  expect(report.summary.captureMsByOrigin).toEqual({
+    tool_batch: { count: 1, min: 130, median: 130, max: 130, sum: 130 },
+    explicit: { count: 2, min: 9131, median: 13_631, max: 18_131, sum: 27_262 },
+    unknown: { count: 1, min: 120, median: 120, max: 120, sum: 120 },
+  });
+});
+
+test("analysis retains controller errors when the shell batch succeeds and isolates epoch traces", async () => {
+  const event = fixture();
+  const trace = { modelCallId: "call", requestId: "request", toolCallId: "tool" };
+  const failed = { ...trace, operationId: "keyboard" };
+  const success = { ...trace, operationId: "pad" };
+  const error = "Error: Unknown keyboard key";
+  const command = "rsa controller keyboard press --key ESC; rsa controller pad release; sleep .5";
+  const events = [
+    event("control", "old", { mode: "auto", epoch: "old" }),
+    event("command", "old", { id: "old-controller", argv: ["old-args"] }, failed),
+    event("execution_error", "old", { error: "old error", aborted: false }, failed),
+    event("control", "old", { mode: "manual" }),
+    event("control", "selected", { mode: "auto", epoch: "selected" }),
+    event("tool_start", "selected", { toolName: "exec" }, trace),
+    event("exec", "selected", { command }, trace),
+    event("command", "selected", { id: "keyboard", argv: ["press", "--key", "ESC"] }, failed),
+    event("command", "old", { id: "wrong-controller", argv: ["wrong-args"] }, failed),
+    event("execution_error", "old", { error: "wrong epoch error", aborted: false }, failed),
+    event("execution_error", "selected", { error, aborted: false }, failed),
+    event("command", "selected", { id: "pad", argv: ["release"] }, success),
+    event("execution", "selected", { id: "action", status: "completed", exitCode: 0,
+      timing: { requestedAtMs: 12_000, receivedAtMs: 13_000 } }, success),
+    event("exec_result", "selected", { exitCode: 0, stderr: `${error}\nUnrelated error text\n` }, trace),
+    event("tool_end", "selected", { toolName: "exec", isError: false }, trace),
+    event("control", "selected", { mode: "manual", reason: "time budget" }),
+    event("execution_error", "selected", { error: "late error", aborted: true }, failed),
+    event("control", "next", { mode: "auto", epoch: "next" }),
+    event("execution_error", "next", { error: "next error", aborted: false }, failed),
+  ];
+  const report = await analyze(events, "selected");
+  expect(report.summary).toMatchObject({ toolErrors: 0, controllerExecutionErrors: 1,
+    controllerActions: 1, controllerExecutionStatuses: { completed: 1 } });
+  expect(report.tools[0]).toMatchObject({ state: "completed", isError: false,
+    exec: { state: "completed", exitCode: 0 } });
+  expect(report.controllerExecutionErrors).toEqual([{
+    seq: 11, at: events[10]!.at, atMs: 11_000, epoch: "selected", ...failed,
+    commandSeq: 8, controller: "keyboard", argv: ["press", "--key", "ESC"], error, aborted: false,
+  }]);
+});
