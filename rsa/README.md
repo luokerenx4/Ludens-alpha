@@ -1,6 +1,6 @@
 # RSA 实验
 
-给模型原始传感器、控制器 CLI 和一个空工作区，让它自行探索并积累技能。设备由独立 Baseware 服务的 mGBA / Ryubing driver 提供；RSA 使用同一份 OMP 18.9.1 循环。模型凭据复用本机 OMP 登录，默认 `openai-codex/gpt-6.1-sol`。
+给模型原始传感器、控制器 CLI 和一个空工作区，让它自行探索并积累技能。`rsa controller` 统一发现和调用设备能力与工作区 Python 函数；设备由独立 Baseware 服务的 mGBA / Ryubing driver 提供。RSA 使用同一份 OMP 18.9.1 循环。模型凭据复用本机 OMP 登录，默认 `openai-codex/gpt-6.1-sol`。
 
 ## 启动
 
@@ -173,7 +173,7 @@ macOS arm64 桥接基于 Ryubing 的 `Canary-1.3.351` 标签，固定到提交 `
 
 `screen capture` 请求模拟器呈现画面的原始 PNG；系统输入框弹出时，改采集该弹窗的真实界面，不采集桌面。可用 `capture --delay-ms 500` 在发送采集请求前等待固定时间；默认 0，等待可取消。这不检测动画完成，返回帧序号也不能保证画面已经呈现该次按键的结果。自动观测通过装配层配置，例如 `--auto-observe '[{"sensorId":"screen","argv":["capture","--delay-ms","500"]}]'`，Harness 只转发标准传感器请求。
 
-`pad` 提供 16 个数字按键和四个摇杆轴，原子动作参数见 `baseware controller pad --help`。动作按墙钟时间执行，时长由调用方选择，每段为至少 16 ms 的安全整数，合计也须为安全整数，输入轮询处切换完整状态。命令等待动作完成，期间仍可用 `pad release` 中断。AI 模式覆盖一号手柄及其体感输入；其他玩家、触屏、模拟器快捷键不在此控制器范围内。完成/取消归零，关闭接管或 TCP 断连恢复一号原生手柄输入。桥接只监听本机回环地址，作为可信本机进程间接口，不是多用户安全隔离。
+`pad` 提供 16 个数字按键和四个摇杆轴，原子动作参数见 `rsa controller controller/pad --help`。动作按墙钟时间执行，时长由调用方选择，每段为至少 16 ms 的安全整数，合计也须为安全整数，输入轮询处切换完整状态。命令等待动作完成，期间仍可用 `pad release` 中断。AI 模式覆盖一号手柄及其体感输入；其他玩家、触屏、模拟器快捷键不在此控制器范围内。完成/取消归零，关闭接管或 TCP 断连恢复一号原生手柄输入。桥接只监听本机回环地址，作为可信本机进程间接口，不是多用户安全隔离。
 
 实机测试会短按方向键和摇杆，请停在可安全操作的菜单。退出 RSA 宿主、保留游戏运行后：
 
@@ -185,59 +185,83 @@ RSA_SWITCH_TEST=1 bun test tests/switch.live.test.ts
 
 实机检查覆盖新画面、组合输入、状态替换、BUSY、取消、自然结束、断连清理、设备侧旧 epoch 拒绝以及原生键盘弹窗。没有音频采集、游戏内存读取或模拟器存读档命令。
 
-## 单独使用传感器与控制器
+## 统一能力 CLI
 
-先运行 Baseware，再用 `rsa run --device-only` 启动不带模型的宿主来持有操作权；两者使用同一工作区默认地址。也可以通过 Baseware TS API 自行持有连接与操作权。
+`rsa controller` 是 Agent 的主要能力入口，原始 Baseware 目录自动填入同一目录。CLI 和 Python API 使用同一执行器；能力不会自动追加到 OMP 的 tools。Baseware 原有 CLI / API / MCP 仍可单独使用，RSA 当前不接入 MCP，也不新增 RSA MCP 适配器。
+
+先运行 Baseware，再用 `rsa run --device-only` 启动不带模型的宿主；两者使用同一工作区默认地址。目录和 help 不需要接管：
 
 ```sh
-baseware sensor list
-baseware sensor screen --help
-baseware sensor screen capture
-baseware controller pad --help
+rsa controller list
+rsa controller sensor/screen --help
+rsa controller controller/pad --help
 rsa auto on
 ```
 
-把 `auto on` 输出中的 UUID 原样放入当前 shell：
+执行能力需要当前接管周期。把 `auto on` 输出中的 UUID 原样放入当前 shell；模型的 shell 会自动得到这些环境变量：
 
 ```sh
 export BASEWARE_EPOCH='<刚才返回的 epoch>'
-baseware controller pad apply --state '{"RIGHT":1,"A":1}' --for-ms 120
-baseware controller pad state
-baseware controller pad release
+rsa controller sensor/screen capture
+rsa controller controller/pad apply --state '{"RIGHT":1,"A":1}' --for-ms 120
+rsa controller controller/pad state
+rsa controller controller/pad release
 unset BASEWARE_EPOCH
 rsa auto off
 ```
 
-手柄有 A/B/SELECT/START/RIGHT/LEFT/UP/DOWN/R/L 十个通道。一次动作替换完整状态，省略的键为 0；结束后全部释放。`play --file /absolute/sequence.json` 接受状态序列，每段时长由调用方选择，须为有限正数，按模拟时间执行。帧边界会带来取整，每段至少占一帧，累计帧数及结束帧须能安全表示。命令等待动作完成；`pad release` 可随时中止当前按键，`auto off` 才交还操作权。
+公共 ID 使用 `controller/<driver 能力 ID>`、`sensor/<driver 能力 ID>` 和 `python/<相对路径.py>:<函数名>`。设备参数原样透传；Python 函数接受 `--args '<JSON object>'`。`list` 只给简短描述与发现诊断，选中能力后再用 `--help` 获取完整参数。不同 driver 的实际能力、通道和单位以它自己的 help 为准；Harness 不内置按键语义。
 
-传感器输出不可变 PNG 文件及采样区间。CLI 输出文件路径；OMP 的 `observe` 工具把文件转换为模型可见的图片块。命令返回的时间区间表示宿主发起请求到收到结果；提供者另返回实际执行帧数，不将宿主计时冒充设备精确采样时刻。
+CLI 传感器调用返回不可变媒体路径及采样区间，并把观测保存到 RSA run。OMP 的 `observe` 工具可将观测转换为模型图片块；通常直接使用循环在动作后提供的画面即可。动作时长由调用方决定，人工接管仍能打断。
 
 ## 工作区 Python 能力
 
+例如在 `scripts/sampling.py` 中写：
+
 ```python
-from rsa_tools import capability
-from baseware import Client
+from rsa_tools import Client, capability
 
 @capability
 def sample(sensor_id: str, argv: list[str]) -> list:
     """Read a sensor using its documented arguments."""
-    return Client().sensor(sensor_id, argv)
+    return Client().call(f"sensor/{sensor_id}", argv)
 ```
 
-RSA 扫描 workspace 中的 `.py` 文件，只暴露 `@capability` / `@capability()` 标记的顶层函数。每个参数都需要类型标注，函数需要非空 docstring；默认值来自函数签名。暂不暴露 async、可变参数或仅限位置参数的函数。支持字符串、整数、浮点、布尔、列表、字符串键字典和可空类型；不支持的签名作为诊断返回，不猜测 schema。Python 3.9 使用 `T | None` 时需要 `from __future__ import annotations`。
+调用方式：
 
-扫描静态读取 AST，不运行 import 或顶层代码；真正调用时启动 Python、导入该文件、传入 JSON 参数并返回 JSON 结果，普通 print 放进 stderr。生成工具名带相对路径与函数名，源码 hash 记入调用日志。OMP 在初始交互与每批工具完成后刷新工具，新增、改动和删除无需重启会话；整理技能期间不暴露这些执行能力。
+```sh
+rsa controller list
+rsa controller python/scripts/sampling.py:sample --help
+rsa controller python/scripts/sampling.py:sample --args '{"sensor_id":"screen","argv":["capture"]}'
+```
 
-`logs/`、`.git/`、依赖和虚拟环境目录不参与扫描。脚本可放在工作区根目录、`scripts/` 或技能目录，未标记的辅助函数保持普通 Python 用法。扫描发现语法错误会通知模型，供它自行修正；不执行猜测性修复。
+Python 可用同一入口组合原始能力和其他工作区能力：
 
-shell 与 Python 工具自动获得 Baseware CLI、Python 包路径及当前 `BASEWARE_SOCKET` / `BASEWARE_EPOCH` / `BASEWARE_TRACE`。`rsa` CLI 只管理宿主，设备操作统一调用 Baseware。人工接管会取消脚本进程组，并由 Baseware 释放设备；脚本不自行获取操作权。这里是可信本机 shell，不是 Python 沙箱。
+```python
+from rsa_tools import Client
+
+client = Client()
+catalog = client.list()
+help_text = client.help("python/scripts/sampling.py:sample")
+observations = client.call("python/scripts/sampling.py:sample", {
+    "sensor_id": "screen", "argv": ["capture"],
+})
+```
+
+RSA 按需扫描 workspace 中的 `.py` 文件，只登记 `@capability` / `@capability()` 标记的顶层函数。每个参数都需要类型标注，函数需要非空 docstring；默认值来自函数签名。暂不暴露 async、可变参数或仅限位置参数的函数。支持字符串、整数、浮点、布尔、列表、字符串键字典和可空类型；不支持的签名作为诊断返回，不猜测 schema。Python 3.9 使用 `T | None` 时需要 `from __future__ import annotations`。
+
+`list` 以及 Python 能力的 help/call 会重新静态读取 AST，不运行 import 或顶层代码；新增、改动和删除无需重启会话。真正调用时启动 Python、校验源码版本和 JSON 参数、导入文件并返回 JSON 结果，普通 print 放进 stderr。失败向 CLI/API 报错，调用日志保留源码 hash、参数及结果。Python 函数可通过 `Client().call()` 嵌套调用其他能力，也可直接调用普通辅助函数；不另加全局串行队列。
+
+`logs/`、`.git/`、依赖和虚拟环境目录不参与扫描。脚本可放在工作区根目录、`scripts/` 或技能目录，未标记的辅助函数保持普通 Python 用法。签名与语法诊断通过目录返回，供 Agent 自行修正。OMP 仍只暴露 `read/write/edit/exec/observe`，不会逐轮注入完整能力目录或各函数 schema；模型通过 CLI 按需发现。
+
+shell 与 Python 能力自动获得 RSA/Baseware CLI、Python 包路径及当前 `RSA_SOCKET` / `BASEWARE_SOCKET` / `BASEWARE_EPOCH` / `BASEWARE_TRACE`。Python API 连接同一 RSA 宿主，原始设备调用最终交给 Baseware，观测与调用 trace 保持连通。人工接管会取消在途调用和脚本进程组，并由 Baseware 释放设备；脚本不自行获取操作权。这里是可信本机 shell，不是 Python 沙箱。
 
 ## 边界与数据
 
 ```text
 ../baseware/src/contracts.ts  标准能力契约
 ../baseware/src/drivers/      设备协议、采集、输入
-src/harness/                 Agent 生命周期、OMP、Python 能力、工作区
+src/harness/                 Agent 生命周期、OMP、统一能力目录与执行、工作区
 src/app/main.ts              连接 Baseware 并装配 Agent
 src/app/workspace.ts         本机组件启动与停止
 ```

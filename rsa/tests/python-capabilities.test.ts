@@ -223,11 +223,11 @@ def step(label: str):
     const registry = new PythonCapabilities(directory);
     const {capabilities: [capability]} = await registry.discover();
     const env = {BASEWARE_SOCKET: socketPath, BASEWARE_EPOCH: "owner-epoch", BASEWARE_TRACE: JSON.stringify({toolCallId: "python-real-call"}),
-      RSA_SOCKET: "/tmp/obsolete.sock", RSA_EPOCH: "obsolete", RSA_TRACE: "{}"};
+      RSA_SOCKET: "/tmp/current-rsa.sock", RSA_EPOCH: "obsolete", RSA_TRACE: "{}"};
     const result = await registry.invoke(capability!.id, {label: "前进"}, {env});
     expect(result).toMatchObject({isError: false, details: {result: {
       execution: {status: "completed", stdout: "完了"}, observations: [observation],
-      data: {position: {x: 3, y: 4}, visible: true, label: "地图"}, rsa_context: [null, null, null],
+      data: {position: {x: 3, y: 4}, visible: true, label: "地图"}, rsa_context: ["/tmp/current-rsa.sock", null, null],
     }}});
     expect(actions).toEqual([["前进"]]);
     expect(acquired).toBe(1);

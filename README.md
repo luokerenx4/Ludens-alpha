@@ -1,6 +1,6 @@
 # Playness · Recursive Self-Adaptation
 
-给 AI 传感器、控制器 CLI 和一个普通工作区，让它自行探索环境，并把经验沉淀为技能。Baseware 将环境 driver 暴露为 CLI、API 和 MCP；RSA 通过这些接口探索，工作区 Python 函数可以成为模型工具。
+给 AI 传感器、控制器 CLI 和一个普通工作区，让它自行探索环境，并把经验沉淀为技能。Baseware 提供环境 driver；RSA 将原始设备与工作区 Python 能力统一放进 `rsa controller`，通过 CLI 按需发现和调用，Python API 用于组合。
 
 这个仓库包含四个独立安装、构建的组件：
 
@@ -53,16 +53,15 @@ mGBA 使用 `rsa init --driver mgba`，先按 [RSA 文档](rsa/README.md)手动�
 
 ## 工作区自己长出的能力
 
-普通 `.py` 文件中的函数用 `@capability` 标记后，RSA 按类型标注和 docstring 生成工具；开始交互和每批工具结束时刷新。发现过程静态解析源码，不导入执行文件，修改和删除在下一次请求生效。脚本既可调用 Baseware Python API，也可调用 CLI；同一次接管的 epoch 和日志关联随进程传递。
+普通 `.py` 文件中的函数用 `@capability` 标记后，可通过 `rsa controller list` 发现、通过单项 `--help` 查看参数。目录按需静态解析源码，不导入执行文件，增删改在下一次查询或调用生效。函数不会自动增加 OMP 的模型工具；CLI 与 Python API 共用目录和执行器，同一次接管的 epoch 和日志关联随调用传递。MCP 当前不注入。
 
 ```python
-from rsa_tools import capability
-from baseware import Client
+from rsa_tools import Client, capability
 
 @capability
 def sample(sensor_id: str, argv: list[str]) -> list:
     """Read a sensor using its documented arguments."""
-    return Client().sensor(sensor_id, argv)
+    return Client().call(f"sensor/{sensor_id}", argv)
 ```
 
 这里的函数只是接口示例，不会预装进任务工作区。实际方法、脚本和技能由运行中的 agent 自己编写。见 [Baseware 接口](baseware/README.md) 与 [RSA 发现规则](rsa/README.md#工作区-python-能力)。

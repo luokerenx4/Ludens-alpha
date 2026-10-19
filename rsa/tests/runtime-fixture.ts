@@ -13,6 +13,7 @@ export function createTestDeviceSession(capabilities: Capabilities, record: Reco
     async acquire(epoch) { await core.acquire(epoch, maxSeconds, client); },
     async release(epoch) { await core.release(epoch); },
     observe: (request, signal, trace, origin) => core.observe(request, signal, { ...trace }, origin),
+    execute: (id, argv, epoch, signal, trace) => core.execute(id, argv, epoch, signal, { ...trace }),
   };
   return { core, devices };
 }

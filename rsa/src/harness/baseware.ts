@@ -2,7 +2,7 @@ import { BasewareClient } from "@playness/baseware/client";
 import { createHash } from "node:crypto";
 import { copyFileSync, mkdirSync, constants } from "node:fs";
 import { extname, join } from "node:path";
-import type { Observation } from "@playness/baseware/contracts";
+import type { Observation, ExecutionResult } from "@playness/baseware/contracts";
 import type { Catalog } from "@playness/baseware/protocol";
 import type { RecordEvent, EventTrace } from "./events.ts";
 import type { DeviceSession } from "./runtime.ts";
@@ -70,6 +70,9 @@ export async function connectBaseware(options: { socket: string; seconds: number
     }
     const session: DeviceSession = {
       catalog, acquire, release,
+      async execute(id, argv, epoch, signal, trace) {
+        return await client.request({ kind: "controller", id, argv, epoch, trace: { ...trace } }, signal) as ExecutionResult;
+      },
       async observe(request, signal, trace, origin) {
         const observations = await client.request({ kind: "sensor", id: request.sensorId, argv: request.argv, epoch: owner, trace: { ...trace }, origin }, signal) as Observation[];
         return observations.map(observation => ({ ...observation, path: localPath(observation) }));

@@ -1,8 +1,12 @@
 import { createServer, connect } from "node:net";
 import { lstat, unlink } from "node:fs/promises";
 import type { Runtime } from "./runtime.ts";
+import type { EventTrace } from "./events.ts";
 
-export interface Request { kind: string; argv: string[]; epoch?: string; runId?: string; expectedEpoch?: string | null }
+export interface Request {
+  kind: string; argv: string[]; epoch?: string; runId?: string; expectedEpoch?: string | null;
+  action?: "list" | "help" | "call"; id?: string; arguments?: unknown; trace?: EventTrace;
+}
 type Response = { ok: true; value: unknown } | { ok: false; error: string };
 
 export async function listen(path: string, runtime: Runtime | (() => Runtime)) {
@@ -21,6 +25,9 @@ export async function listen(path: string, runtime: Runtime | (() => Runtime)) {
   const server = createServer((socket) => {
     let buffer = "";
     let dispatched = false;
+    let completed = false;
+    const cancellation = new AbortController();
+    socket.once("close", () => { if (!completed) cancellation.abort(new Error("Controller client disconnected")); });
     socket.setEncoding("utf8");
     socket.on("error", () => {}); // A CLI can disappear while management cleanup finishes.
     socket.on("data", (chunk) => {
@@ -32,9 +39,10 @@ export async function listen(path: string, runtime: Runtime | (() => Runtime)) {
         let response: Response;
         try {
           const request: Request = JSON.parse(buffer.slice(0, end));
-          response = { ok: true, value: await dispatch(typeof runtime === "function" ? runtime() : runtime, request) };
+          response = { ok: true, value: await dispatch(typeof runtime === "function" ? runtime() : runtime, request, cancellation.signal) };
         } catch (error) { response = { ok: false, error: String(error) }; }
-        socket.end(JSON.stringify(response) + "\n");
+        completed = true;
+        if (!socket.destroyed) socket.end(JSON.stringify(response) + "\n");
       })();
     });
   });
@@ -42,9 +50,17 @@ export async function listen(path: string, runtime: Runtime | (() => Runtime)) {
   return () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 }
 
-export async function dispatch(runtime: Runtime, request: Request): Promise<unknown> {
+export async function dispatch(runtime: Runtime, request: Request, signal = new AbortController().signal): Promise<unknown> {
   const { kind, argv, epoch } = request;
   if (kind === "status") return runtime.status();
+  if (kind === "controller") {
+    if (!runtime.controller) throw new Error("Workspace controller is unavailable");
+    if (request.action === "list") return runtime.controller.list(signal);
+    if (!request.id) throw new Error("Missing capability ID; see rsa controller --help");
+    if (request.action === "help") return runtime.controller.help(request.id, signal);
+    if (request.action === "call") return runtime.callController(request.id, request.arguments, epoch, signal, request.trace);
+    throw new Error("Unknown controller action; see rsa controller --help");
+  }
   if (kind === "auto" || kind === "consolidate") {
     if (epoch !== undefined) throw new Error("Control management belongs to the human, not an agent cycle");
     const status = runtime.status();

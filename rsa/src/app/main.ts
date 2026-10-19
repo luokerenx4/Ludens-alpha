@@ -1,11 +1,12 @@
 #!/usr/bin/env bun
 import { mkdir, writeFile } from "node:fs/promises";
-import { resolve, join } from "node:path";
+import { resolve, join, delimiter } from "node:path";
 import { parseArgs } from "node:util";
 import { cli, HELP } from "../harness/cli.ts";
 import { Runtime } from "../harness/runtime.ts";
 import { listen } from "../harness/transport.ts";
 import { connectBaseware } from "../harness/baseware.ts";
+import { WorkspaceController } from "../harness/controller.ts";
 import { defaultSocket } from "@playness/baseware/address";
 import { EventLog } from "../harness/events.ts";
 import type { ObservationRequest } from "@playness/baseware/contracts";
@@ -114,6 +115,11 @@ async function main() {
     log.record("run_start", { workspace, workspaceId: state.id });
     devices = await connectBaseware({ socket: basewareSocket, seconds, runDir, record: log.record });
     runtime = new Runtime(devices, log.record, seconds, runId);
+    const binDir = resolve(import.meta.dir, "../../bin");
+    runtime.controller = new WorkspaceController({ workspace, devices, record: log.record, env: {
+      RSA_SOCKET: socket, BASEWARE_SOCKET: basewareSocket,
+      PATH: [binDir, resolve(import.meta.dir, "../../../baseware/bin"), process.env.PATH ?? ""].join(delimiter),
+    } });
     devices.onHandback(reason => { void runtime!.stop(reason); });
     devices.onDisconnect((error) => { void runtime!.disconnected(error); });
     const model = values.model ?? "openai-codex/gpt-6.1-sol";
@@ -126,7 +132,7 @@ async function main() {
       exit = postmortem.quit;
       const { createOmpAgent } = await import("../harness/omp/session.ts");
       runtime.agent = await createOmpAgent({ runtime, workspace, state, runDir, log, resume,
-        binDir: resolve(import.meta.dir, "../../bin"), basewareSocket, model, maxRequests, compactionThreshold, autoObserve,
+        binDir, rsaSocket: socket, basewareSocket, model, maxRequests, compactionThreshold, autoObserve,
       });
     }
     await writeFile(join(runDir, "manifest.json"), JSON.stringify({ runId, workspace, workspaceId: state.id, stateDir: state.dir, socket, drivers: devices.catalog.drivers, basewareSocket, omp: "18.9.1", eventSchemaVersion: 1, model: values["device-only"] ? null : model, seconds, maxRequests, resume, autoObserve, compactionThreshold: compactionThreshold ?? null }, null, 2));

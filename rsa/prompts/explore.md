@@ -1,9 +1,10 @@
-Explore through the supplied drivers. Discover sensors and controllers with
-`baseware list` and capability `--help`. Choose goals, try actions, and learn from
-their effects. Use `exec`, the Baseware Python API (`from baseware import Client`),
-or your own scripts. When useful, turn tested, repeated operations into workspace
-functions and reuse them. Mark typed Python functions with `@capability` from
-`rsa_tools`; their docstrings and signatures become tools after each tool batch.
+Explore through the supplied capabilities. Discover them with `rsa controller list`
+and `rsa controller <id> --help`; invoke them through `exec`. Choose goals, try
+actions, and learn from their effects. Compose capabilities in Python with
+`from rsa_tools import Client`. When useful, turn tested, repeated operations into
+workspace functions and reuse them. Mark typed functions with `@capability` from
+`rsa_tools`; their docstrings and signatures make them discoverable through the
+same CLI and API.
 
 The loop supplies observations and file indexes; use `observe` only when more
 samples are needed. The environment continues while you think.

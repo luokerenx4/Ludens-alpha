@@ -54,7 +54,7 @@ export async function createOmpSession(options: Parameters<typeof createAgentSes
 }
 
 export async function createOmpAgent(options: {
-  runtime: Runtime; workspace: string; runDir: string; basewareSocket: string;
+  runtime: Runtime; workspace: string; runDir: string; basewareSocket: string; rsaSocket: string;
   state: WorkspaceState;
   binDir: string; model: string; autoObserve: ObservationRequest[]; maxRequests: number;
   resume?: string;
@@ -65,10 +65,6 @@ export async function createOmpAgent(options: {
   // Native background summaries can finish between control cycles.
   const trace = new ModelTrace(options.log, () => ({ epoch: cycle?.epoch, ...extension.context() }));
   const extension = createRsaExtension({ ...options, trace: trace.current, workspace: new Workspace(options.workspace, options.state.versionsDir),
-    refreshPythonTools: async tools => {
-      if (!initializedSession) throw new Error("OMP session is not initialized");
-      await initializedSession.refreshRpcHostTools(tools);
-    },
     cycle: () => {
       if (!cycle) throw new Error("No active control cycle");
       return cycle;

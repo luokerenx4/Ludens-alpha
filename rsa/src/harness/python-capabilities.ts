@@ -48,7 +48,7 @@ export function pythonModulePaths(): string[] {
 
 const bridge = fileURLToPath(new URL("../../python/rsa_tools/_bridge.py", import.meta.url));
 
-/** A refreshed tool catalog, not a daemon or file watcher. */
+/** Discover and execute workspace functions on demand. */
 export class PythonCapabilities {
   readonly workspace: string;
   private catalog = new Map<string, PythonCapability>();
@@ -90,7 +90,7 @@ export class PythonCapabilities {
     options.signal?.throwIfAborted();
     const input = JSON.stringify(request);
     const env = { ...process.env, ...options.env };
-    for (const name of ["RSA_SOCKET", "RSA_EPOCH", "RSA_TRACE"]) delete env[name];
+    for (const name of ["RSA_EPOCH", "RSA_TRACE"]) delete env[name];
     env.PYTHONPATH = [...pythonModulePaths(), ...(env.PYTHONPATH ? [env.PYTHONPATH] : [])].join(delimiter);
     env.PYTHONDONTWRITEBYTECODE = "1";
     return new Promise((done, fail) => {

@@ -109,15 +109,14 @@ test("catalog help is inert and device execution receives literal argument value
   } finally { await runtime.close(); execute.mockRestore(); read.mockRestore(); }
 });
 
-test("RSA IPC rejects device calls and an agent environment cannot enable control through the CLI", async () => {
+test("RSA IPC requires a workspace controller and an agent environment cannot enable control through the CLI", async () => {
   const { runtime, devices } = fixture();
   const acquire = spyOn(devices, "acquire");
   const path = `/tmp/rsa-management-${crypto.randomUUID()}.sock`;
   const close = await listen(path, runtime);
   try {
-    for (const kind of ["sensor", "controller"]) {
-      await expect(send(path, { kind, argv: ["any", "command"] })).rejects.toThrow("Unknown command");
-    }
+    await expect(send(path, { kind: "sensor", argv: ["any", "command"] })).rejects.toThrow("Unknown command");
+    await expect(send(path, { kind: "controller", argv: [] })).rejects.toThrow("Workspace controller is unavailable");
     const cli = Bun.spawn([process.execPath, resolve(import.meta.dir, "../src/app/main.ts"), "auto", "on"], {
       env: { ...process.env, RSA_SOCKET: path, BASEWARE_EPOCH: "agent-cycle" }, stdout: "pipe", stderr: "pipe",
     });

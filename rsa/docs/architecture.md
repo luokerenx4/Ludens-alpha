@@ -8,14 +8,13 @@
 flowchart LR
     H[人类接管] --> R[RSA / OMP]
     R <--> W[普通 workspace]
-    W --> P[带 capability 装饰器的 Python 函数]
-    R --> C[Baseware Client]
-    R --> S[Shell / CLI]
-    P --> A[Python API]
-    M[MCP 客户端] --> B[Baseware 独立进程]
-    C --> B
-    S --> B
-    A --> B
+    R --> S[exec / rsa controller CLI]
+    S --> F[RSA 能力目录与执行器]
+    P[Python / rsa_tools.Client] --> F
+    F --> P
+    F --> C[Baseware Client]
+    C --> B[Baseware 独立进程]
+    M[独立 CLI / API / MCP 客户端] --> B
     B --> D[Driver: Sensor / Controller]
     D --> E[模拟器或其他设备]
     B -->|设备事件| R
@@ -26,11 +25,11 @@ flowchart LR
 | 组件 | 拥有的职责 | 不包含的职责 |
 | --- | --- | --- |
 | `baseware/` | driver 装配、设备连接、能力目录、操作权、动作取消、CLI / TS API / Python API / MCP、设备日志 | 模型、OMP、技能、工作区脚本发现 |
-| `rsa/` | Agent 生命周期、OMP 会话、观测循环、预算、Python 工具发现与执行、工作区与运行日志 | 设备私有协议、按键含义、游戏策略 |
+| `rsa/` | Agent 生命周期、OMP 会话、观测循环、预算、统一能力 CLI/API、Python 发现与执行、工作区与运行日志 | 设备私有协议、按键含义、游戏策略 |
 | `rsa-dashboard/` | 日志读取、模型与动作统计、媒体展示、人工交还入口 | 模型推理与设备执行 |
 | `rsa-companion/` | 消费日志，在 Alice Pet 气泡中呈现活动、画面与声音 | 策略、driver、独立模型调用 |
 
-各组件独立安装，有自己的锁文件。`rsa` 以本地包依赖 `@playness/baseware` 的契约和客户端，生产代码不导入 `drivers/`。`rsa up` 是本机应用装配入口，可以选择设备类型并启动进程；这个选择不进入 Harness。启动配置使用 `driver`；RSA CLI 只管理 Agent，设备调用统一通过 Baseware，移除了原有 sensor/controller 转发入口。
+各组件独立安装，有自己的锁文件。`rsa` 以本地包依赖 `@playness/baseware` 的契约和客户端，生产代码不导入 `drivers/`。`rsa up` 是本机应用装配入口，可以选择设备类型并启动进程；这个选择不进入 Harness。启动配置使用 `driver`。`rsa controller` 是工作区统一能力入口，将 Baseware 目录中的原始设备能力与 Python 装饰器函数合并；它复用 Baseware 客户端，不复制 driver 实现。
 
 ## Driver 与 Baseware
 
@@ -64,7 +63,7 @@ interface Controller {
 - API：TS `BasewareClient`，Python `from baseware import Client`。
 - MCP：`baseware mcp` 通过官方 SDK 暴露目录、help、sensor 和 controller 工具。
 
-本地 Unix socket 使用逐行 JSON，区分请求 ID、结果与设备事件。TS 客户端可多路复用连接；Python 每次调用建立短连接。MCP stdio 进程连接同一 Baseware，不能再装配一份 driver。接口取消最终都传递到同一 driver；没有入口自行重试有副作用的动作。
+本地 Unix socket 使用逐行 JSON，区分请求 ID、结果与设备事件。TS 客户端可多路复用连接；Python 每次调用建立短连接。MCP stdio 进程连接同一 Baseware，不能再装配一份 driver；当前 RSA 不把它接入 OMP，也不新增 RSA MCP 适配器。接口取消最终都传递到同一 driver；没有入口自行重试有副作用的动作。
 
 ## 操作权与人工接管
 
@@ -99,19 +98,21 @@ workspace/
     background/           # 本机进程日志与 launchd 描述
 ```
 
-未标记的 Python 文件是普通脚本。RSA 静态扫描 `.py` 中用 `@capability` 标记的顶层函数，按函数签名、类型标注和 docstring 生成独立模型工具。扫描不执行 import 或顶层代码，排除日志、依赖、虚拟环境与 Git 目录。错误签名返回诊断，由 Agent 修正。
+`rsa controller list` 返回短能力目录，`rsa controller <id> --help` 返回所选能力的完整用法。公共 ID 分为 `controller/<id>`、`sensor/<id>` 和 `python/<相对路径.py>:<函数名>`；原始设备由 Baseware 的实际目录预填，Harness 不列举具体设备名称。CLI 是默认调用入口；Python `from rsa_tools import Client` 提供 `list/help/call`，共用相同目录与执行器，方便函数组合。
 
-实际调用时在 workspace 启动 Python 进程，校验参数和已发现的源码版本，导入对应模块，调用函数并返回 JSON。工具名稳定地关联文件和函数，调用日志记录源码 hash、参数、结果。函数可以调用 Baseware、其他辅助函数或外部本地程序。它们仍是工作区里的普通代码，不被复制成 Harness 插件。
+未标记的 Python 文件是普通脚本。RSA 在 list 及 Python help/call 时静态扫描 `.py` 中用 `@capability` 标记的顶层函数，读取签名、类型标注和 docstring。扫描不执行 import 或顶层代码，排除日志、依赖、虚拟环境与 Git 目录。新增、修改、删除在下一次查询或调用时生效；错误签名作为诊断返回，由 Agent 修正。发现的函数不注册为 OMP 工具，也不逐轮注入目录与 schema。
 
-每次开始交互和一批工具完成后刷新目录。只有目录、签名或源码变化时，才调用 OMP 原生 `refreshRpcHostTools` 更新工具；不重开会话，不自行实现工具调度器。删除函数即撤下工具。Python 工具、shell 和 observe 串行执行；一次 Python 函数中的多次设备调用被视为一个模型工具，结束后循环补充观测。
+设备参数为原始 `string[]`，CLI 直接透传；Python 参数为对象，CLI 使用 `--args '<JSON object>'`。实际调用 Python 时在 workspace 启动进程，校验参数和发现时的源码版本，导入对应模块并返回 JSON 值，失败向调用方报错。调用日志保留文件、函数、源码 hash、参数和结果。函数可以通过 `Client().call()` 组合原始设备或其他工作区能力，也可调用普通 Python 辅助函数。它们仍是工作区里的代码，不被复制成 Harness 插件。
 
-shell/Python 自动继承 Baseware 地址、本轮 epoch 与 trace，CLI 和 API 可以串起同一条日志链。工作区代码只组合已经开放的 driver 接口；不同工作区默认不共享这些派生能力。此实现是可信本机执行环境，不提供 OS 沙箱或多用户权限边界。
+目录与 help 无需接管；实际调用须携带当前 epoch，由 Runtime 检查和绑定取消信号。CLI/API 连接关闭会取消自身调用，人工交还会取消本周期全部调用及 Python 进程组。嵌套调用复用同一宿主和 epoch，不使用会阻塞嵌套请求的全局队列。设备自身的并发约束仍由 Baseware driver 执行。
+
+shell/Python 自动继承 RSA 与 Baseware 地址、本轮 epoch 与 trace。设备操作最终进入 Baseware，传感器调用通过 RSA 观测路径落盘，模型工具和脚本内多次设备操作能关联到同一日志链。一次 shell 中的复合操作结束后，循环仍统一补充观测。不同工作区默认不共享这些派生能力。此实现是可信本机执行环境，不提供 OS 沙箱或多用户权限边界。
 
 ## OMP 循环与经验
 
 在一次宿主生命周期内复用同一 OMP 会话；再次接管只重置预算与 epoch。重启宿主默认续接该 workspace 的当前会话。新 workspace 从空文件和空会话开始，显式复制的文件属于其初始内容。
 
-循环在初始 prompt 和每批工具完成后提供观测及 skill/memory 索引。模型默认使用这些观测，`observe` 用于按需额外采样。主动采样之后若又执行动作，该观测不能代表批次结束状态；没有后续动作时可复用，避免重复图片。环境在模型思考期间继续运行。
+OMP 固定暴露 `read/write/edit/exec/observe`；能力通过 `exec` 中的 CLI 按需调用，不追加每个装饰器函数的模型工具定义。循环在初始 prompt 和每批工具完成后提供观测及 skill/memory 索引。模型默认使用这些观测，`observe` 用于按需额外采样。主动采样之后若又执行动作，该观测不能代表批次结束状态；没有后续动作时可复用，避免重复图片。环境在模型思考期间继续运行。
 
 模型自行选目标、探索按键、编写脚本并形成经验。`skills/` 保存影响未来决策或行动的可复用方法；`memory/current.md` 覆盖当前状态，历史留在日志。Harness 不注入游戏攻略，不手工改模型生成的经验。`consolidate` 是用户显式触发的一次原会话整理，只开放 read/write/edit，不采样或控制设备。
 
@@ -129,6 +130,6 @@ Baseware 独立记录设备事件，并向订阅者发送相同事件。RSA 将�
 
 `rsa init` / `rsa up` 管理本工作区的模拟器、Baseware、Host 和 Pet，Dashboard 可共享。独立入口也可用于开发：先启动 Baseware，再运行 `rsa run --baseware-socket ...`。新宿主保持 manual，`rsa auto on` 才发送模型请求。
 
-默认验证离线进行：假设备驱动走真实 Baseware core/socket，CLI/API/MCP 走同一服务；真实 OMP 会话使用本地假模型流验证新增、修改、删除 Python 工具，以及观测与历史。真实模拟器测试另外显式开启，避免扰动正在运行的游戏。
+默认验证离线进行：假设备驱动走真实 Baseware core/socket，RSA CLI/API 验证同一目录、嵌套 Python 调用、取消与旧 epoch 拒绝；Baseware 自身 CLI/API/MCP 仍走同一服务。真实 OMP 会话用本地假模型流核对工具列表不随工作区函数变化，以及观测与历史。真实模拟器测试另外显式开启，避免扰动正在运行的游戏。
 
 此阶段没有自动发布插件、跨工作区经验合并、Agent 修改 runtime 或自写 loop。需要这些能力时再扩展相应边界。

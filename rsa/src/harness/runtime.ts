@@ -1,6 +1,7 @@
-import type { Observation, ObservationRequest } from "@playness/baseware/contracts";
+import type { Observation, ObservationRequest, ExecutionResult } from "@playness/baseware/contracts";
 import type { Catalog } from "@playness/baseware/protocol";
 import type { EventTrace, RecordEvent } from "./events.ts";
+import type { WorkspaceController } from "./controller.ts";
 
 export interface AgentRunner {
   run(context: { epoch: string; signal: AbortSignal; message?: string }): Promise<void>;
@@ -16,6 +17,7 @@ export interface DeviceSession {
   acquire(epoch: string): Promise<void>;
   release(epoch: string): Promise<void>;
   observe(request: ObservationRequest, signal: AbortSignal, trace: EventTrace, origin: ObservationOrigin): Promise<Observation[]>;
+  execute(id: string, argv: string[], epoch: string, signal: AbortSignal, trace: EventTrace): Promise<ExecutionResult>;
 }
 
 export class Runtime {
@@ -31,7 +33,9 @@ export class Runtime {
   private takeoverDeadlineMs = 0;
   private reason = "startup";
   private connected = true;
+  private calls = new Set<Promise<unknown>>();
   agent?: AgentRunner;
+  controller?: WorkspaceController;
 
   constructor(private devices: DeviceSession, readonly record: RecordEvent, private maxSeconds = 300, private runId: string = crypto.randomUUID()) {}
 
@@ -43,8 +47,19 @@ export class Runtime {
 
   list() { return this.devices.catalog; }
 
+  async callController(id: string, args: unknown, epoch: string | undefined, signal: AbortSignal, trace: EventTrace = {}) {
+    if (this.mode !== "auto" || !epoch || epoch !== this.epoch) throw new Error("STALE_EPOCH: use the current control epoch");
+    if (!this.controller) throw new Error("Workspace controller is unavailable");
+    const combined = AbortSignal.any([signal, this.control!.signal]);
+    combined.throwIfAborted();
+    const call = this.controller.call(id, args, { epoch, signal: combined, trace: { ...trace, epoch } });
+    this.calls.add(call);
+    try { return await call; }
+    finally { this.calls.delete(call); }
+  }
+
   async start(message?: string) {
-    if (this.mode !== "manual" || this.running) throw new Error("Previous control cycle has not finished");
+    if (this.mode !== "manual" || this.running || this.calls.size) throw new Error("Previous control cycle has not finished");
     if (!this.connected) throw new Error("Baseware disconnected; restart the application");
     const epoch = this.epoch = crypto.randomUUID();
     const control = this.control = new AbortController();
@@ -127,6 +142,9 @@ export class Runtime {
         this.connected = false;
         this.record("error", String(error));
       }
+      // The device is already released; let cancelled workspace calls finish
+      // before another epoch can start. Nested calls need no global queue.
+      await Promise.allSettled(this.calls);
       this.mode = "manual";
       this.record("control", this.status(), { epoch: this.epoch });
     })().finally(() => { this.stopping = undefined; });
