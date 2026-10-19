@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { customToolToDefinition, type ExtensionAPI, type ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { resizeImage } from "@oh-my-pi/pi-coding-agent/utils/image-resize";
 import { createRsaExtension, type Cycle } from "../src/harness/omp/extension.ts";
-import { Runtime } from "../src/harness/runtime.ts";
+import { createTestRuntime } from "./runtime-fixture.ts";
 import { Workspace } from "../src/harness/workspace.ts";
 
 test("request budgets reset on a new takeover while repeated prompts share the same epoch budget", async () => {
@@ -13,11 +13,11 @@ test("request budgets reset on a new takeover while repeated prompts share the s
   const workspace = join(directory, "workspace");
   await mkdir(join(workspace, "skills"), { recursive: true });
   const requests: {epoch?: string; request: number}[] = [];
-  const runtime = new Runtime({controllers: [], sensors: []}, (type, data, trace) => {
+  const runtime = createTestRuntime({controllers: [], sensors: []}, (type, data, trace) => {
     if (type === "context") requests.push({epoch: trace?.epoch, request: (data as {request: number}).request});
   });
   let cycle: Cycle;
-  runtime.driver = {
+  runtime.agent = {
     async run(context) {
       cycle = context;
       await new Promise<void>(resolve => context.signal.addEventListener("abort", () => resolve(), {once: true}));
@@ -56,7 +56,7 @@ test("OMP's SDK adapter delivers the abort signal correctly and returns real ima
   const file = join(directory, "sample.png");
   const png = "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg==";
   await Bun.write(file, Buffer.from(png, "base64"));
-  const runtime = new Runtime({ controllers: [], sensors: [{
+  const runtime = createTestRuntime({ controllers: [], sensors: [{
     id: "camera-q", mediaTypes: ["image/png"], help: () => "sample",
     async read(argv, signal) {
       signal.throwIfAborted();
@@ -97,7 +97,7 @@ test("tool batches reuse the latest explicit sample per sensor and invalidate al
   const reads: {sensorId: string; argv: readonly string[]}[] = [];
   const contexts: {observations: string[]; reusedObservations: string[]; freshObservations: string[]}[] = [];
   let sequence = 0;
-  const runtime = new Runtime({controllers: [], sensors: ["camera", "second-camera"].map(sensorId => ({
+  const runtime = createTestRuntime({controllers: [], sensors: ["camera", "second-camera"].map(sensorId => ({
     id: sensorId, mediaTypes: ["image/png"], help: () => "sample",
     async read(argv: readonly string[]) {
       reads.push({sensorId, argv});

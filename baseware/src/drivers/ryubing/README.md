@@ -1,6 +1,6 @@
-# Ryubing provider
+# Ryubing driver
 
-`provider.ts` implements `Sensor` / `Controller`. `RsaBridge.cs` is compiled inside the emulator; `ryubing.patch` adds its integration points: input override, presented-frame capture, native text-entry dialog, and disposal. The Harness has no Ryubing or Switch branches. Only `app/main.ts` chooses the provider.
+`provider.ts` implements `Sensor` / `Controller`. `RsaBridge.cs` is compiled inside the emulator; `ryubing.patch` adds its integration points: input override, presented-frame capture, native text-entry dialog, and disposal. Baseware's service entrypoint chooses this driver; RSA consumes its catalog and operations through the Baseware client.
 
 ## Rebuild
 

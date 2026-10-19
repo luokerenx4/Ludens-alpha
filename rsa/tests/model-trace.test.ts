@@ -10,7 +10,7 @@ import type { StreamFn } from "@oh-my-pi/pi-agent-core";
 import { logger } from "@oh-my-pi/pi-utils";
 import { EventLog } from "../src/harness/events.ts";
 import { installCompactionHttpTrace, installCompactionSpeculationTrace, ModelTrace } from "../src/harness/omp/trace.ts";
-import { Runtime } from "../src/harness/runtime.ts";
+import { createTestRuntime } from "./runtime-fixture.ts";
 import { Workspace } from "../src/harness/workspace.ts";
 import { createRsaExtension } from "../src/harness/omp/extension.ts";
 import { listen } from "../src/harness/transport.ts";
@@ -281,7 +281,7 @@ test("real OMP HTTP bodies retain DeepSeek image prefixes beyond five images and
   await Bun.write(image, Buffer.from(png, "base64"));
   const log = new EventLog(directory, {id: "wire-test", now: () => performance.now()});
   let samples = 0;
-  const runtime = new Runtime({controllers: [{id: "joint-7", help: () => "move <n>", acquire: async () => {}, release: async () => {},
+  const runtime = createTestRuntime({controllers: [{id: "joint-7", help: () => "move <n>", acquire: async () => {}, release: async () => {},
     async execute(argv) { return {id: crypto.randomUUID(), status: "completed", exitCode: 0, stdout: argv.join(" "), stderr: "",
       timing: {clock: "wire-test", requestedAtMs: performance.now(), receivedAtMs: performance.now()}}; },
   }], sensors: [{id: "camera-q", help: () => "sample", mediaTypes: ["image/png"], async read() {

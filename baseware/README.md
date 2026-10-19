@@ -1,0 +1,66 @@
+# Baseware
+
+Baseware is a local device service. Drivers expose sensors and controllers; one service owns device connections, control leases, cancellation, observations and the device journal. CLI, TypeScript, Python and MCP clients call that same service. Baseware does not load an agent, task memory or workspace skills.
+
+```sh
+bun install --frozen-lockfile
+export PATH="$PWD/bin:$PATH"
+bun run check
+bun test
+```
+
+Start against a prepared emulator bridge:
+
+```sh
+baseware serve --driver ryubing --port 47663 --socket /tmp/example-baseware.sock --data-dir /path/to/device-records
+export BASEWARE_SOCKET=/tmp/example-baseware.sock
+baseware list
+baseware driver list
+baseware sensor screen --help
+baseware sensor screen capture
+```
+
+`baseware/bin/baseware` is the repository CLI. The default socket uses the canonical current directory: `/tmp/playness-baseware-<uid>-<sha256-first16>.sock`. Device data defaults to `$XDG_STATE_HOME/playness/baseware/<socket-name>`, or `~/.local/state/playness/baseware/<socket-name>`. A service starts in manual mode. Device files referenced by calls should use absolute paths.
+
+A persistent client acquires a lease and shares its epoch with temporary callers. Each controller call must supply that epoch. Closing the owner connection, expiration, driver disconnection or `baseware revoke` restores manual input. Closing a temporary caller only cancels its pending calls. Revocation does not wait for an action or model request to finish, and the driver stays connected for the next lease.
+
+```ts
+import { BasewareClient } from "@playness/baseware/client";
+
+const client = await BasewareClient.connect("/tmp/example-baseware.sock", {
+  onEvent: event => console.log(event),
+});
+const epoch = crypto.randomUUID();
+try {
+  await client.request({ kind: "acquire", epoch, seconds: 300 });
+  const catalog = await client.request({ kind: "list" });
+  const observations = await client.request({ kind: "sensor", id: "screen", argv: ["capture"] });
+  // Controller arguments are documented by each capability's help in the catalog.
+} finally {
+  await client.request({ kind: "release", epoch });
+  client.close();
+}
+```
+
+Temporary CLI and MCP clients inherit `BASEWARE_EPOCH`; neither acquires control. `BASEWARE_TRACE` carries a JSON object of parent trace fields. The stdio MCP adapter starts with `baseware mcp` and exposes device discovery, help, observation and execution through the same client. It does not expose acquisition or revocation tools to the model.
+
+The Python client lives in `baseware/python`; add that directory to `PYTHONPATH` for standalone scripts. RSA supplies it automatically to its script processes. A Python call opens a temporary connection and uses the existing owner's epoch:
+
+```python
+from baseware import Client
+
+device = Client()  # BASEWARE_SOCKET, BASEWARE_EPOCH, BASEWARE_TRACE
+catalog = device.list()
+print(device.help("screen"))
+observations = device.sensor("screen", ["capture"])
+```
+
+For a model client using MCP, configure its stdio command as `/absolute/path/to/baseware/bin/baseware`, arguments `["mcp"]`, and environment `BASEWARE_SOCKET` plus the current `BASEWARE_EPOCH`. The catalog becomes tools such as `baseware_sensor_screen` and `baseware_controller_pad`, with a literal `argv` array. The owner must remain connected for controller tools to work. For example, `baseware_sensor_screen` accepts `{"argv":["capture"]}` and returns observation metadata plus image content.
+
+RSA's `@capability` Python functions belong to the task's workspace. RSA discovers, describes and launches them; their device calls use this Python client. They do not register new Baseware hardware drivers or make Baseware load workspace Python code.
+
+Every request is a newline-delimited JSON envelope `{id, request}`; responses are `{id, ok, value}` or `{id, ok:false, error}`. A connection supports concurrent requests. Subscribed clients and the owner receive `{event:{type,data,trace}}`. `BasewareClient.request(request, signal)` sends explicit cancellation for that wire request when aborted; requests are never transparently retried. The exported protocol types document request kinds.
+
+`events.jsonl` records device events independently of RSA, including rejected calls. Observations are immutable files under `observations/<service-id>/`; observation timing uses the service's own clock. Parent trace fields are preserved and each observation/execution receives an operation ID. An RSA host can subscribe and copy events into its run timeline without asking Baseware to understand model calls or workspace contents.
+
+The local socket and emulator bridges assume trusted local processes. Epochs prevent stale or accidental calls; they do not provide operating-system isolation from arbitrary code running as the same user.

@@ -1,13 +1,15 @@
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { delimiter, resolve } from "node:path";
 import type { ExtensionFactory, CustomTool, ReadToolResultEvent } from "@oh-my-pi/pi-coding-agent";
+import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { resizeImage } from "@oh-my-pi/pi-coding-agent/utils/image-resize";
 import * as z from "@oh-my-pi/omptype/zod";
-import type { Observation, ObservationRequest } from "../../contracts.ts";
+import type { Observation, ObservationRequest } from "@playness/baseware/contracts";
 import type { Runtime } from "../runtime.ts";
 import { Workspace } from "../workspace.ts";
 import type { EventTrace, RecordEvent } from "../events.ts";
+import { PythonCapabilities, pythonModulePaths, type PythonDiscovery } from "../python-capabilities.ts";
 
 export async function media(observations: Observation[], record?: RecordEvent, trace?: EventTrace) {
   return Promise.all(observations.map(async (observation) => {
@@ -31,11 +33,13 @@ export function createRsaExtension(options: {
   runtime: Runtime;
   workspace: Workspace;
   socket: string;
+  basewareSocket?: string;
   binDir: string;
   autoObserve: ObservationRequest[];
   cycle(): Cycle;
   maxRequests: number;
   trace?(toolCallId?: string): EventTrace;
+  refreshPythonTools?(tools: AgentTool[]): Promise<void>;
 }) {
   const { runtime, workspace } = options;
   let requests = 0;
@@ -46,6 +50,37 @@ export function createRsaExtension(options: {
   const trace = (toolCallId?: string): EventTrace => ({ epoch: options.cycle().epoch, ...options.trace?.(toolCallId), ...(toolCallId ? { toolCallId } : {}) });
   const observeParameters = z.object({ sensorId: z.string(), argv: z.array(z.string()) });
   const execParameters = z.object({ command: z.string() });
+  const python = options.refreshPythonTools ? new PythonCapabilities(workspace.path, undefined, runtime.record) : undefined;
+  let pythonDiscovery: PythonDiscovery = { capabilities: [], diagnostics: [] };
+  let pythonVersion = "[]";
+
+  const commandEnvironment = (cycle: Cycle, parent: EventTrace): NodeJS.ProcessEnv => ({
+    ...process.env,
+    PATH: [options.binDir, resolve(import.meta.dir, "../../../../baseware/bin"), process.env.PATH ?? ""].join(delimiter),
+    PYTHONPATH: [...pythonModulePaths(), ...(process.env.PYTHONPATH ? [process.env.PYTHONPATH] : [])].join(delimiter),
+    BASEWARE_SOCKET: options.basewareSocket, BASEWARE_EPOCH: cycle.epoch, BASEWARE_TRACE: JSON.stringify(parent),
+    RSA_SOCKET: options.socket, RSA_EPOCH: cycle.epoch, RSA_TRACE: JSON.stringify(parent),
+  });
+
+  async function refreshPython() {
+    if (!python) return;
+    pythonDiscovery = await python.discover(options.cycle().signal);
+    const version = JSON.stringify(pythonDiscovery.capabilities);
+    if (version === pythonVersion) return;
+    await options.refreshPythonTools!(pythonDiscovery.capabilities.map(capability => ({
+      name: capability.name, label: capability.origin.function, description: capability.description,
+      parameters: capability.parameters, loadMode: "essential", concurrency: "exclusive", approval: "exec", intent: "omit",
+      async execute(id, args, signal) {
+        const cycle = options.cycle();
+        const combined = signal ? AbortSignal.any([signal, cycle.signal]) : cycle.signal;
+        combined.throwIfAborted();
+        observed.clear();
+        const parent = trace(id);
+        return python.invoke(capability.id, args, { signal: combined, env: commandEnvironment(cycle, parent), trace: parent });
+      },
+    })));
+    pythonVersion = version;
+  }
 
   const observe: CustomTool<typeof observeParameters> = {
     name: "observe", label: "Observe", loadMode: "essential", approval: "read",
@@ -62,7 +97,7 @@ export function createRsaExtension(options: {
 
   const exec: CustomTool<typeof execParameters> = {
     name: "exec", label: "Shell", loadMode: "essential", approval: "exec",
-    description: "Run a foreground shell command in the workspace. rsa is on PATH and RSA_EPOCH is bound to this cycle.",
+    description: "Run a foreground shell command in the workspace. baseware and rsa are on PATH; Python APIs and the current control epoch are supplied.",
     parameters: execParameters,
     async execute(id, params, _onUpdate, _ctx, signal) {
       const cycle = options.cycle();
@@ -78,7 +113,7 @@ export function createRsaExtension(options: {
       const result = await new Promise<{ exitCode: number; stdout: string; stderr: string }>((done, fail) => {
         const child = spawn("/bin/sh", ["-c", params.command], {
           cwd: workspace.path, detached: true,
-          env: { ...process.env, PATH: `${options.binDir}:${process.env.PATH}`, RSA_SOCKET: options.socket, RSA_EPOCH: String(cycle.epoch), RSA_TRACE: JSON.stringify(parent) },
+          env: commandEnvironment(cycle, parent),
           stdio: ["ignore", "pipe", "pipe"],
         });
         let stdout = "", stderr = "";
@@ -104,6 +139,7 @@ export function createRsaExtension(options: {
     cycle.signal.throwIfAborted();
     try {
       const consolidating = cycle.purpose === "consolidate";
+      if (!consolidating) await refreshPython();
       // An explicit sample's chosen arguments take precedence over this sensor's defaults.
       const fresh = consolidating ? [] : (await Promise.all(options.autoObserve.filter(request => !observed.has(request.sensorId))
         .map(request => runtime.observe(request, cycle.signal, parent, origin)))).flat();
@@ -118,7 +154,8 @@ export function createRsaExtension(options: {
         purpose: cycle.purpose, freshObservations: fresh.map(o => o.id), reusedObservations: reused.map(o => o.id),
         skillVersion: skills.version, memoryVersion: skills.memory.version }, parent);
       return [{ type: "text" as const, text: JSON.stringify({
-        ...(consolidating ? { purpose: cycle.purpose } : { capabilities: runtime.list() }),
+        ...(consolidating ? { purpose: cycle.purpose } : { capabilities: runtime.list(),
+          workspaceCapabilities: { tools: pythonDiscovery.capabilities.map(({ id, origin, codeSHA }) => ({ id, origin, codeSHA })), diagnostics: pythonDiscovery.diagnostics } }),
         control: runtime.status(), observations, skills,
       }) }, ...images];
     } catch (error) { await runtime.stop(`observation failed: ${error}`); throw error; }

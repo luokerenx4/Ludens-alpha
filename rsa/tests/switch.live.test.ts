@@ -2,9 +2,9 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSwitchProvider } from "../src/providers/ryubing/provider.ts";
-import { Bridge } from "../src/providers/bridge.ts";
-import { Runtime } from "../src/harness/runtime.ts";
+import { createSwitchProvider } from "@playness/baseware/drivers/ryubing/provider.ts";
+import { Bridge } from "@playness/baseware/drivers/bridge.ts";
+import { createTestRuntime } from "./runtime-fixture.ts";
 
 test.skipIf(process.env.RSA_SWITCH_TEST !== "1")("Ryubing captures frames, interrupts long actions, hands back control, rejects stale epochs and clears disconnects", async () => {
   const directory = await mkdtemp(join(tmpdir(), "rsa-switch-"));
@@ -73,7 +73,7 @@ test.skipIf(process.env.RSA_SWITCH_TEST !== "1")("Ryubing captures frames, inter
     const afterReconnect = JSON.parse((await pad.execute(["state"], { epoch: nextEpoch, signal })).stdout);
     expect(Object.values(afterReconnect.state).every(value => value === 0)).toBe(true);
     await pad.release(nextEpoch);
-    const runtime = new Runtime(provider.capabilities, () => {});
+    const runtime = createTestRuntime(provider.capabilities, () => {});
     try {
       const takeover = await runtime.start(); // Device-only Runtime: no model driver or model request.
       const runtimeEpoch = takeover.epoch!;

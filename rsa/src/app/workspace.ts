@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { defaultSocket } from "@playness/baseware/address";
 import workspaceGuide from "../../templates/AGENTS.md" with { type: "text" };
 
 export const WORKSPACE_HELP = `Workspace startup (macOS):
@@ -13,7 +14,7 @@ rsa down [--keep-emulator] [--dashboard]
 These commands use <workspace>/rsa.json. Paths are relative to that workspace.
 up starts services in manual mode; use rsa auto on to let the agent play.
 Repeated up reuses running services; down then up applies configuration changes.
-down stops this workspace's managed host, Pet and emulator (save your game first).
+down stops this workspace's managed host, Pet, Baseware and emulator (save your game first).
 Use down --keep-emulator before changing host settings to preserve the current game.
 The shared Dashboard stays up unless --dashboard is given by its owning workspace.
 Without game, prepare the emulator bridge yourself. mGBA always uses this mode.`;
@@ -49,7 +50,7 @@ export function parseConfig(value: unknown): LaunchConfig {
   return result;
 }
 
-type ServiceName = "emulator" | "host" | "dashboard" | "pet";
+type ServiceName = "emulator" | "baseware" | "host" | "dashboard" | "pet";
 export interface LaunchPlan {
   workspace: string;
   config: LaunchConfig;
@@ -57,19 +58,25 @@ export interface LaunchPlan {
   background: string;
   launcher: string;
   rsa: string;
+  baseware: string;
+  basewareSocket: string;
   commands: Partial<Record<ServiceName, string[]>>;
 }
 
-export function launchPlan(config: LaunchConfig, workspace: string, repo = resolve(import.meta.dir, "../../..")): LaunchPlan {
+export async function launchPlan(config: LaunchConfig, workspace: string, repo = resolve(import.meta.dir, "../../.."), socket?: string): Promise<LaunchPlan> {
   const rsa = join(repo, "rsa/bin/rsa");
+  const baseware = join(repo, "baseware/bin/baseware");
+  const basewareSocket = socket ?? await defaultSocket(workspace);
   const background = join(workspace, "logs/background");
   return {
     workspace, config, dashboardUrl: "http://127.0.0.1:3015", background,
-    launcher: join(repo, "rsa/scripts/launch-background.py"), rsa,
+    launcher: join(repo, "rsa/scripts/launch-background.py"), rsa, baseware, basewareSocket,
     commands: {
       ...(config.game ? { emulator: ["env", `RSA_BRIDGE_PORT=${config.port}`,
-        join(repo, "rsa/src/providers/ryubing/launch.sh"), resolve(workspace, config.game)] } : {}),
-      host: [rsa, "run", "--provider", config.provider, "--port", String(config.port), "--model", config.model,
+        join(repo, "baseware/src/drivers/ryubing/launch.sh"), resolve(workspace, config.game)] } : {}),
+      baseware: [baseware, "serve", "--driver", config.provider, "--port", String(config.port), "--socket", basewareSocket,
+        "--data-dir", join(workspace, "logs/baseware")],
+      host: [rsa, "run", "--baseware-socket", basewareSocket, "--model", config.model,
         "--seconds", String(config.seconds), "--requests", String(config.requests), "--compaction-threshold", String(config.compactionThreshold)],
       ...(config.dashboard ? { dashboard: ["npm", "--prefix", join(repo, "rsa-dashboard"), "run", "dev"] } : {}),
       ...(config.pet ? { pet: [join(repo, "rsa-companion/bin/rsa-companion"), "--workspace", workspace,
@@ -80,6 +87,7 @@ export function launchPlan(config: LaunchConfig, workspace: string, repo = resol
 
 type CommandResult = { code: number; stdout: string; stderr: string };
 type HostStatus = { runId: string; mode: string; connected: boolean; thinking: boolean; consolidating: boolean; maxSeconds: number };
+type BasewareStatus = { serviceId: string; mode: string; connected: boolean; epoch: string | null };
 type Job = { target: string; registered: boolean; pid: number | null; state: string | null; lastExitCode: number | null };
 export interface LaunchIO {
   run(argv: string[], cwd: string): Promise<CommandResult>;
@@ -93,7 +101,9 @@ const systemIO: LaunchIO = {
   async run(argv, cwd) {
     const env = { ...process.env };
     // Workspace selection must not inherit a previous agent shell's address or lease.
-    for (const key of ["RSA_SOCKET", "RSA_WORKSPACE", "RSA_EPOCH", "RSA_TRACE"]) delete env[key];
+    for (const key of Object.keys(env)) {
+      if (key.startsWith("BASEWARE_") || ["RSA_SOCKET", "RSA_WORKSPACE", "RSA_EPOCH", "RSA_TRACE"].includes(key)) delete env[key];
+    }
     const child = Bun.spawn(argv, { cwd, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     const timer = setTimeout(() => child.kill(), 10_000);
     try {
@@ -133,10 +143,14 @@ export class WorkspaceLauncher {
     const result = await this.run([this.plan.rsa, "status"]);
     return result.code === 0 ? JSON.parse(result.stdout) : null;
   }
+  async baseware(): Promise<BasewareStatus | null> {
+    const result = await this.run(["env", `BASEWARE_SOCKET=${this.plan.basewareSocket}`, this.plan.baseware, "status"]);
+    return result.code === 0 ? JSON.parse(result.stdout) : null;
+  }
   async status() {
-    const [host, dashboard, ...jobs] = await Promise.all([this.host(), this.io.dashboardReady(this.plan.dashboardUrl),
-      ...(["emulator", "host", "dashboard", "pet"] as const).map(async name => ({ name, ...await this.job(name), log: join(this.plan.background, `${name}.log`) }))]);
-    return { workspace: this.plan.workspace, host, dashboard: { url: this.plan.dashboardUrl, ready: dashboard }, jobs };
+    const [host, baseware, dashboard, ...jobs] = await Promise.all([this.host(), this.baseware(), this.io.dashboardReady(this.plan.dashboardUrl),
+      ...(["emulator", "baseware", "host", "dashboard", "pet"] as const).map(async name => ({ name, ...await this.job(name), log: join(this.plan.background, `${name}.log`) }))]);
+    return { workspace: this.plan.workspace, host, baseware, dashboard: { url: this.plan.dashboardUrl, ready: dashboard }, jobs };
   }
   private async waitFor<T>(description: string, probe: () => Promise<T | null | false>): Promise<T> {
     const deadline = this.io.now() + 120_000;
@@ -170,9 +184,9 @@ export class WorkspaceLauncher {
     return result.stdout.trim().split(/\s+/).filter(Boolean).map(Number).filter(pid => !listeners.includes(pid));
   }
   async up() {
-    let host = await this.host();
-    if (!host) {
-      const existing = await this.job("host");
+    let baseware = await this.baseware();
+    if (!baseware) {
+      const existing = await this.job("baseware");
       if (!existing.pid) {
         if (this.plan.commands.emulator) {
           const emulator = await this.job("emulator");
@@ -187,14 +201,26 @@ export class WorkspaceLauncher {
           });
         } else if (!(await this.listeningPids(this.plan.config.port)).length) {
           throw new Error(`No prepared bridge on port ${this.plan.config.port}. ${this.plan.config.provider === "mgba"
-            ? "Open the ROM in mGBA and load rsa/src/providers/mgba/bridge.lua in Tools → Scripting."
+            ? "Open the ROM in mGBA and load baseware/src/drivers/mgba/bridge.lua in Tools → Scripting."
             : "Start the patched Ryubing with the desired game, or set game in rsa.json."}`);
         }
-        // Bridges accept one host. A second TCP client could otherwise wait indefinitely for HELLO.
+        // Only probe bridge ownership when there is no reusable Baseware service.
         const clients = await this.bridgeClients(this.plan.config.port);
-        if (clients.length) throw new Error(`Bridge port ${this.plan.config.port} is already used by PID ${clients.join(", ")}. Stop its host before switching workspaces.`);
-        await this.ensure("host");
+        if (clients.length) throw new Error(`Bridge port ${this.plan.config.port} is already used by PID ${clients.join(", ")}. Use its Baseware service or stop it before switching workspaces.`);
+        await this.ensure("baseware");
       }
+      baseware = await this.waitFor("Baseware service", async () => {
+        const value = await this.baseware();
+        if (value) return value;
+        await this.alive("baseware");
+        return false;
+      });
+    } else this.io.note(`Reusing Baseware ${baseware.serviceId}; running settings are unchanged.`);
+    if (!baseware.connected) throw new Error("Baseware is alive but its device is disconnected. Inspect rsa services before stopping and starting it again.");
+
+    let host = await this.host();
+    if (!host) {
+      await this.ensure("host");
       host = await this.waitFor("RSA host", async () => {
         const value = await this.host();
         if (value) return value;
@@ -234,16 +260,20 @@ export class WorkspaceLauncher {
         return !status || (!status.thinking && !status.consolidating);
       });
     }
-    for (const name of ["host", "pet", ...(!keepEmulator ? ["emulator"] : []), ...(includeDashboard ? ["dashboard"] : [])] as ServiceName[]) {
+    for (const name of ["host", "pet", "baseware", ...(!keepEmulator ? ["emulator"] : []), ...(includeDashboard ? ["dashboard"] : [])] as ServiceName[]) {
       const job = await this.job(name);
       if (!job.registered) continue;
-      // A manually launched host may still own the emulator. Never stop its device here.
-      if (name === "emulator" && await this.host()) throw new Error("An unmanaged host still owns this workspace. Stop it before shutting down the emulator.");
+      // A manually launched host or another lease holder may still own the device.
+      if ((name === "baseware" || name === "emulator") && await this.host()) throw new Error(`An unmanaged host still owns this workspace. Stop it before shutting down ${name}.`);
+      if (name === "baseware") {
+        const service = await this.baseware();
+        if (service && service.mode !== "manual") throw new Error("Baseware still has an active owner. Release its control lease before shutting it down.");
+      }
       if (name === "emulator" && job.pid) {
         // An external-device workspace may have attached to this emulator since our host stopped.
         const listeners = await this.run(["lsof", "-a", "-p", String(job.pid), "-nP", "-iTCP", "-sTCP:LISTEN", "-F", "n"]);
         for (const match of listeners.stdout.matchAll(/^n.*:(\d+)$/gm)) {
-          if ((await this.bridgeClients(Number(match[1]))).length) throw new Error("Emulator still has a bridge client from another host; stop that host before closing it.");
+          if ((await this.bridgeClients(Number(match[1]))).length) throw new Error("Emulator still has a bridge client from another Baseware service; stop that service before closing it.");
         }
       }
       await this.checked(["launchctl", "bootout", job.target]);
@@ -273,7 +303,7 @@ export async function workspaceCommand(command: string, args: string[], selected
   const workspace = await realpath(selectedWorkspace);
   // Status and shutdown remain available even if the launch config was removed or edited badly.
   const config = command === "up" ? parseConfig(await Bun.file(join(workspace, "rsa.json")).json()) : parseConfig({ provider: "mgba" });
-  const plan = launchPlan(config, workspace);
+  const plan = await launchPlan(config, workspace);
   if (values["dry-run"]) { console.log(JSON.stringify(plan, null, 2)); return; }
   if (process.platform !== "darwin") throw new Error("Workspace service commands currently use macOS launchd");
   if (command === "up") {

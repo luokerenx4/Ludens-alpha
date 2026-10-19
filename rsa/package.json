@@ -18,7 +18,8 @@
     "@oh-my-pi/pi-catalog": "18.9.1",
     "@oh-my-pi/pi-coding-agent": "18.9.1",
     "@oh-my-pi/pi-utils": "18.9.1",
-    "@oh-my-pi/snapcompact": "18.9.1"
+    "@oh-my-pi/snapcompact": "18.9.1",
+    "@playness/baseware": "file:../baseware"
   },
   "patchedDependencies": {
     "@oh-my-pi/pi-ai@18.9.1": "patches/@oh-my-pi%2Fpi-ai@18.9.1.patch",

@@ -9,7 +9,7 @@ import { buildTransformedCodexRequestBody } from "@oh-my-pi/pi-ai/providers/open
 import { buildResponsesDeltaInput } from "@oh-my-pi/pi-ai/providers/openai-shared";
 import { createRsaExtension } from "../src/harness/omp/extension.ts";
 import { createOmpSession } from "../src/harness/omp/session.ts";
-import { Runtime } from "../src/harness/runtime.ts";
+import { createTestRuntime } from "./runtime-fixture.ts";
 import { Workspace } from "../src/harness/workspace.ts";
 
 test.each([1, 26])("OMP persists batches of %i images and reuses the Codex prefix across tools and prompts", async (batchSize) => {
@@ -21,7 +21,7 @@ test.each([1, 26])("OMP persists batches of %i images and reuses the Codex prefi
   let captures = 0;
   const states: string[] = [];
   const events: { type: string; data: any }[] = [];
-  const runtime = new Runtime({ controllers: [], sensors: [{
+  const runtime = createTestRuntime({ controllers: [], sensors: [{
     id: "camera", mediaTypes: ["image/png"], help: () => "capture",
     async read() {
       const position = Bun.file(join(workspace, "position"));

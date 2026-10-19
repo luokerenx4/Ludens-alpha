@@ -12,6 +12,10 @@ class FakeServices implements LaunchIO {
   starts: string[] = [];
   failStart: string | null = null;
   externalEmulator = false;
+  externalBaseware = false;
+  externalHost = false;
+  basewareConnected = true;
+  basewareMode = "manual";
   preparedBridgePid: number | null = null;
   bridgeClientPids: number[] = [];
   bridgePort: number;
@@ -34,8 +38,15 @@ class FakeServices implements LaunchIO {
     expect(cwd).toBe(this.plan.workspace);
     this.calls.push([...argv]);
     const result = (stdout = "", code = 0, stderr = "") => ({ code, stdout, stderr });
+    if (argv[0] === "env" && argv[2] === this.plan.baseware && argv[3] === "status") {
+      expect(argv[1]).toBe(`BASEWARE_SOCKET=${this.plan.basewareSocket}`);
+      if (!this.jobs.has(this.target("baseware")) && !this.externalBaseware) return result("", 1);
+      this.events.push(`baseware:${this.basewareMode}:${this.basewareConnected}`);
+      return result(JSON.stringify({ serviceId: "device-session", mode: this.basewareMode,
+        connected: this.basewareConnected, epoch: this.basewareMode === "auto" ? "another-owner" : null }));
+    }
     if (argv[0] === this.plan.rsa && argv[1] === "status") {
-      if (!this.jobs.has(this.target("host"))) return result("", 1);
+      if (!this.jobs.has(this.target("host")) && !this.externalHost) return result("", 1);
       const thinking = this.cleanupReads-- > 0;
       this.events.push(`host:${this.mode}:${thinking}`);
       return result(JSON.stringify({ runId: "original-session", mode: this.mode, connected: true,
@@ -44,6 +55,7 @@ class FakeServices implements LaunchIO {
     if (argv[0] === this.plan.rsa && argv.slice(1).join(" ") === "auto off") {
       this.events.push("auto off");
       this.mode = "manual";
+      this.basewareMode = "manual";
       this.cleanupReads = 2;
       return result();
     }
@@ -61,6 +73,7 @@ class FakeServices implements LaunchIO {
       this.starts.push(name);
       expect(argv.slice(3)).toEqual(this.plan.commands[name as keyof typeof this.plan.commands]!);
       if (name === this.failStart) return result("", 1, `${name} unavailable`);
+      if (name === "host") expect(this.events).toContain("baseware:manual:true");
       this.seed(name);
       if (name === "dashboard") this.dashboard = true;
       return result();
@@ -71,7 +84,8 @@ class FakeServices implements LaunchIO {
       if (argv.includes("-p")) return pid ? result(`p${pid}\nn127.0.0.1:${this.bridgePort}\n`) : result("", 1);
       if (!argv.includes(`-iTCP:${this.bridgePort}`) || !pid) return result("", 1);
       // lsof ESTABLISHED also reports the server PID; it is not a competing host.
-      return result(argv.includes("-sTCP:ESTABLISHED") ? [pid, ...this.bridgeClientPids].join("\n") : String(pid));
+      const baseware = this.jobs.get(this.target("baseware"));
+      return result(argv.includes("-sTCP:ESTABLISHED") ? [pid, ...(baseware ? [baseware] : []), ...this.bridgeClientPids].join("\n") : String(pid));
     }
     if (argv[0] === "kill" && argv[1] === "-0") return result("", [...this.jobs.values()].includes(Number(argv[2])) ? 0 : 1);
     throw new Error(`Unexpected command: ${JSON.stringify(argv)}`);
@@ -79,18 +93,24 @@ class FakeServices implements LaunchIO {
 }
 
 const plan = () => launchPlan(parseConfig({ provider: "ryubing", game: "games/A game; $(touch BAD).nsp" }),
-  "/tmp/Workspace with spaces", "/tmp/Source with spaces");
+  "/tmp/Workspace with spaces", "/tmp/Source with spaces", "/tmp/baseware-test.sock");
 
-test("launch config keeps limits explicit and paths as literal argv entries", () => {
-  const value = plan();
+test("launch config keeps limits explicit and paths as literal argv entries", async () => {
+  const value = await plan();
   expect(value.config).toMatchObject({ port: 47663, seconds: 1800, requests: 1000, compactionThreshold: 256000 });
   expect(parseConfig({ provider: "mgba" }).port).toBe(47653);
   expect(() => parseConfig({ provider: "ryubing", second: 10 })).toThrow("Unknown");
   expect(() => parseConfig({ provider: "mgba", game: "game.gba" })).toThrow("mGBA");
   expect(value.commands.emulator).toEqual(["env", "RSA_BRIDGE_PORT=47663",
-    "/tmp/Source with spaces/rsa/src/providers/ryubing/launch.sh",
+    "/tmp/Source with spaces/baseware/src/drivers/ryubing/launch.sh",
     "/tmp/Workspace with spaces/games/A game; $(touch BAD).nsp"]);
+  expect(value.commands.baseware).toEqual(["/tmp/Source with spaces/baseware/bin/baseware", "serve",
+    "--driver", "ryubing", "--port", "47663", "--socket", "/tmp/baseware-test.sock",
+    "--data-dir", "/tmp/Workspace with spaces/logs/baseware"]);
   expect(value.commands.host).toContain("/tmp/Source with spaces/rsa/bin/rsa");
+  expect(value.commands.host).toContain("--baseware-socket");
+  expect(value.commands.host).not.toContain("--provider");
+  expect(value.commands.host).not.toContain("--port");
   expect(value.commands.pet).toContain("/tmp/Workspace with spaces");
 });
 
@@ -130,7 +150,7 @@ test("init and dry-run preserve existing workspace files and never invoke servic
 });
 
 test("failed startup preserves ready services and repeated up resumes without duplicate hosts or takeover", async () => {
-  const value = plan();
+  const value = await plan();
   const io = new FakeServices(value);
   const launcher = new WorkspaceLauncher(value, io);
   io.failStart = "dashboard";
@@ -141,39 +161,41 @@ test("failed startup preserves ready services and repeated up resumes without du
   const recovered = await launcher.up();
   expect(recovered.host?.mode).toBe("manual");
   await launcher.up();
-  expect(io.starts).toEqual(["emulator", "host", "dashboard", "dashboard", "pet"]);
+  expect(io.starts).toEqual(["emulator", "baseware", "host", "dashboard", "dashboard", "pet"]);
+  expect(recovered.baseware).toMatchObject({ connected: true, serviceId: "device-session" });
   expect(io.calls.some(argv => argv[1] === "auto")).toBe(false);
   expect(io.calls.some(argv => argv[1] === "bootout")).toBe(false);
 });
 
 test("down waits for takeover cleanup, stops only owned jobs, and keeps the shared Dashboard", async () => {
-  const value = plan();
+  const value = await plan();
   const io = new FakeServices(value);
-  for (const name of ["host", "emulator", "pet", "dashboard"]) io.seed(name);
+  for (const name of ["host", "baseware", "emulator", "pet", "dashboard"]) io.seed(name);
   const foreign = "gui/501/dev.playness.rsa.another-workspace.host";
   io.jobs.set(foreign, 999);
   io.dashboard = true;
   io.mode = "auto";
+  io.basewareMode = "auto";
   await new WorkspaceLauncher(value, io).down(false);
   const stopHost = io.events.indexOf(`stop:${io.target("host")}`);
   expect(io.events.indexOf("auto off")).toBeLessThan(stopHost);
   expect(io.events.indexOf("host:manual:false")).toBeGreaterThan(io.events.indexOf("auto off"));
   expect(io.events.indexOf("host:manual:false")).toBeLessThan(stopHost);
   expect(io.calls.filter(argv => argv[1] === "bootout").map(argv => argv[2])).toEqual(
-    ["host", "pet", "emulator"].map(name => io.target(name)));
+    ["host", "pet", "baseware", "emulator"].map(name => io.target(name)));
   expect([...io.jobs.keys()]).toEqual([io.target("dashboard"), foreign]);
 
   const keep = new FakeServices(value);
-  for (const name of ["host", "emulator", "pet", "dashboard"]) keep.seed(name);
+  for (const name of ["host", "baseware", "emulator", "pet", "dashboard"]) keep.seed(name);
   keep.dashboard = true;
   await new WorkspaceLauncher(value, keep).down(false, true);
   expect(keep.calls.filter(argv => argv[1] === "bootout").map(argv => argv[2])).toEqual(
-    ["host", "pet"].map(name => keep.target(name)));
+    ["host", "pet", "baseware"].map(name => keep.target(name)));
   expect([...keep.jobs.keys()]).toEqual([keep.target("emulator"), keep.target("dashboard")]);
 });
 
 test("an external Ryubing process blocks startup before spawning or stopping anything", async () => {
-  const value = plan();
+  const value = await plan();
   const io = new FakeServices(value);
   io.externalEmulator = true;
   await expect(new WorkspaceLauncher(value, io).up()).rejects.toThrow("already running outside this workspace");
@@ -182,20 +204,60 @@ test("an external Ryubing process blocks startup before spawning or stopping any
 });
 
 test("a bridge used by another workspace neither receives a second host nor gets stopped", async () => {
-  const prepared = launchPlan(parseConfig({ provider: "ryubing" }), "/tmp/Second workspace");
+  const prepared = await launchPlan(parseConfig({ provider: "ryubing" }), "/tmp/Second workspace", undefined, "/tmp/second-baseware.sock");
   const attach = new FakeServices(prepared);
   attach.preparedBridgePid = 700;
   attach.bridgeClientPids = [701];
   await expect(new WorkspaceLauncher(prepared, attach).up()).rejects.toThrow("already used by PID 701");
   expect(attach.starts).toEqual([]);
 
-  const value = plan();
+  const value = await plan();
   const owner = new FakeServices(value);
   owner.seed("emulator");
   // down must discover the actual port even if rsa.json has since changed.
   owner.bridgePort = 47999;
   owner.bridgeClientPids = [701];
-  await expect(new WorkspaceLauncher(value, owner).down(false)).rejects.toThrow("bridge client from another host");
+  await expect(new WorkspaceLauncher(value, owner).down(false)).rejects.toThrow("bridge client from another Baseware service");
   expect(owner.jobs.has(owner.target("emulator"))).toBe(true);
   expect(owner.calls.some(argv => argv[1] === "bootout")).toBe(false);
+});
+
+test("a connected Baseware service is reused without probing its occupied emulator bridge", async () => {
+  const value = await plan();
+  const io = new FakeServices(value);
+  io.externalBaseware = true;
+  io.externalEmulator = true;
+  io.bridgeClientPids = [701];
+  const status = await new WorkspaceLauncher(value, io).up();
+  expect(status.baseware?.connected).toBe(true);
+  expect(io.starts).toEqual(["host", "dashboard", "pet"]);
+  expect(io.calls.some(argv => argv[0] === "pgrep" || (argv[0] === "lsof" && argv.includes(`-iTCP:${value.config.port}`)))).toBe(false);
+});
+
+test("a failed or disconnected Baseware service never starts the RSA host", async () => {
+  const value = await plan();
+  const failed = new FakeServices(value);
+  failed.failStart = "baseware";
+  await expect(new WorkspaceLauncher(value, failed).up()).rejects.toThrow("baseware unavailable");
+  expect(failed.starts).toEqual(["emulator", "baseware"]);
+  expect(failed.jobs.has(failed.target("emulator"))).toBe(true);
+
+  const disconnected = new FakeServices(value);
+  disconnected.seed("baseware");
+  disconnected.basewareConnected = false;
+  await expect(new WorkspaceLauncher(value, disconnected).up()).rejects.toThrow("Baseware is alive but its device is disconnected");
+  expect(disconnected.starts).toEqual([]);
+});
+
+test("down preserves Baseware and its emulator while an unmanaged host or lease still owns them", async () => {
+  const value = await plan();
+  for (const owner of ["host", "lease"] as const) {
+    const io = new FakeServices(value);
+    io.seed("baseware");
+    io.seed("emulator");
+    io.externalHost = owner === "host";
+    io.basewareMode = owner === "lease" ? "auto" : "manual";
+    await expect(new WorkspaceLauncher(value, io).down(false)).rejects.toThrow(owner === "host" ? "unmanaged host" : "active owner");
+    expect(io.calls.some(argv => argv[1] === "bootout")).toBe(false);
+  }
 });

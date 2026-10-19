@@ -1,7 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
-import type { Clock } from "../contracts.ts";
+import type { Clock } from "@playness/baseware/contracts";
 
 export interface EventTrace {
   epoch?: string;

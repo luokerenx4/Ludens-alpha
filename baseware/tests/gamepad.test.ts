@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { encodeSpans } from "../src/providers/mgba/provider.ts";
+import { encodeSpans } from "../src/drivers/mgba/provider.ts";
 
 test("state sequences replace omitted keys and round cumulative durations without per-span drift", () => {
   expect(encodeSpans([

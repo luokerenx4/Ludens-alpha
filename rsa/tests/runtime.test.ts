@@ -1,6 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
-import type { Capabilities, Controller } from "../src/contracts.ts";
-import { Runtime } from "../src/harness/runtime.ts";
+import type { Capabilities, Controller } from "@playness/baseware/contracts";
+import { createTestRuntime } from "./runtime-fixture.ts";
 import { dispatch, listen, send } from "../src/harness/transport.ts";
 
 function fixture() {
@@ -26,7 +26,7 @@ function fixture() {
       },
     }],
   };
-  return { controller, runtime: new Runtime(capabilities, () => {}), angle: () => angle, owner: () => owner };
+  return { controller, runtime: createTestRuntime(capabilities, () => {}), angle: () => angle, owner: () => owner };
 }
 
 test("takeover time remaining ignores host age and resets on each epoch", async () => {
@@ -51,7 +51,7 @@ test("takeover time remaining ignores host age and resets on each epoch", async 
 test("a human takeover message reaches only its own cycle and malformed arguments cannot acquire control", async () => {
   const { runtime, owner } = fixture();
   const messages: (string | undefined)[] = [];
-  runtime.driver = {
+  runtime.agent = {
     run: async ({ message, signal }) => {
       messages.push(message);
       await new Promise<void>(done => signal.addEventListener("abort", () => done(), { once: true }));
@@ -129,7 +129,7 @@ test("parallel hosts route to independent devices and reject each other's epochs
 test("off completes device handback without waiting for the model, and prevents overlapping cycles", async () => {
   const { runtime, owner } = fixture();
   const model = Promise.withResolvers<void>();
-  runtime.driver = { run: async () => model.promise, consolidate: async () => {}, abort: async () => {}, close: async () => {} };
+  runtime.agent = { run: async () => model.promise, consolidate: async () => {}, abort: async () => {}, close: async () => {} };
   await runtime.start();
   await runtime.stop();
   expect(owner()).toBeUndefined();
@@ -146,7 +146,7 @@ test("consolidation keeps devices manual, rejects overlap, and drains cancellati
   runtime.capabilities.sensors[0].read = async () => { deviceCalls++; return []; };
   const prompt = Promise.withResolvers<void>(), cleanup = Promise.withResolvers<void>();
   let signal: AbortSignal | undefined;
-  runtime.driver = {
+  runtime.agent = {
     run: async () => {},
     consolidate: async (context) => { signal = context.signal; await prompt.promise; },
     abort: async () => { prompt.resolve(); await cleanup.promise; }, close: async () => {},
@@ -176,12 +176,12 @@ test("consolidation reports completion, failure, and time budget cancellation se
   for (const expected of ["completed", "failed", "aborted"]) {
     const events: { type: string; data: any }[] = [];
     const done = Promise.withResolvers<void>();
-    const runtime = new Runtime({ sensors: [], controllers: [] }, (type, data) => {
+    const runtime = createTestRuntime({ sensors: [], controllers: [] }, (type, data) => {
       events.push({ type, data });
       if (type === "consolidation_end") done.resolve();
     });
     const prompt = Promise.withResolvers<void>();
-    runtime.driver = {
+    runtime.agent = {
       run: async () => {},
       consolidate: async () => {
         if (expected === "failed") throw new Error("model error");

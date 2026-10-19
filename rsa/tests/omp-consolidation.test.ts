@@ -7,7 +7,7 @@ import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream"
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { createRsaExtension, type Cycle } from "../src/harness/omp/extension.ts";
 import { consolidateOmpSession, createOmpSession } from "../src/harness/omp/session.ts";
-import { Runtime } from "../src/harness/runtime.ts";
+import { createTestRuntime } from "./runtime-fixture.ts";
 import { Workspace } from "../src/harness/workspace.ts";
 
 test("consolidation uses the same session with file tools, records memory reads, and skips sensors", async () => {
@@ -20,7 +20,7 @@ test("consolidation uses the same session with file tools, records memory reads,
   await Bun.write(image, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg==", "base64"));
   let captures = 0;
   const events: { type: string; data: any; epoch?: string }[] = [];
-  const runtime = new Runtime({ controllers: [], sensors: [{
+  const runtime = createTestRuntime({ controllers: [], sensors: [{
     id: "camera", mediaTypes: ["image/png"], help: () => "capture",
     async read() {
       return [{ id: `sample-${++captures}`, sensorId: "camera", mediaType: "image/png", path: image,

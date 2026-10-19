@@ -5,25 +5,25 @@ import { parseArgs } from "node:util";
 import { cli, HELP } from "../harness/cli.ts";
 import { Runtime } from "../harness/runtime.ts";
 import { listen } from "../harness/transport.ts";
-import { createGbaProvider } from "../providers/mgba/provider.ts";
-import { createSwitchProvider } from "../providers/ryubing/provider.ts";
+import { connectBaseware } from "../harness/baseware.ts";
+import { defaultSocket } from "@playness/baseware/address";
 import { EventLog } from "../harness/events.ts";
-import type { ObservationRequest } from "../contracts.ts";
+import type { ObservationRequest } from "@playness/baseware/contracts";
 import { readCurrentSession, resolveWorkspaceState } from "../harness/workspace-state.ts";
 import { validateSessionWorkspace } from "../harness/omp/workspace-session.ts";
 import workspaceGuide from "../../templates/AGENTS.md" with { type: "text" };
 import { WORKSPACE_HELP, workspaceCommand } from "./workspace.ts";
 
-// Runtime state lives beside the monorepo, outside its three component directories.
+// Runtime state lives beside the monorepo, outside its component directories.
 const artifactRoot = resolve(import.meta.dir, "../../../../artifacts/rsa");
 let exit: (code: number) => void | Promise<void> = code => process.exit(code);
-const RUN_HELP = `rsa [--workspace <path>] run [--provider mgba|ryubing] [--port <n>] [--workspace <path>] [--device-only] [--model <provider/model>] [--resume <session.jsonl> | --new-session] [--seconds <n>] [--requests <n>] [--compaction-threshold <tokens>] [--auto-observe <JSON>]
+const RUN_HELP = `rsa [--workspace <path>] run [--baseware-socket <path>] [--workspace <path>] [--device-only] [--model <provider/model>] [--resume <session.jsonl> | --new-session] [--seconds <n>] [--requests <n>] [--compaction-threshold <tokens>] [--auto-observe <JSON>]
 Each workspace keeps its own session; --new-session starts fresh without deleting workspace files.
 The current directory is the default workspace. Run logs go to <workspace>/logs/<run-id>/.
 --resume selects an existing session from the same workspace, then remembers it for future starts.
 --compaction-threshold configures OMP's native compaction trigger; default is 256000 tokens.
 --auto-observe supplies an array of {sensorId, argv} requests; default is screen capture.
-Default provider: mgba. Default bridge ports: mgba=47653, ryubing=47663.`;
+Hardware is provided by an independent Baseware service. Its default socket is derived from the workspace.`;
 
 async function main() {
   const args = process.argv.slice(2);
@@ -44,8 +44,7 @@ async function main() {
   }
   const { values } = parseArgs({ args: args.slice(1), options: {
     workspace: { type: "string", default: selectedWorkspace },
-    provider: { type: "string", default: "mgba" },
-    port: { type: "string" },
+    "baseware-socket": { type: "string" },
     "device-only": { type: "boolean", default: false },
     model: { type: "string" },
     resume: { type: "string" },
@@ -66,16 +65,14 @@ async function main() {
   if (!Array.isArray(autoObserve) || autoObserve.some(request => !request || typeof request.sensorId !== "string"
     || !Array.isArray(request.argv) || request.argv.some(arg => typeof arg !== "string"))) throw new Error("--auto-observe expects [{sensorId, argv: string[]}]");
   if (values.resume && values["new-session"]) throw new Error("Use either --resume or --new-session");
-  if (values["device-only"] && (values.resume || values["new-session"])) throw new Error("Session options require a model driver");
-  if (values.provider !== "mgba" && values.provider !== "ryubing") throw new Error("--provider must be mgba or ryubing");
+  if (values["device-only"] && (values.resume || values["new-session"])) throw new Error("Session options require an agent");
   const state = await resolveWorkspaceState(values.workspace!, artifactRoot);
   const workspace = state.workspace;
   const socket = process.env.RSA_SOCKET ?? state.socket;
   const runId = new Date().toISOString().replaceAll(":", "-");
   const runDir = join(workspace, "logs", runId);
-  const port = Number(values.port ?? (values.provider === "mgba" ? 47653 : 47663));
-  const factory = values.provider === "mgba" ? createGbaProvider : createSwitchProvider;
-  let provider: Awaited<ReturnType<typeof factory>> | undefined;
+  const basewareSocket = values["baseware-socket"] ?? process.env.BASEWARE_SOCKET ?? await defaultSocket(workspace);
+  let devices: Awaited<ReturnType<typeof connectBaseware>> | undefined;
   let runtime: Runtime | undefined;
   let log: EventLog | undefined;
   let ready = false;
@@ -85,7 +82,7 @@ async function main() {
     ready = false;
     try { await runtime?.close(); }
     finally {
-      provider?.close();
+      devices?.close();
       for (const closeServer of closeServers.reverse()) await closeServer();
       if (runtime) log?.record("run_end", runtime.status());
     }
@@ -115,9 +112,10 @@ async function main() {
     const clock = { id: runId, now: () => performance.now() };
     log = new EventLog(runDir, clock);
     log.record("run_start", { workspace, workspaceId: state.id });
-    provider = await factory({ port, artifactsDir: join(runDir, "observations"), clock });
-    runtime = new Runtime(provider.capabilities, log.record, seconds, runId);
-    provider.onDisconnect((error) => { void runtime!.disconnected(error); });
+    devices = await connectBaseware({ socket: basewareSocket, seconds, runDir, record: log.record });
+    runtime = new Runtime(devices.capabilities, log.record, devices.operations, seconds, runId);
+    devices.onHandback(reason => { void runtime!.stop(reason); });
+    devices.onDisconnect((error) => { void runtime!.disconnected(error); });
     const model = values.model ?? "openai-codex/gpt-6.1-sol";
     if (!values["device-only"]) {
       // Device-only mode can run without importing OMP or opening credential storage.
@@ -126,12 +124,12 @@ async function main() {
       // await this host's cleanup too. The signal and finally share one promise.
       unregisterCleanup = postmortem.register("rsa-run", close, { exitOnly: true });
       exit = postmortem.quit;
-      const { createOmpDriver } = await import("../harness/omp/session.ts");
-      runtime.driver = await createOmpDriver({ runtime, workspace, state, runDir, socket, log, resume,
-        binDir: resolve(import.meta.dir, "../../bin"), model, maxRequests, compactionThreshold, autoObserve,
+      const { createOmpAgent } = await import("../harness/omp/session.ts");
+      runtime.agent = await createOmpAgent({ runtime, workspace, state, runDir, socket, log, resume,
+        binDir: resolve(import.meta.dir, "../../bin"), basewareSocket, model, maxRequests, compactionThreshold, autoObserve,
       });
     }
-    await writeFile(join(runDir, "manifest.json"), JSON.stringify({ runId, workspace, workspaceId: state.id, stateDir: state.dir, socket, provider: values.provider === "mgba" ? "mgba-0.10.5" : "ryubing-1.3.351-rsa.2", port, omp: "18.9.1", eventSchemaVersion: 1, model: values["device-only"] ? null : model, seconds, maxRequests, resume, autoObserve, compactionThreshold: compactionThreshold ?? null }, null, 2));
+    await writeFile(join(runDir, "manifest.json"), JSON.stringify({ runId, workspace, workspaceId: state.id, stateDir: state.dir, socket, drivers: devices.catalog.drivers, provider: devices.catalog.drivers.map(driver => `${driver.id}-${driver.version}`).join(", "), basewareSocket, omp: "18.9.1", eventSchemaVersion: 1, model: values["device-only"] ? null : model, seconds, maxRequests, resume, autoObserve, compactionThreshold: compactionThreshold ?? null }, null, 2));
     ready = true;
     console.log(JSON.stringify({ ready: true, socket, workspace, stateDir: state.dir, runDir, ...runtime.status() }, null, 2));
     await new Promise<void>((done) => { process.once("SIGINT", done); process.once("SIGTERM", done); });

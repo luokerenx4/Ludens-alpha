@@ -4,8 +4,8 @@ import { createAgentSession, discoverAuthStorage, ModelRegistry, SessionManager,
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { PROVIDER_IMAGE_BUDGETS } from "@oh-my-pi/snapcompact";
-import type { ObservationRequest } from "../../contracts.ts";
-import type { Driver, Runtime } from "../runtime.ts";
+import type { ObservationRequest } from "@playness/baseware/contracts";
+import type { AgentRunner, Runtime } from "../runtime.ts";
 import { Workspace } from "../workspace.ts";
 import type { WorkspaceState } from "../workspace-state.ts";
 import { openWorkspaceSession, selectWorkspaceSession } from "./workspace-session.ts";
@@ -53,21 +53,27 @@ export async function createOmpSession(options: Parameters<typeof createAgentSes
   return result;
 }
 
-export async function createOmpDriver(options: {
-  runtime: Runtime; workspace: string; runDir: string; socket: string;
+export async function createOmpAgent(options: {
+  runtime: Runtime; workspace: string; runDir: string; socket: string; basewareSocket: string;
   state: WorkspaceState;
   binDir: string; model: string; autoObserve: ObservationRequest[]; maxRequests: number;
   resume?: string;
   compactionThreshold?: number;
   log: EventLog;
-}): Promise<Driver> {
+}): Promise<AgentRunner> {
   let cycle: Cycle | undefined;
   // Native background summaries can finish between control cycles.
   const trace = new ModelTrace(options.log, () => ({ epoch: cycle?.epoch, ...extension.context() }));
-  const extension = createRsaExtension({ ...options, trace: trace.current, workspace: new Workspace(options.workspace, options.state.versionsDir), cycle: () => {
-    if (!cycle) throw new Error("No active control cycle");
-    return cycle;
-  } });
+  const extension = createRsaExtension({ ...options, trace: trace.current, workspace: new Workspace(options.workspace, options.state.versionsDir),
+    refreshPythonTools: async tools => {
+      if (!initializedSession) throw new Error("OMP session is not initialized");
+      await initializedSession.refreshRpcHostTools(tools);
+    },
+    cycle: () => {
+      if (!cycle) throw new Error("No active control cycle");
+      return cycle;
+    },
+  });
   const settings = Settings.isolated({
     "memory.backend": "off", "autolearn.enabled": false, "retry.enabled": false,
     "retry.modelFallback": false, "title.refreshOnReplan": false,

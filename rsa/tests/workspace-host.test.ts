@@ -18,6 +18,7 @@ async function fixture() {
   const sockets = new Set<Socket>();
   const states: WorkspaceState[] = [];
   const children: Host[] = [];
+  const basewareSockets = new Map<string, string>();
   const bridge = createServer(socket => {
     sockets.add(socket);
     socket.on("close", () => sockets.delete(socket));
@@ -40,7 +41,7 @@ async function fixture() {
 import { appendFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 mock.module(${JSON.stringify(join(rsaDirectory, "src/harness/omp/session.ts"))}, () => ({
-  createOmpDriver: async ({ workspace, resume, runDir }) => {
+  createOmpAgent: async ({ workspace, resume, runDir }) => {
     await writeFile(join(runDir, "test-driver.json"), JSON.stringify({ workspace, resume, cwd: process.cwd() }));
     await appendFile(process.env.RSA_TEST_DRIVER_CALLS, JSON.stringify({ workspace, resume }) + "\\n");
     if (process.env.RSA_TEST_GATE) {
@@ -61,7 +62,7 @@ mock.module(${JSON.stringify(join(rsaDirectory, "src/harness/omp/session.ts"))},
   }
   function launch(workspace: string, options: string[] = [], extra: Record<string, string> = {}, fromCwd = false): Host {
     const child = Bun.spawn([process.execPath, "--preload", preload, entry, "run", ...(fromCwd ? [] : ["--workspace", workspace]),
-      "--port", String((bridge.address() as AddressInfo).port), ...options], {
+      "--baseware-socket", basewareSockets.get(workspace)!, ...options], {
       cwd: fromCwd ? workspace : rsaDirectory, env: environment(extra), stdin: "ignore", stdout: "pipe", stderr: "pipe",
     });
     const launched = { child, stderr: new Response(child.stderr).text() };
@@ -72,6 +73,16 @@ mock.module(${JSON.stringify(join(rsaDirectory, "src/harness/omp/session.ts"))},
     async state(name: string) {
       const state = await resolveWorkspaceState(join(directory, "workspaces", name), artifactRoot);
       states.push(state);
+      const socket = join(directory, `baseware-${name}.sock`);
+      basewareSockets.set(state.workspace, socket);
+      const child = Bun.spawn([process.execPath, join(rsaDirectory, "../baseware/src/main.ts"), "serve",
+        "--driver", "mgba", "--port", String((bridge.address() as AddressInfo).port),
+        "--socket", socket, "--data-dir", join(state.workspace, "logs/baseware")], {
+        cwd: state.workspace, env: environment(), stdin: "ignore", stdout: "pipe", stderr: "pipe",
+      });
+      const service = { child, stderr: new Response(child.stderr).text() };
+      children.push(service);
+      await ready(service);
       return state;
     },
     async status(workspace: string, fromCwd = false) {

@@ -12,7 +12,7 @@ rsa controller <id> --help | <arguments...>
 Control commands require RSA_EPOCH from auto on. Agent shells receive it automatically.
 The current directory is the workspace; --workspace <path> or RSA_WORKSPACE overrides it.
 RSA_SOCKET overrides its default host address. Each workspace resumes its own session.
-Capability-specific help comes from its provider.`;
+Device calls are forwarded to Baseware. Use baseware for direct CLI/API/MCP access.`;
 
 export async function cli(argv: string[], socket: string) {
   const [kind, ...rest] = argv;

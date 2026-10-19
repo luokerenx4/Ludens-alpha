@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSwitchProvider, encodeSpans } from "../src/providers/ryubing/provider.ts";
+import { createSwitchProvider, encodeSpans } from "../src/drivers/ryubing/provider.ts";
 
 test("Switch controls encode complete digital and analog states without game semantics", () => {
   expect(encodeSpans([

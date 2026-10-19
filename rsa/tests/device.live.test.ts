@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { send } from "../src/harness/transport.ts";
-import type { ExecutionResult, Observation } from "../src/contracts.ts";
+import type { ExecutionResult, Observation } from "@playness/baseware/contracts";
 import { rm } from "node:fs/promises";
 
 const socket = process.env.RSA_SOCKET ?? `/tmp/playness-rsa-${process.getuid!()}.sock`;

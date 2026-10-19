@@ -1,19 +1,21 @@
 # RSA 实验
 
-给模型原始传感器、控制器 CLI 和一个空工作区，让它自行探索并积累技能。提供者支持 mGBA 0.10.5 与 Ryubing Canary 1.3.351 RSA，通过同一份 OMP 18.9.1 循环运行。模型凭据复用本机 OMP 登录，默认 `openai-codex/gpt-6.1-sol`。
+给模型原始传感器、控制器 CLI 和一个空工作区，让它自行探索并积累技能。设备由独立 Baseware 服务的 mGBA / Ryubing driver 提供；RSA 使用同一份 OMP 18.9.1 循环。模型凭据复用本机 OMP 登录，默认 `openai-codex/gpt-6.1-sol`。
 
 ## 启动
 
-本仓库根目录包含 `rsa/`、`rsa-dashboard/`、`rsa-companion/`。下文的 `artifacts/` 指仓库同级的运行目录 `<repo>/../artifacts/`；它不属于源码，日志仍写入各自 workspace。
+本仓库根目录包含 `baseware/`、`rsa/`、`rsa-dashboard/`、`rsa-companion/`。下文的 `artifacts/` 指仓库同级的运行目录 `<repo>/../artifacts/`；它不属于源码，日志仍写入各自 workspace。
 
 ### 工作区启动入口
 
 需要 Bun 1.4、Python 3 和已准备好的设备；Dashboard、Pet 的安装步骤见[仓库 README](../README.md)。后台启动入口目前使用 macOS launchd。ROM、固件、密钥不进入 Git。
 
 ```sh
-cd rsa
+cd baseware
 bun install --frozen-lockfile
-export PATH="$PWD/bin:$PATH"
+cd ../rsa
+bun install --frozen-lockfile
+export PATH="$PWD/bin:$PWD/../baseware/bin:$PATH"
 mkdir -p /absolute/path/to/workspace
 cd /absolute/path/to/workspace
 rsa init --provider ryubing --game /absolute/path/to/game.nsp --seconds 1800
@@ -23,7 +25,7 @@ rsa services
 rsa auto on
 ```
 
-`rsa init` 在当前工作区生成 `rsa.json`，已有配置不会覆盖。`rsa up --dry-run` 只输出启动命令和路径，不启动进程。确认计划后，`rsa up` 连接设备并启动所需的 Host、Dashboard 与 Pet；`rsa services` 汇总本工作区的后台进程、Host 状态和共享 Dashboard。新 Host 启动后保持手动，执行 `auto on` 后才查阅设备 help、发送模型请求并操作游戏。复用已在接管中的 Host 时，`up` 保留当前状态，不打断运行。
+`rsa init` 在当前工作区生成 `rsa.json`，已有配置不会覆盖。`rsa up --dry-run` 只输出启动命令和路径，不启动进程。确认计划后，`rsa up` 连接设备并启动所需的 Baseware、Host、Dashboard 与 Pet；`rsa services` 汇总本工作区的后台进程、Host 状态和共享 Dashboard。新 Host 启动后保持手动，执行 `auto on` 后才发送模型请求并操作游戏；设备目录与 help 在启动时就已可用。复用已在接管中的 Host 时，`up` 保留当前状态，不打断运行。
 
 接管时可附带一次用户提醒，例如 `rsa auto on --message '稍后要关闭模拟器，请先保存进度。'`。附言作为本轮第一条用户消息进入原会话，后续续轮不重复注入，也不修改技能、记忆或系统提示。
 
@@ -51,8 +53,8 @@ rsa auto on
 - 重复 `up` 复用本工作区已就绪的 Host 和受管理的进程，不清空会话、不重启，也不改变已有接管状态。配置修改需重启对应进程加载；原 OMP 历史和工作区文件继续保留。
 - Dashboard 使用 `http://127.0.0.1:3015`，已有服务可共用。新启动的 Pet 使用 `logs/background/pet-profile/` 保存独立设置；本工作区已经受管理的 Pet 保持原进程及设置。
 - `rsa auto off` 立即交还控制并取消在途模型与 shell，模拟器继续运行。再次接管须等本周期清理结束。
-- `rsa down` 先交还控制并等待清理，再停止本工作区管理的 Host、Pet 和模拟器；关闭模拟器会丢失未保存的游戏进度。它不关闭外部手动启动的进程，也不删除工作区或历史。
-- `rsa down --keep-emulator` 只停止 Host、Pet，保留模拟器及当前游戏状态，适合更换预算、模型或加载 Host 代码改动。更换游戏或模拟器启动配置时使用普通 `down` / `up`。
+- `rsa down` 先交还控制并等待清理，再停止本工作区管理的 Host、Pet、Baseware 和模拟器；关闭模拟器会丢失未保存的游戏进度。它不关闭外部手动启动的进程，也不删除工作区或历史。
+- `rsa down --keep-emulator` 停止 Host、Pet、Baseware，保留模拟器及当前游戏状态，适合更换预算、模型或加载 Host 代码改动。更换游戏或模拟器启动配置时使用普通 `down` / `up`。
 - `down` 默认保留共享 Dashboard。确需关闭时，`rsa down --dashboard` 只关闭本工作区启动的 Dashboard；其他工作区的看板和 Pet 连接可能因此中断。`--dashboard` 与 `--keep-emulator` 可以组合使用。
 
 例如修改 `rsa.json` 中的接管预算后，保留当前游戏并加载新预算：
@@ -68,10 +70,10 @@ rsa auto on
 
 ### mGBA 设备准备
 
-在 mGBA 0.10.5 打开游戏，然后进入 **Tools → Scripting**。在底部输入框执行以下代码，路径换成自己 checkout 中的绝对路径（可在 `rsa/` 下运行 `realpath src/providers/mgba/bridge.lua` 获取）：
+在 mGBA 0.10.5 打开游戏，然后进入 **Tools → Scripting**。在底部输入框执行以下代码，路径换成自己 checkout 中的绝对路径（可在 `rsa/` 下运行 `realpath ../baseware/src/drivers/mgba/bridge.lua` 获取）：
 
 ```lua
-dofile("/absolute/path/to/repo/rsa/src/providers/mgba/bridge.lua")
+dofile("/absolute/path/to/repo/baseware/src/drivers/mgba/bridge.lua")
 ```
 
 出现 `RSA bridge listening on 127.0.0.1:47653 (manual)` 即已加载。重复执行会关闭旧桥并加载新代码。脚本窗口可以关闭，游戏需要保持运行；模拟器暂停时，帧回调、采集和交接也会暂停。
@@ -87,16 +89,19 @@ rsa auto on
 
 ### 独立 Host 与高级启动
 
-`rsa run` 保留原来的前台宿主入口，以命令行参数配置；`rsa.json` 由 `init` / `up` 管理。只运行设备或调试单个组件时仍可直接使用它，启动默认手动，等待输出 `ready: true` 后从同一工作区执行 `rsa auto on`。
+`rsa run` 是前台 agent 宿主，连接已经运行的 Baseware，不加载设备 driver；`rsa.json` 由 `init` / `up` 管理。只运行设备或调试单个组件时仍可直接使用它，启动默认手动，等待输出 `ready: true` 后从同一工作区执行 `rsa auto on`。
 
 可选参数：
 
 ```sh
+# 先在 workspace 的另一个终端运行设备服务（或由 rsa up 管理）
+baseware serve --driver ryubing --data-dir ./logs/baseware
+# 本终端启动 agent
 rsa run --workspace /absolute/path/to/workspace \
   --model openai-codex/gpt-6.1-sol --seconds 300 --requests 50
 ```
 
-`--seconds` 是每次接管的最长墙钟时间，`--requests` 是每次接管的模型请求预算。达到任一预算即回到手动；下一次 `auto on` 使用新的预算，保留同一 OMP 会话及完整历史。默认 socket 为 `/tmp/playness-rsa-<uid>-<workspace-hash>.sock`，随工作区选择；`RSA_SOCKET` 可手动覆盖连接地址。
+`--seconds` 是每次接管的最长墙钟时间，`--requests` 是每次接管的模型请求预算。达到任一预算即回到手动；下一次 `auto on` 使用新的预算，保留同一 OMP 会话及完整历史。默认 socket 为 `/tmp/playness-rsa-<uid>-<workspace-hash>.sock`，随工作区选择；`RSA_SOCKET` 可手动覆盖连接地址。Baseware 使用独立的 `/tmp/playness-baseware-<uid>-<workspace-hash>.sock`；Host 可用 `--baseware-socket` 或 `BASEWARE_SOCKET` 选择服务。
 
 持续性能观察可给一次接管设置较长的总预算（例如 `--seconds 1800`），每五分钟离线查看日志，不必关掉再接管。预算到期会取消在途响应，WS 连接可能随之重建；在长历史下，频繁硬停会反复付出完整首帧上传的成本。只有需要加载代码改动时才重启宿主。
 
@@ -112,7 +117,7 @@ rsa run --workspace /absolute/path/to/workspace \
 
 `status` 返回宿主 `runId` 和 `maxSeconds`。控制 IPC 必须携带匹配的 `runId`，并可用 `expectedEpoch` 校验控制周期；CLI 自动读取并带上这两个字段，避免旧看板对重启后的宿主发出控制命令。
 
-更换时长预算并保留上下文时，先停止旧宿主，再用 `rsa run --workspace <原工作区> --seconds 1800` 启动，并按原配置指定模型、端口。宿主默认续接该工作区的当前 OMP 会话，保留身份、历史与压缩状态；新的事件日志与观测写入新 run。`--new-session` 开始全新上下文，保留工作区文件。`--resume <原会话.jsonl>` 用于首次绑定旧会话或显式选择历史，会话路径见旧 run 的 `session` 事件；原文件原地继续追加，不搬迁、不搜索或拼接其他历史。恢复不同工作区的会话会被拒绝。
+更换时长预算并保留上下文时，先停止旧宿主，再用 `rsa run --workspace <原工作区> --seconds 1800` 启动，并按原配置指定模型、Baseware 地址。宿主默认续接该工作区的当前 OMP 会话，保留身份、历史与压缩状态；新的事件日志与观测写入新 run。`--new-session` 开始全新上下文，保留工作区文件。`--resume <原会话.jsonl>` 用于首次绑定旧会话或显式选择历史，会话路径见旧 run 的 `session` 事件；原文件原地继续追加，不搬迁、不搜索或拼接其他历史。恢复不同工作区的会话会被拒绝。
 
 ### 工作区与并行运行
 
@@ -133,37 +138,29 @@ rsa auto on
 
 `rsa run --workspace ...` 同样有效。路径按 realpath 归一化，同一目录的符号链接使用同一份状态。两个工作区即使共享父目录，也有独立的会话、运行记录、内容快照和默认 socket。新目录从空经验、空会话开始；重开原目录保留原文件并续接会话，不自动继承其他工作区的内容。若显式复制了任务文件，则这些文件就是新工作区的初始内容。
 
-宿主在打开会话和连接设备前先占用工作区的固定 socket；即使另设 `RSA_SOCKET`，同一工作区也不能并发启动两个宿主。模型凭据仍共享本机 OMP 登录。这是上下文与数据的逻辑隔离，shell 仍可访问本机文件系统和网络；模拟器配置、存档和设备连接由 provider 管理，不随工作区隔离。
+宿主在打开会话和连接设备前先占用工作区的固定 socket；即使另设 `RSA_SOCKET`，同一工作区也不能并发启动两个宿主。模型凭据仍共享本机 OMP 登录。这是上下文与数据的逻辑隔离，shell 仍可访问本机文件系统和网络；模拟器配置、存档和设备连接由 Baseware driver 管理，不随工作区隔离。
 
 并行游戏还需要分别启动模拟器实例并使用不同桥端口。在第二个 mGBA 实例中打开对应 ROM，再从 Scripting 执行：
 
 ```lua
 RSA_BRIDGE_PORT = 47654
-dofile("/absolute/path/to/repo/rsa/src/providers/mgba/bridge.lua")
+dofile("/absolute/path/to/repo/baseware/src/drivers/mgba/bridge.lua")
 ```
 
-随后在独立 shell 中启动第二个宿主（路径按实际 checkout 替换）：
-
-```sh
-export RSA_WORKSPACE=/absolute/path/to/workspaces/second-task
-bin/rsa run \
-  --port 47654 --model deepseek/deepseek-flash --seconds 1200 --requests 1000
-```
-
-管理第二个宿主时选择相同工作区，例如 `bin/rsa --workspace /absolute/path/to/workspaces/second-task auto on`。若手动覆盖了 `RSA_SOCKET`，管理命令也使用相同覆盖值。模型执行的 shell 自动继承自己宿主的 socket 与 epoch。`--port` 必须与该实例的 `RSA_BRIDGE_PORT` 一致；mGBA 默认 47653，Ryubing 默认 47663。`--provider` 和端口选择只在应用装配层处理，标准能力接口不变。
+随后进入第二个工作区，用 `rsa init --provider mgba` 创建配置，将 `rsa.json` 的 `port` 改为 47654，再执行 `rsa up`。每个工作区有独立 Baseware 地址和 RSA 地址；真实设备也需独立实例。模型、预算在工作区 `rsa.json` 中配置。`provider` 和 `port` 只用于启动 Baseware，Harness 不据此选择设备代码。
 
 ### Switch / Ryubing
 
-macOS arm64 桥接基于 Ryubing 的 `Canary-1.3.351` 标签，固定到提交 `475615f0431b4995b03c930c5089d20f6f3570e0`，本地版本为 `1.3.351-rsa.2`。唯一安装应用是 `/Applications/Ryubing.app`，手动和 RSA 使用同一份程序；界面名称是 Ryubing，上游内部可执行文件与进程仍叫 `Ryujinx`。具体构建来源及补丁说明见 [provider README](src/providers/ryubing/README.md)。
+macOS arm64 桥接基于 Ryubing 的 `Canary-1.3.351` 标签，固定到提交 `475615f0431b4995b03c930c5089d20f6f3570e0`，本地版本为 `1.3.351-rsa.2`。唯一安装应用是 `/Applications/Ryubing.app`，手动和 RSA 使用同一份程序；界面名称是 Ryubing，上游内部可执行文件与进程仍叫 `Ryujinx`。具体构建来源及补丁说明见 [provider README](../baseware/src/drivers/ryubing/README.md)。
 
 准备 .NET 10 SDK、Python 3、Xcode Command Line Tools 后，在本目录执行。当前私有 SDK 为 10.0.402，不依赖全局 SDK：
 
 ```sh
 # 默认查找 ../../artifacts/switch/dotnet/dotnet，也可用 RSA_DOTNET 指定 SDK。
-src/providers/ryubing/build.sh
+../baseware/src/drivers/ryubing/build.sh
 # 退出正在运行的模拟器，将 ../../artifacts/switch/ryubing-build/Ryujinx.app
 # 安装为 /Applications/Ryubing.app 后启动。
-src/providers/ryubing/launch.sh '/absolute/path/to/game.xci'
+../baseware/src/drivers/ryubing/launch.sh '/absolute/path/to/game.xci'
 ```
 
 源码在 `artifacts/switch/ryubing-canary-source`，签名后的构建暂存在 `artifacts/switch/ryubing-build/Ryujinx.app`。NuGet 配置仅将上游 LibHac 源 URL 替换为 `https://nuget.ryulynx.org/v3/index.json`，其余上游配置与依赖版本保留；不再使用旧 Stable 构建的 LibHac 升版本和标题遍历兼容修改。
@@ -172,16 +169,7 @@ src/providers/ryubing/launch.sh '/absolute/path/to/game.xci'
 
 旧 Stable 基底的火纹验证使用 Vulkan、1× 分辨率、Hypervisor 关闭、一号 Pro Controller；这是历史记录，不表示已验证新版或其他游戏的兼容性。
 
-另开终端，在本目录启动独立宿主：
-
-```sh
-export RSA_SOCKET=/tmp/playness-rsa-engage.sock
-bin/rsa run --provider ryubing \
-  --workspace "$PWD/../../artifacts/rsa/fire-emblem-engage/workspace" \
-  --model openai-codex/gpt-6.1-sol --seconds 300 --requests 12
-```
-
-第三个终端使用相同 `RSA_SOCKET`，执行 `bin/rsa auto on` 开始、`bin/rsa auto off` 交还手柄。仅验证设备时给宿主加 `--device-only`。项目工作区从空目录开始，不加载其他游戏的技能，也不注入火纹攻略；循环、事件日志、缓存策略、会话恢复与 GBA 相同。
+准备设备后，进入任务工作区使用 `rsa init --provider ryubing` / `rsa up`，或分别启动 `baseware serve --driver ryubing` 与 `rsa run`。项目从空经验开始，不加载其他游戏技能；模型循环与 GBA 使用同一实现。
 
 `screen capture` 请求模拟器呈现画面的原始 PNG；系统输入框弹出时，改采集该弹窗的真实界面，不采集桌面。可用 `capture --delay-ms 500` 在发送采集请求前等待固定时间；默认 0，等待可取消。这不检测动画完成，返回帧序号也不能保证画面已经呈现该次按键的结果。自动观测通过装配层配置，例如 `--auto-observe '[{"sensorId":"screen","argv":["capture","--delay-ms","500"]}]'`，Harness 只转发标准传感器请求。
 
@@ -224,16 +212,37 @@ bin/rsa auto off
 
 传感器输出不可变 PNG 文件及采样区间。CLI 输出文件路径；OMP 的 `observe` 工具把文件转换为模型可见的图片块。命令返回的时间区间表示宿主发起请求到收到结果；提供者另返回实际执行帧数，不将宿主计时冒充设备精确采样时刻。
 
+## 工作区 Python 能力
+
+```python
+from rsa_tools import capability
+from baseware import Client
+
+@capability
+def sample(sensor_id: str, argv: list[str]) -> list:
+    """Read a sensor using its documented arguments."""
+    return Client().sensor(sensor_id, argv)
+```
+
+RSA 扫描 workspace 中的 `.py` 文件，只暴露 `@capability` / `@capability()` 标记的顶层函数。每个参数都需要类型标注，函数需要非空 docstring；默认值来自函数签名。暂不暴露 async、可变参数或仅限位置参数的函数。支持字符串、整数、浮点、布尔、列表、字符串键字典和可空类型；不支持的签名作为诊断返回，不猜测 schema。Python 3.9 使用 `T | None` 时需要 `from __future__ import annotations`。
+
+扫描静态读取 AST，不运行 import 或顶层代码；真正调用时启动 Python、导入该文件、传入 JSON 参数并返回 JSON 结果，普通 print 放进 stderr。生成工具名带相对路径与函数名，源码 hash 记入调用日志。OMP 在初始交互与每批工具完成后刷新工具，新增、改动和删除无需重启会话；整理技能期间不暴露这些执行能力。
+
+`logs/`、`.git/`、依赖和虚拟环境目录不参与扫描。脚本可放在工作区根目录、`scripts/` 或技能目录，未标记的辅助函数保持普通 Python 用法。扫描发现语法错误会通知模型，供它自行修正；不执行猜测性修复。
+
+shell 与 Python 工具自动获得 Baseware CLI、Python 包路径及当前 `BASEWARE_SOCKET` / `BASEWARE_EPOCH` / `BASEWARE_TRACE`。`rsa` CLI 仍可用于控制宿主与转发设备请求，新的脚本优先直接调用 Baseware。人工接管会取消脚本进程组，并由 Baseware 释放设备；脚本不自行获取操作权。这里是可信本机 shell，不是 Python 沙箱。
+
 ## 边界与数据
 
 ```text
-src/contracts.ts           标准能力契约
-src/harness/               能力路由、操作权、OMP、工作区
-src/providers/mgba/        原始采集、手柄命令、Lua 私有协议
-src/app/main.ts            创建 GBA 提供者并注入能力
+../baseware/src/contracts.ts  标准能力契约
+../baseware/src/drivers/      设备协议、采集、输入
+src/harness/                 Agent 生命周期、OMP、Python 能力、工作区
+src/app/main.ts              连接 Baseware 并装配 Agent
+src/app/workspace.ts         本机组件启动与停止
 ```
 
-Harness 不导入 GBA 提供者，不解释 GBA 按键、帧率或 ROM。`screen capture` 自动观测配置也由装配层传入。提供者内部将小型 screen/pad 实现合在一个文件中，没有另建框架。
+Harness 不导入具体 driver，不解释 GBA 按键、帧率或 ROM。`screen capture` 自动观测配置也由装配层传入。提供者内部将小型 screen/pad 实现合在一个文件中，没有另建框架。
 
 工作区就是当前目录，目录用途由根目录 `AGENTS.md` 说明：
 
@@ -289,7 +298,7 @@ WS 握手超时、socket 错误，以及连接到期（`websocket_connection_lim
 - 未打补丁的 OMP 18.9.1 在离线假连接每次返回 1009 时发送 **6 次**（首次加 5 次重试）才回退 SSE。`retry.enabled: false` 关闭的是 agent 层重试，未关闭这一层传输重试。对相同大包反复重发无法解决体积拒绝，这是 SDK 的错误分类/降级缺陷；底层网络事件未通过 `onSseEvent` 暴露，也是原 Harness 日志看不到拒绝原因的原因。
 - SSE 连续成功请求的压缩后上传量从约 13.5 MB 增长到 21.8 MB，响应头等待从约 54 秒增长到 111 秒。第二轮输入缓存为 96.2%，仍耗时约 58 秒；缓存不会省掉上传。日志记录的请求准备仅约 0.6～0.9 秒，观测约 0.2 秒，手柄动作约 0.1 秒。现有计时无法进一步区分上传、网络与服务端排队；诊断期间短暂请求重叠可能影响并发限流，不能据此排除用户在 Codex 侧看到的 429。
 
-当前循环在每批工具完成后提供一组观测，并复用该批显式 `observe` 的结果；模型图像在首次入历史前按 OMP 路径编码，之后保持不变。`status.thinking` 仍表示 driver 循环正在运行，细分阶段由事件日志和看板展示。确认游戏推进可同时查看 `model_end`、`execution` 与操作后的画面，传感器/控制器边界不包含游戏语义。
+当前循环在每批工具完成后提供一组观测，并复用该批显式 `observe` 的结果；模型图像在首次入历史前按 OMP 路径编码，之后保持不变。`status.thinking` 仍表示 agent 循环正在运行，细分阶段由事件日志和看板展示。确认游戏推进可同时查看 `model_end`、`execution` 与操作后的画面，传感器/控制器边界不包含游戏语义。
 
 ## 事件日志
 
@@ -303,7 +312,7 @@ WS 握手超时、socket 错误，以及连接到期（`websocket_connection_lim
 
 大对象放在 `payloads/<sha256>.json.gz` 或 `.bin.gz`，引用中的 hash 与 bytes 对应解压后的字节；不截断内容。相同内容复用文件。HTTP body 自身若启用了压缩，先解开日志的 gzip，再按该事件的 `contentEncoding` 解释。`streams/<modelCallId>.jsonl` 保存 OMP 暴露的原始 SSE 事件或 WebSocket 帧及时间，供核查服务端原始 usage；无流事件时不会创建该文件。`model_end.usage` 则是 OMP 统一后的统计格式。
 
-`tool_start/end`、`exec/exec_result`、`observation_start/end/error`、`command/execution/execution_error` 串起模型到能力边界的执行链。shell 通过 `RSA_TRACE` 将关联字段带入 CLI 请求；这只是观测元数据，控制权仍由 `RSA_EPOCH` 校验。工具正文单独保存；观测文件与技能版本沿用已有存储。
+`tool_start/end`、`exec/exec_result`、`observation_start/end/error`、`command/execution/execution_error` 串起模型到能力边界的执行链。shell 和 Python 通过 `BASEWARE_TRACE` 将关联字段带入设备请求；`rsa` 转发入口使用 `RSA_TRACE`。这些只是观测元数据，操作权由本轮 epoch 校验。`python_capabilities`、`python_capability/result` 记录能力目录、源码 hash、调用参数及结果。Baseware 独立保存设备日志，同时推送给 RSA；RSA 将观测文件复制进自己的 run，保持 Dashboard 与 Pet 的日志读取方式。工具正文单独保存；观测文件与技能版本沿用已有存储。
 
 为排查 2026-10-15 实跑中的动作后过早采样和技能读取漏记，日志额外记录以下信息；这些诊断字段不进入模型上下文，也不改变采样时机：
 
@@ -361,6 +370,7 @@ RSA_MGBA=1 bun test tests/device.live.test.ts
 另外，关闭宿主但保留 mGBA 脚本运行，可验证连续重连和动作中断线：
 
 ```sh
+cd ../baseware
 RSA_BRIDGE_TEST=1 bun test tests/bridge.live.test.ts
 ```
 

@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createGbaProvider } from "../src/providers/mgba/provider.ts";
+import { createGbaProvider } from "../src/drivers/mgba/provider.ts";
 
 test.skipIf(process.env.RSA_BRIDGE_TEST !== "1")("bridge survives repeated disconnects, including a connection lost during input", async () => {
   const directory = await mkdtemp(join(tmpdir(), "rsa-bridge-"));
