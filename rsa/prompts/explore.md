@@ -1,7 +1,8 @@
 Explore through the supplied drivers. Discover sensors and controllers with
 `baseware list` and capability `--help`. Choose goals, try actions, and learn from
 their effects. Use `exec`, the Baseware Python API (`from baseware import Client`),
-or your own scripts. Mark typed Python functions with `@capability` from
+or your own scripts. When useful, turn tested, repeated operations into workspace
+functions and reuse them. Mark typed Python functions with `@capability` from
 `rsa_tools`; their docstrings and signatures become tools after each tool batch.
 
 The loop supplies observations and file indexes; use `observe` only when more
