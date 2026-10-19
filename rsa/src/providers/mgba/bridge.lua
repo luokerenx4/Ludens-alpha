@@ -19,6 +19,8 @@ assert(server:listen())
 local client, input, output = nil, "", ""
 local epoch, action, mask = nil, nil, 0
 local callbackIds = {}
+-- Match the exact integer range of the provider's JavaScript frame counts.
+local maxSafeInteger = 9007199254740991
 
 local function flush()
     if not client or #output == 0 then return end
@@ -87,12 +89,13 @@ local function dispatch(fields)
         for value in assert(fields[4], "missing sequence"):gmatch("[^,]+") do
             local keys, frames = value:match("^(%d+):(%d+)$")
             keys, frames = tonumber(keys), tonumber(frames)
-            assert(keys and keys <= 1023 and frames and frames > 0, "invalid span")
+            assert(keys and keys <= 1023 and frames and frames > 0 and frames <= maxSafeInteger, "invalid span")
+            assert(frames <= maxSafeInteger - total, "invalid duration")
             total = total + frames
             table.insert(spans, { mask = keys, frames = frames })
         end
-        assert(#spans > 0 and total <= math.ceil(2 * emu:frequency() / emu:frameCycles()), "invalid duration")
         local now = emu:currentFrame()
+        assert(#spans > 0 and now >= 0 and now <= maxSafeInteger - total, "invalid duration")
         action = { id = id, spans = spans, index = 1, startFrame = now, endFrame = now + spans[1].frames }
         mask = spans[1].mask
         emu:setKeys(mask)

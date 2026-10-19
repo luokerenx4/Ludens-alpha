@@ -14,9 +14,9 @@ export function encodeSpans(spans: Span[]): string {
   if (!Array.isArray(spans) || !spans.length) throw new Error("Expected a non-empty state sequence");
   let elapsed = 0;
   return spans.map(({ state, durationMs }) => {
-    if (!Number.isInteger(durationMs) || durationMs < 16) throw new Error("durationMs must be an integer >= 16");
+    if (!Number.isSafeInteger(durationMs) || durationMs < 16) throw new Error("durationMs must be a safe integer >= 16");
     elapsed += durationMs;
-    if (elapsed > 2000) throw new Error("A sequence may last at most 2000 ms");
+    if (!Number.isSafeInteger(elapsed)) throw new Error("Sequence duration must be a safe integer");
     if (!state || Array.isArray(state) || typeof state !== "object") throw new Error("state must be an object");
     let mask = 0;
     const axes = [0, 0, 0, 0];
@@ -41,7 +41,8 @@ release
 apply replaces the entire state; omitted channels are 0. play accepts
 [{"state":{"A":1},"durationMs":100}, ...]. Adjacent spans preserve held controls.
 Durations use wall time sampled at input polls, not emulation frames. Each span
-is an integer >= 16 ms; total <= 2000 ms. Commands wait for completion.
+has a caller-chosen safe integer duration >= 16 ms; total must be a safe integer.
+Commands wait for completion.
 All controls return to 0 at completion or cancellation. One action at a time; BUSY otherwise.
 release interrupts the action but retains ownership. Human auto off restores human input.
 state reports the bridge's current controls and action ID, never game memory.`;

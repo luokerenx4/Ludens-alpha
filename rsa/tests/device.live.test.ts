@@ -33,7 +33,7 @@ test.skipIf(process.env.RSA_MGBA !== "1")("real device captures PNG, completes s
     expect(png.readUInt32BE(20)).toBe(160);
     expect(capture[0].timing.requestedAtMs).toBeGreaterThan(result.timing.receivedAtMs);
 
-    const action = command(["apply", "--state", '{"RIGHT":1}', "--for-ms", "2000"]);
+    const action = command(["apply", "--state", '{"RIGHT":1}', "--for-ms", "30000"]);
     await Bun.sleep(100);
     await expect(command(["apply", "--state", '{"A":1}', "--for-ms", "100"])).rejects.toThrow("BUSY");
     const start = performance.now();

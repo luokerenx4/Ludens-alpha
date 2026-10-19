@@ -154,7 +154,7 @@ bin/rsa run \
 
 ### Switch / Ryubing
 
-macOS arm64 桥接基于 Ryubing 的 `Canary-1.3.351` 标签，固定到提交 `475615f0431b4995b03c930c5089d20f6f3570e0`，本地版本为 `1.3.351-rsa.1`。唯一安装应用是 `/Applications/Ryubing.app`，手动和 RSA 使用同一份程序；界面名称是 Ryubing，上游内部可执行文件与进程仍叫 `Ryujinx`。具体构建来源及补丁说明见 [provider README](src/providers/ryubing/README.md)。
+macOS arm64 桥接基于 Ryubing 的 `Canary-1.3.351` 标签，固定到提交 `475615f0431b4995b03c930c5089d20f6f3570e0`，本地版本为 `1.3.351-rsa.2`。唯一安装应用是 `/Applications/Ryubing.app`，手动和 RSA 使用同一份程序；界面名称是 Ryubing，上游内部可执行文件与进程仍叫 `Ryujinx`。具体构建来源及补丁说明见 [provider README](src/providers/ryubing/README.md)。
 
 准备 .NET 10 SDK、Python 3、Xcode Command Line Tools 后，在本目录执行。当前私有 SDK 为 10.0.402，不依赖全局 SDK：
 
@@ -185,7 +185,7 @@ bin/rsa run --provider ryubing \
 
 `screen capture` 请求模拟器呈现画面的原始 PNG；系统输入框弹出时，改采集该弹窗的真实界面，不采集桌面。可用 `capture --delay-ms 500` 在发送采集请求前等待固定时间；默认 0，等待可取消。这不检测动画完成，返回帧序号也不能保证画面已经呈现该次按键的结果。自动观测通过装配层配置，例如 `--auto-observe '[{"sensorId":"screen","argv":["capture","--delay-ms","500"]}]'`，Harness 只转发标准传感器请求。
 
-`pad` 提供 16 个数字按键和四个摇杆轴，原子动作参数见 `bin/rsa controller pad --help`。动作按墙钟时间执行，每段至少 16 ms、合计最多 2000 ms，输入轮询处切换完整状态。AI 模式覆盖一号手柄及其体感输入；其他玩家、触屏、模拟器快捷键不在此控制器范围内。完成/取消归零，关闭接管或 TCP 断连恢复一号原生手柄输入。桥接只监听本机回环地址，作为可信本机进程间接口，不是多用户安全隔离。
+`pad` 提供 16 个数字按键和四个摇杆轴，原子动作参数见 `bin/rsa controller pad --help`。动作按墙钟时间执行，时长由调用方选择，每段为至少 16 ms 的安全整数，合计也须为安全整数，输入轮询处切换完整状态。命令等待动作完成，期间仍可用 `pad release` 中断。AI 模式覆盖一号手柄及其体感输入；其他玩家、触屏、模拟器快捷键不在此控制器范围内。完成/取消归零，关闭接管或 TCP 断连恢复一号原生手柄输入。桥接只监听本机回环地址，作为可信本机进程间接口，不是多用户安全隔离。
 
 实机测试会短按方向键和摇杆，请停在可安全操作的菜单。退出 RSA 宿主、保留游戏运行后：
 
@@ -220,7 +220,7 @@ unset RSA_EPOCH
 bin/rsa auto off
 ```
 
-手柄有 A/B/SELECT/START/RIGHT/LEFT/UP/DOWN/R/L 十个通道。一次动作替换完整状态，省略的键为 0；结束后全部释放。`play --file /absolute/sequence.json` 接受状态序列，总时长不超过 2000 毫秒模拟时间。帧边界会带来取整。`pad release` 只中止当前按键，`auto off` 才交还操作权。
+手柄有 A/B/SELECT/START/RIGHT/LEFT/UP/DOWN/R/L 十个通道。一次动作替换完整状态，省略的键为 0；结束后全部释放。`play --file /absolute/sequence.json` 接受状态序列，每段时长由调用方选择，须为有限正数，按模拟时间执行。帧边界会带来取整，每段至少占一帧，累计帧数及结束帧须能安全表示。命令等待动作完成；`pad release` 可随时中止当前按键，`auto off` 才交还操作权。
 
 传感器输出不可变 PNG 文件及采样区间。CLI 输出文件路径；OMP 的 `observe` 工具把文件转换为模型可见的图片块。命令返回的时间区间表示宿主发起请求到收到结果；提供者另返回实际执行帧数，不将宿主计时冒充设备精确采样时刻。
 

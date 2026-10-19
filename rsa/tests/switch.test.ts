@@ -15,7 +15,21 @@ test("Switch controls encode complete digital and analog states without game sem
     expect(() => encodeSpans([{ state, durationMs: 100 }])).toThrow("Invalid channel");
   }
   expect(() => encodeSpans([{ state: {}, durationMs: 15 }])).toThrow(">= 16");
-  expect(() => encodeSpans([{ state: {}, durationMs: 1000 }, { state: {}, durationMs: 1001 }])).toThrow("2000");
+});
+
+test("Switch accepts long actions and sequences while rejecting invalid or unsafe durations", () => {
+  expect(encodeSpans([{ state: { A: 1 }, durationMs: 30_000 }])).toBe("1:0:0:0:0:30000");
+  expect(encodeSpans([
+    { state: { A: 1 }, durationMs: 5_000 },
+    { state: {}, durationMs: 25_000 },
+  ])).toBe("1:0:0:0:0:5000,0:0:0:0:0:25000");
+  for (const durationMs of [NaN, Infinity, 16.5, Number.MAX_SAFE_INTEGER + 1]) {
+    expect(() => encodeSpans([{ state: {}, durationMs }])).toThrow();
+  }
+  expect(() => encodeSpans([
+    { state: {}, durationMs: Number.MAX_SAFE_INTEGER },
+    { state: {}, durationMs: 16 },
+  ])).toThrow();
 });
 
 async function withSwitchBridge(run: (provider: Awaited<ReturnType<typeof createSwitchProvider>>,

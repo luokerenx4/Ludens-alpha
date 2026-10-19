@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSwitchProvider } from "../src/providers/ryubing/provider.ts";
 import { Bridge } from "../src/providers/bridge.ts";
+import { Runtime } from "../src/harness/runtime.ts";
 
-test.skipIf(process.env.RSA_SWITCH_TEST !== "1")("Ryubing captures frames, applies controls, cancels, rejects stale epochs and clears disconnects", async () => {
+test.skipIf(process.env.RSA_SWITCH_TEST !== "1")("Ryubing captures frames, interrupts long actions, hands back control, rejects stale epochs and clears disconnects", async () => {
   const directory = await mkdtemp(join(tmpdir(), "rsa-switch-"));
   const port = Number(process.env.RSA_BRIDGE_PORT ?? 47663);
   const connect = () => createSwitchProvider({ port, artifactsDir: directory, clock: { id: "switch-test", now: () => performance.now() } });
@@ -24,7 +25,7 @@ test.skipIf(process.env.RSA_SWITCH_TEST !== "1")("Ryubing captures frames, appli
     const epoch = crypto.randomUUID();
     await pad.acquire(epoch);
     const abort = new AbortController();
-    const action = pad.execute(["apply", "--state", '{"RIGHT":1,"LX":0.5}', "--for-ms", "2000"], { epoch, signal: abort.signal });
+    const action = pad.execute(["apply", "--state", '{"RIGHT":1,"LX":0.5}', "--for-ms", "30000"], { epoch, signal: abort.signal });
     await Bun.sleep(80);
     const state = JSON.parse((await pad.execute(["state"], { epoch, signal })).stdout);
     expect(state.state.RIGHT).toBe(1);
@@ -36,11 +37,32 @@ test.skipIf(process.env.RSA_SWITCH_TEST !== "1")("Ryubing captures frames, appli
     expect(performance.now() - started).toBeLessThan(500);
     const neutral = JSON.parse((await pad.execute(["state"], { epoch, signal })).stdout);
     expect(Object.values(neutral.state).every(value => value === 0)).toBe(true);
+    expect(neutral.actionId).toBeNull();
+    const sequenceFile = join(directory, "long-sequence.json");
+    await Bun.write(sequenceFile, JSON.stringify([
+      { state: {}, durationMs: 5_000 },
+      { state: {}, durationMs: 25_000 },
+    ]));
+    const sequenceAbort = new AbortController();
+    const sequence = pad.execute(["play", "--file", sequenceFile], { epoch, signal: sequenceAbort.signal });
+    await Bun.sleep(2_100); // Neutral controls let us cross the former limit without navigating the game.
+    const active = JSON.parse((await pad.execute(["state"], { epoch, signal })).stdout);
+    expect(active.actionId).not.toBeNull();
+    expect(Object.values(active.state).every(value => value === 0)).toBe(true);
+    const sequenceStop = performance.now();
+    sequenceAbort.abort();
+    const interrupted = await sequence;
+    expect(interrupted.status).toBe("interrupted");
+    expect(JSON.parse(interrupted.stdout).elapsedMs).toBeGreaterThan(2_000);
+    expect(performance.now() - sequenceStop).toBeLessThan(500);
+    const afterSequence = JSON.parse((await pad.execute(["state"], { epoch, signal })).stdout);
+    expect(afterSequence.actionId).toBeNull();
+    expect(Object.values(afterSequence.state).every(value => value === 0)).toBe(true);
     const finished = await pad.execute(["apply", "--state", '{}', "--for-ms", "100"], { epoch, signal });
     expect(finished.status).toBe("completed");
     expect(JSON.parse(finished.stdout).elapsedMs).toBeGreaterThanOrEqual(100);
     expect(JSON.parse(finished.stdout).inputPolls).toBeGreaterThan(0);
-    const lost = pad.execute(["apply", "--state", '{"LEFT":1}', "--for-ms", "2000"], { epoch, signal }).catch(error => error);
+    const lost = pad.execute(["apply", "--state", '{"LEFT":1}', "--for-ms", "30000"], { epoch, signal }).catch(error => error);
     await Bun.sleep(50);
     provider.close();
     expect(await lost).toBeInstanceOf(Error);
@@ -51,12 +73,34 @@ test.skipIf(process.env.RSA_SWITCH_TEST !== "1")("Ryubing captures frames, appli
     const afterReconnect = JSON.parse((await pad.execute(["state"], { epoch: nextEpoch, signal })).stdout);
     expect(Object.values(afterReconnect.state).every(value => value === 0)).toBe(true);
     await pad.release(nextEpoch);
+    const runtime = new Runtime(provider.capabilities, () => {});
+    try {
+      const takeover = await runtime.start(); // Device-only Runtime: no model driver or model request.
+      const runtimeEpoch = takeover.epoch!;
+      const longAction = runtime.execute("pad", ["apply", "--state", '{}', "--for-ms", "30000"], runtimeEpoch);
+      await Bun.sleep(80);
+      const beforeHandback = JSON.parse((await runtime.execute("pad", ["state"], runtimeEpoch)).stdout);
+      expect(beforeHandback.actionId).not.toBeNull();
+      const handback = performance.now();
+      await runtime.stop("human");
+      expect((await longAction).status).toBe("interrupted");
+      expect(performance.now() - handback).toBeLessThan(500);
+      expect(runtime.status()).toMatchObject({ mode: "manual", epoch: null, reason: "human" });
+      await expect(runtime.execute("pad", ["state"], runtimeEpoch)).rejects.toThrow("STALE_EPOCH");
+      await expect(pad.execute(["state"], { epoch: runtimeEpoch, signal })).rejects.toThrow("STALE_EPOCH");
+      const resumed = await runtime.start();
+      expect(resumed.epoch).not.toBe(runtimeEpoch);
+      const afterHandback = JSON.parse((await runtime.execute("pad", ["state"], resumed.epoch!)).stdout);
+      expect(afterHandback.actionId).toBeNull();
+      expect(Object.values(afterHandback.state).every(value => value === 0)).toBe(true);
+      await expect(runtime.execute("pad", ["state"], runtimeEpoch)).rejects.toThrow("STALE_EPOCH");
+    } finally { await runtime.close(); }
     provider.close();
     const wire = await Bridge.open(port);
     try {
       await wire.request("OWN", [nextEpoch]);
       await expect(wire.request("APPLY", [epoch, "1:0:0:0:0:100"])).rejects.toThrow("STALE_EPOCH");
-      await expect(wire.request("APPLY", [nextEpoch, "1:0:0:0:0:9000"])).rejects.toThrow("Invalid state");
+      await expect(wire.request("APPLY", [nextEpoch, "1:0:0:0:0:15"])).rejects.toThrow("Invalid state");
       await wire.request("DISOWN", [nextEpoch]);
     } finally { wire.close(); }
   } finally { provider.close(); await rm(directory, { recursive: true }); }

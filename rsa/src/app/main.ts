@@ -131,7 +131,7 @@ async function main() {
         binDir: resolve(import.meta.dir, "../../bin"), model, maxRequests, compactionThreshold, autoObserve,
       });
     }
-    await writeFile(join(runDir, "manifest.json"), JSON.stringify({ runId, workspace, workspaceId: state.id, stateDir: state.dir, socket, provider: values.provider === "mgba" ? "mgba-0.10.5" : "ryubing-1.3.351-rsa.1", port, omp: "18.9.1", eventSchemaVersion: 1, model: values["device-only"] ? null : model, seconds, maxRequests, resume, autoObserve, compactionThreshold: compactionThreshold ?? null }, null, 2));
+    await writeFile(join(runDir, "manifest.json"), JSON.stringify({ runId, workspace, workspaceId: state.id, stateDir: state.dir, socket, provider: values.provider === "mgba" ? "mgba-0.10.5" : "ryubing-1.3.351-rsa.2", port, omp: "18.9.1", eventSchemaVersion: 1, model: values["device-only"] ? null : model, seconds, maxRequests, resume, autoObserve, compactionThreshold: compactionThreshold ?? null }, null, 2));
     ready = true;
     console.log(JSON.stringify({ ready: true, socket, workspace, stateDir: state.dir, runDir, ...runtime.status() }, null, 2));
     await new Promise<void>((done) => { process.once("SIGINT", done); process.once("SIGTERM", done); });

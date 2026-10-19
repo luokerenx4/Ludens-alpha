@@ -14,7 +14,6 @@ export function encodeSpans(spans: Span[], fps: number): string {
   return spans.map((span) => {
     if (!Number.isFinite(span.durationMs) || span.durationMs <= 0) throw new Error("durationMs must be positive");
     elapsed += span.durationMs;
-    if (elapsed > 2000) throw new Error("A sequence may last at most 2000 ms");
     if (!span.state || Array.isArray(span.state) || typeof span.state !== "object") throw new Error("state must be an object");
     let mask = 0;
     for (const [key, value] of Object.entries(span.state)) {
@@ -23,6 +22,7 @@ export function encodeSpans(spans: Span[], fps: number): string {
       mask |= value << index;
     }
     const frames = Math.ceil(elapsed * fps / 1000);
+    if (!Number.isSafeInteger(frames)) throw new Error("Sequence duration exceeds the safe emulation frame range");
     const duration = frames - previousFrames;
     if (duration < 1) throw new Error("Each span must occupy at least one emulation frame");
     previousFrames = frames;
@@ -37,7 +37,8 @@ play --file <absolute JSON file path>
 release
 apply replaces the entire state; omitted channels are 0. play accepts
 [{"state":{"A":1},"durationMs":100}, ...]. Adjacent spans preserve held keys.
-Durations use emulation time, rounded to frame boundaries; total <= 2000 ms.
+Choose finite positive durations in emulation time, rounded to frame boundaries.
+Each span must occupy at least one frame; total frames must be a safe integer.
 Commands wait for completion. All keys return to 0 at completion or cancellation.
 Only one action may run; a concurrent action fails BUSY.
 release interrupts the current action, retaining ownership. Human auto off returns ownership.

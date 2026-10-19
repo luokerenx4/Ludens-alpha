@@ -34,7 +34,7 @@ internal sealed class RsaBridge : IDisposable
     private GamepadInput _state;
     private long _frame;
 
-    private sealed record Span(GamepadInput State, int EndMs);
+    private sealed record Span(GamepadInput State, long EndMs);
     private sealed class ActionRun(string id, Span[] spans)
     {
         public readonly string Id = id;
@@ -333,12 +333,16 @@ internal sealed class RsaBridge : IDisposable
 
     private static Span[] ParseSpans(string sequence)
     {
-        int end = 0;
+        long end = 0;
         return sequence.Split(',').Select(raw =>
         {
-            int[] parts = raw.Split(':').Select(value => int.Parse(value, CultureInfo.InvariantCulture)).ToArray();
-            if (parts.Length != 6 || parts[0] < 0 || parts[0] > 65535 || parts.Skip(1).Take(4).Any(value => Math.Abs((long)value) > 32767)
-                || parts[5] < 16 || parts[5] > 2000 || (end += parts[5]) > 2000) throw new ArgumentException("Invalid state sequence");
+            string[] fields = raw.Split(':');
+            if (fields.Length != 6) throw new ArgumentException("Invalid state sequence");
+            int[] parts = fields.Take(5).Select(value => int.Parse(value, CultureInfo.InvariantCulture)).ToArray();
+            long duration = long.Parse(fields[5], CultureInfo.InvariantCulture);
+            if (parts[0] < 0 || parts[0] > 65535 || parts.Skip(1).Any(value => Math.Abs((long)value) > 32767)
+                || duration < 16) throw new ArgumentException("Invalid state sequence");
+            end = checked(end + duration);
             return new Span(new GamepadInput {
                 PlayerId = PlayerIndex.Player1, Buttons = (ControllerKeys)parts[0],
                 LStick = new JoystickPosition { Dx = parts[1], Dy = parts[2] },

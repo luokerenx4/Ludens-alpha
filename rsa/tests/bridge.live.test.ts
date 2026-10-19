@@ -13,7 +13,7 @@ test.skipIf(process.env.RSA_BRIDGE_TEST !== "1")("bridge survives repeated disco
       const epoch = crypto.randomUUID();
       await controller.acquire(epoch);
       if (i === 0) {
-        const action = controller.execute(["apply", "--state", '{"LEFT":1}', "--for-ms", "2000"], { epoch, signal: new AbortController().signal });
+        const action = controller.execute(["apply", "--state", '{"LEFT":1}', "--for-ms", "30000"], { epoch, signal: new AbortController().signal });
         const outcome = action.then((value) => value, (error: Error) => error);
         await Bun.sleep(50);
         provider.close();
