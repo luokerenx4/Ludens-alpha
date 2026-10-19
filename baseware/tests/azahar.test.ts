@@ -7,6 +7,7 @@ import { createAzaharProvider, encodeSpans } from "../src/drivers/azahar/provide
 
 type Request = { id: string; op: string; args: string[]; socket: Socket };
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+const pngs = { top: png, bottom: Buffer.concat([png, Buffer.from("bottom")]) };
 const reply = ({ socket, id }: Request, fields: string[] = []) => socket.write([id, "OK", ...fields].join("\t") + "\n");
 
 async function fixture(run: (provider: Awaited<ReturnType<typeof createAzaharProvider>>, requests: Request[], directory: string) => Promise<void>,
@@ -25,12 +26,12 @@ async function fixture(run: (provider: Awaited<ReturnType<typeof createAzaharPro
         const request = { id, op, args, socket };
         requests.push(request);
         if (handle?.(request)) continue;
-        if (op === "HELLO") reply(request, ["azahar-rsa-2"]);
+        if (op === "HELLO") reply(request, ["azahar-rsa-3"]);
         else if (op === "TOUCH_INFO") reply(request, ["0", "0", "319", "239"]);
         else if (op === "OWN" || op === "DISOWN" || op === "STOP") reply(request);
         else if (op === "STATE") reply(request, ["4097", "32767", "0", "0", "-32767", "-"]);
         else if (op === "APPLY") reply(request, ["completed", "30000", "1800"]);
-        else if (op === "CAPTURE") void writeFile(args[0], png).then(() => reply(request, ["17"]));
+        else if (op === "CAPTURE") void writeFile(args[1], pngs[args[0] as "top" | "bottom"]).then(() => reply(request, ["17"]));
         else if (op.startsWith("TOUCH_")) reply(request, ["completed"]);
         else socket.write(`${id}\tERROR\tUnexpected ${op}\n`);
       }
@@ -59,10 +60,10 @@ test("Azahar encodes real 3DS channels and accepts caller-selected long duration
   }
 });
 
-test("Azahar offers only native pad, touch and screen with a shared lease", async () => {
+test("Azahar offers native pad, touch and two independent screens with a shared lease", async () => {
   await fixture(async (provider, requests) => {
-    expect(provider.version).toBe("2126.2-rsa.2");
-    expect(provider.capabilities.controllers.map(c => c.id)).toEqual(["pad", "touch", "screen"]);
+    expect(provider.version).toBe("2126.2-rsa.3");
+    expect(provider.capabilities.controllers.map(c => c.id)).toEqual(["pad", "touch", "screen.top", "screen.bottom"]);
     const [pad, touch] = provider.capabilities.controllers;
     await pad.acquire!("epoch");
     await touch.acquire!("epoch");
@@ -82,20 +83,66 @@ test("Azahar offers only native pad, touch and screen with a shared lease", asyn
   });
 });
 
-test("Azahar captures the complete native PNG without inventing a presented-frame sequence", async () => {
+test("Azahar samples independent hardware screens without combining or inventing presented-frame sequences", async () => {
   await fixture(async (provider, requests) => {
-    const screen = provider.capabilities.controllers.find(c => c.id === "screen")!;
     const signal = new AbortController().signal;
-    const result = await screen.execute(["capture"], { signal });
-    const observation = result.observations![0];
-    expect(await readFile(observation.path)).toEqual(png);
-    expect(observation.controllerId).toBe("screen");
-    expect(observation.sourceSequence).toBeUndefined();
-    expect(JSON.parse(result.stdout)).toEqual({ captureSequence: 17 });
+    const paths: string[] = [];
+    for (const source of ["top", "bottom"] as const) {
+      const screen = provider.capabilities.controllers.find(c => c.id === `screen.${source}`)!;
+      const result = await screen.execute(["capture"], { signal });
+      const observation = result.observations![0];
+      expect(result.observations).toHaveLength(1);
+      expect(await readFile(observation.path)).toEqual(pngs[source]);
+      expect(observation.controllerId).toBe(`screen.${source}`);
+      expect(observation.sourceSequence).toBeUndefined();
+      expect(JSON.parse(result.stdout)).toEqual({ captureSequence: 17 });
+      expect(requests.filter(r => r.op === "CAPTURE").at(-1)!.args).toEqual([source, observation.path]);
+      expect(screen.help()).toContain(source === "top" ? "400×240" : "320×240");
+      await expect(screen.execute(["capture", "--crop", "bottom"], { signal })).rejects.toThrow();
+      paths.push(observation.path);
+    }
+    expect(paths[0]).not.toBe(paths[1]);
     expect(requests.filter(r => r.op === "OWN")).toHaveLength(0);
-    expect(requests.find(r => r.op === "CAPTURE")!.args).toEqual([observation.path]);
-    await expect(screen.execute(["capture", "--crop", "bottom"], { signal })).rejects.toThrow();
-    expect(requests.filter(r => r.op === "CAPTURE")).toHaveLength(1);
+    expect(requests.filter(r => r.op === "CAPTURE")).toHaveLength(2);
+  });
+});
+
+test("Azahar serializes concurrent source captures without merging their observations", async () => {
+  let active = false;
+  await fixture(async (provider, requests) => {
+    const top = provider.capabilities.controllers.find(c => c.id === "screen.top")!;
+    const bottom = provider.capabilities.controllers.find(c => c.id === "screen.bottom")!;
+    const signal = new AbortController().signal;
+    const results = await Promise.all([
+      top.execute(["capture"], { signal }), bottom.execute(["capture"], { signal }),
+    ]);
+    expect(requests.filter(r => r.op === "CAPTURE").map(r => r.args[0])).toEqual(["top", "bottom"]);
+    expect(results.map(r => r.observations![0].controllerId)).toEqual(["screen.top", "screen.bottom"]);
+    expect(results[0].observations![0].path).not.toBe(results[1].observations![0].path);
+    expect(results[1].timing.requestedAtMs).toBeGreaterThanOrEqual(results[0].timing.receivedAtMs);
+    expect(results[1].timing.receivedAtMs).toBeGreaterThan(results[0].timing.receivedAtMs);
+    for (let index = 0; index < results.length; index++) {
+      expect(results[index].observations).toHaveLength(1);
+      expect(await readFile(results[index].observations![0].path)).toEqual(index === 0 ? pngs.top : pngs.bottom);
+    }
+    const abort = new AbortController();
+    const first = top.execute(["capture"], { signal });
+    const queued = bottom.execute(["capture"], { signal: abort.signal }).catch(error => error);
+    abort.abort();
+    await first;
+    expect(await queued).toBeInstanceOf(Error);
+    expect(requests.filter(r => r.op === "CAPTURE")).toHaveLength(3);
+  }, request => {
+    if (request.op !== "CAPTURE") return false;
+    if (active) { request.socket.write(`${request.id}\tERROR\tCAPTURE_BUSY\n`); return true; }
+    active = true;
+    void (async () => {
+      await Bun.sleep(10);
+      await writeFile(request.args[1], pngs[request.args[0] as "top" | "bottom"]);
+      active = false;
+      reply(request, ["17"]);
+    })();
+    return true;
   });
 });
 

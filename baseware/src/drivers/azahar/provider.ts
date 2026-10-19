@@ -47,14 +47,14 @@ All controls return to 0 at completion or cancellation. One action at a time; BU
 release interrupts current pad and touch input but retains ownership. Human auto off restores human input.
 state reports the bridge's current controls and action ID, never game memory.`;
 
-/** Native pad, single-contact touch and the emulator's current render layout. */
+/** Native pad, single-contact touch and independent hardware screen sources. */
 export async function createAzaharProvider(options: { port: number; artifactsDir: string; clock: Clock }) {
   const { clock } = options;
   await mkdir(options.artifactsDir, { recursive: true });
   const bridge = await Bridge.open(options.port);
   try {
     const [version] = await bridge.request("HELLO");
-    if (version !== "azahar-rsa-2") throw new Error(`Unexpected bridge: ${version}`);
+    if (version !== "azahar-rsa-3") throw new Error(`Unexpected bridge: ${version}`);
     let owner: string | undefined;
     const acquire = async (epoch: string) => {
       if (owner === epoch) return;
@@ -66,22 +66,35 @@ export async function createAzaharProvider(options: { port: number; artifactsDir
       await bridge.request("DISOWN", [epoch]);
     };
     const touch = await createTouchController({ bridge, clock, acquire, release, owns: epoch => owner === epoch });
-    const screen: Controller = {
-      id: "screen", requiresControl: false, mediaTypes: ["image/png"],
-      help: () => "capture\nCapture the current complete emulator render layout as PNG. No screen identification, cropping or coordinate conversion. Returns an immutable path, sample interval and captureSequence; this sequence counts captures, not presented frames.",
-      async execute(argv, { signal }) {
-        if (argv.length !== 1 || argv[0] !== "capture") throw new Error("Usage: controller screen capture");
-        signal.throwIfAborted();
-        const id = crypto.randomUUID();
-        const path = join(options.artifactsDir, `${id}.png`);
-        const requestedAtMs = clock.now();
-        const [sequence] = await bridge.request("CAPTURE", [path], id);
-        signal.throwIfAborted();
-        const timing = { clock: clock.id, requestedAtMs, receivedAtMs: clock.now() };
-        return { id, status: "completed", exitCode: 0, stdout: JSON.stringify({ captureSequence: Number(sequence) }), stderr: "", timing,
-          observations: [{ id, controllerId: "screen", mediaType: "image/png", path, timing }] };
-      },
-    };
+    let captureTail = Promise.resolve();
+    const screens = (["top", "bottom"] as const).map((source): Controller => {
+      const controllerId = `screen.${source}`;
+      const dimensions = source === "top" ? "400×240" : "320×240";
+      return {
+        id: controllerId, requiresControl: false, mediaTypes: ["image/png"],
+        help: () => `capture\nCapture the native ${source} screen (${dimensions}) as one PNG. This is an independent hardware source; no combined layout, cropping, scaling or coordinate conversion. Returns an immutable path, sample interval and captureSequence; this sequence counts captures, not presented frames.`,
+        async execute(argv, { signal }) {
+          if (argv.length !== 1 || argv[0] !== "capture") throw new Error(`Usage: controller ${controllerId} capture`);
+          signal.throwIfAborted();
+          const id = crypto.randomUUID();
+          const path = join(options.artifactsDir, `${id}.png`);
+          const previous = captureTail;
+          let release!: () => void;
+          captureTail = new Promise<void>(resolve => { release = resolve; });
+          try {
+            // Both sources share one native renderer capture slot, not one image.
+            await previous;
+            signal.throwIfAborted();
+            const requestedAtMs = clock.now();
+            const [sequence] = await bridge.request("CAPTURE", [source, path], id);
+            signal.throwIfAborted();
+            const timing = { clock: clock.id, requestedAtMs, receivedAtMs: clock.now() };
+            return { id, status: "completed", exitCode: 0, stdout: JSON.stringify({ captureSequence: Number(sequence) }), stderr: "", timing,
+              observations: [{ id, controllerId, mediaType: "image/png", path, timing }] };
+          } finally { release(); }
+        },
+      };
+    });
     const pad: Controller = {
       id: "pad", requiresControl: true, help: () => PAD_HELP,
       acquire, release,
@@ -126,8 +139,8 @@ export async function createAzaharProvider(options: { port: number; artifactsDir
       },
     };
     return {
-      capabilities: { controllers: [pad, touch, screen] } satisfies Capabilities,
-      version: "2126.2-rsa.2",
+      capabilities: { controllers: [pad, touch, ...screens] } satisfies Capabilities,
+      version: "2126.2-rsa.3",
       onDisconnect(handler: (error: Error) => void) { bridge.onDisconnect = handler; },
       close() { bridge.close(); },
     };

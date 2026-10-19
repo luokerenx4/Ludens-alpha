@@ -87,7 +87,11 @@ export async function launchPlan(config: LaunchConfig, workspace: string, repo =
         "--data-dir", join(workspace, "logs/baseware")],
       host: [rsa, "run", "--baseware-socket", basewareSocket, "--model", config.model,
         "--seconds", String(config.seconds), "--requests", String(config.requests), "--compaction-threshold", String(config.compactionThreshold),
-        ...(config.driver === "cua" ? ["--auto-observe", JSON.stringify([{ controllerId: "cua.get_desktop_state", argv: [] }])] : [])],
+        ...(config.driver === "cua" ? ["--auto-observe", JSON.stringify([{ controllerId: "cua.get_desktop_state", argv: [] }])]
+          : config.driver === "azahar" ? ["--auto-observe", JSON.stringify([
+            { controllerId: "screen.top", argv: ["capture"] },
+            { controllerId: "screen.bottom", argv: ["capture"] },
+          ])] : [])],
       ...(config.dashboard ? { dashboard: ["npm", "--prefix", join(repo, "rsa-dashboard"), "run", "dev"] } : {}),
       ...(config.pet ? { pet: [join(repo, "rsa-companion/bin/rsa-companion"), "--workspace", workspace,
         "--profile", join(background, "pet-profile"), "--show-window"] } : {}),

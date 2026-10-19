@@ -65,10 +65,11 @@ after the emulator samples it. Cancellation or returning control lifts the conta
 There are no built-in tap, drag, timing, screen-layout or screenshot-coordinate
 conversion commands. Callers compose those behaviors in workspace code.
 
-Azahar provides its own native `pad`, `touch` and `screen` controllers. It has no
-Cua dependency or desktop capabilities. Screen capture returns the emulator's
-complete current framebuffer layout; interpretation and transformation belong to
-workspace code. Prepare the patched emulator using the
+Azahar provides its own native `pad`, `touch`, `screen.top` and `screen.bottom`
+controllers. It has no Cua dependency or desktop capabilities. Each screen
+capture returns one independent hardware image (400×240 or 320×240), with no
+combined layout. Sensor fusion and transformation belong to workspace code.
+Prepare the patched emulator using the
 [Azahar driver instructions](src/drivers/azahar/README.md), then connect:
 
 ```sh

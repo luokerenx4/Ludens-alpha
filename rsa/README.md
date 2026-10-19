@@ -89,7 +89,7 @@ NDS 的 [melonDS](https://github.com/melonDS-emu/melonDS/releases) 可按桌面�
 
 ### 3DS / Azahar
 
-Azahar 是独立的 3DS driver，提供原生 `pad`、`touch` 和 `screen`，不依赖 Cua。先按 [Azahar driver 文档](../baseware/src/drivers/azahar/README.md) 构建并安装带桥模拟器，再在独立工作区启动：
+Azahar 是独立的 3DS driver，提供原生 `pad`、`touch`、`screen.top` 和 `screen.bottom`，不依赖 Cua。先按 [Azahar driver 文档](../baseware/src/drivers/azahar/README.md) 构建并安装带桥模拟器，再在独立工作区启动：
 
 ```sh
 rsa init --driver azahar --game /absolute/path/to/game.3ds --seconds 1800
@@ -99,7 +99,7 @@ rsa controller list
 rsa controller controller/touch --help
 ```
 
-已有带桥模拟器运行时可省略 `--game`；默认原生桥端口为 47673。按键、摇杆和触屏通过模拟器内部输入状态注入，不依赖桌面鼠标坐标或窗口焦点。初始自动观测使用 `screen capture`，返回模拟器当前完整渲染布局。Agent 可在 workspace 中自行写 observe hook 处理画面；驱动不识别上下屏、不裁剪、不推导屏幕到触点的坐标关系。
+已有带桥模拟器运行时可省略 `--game`；默认原生桥端口为 47673。按键、摇杆和触屏通过模拟器内部输入状态注入，不依赖桌面鼠标坐标或窗口焦点。初始自动观测分别调用 `screen.top capture` 和 `screen.bottom capture`，原样送入两张独立的 400×240、320×240 图像。它们来自各自的硬件屏幕，不从窗口合图中裁剪；采样时间分别记录，不假定同时采样。Agent 自己在 workspace 中编写、试用和修改 observe hook，决定如何融合这些观测；驱动不提供拼接策略或画面到触点的坐标变换。
 
 `touch` 只提供 `down --x <整数> --y <整数>`、`move --x <整数> --y <整数>`、`up`。3DS 范围为 x=0..319、y=0..239，均包含端点；原点在左上，x 向右、y 向下。状态跨调用保留，down 要求当前未按下，move 要求已经按下，释放操作权或取消会抬起。点按、拖拽、等待和画面坐标转换由 Agent 自己组合成 workspace 脚本，仍优先通过 `rsa controller` 发现和使用。
 

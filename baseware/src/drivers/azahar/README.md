@@ -1,7 +1,7 @@
 # Azahar driver
 
-The pinned Azahar 2126.2 build exposes three native capabilities: `pad`, `touch`,
-and `screen`. They share one emulator connection and input epoch. This driver
+The pinned Azahar 2126.2 build exposes four native capabilities: `pad`, `touch`,
+`screen.top`, and `screen.bottom`. They share one emulator connection and input epoch. This driver
 has no CUA dependency and sends no desktop keyboard or mouse events.
 
 - `pad` supplies the physical buttons, Circle Pad, and C-stick at Azahar's input
@@ -10,10 +10,11 @@ has no CUA dependency and sends no desktop keyboard or mouse events.
 - `touch` supplies a single contact in integer device coordinates `x=0..319`,
   `y=0..239`. Only down, move, and up are exposed. No tap, drag, display scaling,
   screen identification, or coordinate conversion is built in.
-- `screen` uses Azahar's renderer screenshot path and returns the complete current
-  primary render layout as PNG. It does not inspect, split, or crop the image.
-  Paused/no-game capture requests fail directly; pausing or stopping an in-flight
-  capture resolves it with the same error instead of leaving a pending request.
+- `screen.top` and `screen.bottom` independently render one hardware screen through
+  Azahar's screenshot path: 400×240 for the top display (left eye), 320×240 for the
+  bottom touchscreen. They do not read window layout, crop a combined image, add
+  host cursor overlays, or compose the two sources. Paused/no-game requests fail
+  directly; pausing or stopping an in-flight capture resolves that request.
 
 ## Build and launch
 
@@ -34,7 +35,7 @@ plus optional fields, or `ERROR` plus a message.
 
 | Request fields after ID | Result |
 | --- | --- |
-| `HELLO` | `azahar-rsa-2` |
+| `HELLO` | `azahar-rsa-3` |
 | `OWN epoch` | Acquire neutral native input. |
 | `STATE epoch` | `mask lx ly rx ry actionId` (tab separated); action ID is `-` when idle. |
 | `APPLY epoch sequence` | `completed\|interrupted elapsedMs polls`. |
@@ -42,7 +43,7 @@ plus optional fields, or `ERROR` plus a message.
 | `TOUCH_DOWN epoch x y` | Press one contact; fails if already down. |
 | `TOUCH_MOVE epoch x y` | Move the current contact; fails if not down. |
 | `TOUCH_UP epoch` | Release; idempotent. |
-| `CAPTURE absolutePath` | Save PNG, return a capture sequence number, not a game-frame number. |
+| `CAPTURE top\|bottom absolutePath` | Save the selected hardware screen as PNG, return a capture sequence number, not a game-frame number. |
 | `STOP epoch [request-id]` | Cancel matching pad/touch action; omitted ID releases both. |
 | `DISOWN epoch` | Release all native input and restore human input. |
 

@@ -156,7 +156,10 @@ test("Azahar launches its own native device without desktop dependencies", async
   expect(value.commands.baseware).toContain("azahar");
   expect(value.commands.baseware).toContain("47673");
   expect(value.commands.baseware).not.toContain("--cua-command");
-  expect(value.commands.host).not.toContain("--auto-observe");
+  expect(value.commands.host![value.commands.host!.indexOf("--auto-observe") + 1]).toBe(JSON.stringify([
+    { controllerId: "screen.top", argv: ["capture"] },
+    { controllerId: "screen.bottom", argv: ["capture"] },
+  ]));
   expect(() => parseConfig({ driver: "azahar", cuaCommand: "/tools/cua-driver" })).toThrow("cua driver");
   const io = new FakeServices(value);
   io.bridgePort = 47673;

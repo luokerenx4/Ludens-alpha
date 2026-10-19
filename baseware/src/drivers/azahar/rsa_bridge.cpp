@@ -136,7 +136,7 @@ struct RsaBridge::Impl {
         if (fields.size() < 2) throw std::runtime_error("INVALID_COMMAND");
         std::unique_lock lock(mutex);
         const auto& op = fields[1];
-        if (op == "HELLO") return "azahar-rsa-2";
+        if (op == "HELLO") return "azahar-rsa-3";
         if (op == "TOUCH_INFO") return "0\t0\t319\t239";
         if (op == "TOUCH_STATE") {
             return std::to_string(!epoch.empty()) + "\t" + std::to_string(pressed) + "\t" +
@@ -144,7 +144,9 @@ struct RsaBridge::Impl {
                    std::to_string(generation) + "\t" + std::to_string(sampled);
         }
         if (op == "CAPTURE") {
-            if (fields.size() != 3 || fields[2].empty() || fields[2][0] != '/')
+            if (fields.size() != 4 || (fields[2] != "top" && fields[2] != "bottom"))
+                throw std::runtime_error("CAPTURE_SOURCE_REQUIRED");
+            if (fields[3].empty() || fields[3][0] != '/')
                 throw std::runtime_error("ABSOLUTE_PATH_REQUIRED");
             if (!capture_handler) throw std::runtime_error("NO_RENDERER");
             if (capture) throw std::runtime_error("CAPTURE_BUSY");
@@ -152,7 +154,7 @@ struct RsaBridge::Impl {
             auto handler = capture_handler;
             const auto id = fields[0];
             lock.unlock();
-            handler(fields[2], [this, id](std::string error) {
+            handler(fields[2], fields[3], [this, id](std::string error) {
                 std::lock_guard guard(mutex);
                 if (!capture || capture->id != id) return;
                 replies.emplace_back(id, error.empty() ? "OK\t" + std::to_string(capture->sequence)

@@ -16,7 +16,7 @@ public:
     };
     using Update = std::function<void(bool owned, bool pressed, unsigned x, unsigned y,
                                       std::uint64_t generation)>;
-    using Capture = std::function<void(const std::string& path,
+    using Capture = std::function<void(const std::string& source, const std::string& path,
                                        std::function<void(std::string error)> done)>;
     RsaBridge(unsigned port, Update update);
     ~RsaBridge();
