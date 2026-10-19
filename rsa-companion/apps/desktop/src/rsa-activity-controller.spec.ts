@@ -10,7 +10,7 @@ function block(id: string, kind: LogBlock['kind'] = 'tool', status: LogBlock['st
 function state(blocks: LogBlock[] = [], overrides: Partial<RsaActivitySnapshot> = {}): RsaActivitySnapshot {
   return { identity: 'workspace:run:epoch', activity: 'running', blocks, current: {
     workspace: '/workspace', runId: 'run', epoch: 'epoch', phase: '等待模型首事件', intent: '查看证据',
-    observationUrl: null, updatedAt: '2026-10-17T13:40:00Z', error: null, dashboardUrl: 'http://localhost:3015', blocks,
+    observationUrl: null, updatedAt: '2026-10-17T13:40:00Z', error: null, dashboardUrl: 'http://localhost:3015/?project=workspace&run=run&epoch=epoch', blocks,
   }, ...overrides }
 }
 function setup() {
@@ -196,7 +196,9 @@ describe('RSA block speech', () => {
     await s.poll(state([block('first'), block('queued')]))
     const oldId = s.shows()[0].event.displayId
     expect(s.controller.open(oldId, 'main')).toBe(false)
-    expect(s.controller.open(oldId, 'pet')).toBe(true); expect(s.open).toHaveBeenCalledWith('office')
+    expect(s.controller.open(oldId, 'pet')).toBe(true)
+    const detail = new URL(s.open.mock.calls.at(-1)![0])
+    expect(Object.fromEntries(detail.searchParams)).toMatchObject({ project: 'workspace', run: 'run', epoch: 'epoch', view: 'live', block: 'first' })
     await s.poll(state([block('next-active', 'text', 'running')], { identity: 'workspace:run:new-epoch' }))
     expect(s.controller.dismiss(oldId, 'pet')).toBe(false)
     expect(s.shows().at(-1)?.event.input.id).toBe('next-active')

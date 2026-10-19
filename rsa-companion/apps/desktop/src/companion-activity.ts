@@ -5,7 +5,12 @@ import { RsaActivityController } from './rsa-activity-controller.js'
 import type { RsaActivitySource } from './rsa-source.js'
 import { DEFAULT_ACTIVITY_PREFERENCES } from './activity-policy.js'
 
-export function installCompanionActivity(owner: BrowserWindow, pet: BrowserWindow) {
+export interface OwnerAccess {
+  trustedOwner?(event: Electron.IpcMainInvokeEvent): boolean
+  openDetails?(url: string): void
+}
+
+export function installCompanionActivity(owner: BrowserWindow, pet: BrowserWindow, access: OwnerAccess = {}) {
   const store = createActivityPreferenceStore(join(app.getPath('userData'), 'activity-notifications.json'), {
     ...DEFAULT_ACTIVITY_PREFERENCES,
     events: { ...DEFAULT_ACTIVITY_PREFERENCES.events, progress: true, news: false }, brief: false,
@@ -22,15 +27,17 @@ export function installCompanionActivity(owner: BrowserWindow, pet: BrowserWindo
       const window = surface === 'main' ? owner : pet
       if (!window.isDestroyed()) window.webContents.send('openalice:activity:display', event)
     },
-    open: context => {
+    open: url => {
       if (owner.isDestroyed()) return
       if (owner.isMinimized()) owner.restore()
       owner.show(); owner.focus()
-      owner.webContents.send('openalice:activity:open', context)
+      if (access.openDetails) access.openDetails(url)
+      else owner.webContents.send('openalice:activity:open', url)
     },
   }, store.get())
   const trusted = (event: Electron.IpcMainInvokeEvent, window: BrowserWindow) =>
     !window.isDestroyed() && event.sender === window.webContents && event.senderFrame === window.webContents.mainFrame
+      && (window !== owner || !access.trustedOwner || access.trustedOwner(event))
   const handlers: string[] = []
   const handle = (name: string, callback: (event: Electron.IpcMainInvokeEvent, input: unknown) => unknown) => {
     const channel = 'openalice:activity:' + name; handlers.push(channel); ipcMain.handle(channel, callback)

@@ -1,300 +1,287 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
-import type { Call, Observation, Project, RunData } from "@/lib/types";
-import { sseFallbackReason } from "@/lib/transport";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import type { Project, RunData } from "@/lib/types";
+import type { LogBlock } from "@/lib/activity";
 import { initialSelection } from "@/lib/initial-selection";
-const sec = (ms: number | null | undefined) =>
-  ms == null ? "—" : `${(ms / 1000).toFixed(1)}s`;
-const mb = (n: number | null) =>
-  n === null ? "—" : `${(n / 1e6).toFixed(2)} MB`;
-const percent = (n: number | null) =>
-  n == null ? "—" : `${(n * 100).toFixed(1)}%`;
-const time = (s: string) =>
-  new Date(s).toLocaleTimeString("zh-CN", {
-    hour12: false,
-    timeZone: "Asia/Shanghai",
-  });
-const date = (s: string) => {
-  const p = s.match(/^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})/);
-  return p
-    ? new Date(`${p[1]}T${p[2]}:${p[3]}:${p[4]}Z`).toLocaleString("zh-CN", {
-        timeZone: "Asia/Shanghai",
-        hour12: false,
-      })
-    : s;
-};
-const originName: Record<string, string> = {
-  prompt_start: "轮次输入",
-  tool_batch: "自动观测",
-  explicit: "主动 observe",
-  cli: "CLI 采样",
-  unknown: "观测",
-};
-const requestBytes = (call: Call) =>
-  call.transport === "websocket" ? call.frameBytes : call.wireBytes;
-const transportName = (call: Call) =>
-  call.transport === "websocket"
-    ? `WS · ${call.incremental === null ? "未注明" : call.incremental ? "增量" : "全量"}`
-    : call.transport === "sse" ? "SSE" : "传输未记录";
-async function json<T>(url: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(url, { cache: "no-store", ...init });
-  const data = await r.json();
-  if (!r.ok) throw new Error(data.error ?? "请求失败");
-  return data;
+import { ActivityFeed } from "@/components/activity-feed";
+import { AliceSettings } from "@/components/alice-settings";
+import { DesktopBridge } from "@/components/desktop-bridge";
+import {
+  Metric,
+  ObservationPanel,
+  RequestChart,
+  RequestDetails,
+  seconds,
+  percent,
+  bytes,
+  clockTime,
+  requestBytes,
+  transport,
+} from "@/components/run-visuals";
+
+async function json<T>(url: string, signal?: AbortSignal): Promise<T> {
+  const response = await fetch(url, { cache: "no-store", signal });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error ?? "读取失败");
+  return result;
 }
-function Chart({
-  calls,
-  type,
-  selected,
-  onSelect,
-}: {
-  calls: Call[];
-  type: "latency" | "cache" | "body";
-  selected?: string;
-  onSelect: (id: string) => void;
-}) {
-  const values = calls.map((c) => {
-    const value = type === "latency" ? c.durationMs : type === "cache" ? c.cacheHit : requestBytes(c);
-    return value === null ? null : value / (type === "latency" ? 1000 : type === "cache" ? 0.01 : 1e6);
-  });
-  const max = type === "cache" ? 100 : Math.max(1, ...values.flatMap(v => v === null ? [] : [v])) * 1.12;
-  const x = (i: number) => 28 + ((i + 0.5) * 512) / Math.max(1, calls.length);
-  const y = (v: number) => 113 - (v / max) * 88;
-  const line = values
-    .flatMap((v, i) =>
-      v === null
-        ? []
-        : [`${x(i)},${y(v)}`],
-    )
-    .join(" ");
+const subscribeLocation = (listener: () => void) => {
+  window.addEventListener("popstate", listener);
+  return () => window.removeEventListener("popstate", listener);
+};
+const getLocation = () => window.location.search;
+const serverLocation = () => "";
+const views = {
+  live: ["运行", "运行现场", "看看它正在看什么、做什么。"],
+  benchmark: ["Benchmark", "运行性能", "沿着一次请求，找到循环里的等待。"],
+  alice: ["Alice", "与 Alice 一起工作", "按自己的习惯，调整她的陪伴方式。"],
+} as const;
+type View = keyof typeof views;
+function workspaceName(project?: Project) {
+  if (!project) return "选择工作空间";
+  if (project.workspace) {
+    const parts = project.workspace.split("/").filter(Boolean);
+    return (
+      (parts.at(-1) === "workspace" ? parts.at(-2) : parts.at(-1)) ?? project.id
+    );
+  }
+  return project.id;
+}
+const runDate = (id: string) => {
+  const match = id.match(/^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})/);
+  return match
+    ? new Date(
+        match[1] + "T" + match[2] + ":" + match[3] + ":" + match[4] + "Z",
+      ).toLocaleString("zh-CN", {
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+        timeZone: "Asia/Shanghai",
+      })
+    : id;
+};
+function NavIcon({ kind }: { kind: View | "logo" }) {
   return (
     <svg
-      className="chart"
-      viewBox="0 0 560 145"
-      role="img"
-      aria-label={
-        type === "latency"
-          ? "逐请求耗时和响应头等待"
-          : type === "cache"
-            ? "逐请求缓存命中率"
-            : "逐请求体大小"
-      }
+      viewBox="0 0 24 24"
+      width="22"
+      height="22"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      aria-hidden="true"
     >
-      {[0, 0.5, 1].map((v) => (
-        <g key={v}>
-          <line
-            x1="28"
-            x2="542"
-            y1={y(v * max)}
-            y2={y(v * max)}
-            className="grid-line"
-          />
-          <text x="23" y={y(v * max) + 3} textAnchor="end">
-            {(v * max).toFixed(0)}
-          </text>
-        </g>
-      ))}
-      {type === "latency" &&
-        calls.map((c, i) => c.headersMs === null ? null : (
-          <rect
-            key={c.id}
-            x={x(i) - Math.max(1, 170 / calls.length)}
-            y={y(c.headersMs / 1000)}
-            width={Math.max(2, 340 / calls.length)}
-            height={Math.max(0, 113 - y(c.headersMs / 1000))}
-            fill="#4c5c9d"
-            opacity=".75"
-          />
-        ))}
-      <polyline
-        points={line}
-        fill="none"
-        stroke={
-          type === "latency"
-            ? "#a4b4ff"
-            : type === "cache"
-              ? "#7cdbb9"
-              : "#e4ba73"
-        }
-        strokeWidth="2"
-      />
-      {calls.map((c, i) => (
-        <g key={c.id}>
-          {c.id === selected && (
-            <line
-              x1={x(i)}
-              x2={x(i)}
-              y1="19"
-              y2="116"
-              stroke="#fff"
-              strokeDasharray="3 3"
-              opacity=".45"
-            />
-          )}
-          <rect
-            x={x(i) - 256 / calls.length}
-            y="12"
-            width={512 / calls.length}
-            height="112"
-            fill="transparent"
-            onClick={() => onSelect(c.id)}
-            className="chart-hit"
-          >
-            <title>
-              #{c.index} ·{" "}
-              {values[i] === null
-                ? "无数据"
-                : `${values[i].toFixed(2)}${type === "latency" ? " 秒" : type === "cache" ? "%" : " MB"}`}
-            </title>
-          </rect>
-        </g>
-      ))}
-      <text x="28" y="138">
-        #1
-      </text>
-      <text x="542" y="138" textAnchor="end">
-        #{calls.length || "—"}
-      </text>
+      {kind === "logo" ? (
+        <>
+          <path d="m12 2 9 5v10l-9 5-9-5V7Z" />
+          <path d="m3 7 9 5 9-5M12 12v10" />
+        </>
+      ) : kind === "live" ? (
+        <path d="m8 5 11 7-11 7Z" fill="currentColor" stroke="none" />
+      ) : kind === "benchmark" ? (
+        <>
+          <path d="M4 19V11M10 19V5M16 19V8M22 19V2" strokeWidth="3" />
+        </>
+      ) : (
+        <>
+          <path d="M4 18v-6a8 8 0 0 1 16 0v6M7 21h10M8 13h.01M16 13h.01M9 17q3 3 6 0" />
+          <path d="M2 12v5h3M22 12v5h-3" />
+        </>
+      )}
     </svg>
   );
 }
+
 export default function Dashboard() {
+  const search = useSyncExternalStore(
+    subscribeLocation,
+    getLocation,
+    serverLocation,
+  );
+  const query = new URLSearchParams(search);
+  const view: View =
+    query.get("view") === "benchmark"
+      ? "benchmark"
+      : query.get("view") === "alice"
+        ? "alice"
+        : "live";
   const [projects, setProjects] = useState<Project[]>([]);
-  const [project, setProject] = useState("");
-  const [run, setRun] = useState("");
-  const [epoch, setEpoch] = useState("");
-  const [loaded, setData] = useState<RunData | null>(null);
+  const [catalogReady, setCatalogReady] = useState(false);
+  const [catalogError, setCatalogError] = useState("");
+  const [loaded, setLoaded] = useState<{ key: string; data: RunData } | null>(
+    null,
+  );
+  const [activity, setActivity] = useState<{
+    key: string;
+    epoch: string | null;
+    blocks: LogBlock[];
+  } | null>(null);
   const [error, setError] = useState("");
-  const [selected, setSelected] = useState<string | null>(null);
-  const [imageId, setImageId] = useState<string | null>(null);
+  const [activityError, setActivityError] = useState("");
   const [refresh, setRefresh] = useState(true);
+  const [desktop, setDesktop] = useState(false);
   const [stopping, setStopping] = useState(false);
-  const [panel, setPanel] = useState<"tools" | "skills" | "events">("tools");
-  const initialCycle = useRef<{ project: string; run: string; epoch: string } | null>(null);
-  useEffect(() => {
-    let active = true;
-    let initialized = false;
-    const load = async () => {
-      try {
-        const ps = await json<Project[]>("/api/catalog");
-        if (!active) return;
-        setProjects(ps);
-        if (!initialized && ps.length) {
-          initialized = true;
-          const target = initialSelection(window.location.search, ps);
-          initialCycle.current = {
-            ...target,
-            run: target.run || ps.find((p) => p.id === target.project)?.runs[0]?.id || "",
-          };
-          setProject(target.project);
-          setRun(target.run);
-        } else {
-          setProject((p) => p || ps[0]?.id || "");
-        }
-        setError("");
-      } catch (e) {
-        if (active) setError(String(e));
-      }
-    };
-    void load();
-    const id = setInterval(load, 10000);
-    return () => {
-      active = false;
-      clearInterval(id);
-    };
-  }, []);
-  const currentProject = projects.find((p) => p.id === project);
-  const effectiveRun = run || currentProject?.runs[0]?.id || "";
-  const data =
-    loaded?.project === project &&
-    loaded.run === effectiveRun &&
-    (!epoch || loaded.selectedEpoch === epoch)
-      ? loaded
-      : null;
-  const cycles =
-    loaded?.project === project && loaded.run === effectiveRun
-      ? loaded.cycles
+  const [panel, setPanel] = useState("trace");
+  const [requestLimit, setRequestLimit] = useState(100);
+  const selection = initialSelection(search, projects);
+  const project = projects.find((p) => p.id === selection.project);
+  const run = selection.run || project?.runs[0]?.id || "";
+  const key = selection.project + "/" + run + "/" + selection.epoch;
+  const data = loaded?.key === key ? loaded.data : null;
+  const blocks =
+    activity?.key === key && activity.epoch === data?.selectedEpoch
+      ? activity.blocks
       : [];
-  const runUrl = `/api/run?project=${encodeURIComponent(project)}&run=${encodeURIComponent(effectiveRun)}${epoch ? `&epoch=${encodeURIComponent(epoch)}` : ""}`;
+  const call =
+    data?.calls.find((c) => c.id === query.get("call")) ?? data?.calls.at(-1);
+  const selectedImage = query.get("image") ?? undefined;
+  const navigateUrl = useCallback((target: string) => {
+    const url = new URL(target, window.location.href);
+    if (url.origin !== window.location.origin) return;
+    const next = url.pathname + url.search;
+    if (next === window.location.pathname + window.location.search) return;
+    window.history.pushState(null, "", next);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  }, []);
+  const navigate = (patch: Record<string, string | null>) => {
+    const params = new URLSearchParams(window.location.search);
+    for (const [name, value] of Object.entries(patch))
+      value ? params.set(name, value) : params.delete(name);
+    navigateUrl("/?" + params.toString());
+  };
+  const pinned = {
+    project: selection.project,
+    run,
+    epoch: data?.selectedEpoch ?? selection.epoch,
+  };
+  const selectCall = (id: string) =>
+    navigate({ ...pinned, call: id, image: null, block: null });
   useEffect(() => {
-    if (!project || !effectiveRun) return;
-    let active = true;
+    setDesktop(!!window.openAlice?.companion);
+  }, []);
+  useEffect(() => {
+    const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
-    setData(null);
-    setSelected(null);
-    setImageId(null);
     const load = async () => {
       try {
-        const next = await json<RunData>(runUrl);
-        if (active) {
-          const target = initialCycle.current;
-          initialCycle.current = null;
-          if (target?.project === next.project && target.run === next.run &&
-              next.cycles.some((cycle) => cycle.epoch === target.epoch)) {
-            setEpoch(target.epoch);
-          }
-          setData(next);
-          setError("");
-        }
+        const value = await json<Project[]>("/api/catalog", controller.signal);
+        setProjects(value);
+        setCatalogError("");
       } catch (e) {
-        if (active) setError(String(e));
+        if (!controller.signal.aborted) setCatalogError(String(e));
       } finally {
-        if (active && refresh) timer = setTimeout(load, 2500);
+        if (!controller.signal.aborted) {
+          setCatalogReady(true);
+          timer = setTimeout(load, 10000);
+        }
       }
     };
     void load();
     return () => {
-      active = false;
+      controller.abort();
       clearTimeout(timer);
     };
-  }, [project, effectiveRun, epoch, refresh, runUrl]);
-  const call = data?.calls.find((c) => c.id === selected) ?? data?.calls.at(-1);
-  const fallbackReason = call && data
-    ? sseFallbackReason(call, Date.parse(data.updatedAt))
-    : null;
-  const samples = call
-    ? [...new Set([...call.inputObservations, ...call.observations])].flatMap(
-        (id) => {
-          const o = data?.observations.find((o) => o.id === id);
-          return o ? [o] : [];
-        },
-      )
-    : [];
-  const observation =
-    data?.observations.find((o) => o.id === imageId) ??
-    samples.at(-1) ??
-    data?.observations.at(-1);
-  const mediaUrl = (o: Observation) =>
-    `/api/media?project=${encodeURIComponent(project)}&run=${encodeURIComponent(effectiveRun)}&id=${encodeURIComponent(o.id)}`;
-  const select = (id: string) => {
-    setSelected(id);
-    setImageId(null);
-  };
+  }, []);
+  useEffect(() => {
+    if (!selection.project || !run) return;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    const params = new URLSearchParams({
+      project: selection.project,
+      run,
+      ...(selection.epoch ? { epoch: selection.epoch } : {}),
+    });
+    const load = async () => {
+      try {
+        const next = await json<RunData>(
+          "/api/run?" + params,
+          controller.signal,
+        );
+        if (controller.signal.aborted) return;
+        setLoaded({ key, data: next });
+        setError("");
+        if (view === "live") {
+          try {
+            // Pin activity to the cycle returned by /run so a new takeover cannot mix two cycles.
+            const activityParams = new URLSearchParams(params);
+            if (next.selectedEpoch)
+              activityParams.set("epoch", next.selectedEpoch);
+            const result = await json<{ blocks: LogBlock[] }>(
+              "/api/activity?" + activityParams,
+              controller.signal,
+            );
+            if (!controller.signal.aborted) {
+              setActivity({
+                key,
+                epoch: next.selectedEpoch,
+                blocks: result.blocks,
+              });
+              setActivityError("");
+            }
+          } catch (e) {
+            if (!controller.signal.aborted) setActivityError(String(e));
+          }
+        }
+      } catch (e) {
+        if (!controller.signal.aborted) setError(String(e));
+      } finally {
+        if (!controller.signal.aborted && refresh)
+          timer = setTimeout(load, 2500);
+      }
+    };
+    void load();
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
+  }, [selection.project, run, selection.epoch, key, refresh, view]);
   const live = data?.live;
-  const selectedLive =
-    live?.runId === data?.run && live?.connected &&
-    data?.selectedEpoch !== null && data?.selectedEpoch === live?.epoch;
-  const auto = selectedLive && live?.mode === "auto";
-  const replayingCycle =
-    data && data.selectedEpoch !== data.cycles.at(-1)?.epoch;
+  const isCurrent =
+    !!data && live?.runId === data.run && data.selectedEpoch === live?.epoch;
+  const auto = isCurrent && live?.connected && live.mode === "auto";
+  const returned =
+    !!data &&
+    live?.runId === data.run &&
+    live.connected &&
+    live.mode === "manual" &&
+    data.selectedEpoch === data.cycles.at(-1)?.epoch;
   const phase = auto ? data?.livePhase : null;
-  const compacting = phase?.kind === "compaction";
-  const s = data?.summary;
+  const status =
+    phase?.label ??
+    (auto
+      ? "AI 正在接管"
+      : data
+        ? returned || (isCurrent && live?.connected)
+          ? "控制权已交还"
+          : "历史运行回放"
+        : "等待运行");
   const stop = async () => {
-    if (!data || !live) return;
+    if (!data?.controlAllowed || !auto) return;
     setStopping(true);
     try {
-      await json("/api/control", {
+      const response = await fetch("/api/control", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          project,
-          run: effectiveRun,
+          project: data.project,
+          run: data.run,
           epoch: data.selectedEpoch,
           action: "off",
         }),
       });
-      setData(await json(runUrl));
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "交还失败");
+      const next = await json<RunData>(
+        "/api/run?" +
+          new URLSearchParams({
+            project: data.project,
+            run: data.run,
+            ...(data.selectedEpoch ? { epoch: data.selectedEpoch } : {}),
+          }),
+      );
+      setLoaded({ key, data: next });
       setError("");
     } catch (e) {
       setError(String(e));
@@ -302,570 +289,511 @@ export default function Dashboard() {
       setStopping(false);
     }
   };
+  const s = data?.summary;
+  const hasTelemetry = data?.telemetry.sources.some(
+    (source) => source.component !== "unlabelled",
+  );
   return (
-    <main>
-      <header className="topbar">
-        <div className="brand">
-          <span className="brand-symbol">
-            r<span>↗</span>
-          </span>
-          <div>
-            <strong>
-              RSA <span>观察台</span>
-            </strong>
-            <small>RECURSIVE SELF-ADAPTATION</small>
-          </div>
-        </div>
-        <div className="header-right">
-          <span className="local-tag">LOCAL / 127.0.0.1</span>
-          <button
-            className={`refresh ${refresh ? "active" : ""}`}
-            onClick={() => setRefresh(!refresh)}
+    <div className="console-shell">
+      <DesktopBridge onNavigate={navigateUrl} />
+      <aside className="sidebar">
+        <a
+          className="brand"
+          href="?view=live"
+          onClick={(e) => {
+            e.preventDefault();
+            navigate({ view: "live" });
+          }}
+        >
+          <NavIcon kind="logo" />
+          <span>Playness</span>
+        </a>
+        <div className="workspace-picker">
+          <label htmlFor="workspace">工作空间</label>
+          <select
+            id="workspace"
+            value={selection.project}
+            onChange={(e) =>
+              navigate({
+                project: e.target.value,
+                workspace: null,
+                run: null,
+                epoch: null,
+                call: null,
+                block: null,
+                image: null,
+              })
+            }
           >
-            <i />
-            {refresh ? "实时刷新 · 2.5s" : "刷新已暂停"}
-          </button>
+            {!projects.length && <option value="">暂无工作空间</option>}
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {workspaceName(p)}
+              </option>
+            ))}
+          </select>
         </div>
-      </header>
-      <section className="title-row">
-        <div>
-          <div className="eyebrow">ENVIRONMENT / SESSION / EVIDENCE</div>
-          <h1>从画面，到行动。</h1>
-          <p>观察每一轮决策，找到循环里的等待。</p>
-        </div>
-        <div className="selectors">
-          <label>
-            环境项目
-            <select
-              aria-label="环境项目"
-              value={project}
-              onChange={(e) => {
-                initialCycle.current = null;
-                setProject(e.target.value);
-                setRun("");
-                setEpoch("");
+        <nav aria-label="控制台导航">
+          {(Object.keys(views) as View[]).map((id) => (
+            <a
+              key={id}
+              href={
+                "?" +
+                new URLSearchParams({ ...Object.fromEntries(query), view: id })
+              }
+              className={view === id ? "active" : ""}
+              aria-current={view === id ? "page" : undefined}
+              onClick={(e) => {
+                e.preventDefault();
+                navigate({ view: id });
               }}
             >
-              {projects.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.id}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            运行记录
+              <NavIcon kind={id} />
+              <span>{views[id][0]}</span>
+            </a>
+          ))}
+        </nav>
+        <div className="sidebar-bottom">
+          <NavIcon kind="alice" />
+          <div>
+            <span>{desktop ? "Alice 桌面版" : "浏览器模式"}</span>
+            <small>
+              <i
+                className={"status-dot " + (live?.connected ? "online" : "")}
+              />
+              {live?.connected ? "宿主已连接" : "本地日志"}
+            </small>
+          </div>
+          <span className="sidebar-arrow">↗</span>
+        </div>
+      </aside>
+      <div className="console-main">
+        <header className="context-bar">
+          <div className="breadcrumb">
+            <span>{workspaceName(project)}</span>
+            <i>/</i>
+            <strong>{views[view][0]}</strong>
+          </div>
+          <div className="context-controls">
             <select
               aria-label="运行记录"
-              value={effectiveRun}
-              onChange={(e) => {
-                initialCycle.current = null;
-                setRun(e.target.value);
-                setEpoch("");
-              }}
-            >
-              {currentProject?.runs.map((r, i) => (
-                <option key={r.id} value={r.id}>
-                  {date(r.id)}
-                  {i === 0 ? " · 最新" : ""}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            接管周期
-            <select
-              aria-label="接管周期"
-              value={epoch}
-              onChange={(e) => {
-                initialCycle.current = null;
-                setEpoch(e.target.value);
-              }}
+              value={selection.run}
+              onChange={(e) =>
+                navigate({
+                  run: e.target.value,
+                  epoch: null,
+                  call: null,
+                  block: null,
+                  image: null,
+                })
+              }
             >
               <option value="">
-                跟随最新周期
-                {cycles.length ? ` · #${cycles.length}` : " · 尚未接管"}
+                最新运行
+                {project?.runs[0] ? " · " + runDate(project.runs[0].id) : ""}
               </option>
-              {[...cycles].reverse().map((cycle, i) => (
-                <option key={cycle.epoch} value={cycle.epoch}>
-                  #{cycles.length - i} · {time(cycle.startedAt)} ·{" "}
-                  {cycle.epoch.slice(0, 8)}
+              {project?.runs.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {runDate(r.id)}
                 </option>
               ))}
             </select>
-          </label>
-        </div>
-      </section>
-      {error && (
-        <div className="error-banner" role="alert">
-          {error}
-        </div>
-      )}
-      {!data ? (
-        <div className="loading">
-          <span className="loading-dot" />
-          {projects.length ? "正在读取运行日志…" : "正在发现本地运行…"}
-        </div>
-      ) : (
-        <>
-          <section className="status-strip">
-            <div className="status-main">
-              <span className={`status-light ${auto ? "live" : ""}`} />
-              <strong>
-                {phase
-                  ? phase.label
-                  : auto
-                    ? "AI 正在接管"
-                    : replayingCycle
-                      ? "周期回放"
-                      : live
-                        ? "控制权已交还"
-                        : "运行回放"}
-              </strong>
-              <span className="dim">
-                {phase
-                  ? phase.startedAt
-                    ? `已等待 ${sec(phase.elapsedMs)} · ${time(phase.startedAt)} 开始`
-                    : "压缩事件交叠，起点不确定"
-                  : data.controlReason}
-              </span>
+            <select
+              aria-label="接管周期"
+              value={selection.epoch}
+              onChange={(e) =>
+                navigate({
+                  project: selection.project,
+                  run,
+                  epoch: e.target.value,
+                  call: null,
+                  block: null,
+                  image: null,
+                })
+              }
+            >
+              <option value="">
+                最新周期{data?.cycles.length ? " · #" + data.cycles.length : ""}
+              </option>
+              {[...(data?.cycles ?? [])].reverse().map((c, i) => (
+                <option key={c.epoch} value={c.epoch}>
+                  #{data!.cycles.length - i} · {clockTime(c.startedAt)}
+                </option>
+              ))}
+            </select>
+            <button
+              className={"refresh-toggle" + (refresh ? " active" : "")}
+              aria-pressed={refresh}
+              title="只控制界面刷新，不影响 Agent"
+              onClick={() => setRefresh((v) => !v)}
+            >
+              <i className="status-dot" />
+              {refresh ? "实时" : "已暂停刷新"}
+            </button>
+          </div>
+        </header>
+        <main className="page-content">
+          <div className="page-heading">
+            <div>
+              <h1>{views[view][1]}</h1>
+              <p>{views[view][2]}</p>
             </div>
-            <div className="status-meta">
-              <span>{data.manifest.model ?? "仅设备"}</span>
-              <span>预算 {data.manifest.seconds}s</span>
-              <span>
-                压缩阈值 {data.manifest.compactionThreshold == null
-                  ? "OMP 默认"
-                  : `${data.manifest.compactionThreshold.toLocaleString("en-US")} tokens`}
-              </span>
-              <span>
-                {Math.floor(s!.elapsedSeconds / 60)}分{" "}
-                {Math.floor(s!.elapsedSeconds % 60)}秒
-              </span>
+            {view !== "alice" && (
               <button
-                className="stop"
-                disabled={!data.controlAllowed || !auto || stopping}
+                className="control-button handback"
+                disabled={!data?.controlAllowed || !auto || stopping}
+                title={data?.controlReason ?? "暂无运行"}
                 onClick={stop}
               >
-                {stopping ? "正在交还…" : "■ 交还控制权"}
+                {stopping ? "正在交还…" : "交还控制权"}
               </button>
+            )}
+          </div>
+          {(catalogError || error) && (
+            <div className="error-banner" role="alert">
+              {catalogError || error}
+              {data && (
+                <small>保留上次读取结果 · {clockTime(data.updatedAt)}</small>
+              )}
             </div>
-          </section>
-          <p className="scope-note">
-            请求统计仅覆盖主循环；独立的 OMP
-            压缩请求不计入下方请求数、耗时和缓存指标。
-            WS 大小为构建的请求帧，不代表网络实收。
-          </p>
-          <section className="metrics">
-            <Metric
-              label="完成请求"
-              value={String(s!.completed)}
-              suffix={`/ ${data.calls.length}`}
-              detail={`${data.calls.filter((c) => c.status === "pending").length} 个请求进行中`}
-            />
-            <Metric
-              label="实际控制动作"
-              value={String(s!.actions)}
-              detail={`${s!.explicitObserves} 次独立 observe`}
-            />
-            <Metric
-              label="请求耗时 · 中位数"
-              value={sec(s!.medianMs)}
-              detail={`响应头等待 ${sec(s!.medianHeadersMs)}`}
-            />
-            <Metric
-              label="首请求后缓存命中"
-              value={percent(s!.warmCacheHit)}
-              detail={`全部请求 ${percent(s!.cacheHit)}`}
-            />
-            <Metric
-              label="错误 / 自动压缩"
-              value={`${s!.errors} / ${s!.compactions}`}
-              detail="保留重试与中止证据"
-            />
-          </section>
-          <section className="charts">
-            <div className="chart-card">
-              <div className="section-label">
-                请求延迟 <span>秒</span>
-                <div className="legend">
-                  <i />
-                  总耗时 <i className="wait" />
-                  HTTP 响应头等待
-                </div>
-              </div>
-              <Chart
-                calls={data.calls}
-                type="latency"
-                selected={call?.id}
-                onSelect={select}
-              />
-            </div>
-            <div className="chart-card">
-              <div className="section-label">
-                缓存命中 <span>%</span>
-              </div>
-              <Chart
-                calls={data.calls}
-                type="cache"
-                selected={call?.id}
-                onSelect={select}
-              />
-            </div>
-            <div className="chart-card">
-              <div className="section-label">
-                请求体大小 <span>MB · HTTP body / 构建的 WS 帧</span>
-              </div>
-              <Chart
-                calls={data.calls}
-                type="body"
-                selected={call?.id}
-                onSelect={select}
-              />
-            </div>
-          </section>
-          <section className="workbench">
-            <aside className="timeline">
-              <div className="pane-heading">
-                <h2>请求时间轴</h2>
-                <button
-                  className={!selected ? "follow selected" : "follow"}
-                  onClick={() => {
-                    setSelected(null);
-                    setImageId(null);
-                  }}
-                >
-                  跟随最新 ↓
-                </button>
-              </div>
-              <div className="timeline-list">
-                {[...data.calls].reverse().map((c) => (
-                  <button
-                    key={c.id}
-                    className={`request ${c.id === call?.id ? "selected" : ""}`}
-                    onClick={() => select(c.id)}
-                  >
-                    <div className="request-head">
-                      <span className="request-number">
-                        #{String(c.index).padStart(3, "0")}
-                      </span>
-                      <time>{time(c.at)}</time>
-                      <span className={`request-state ${c.status}`}>
-                        {c.status === "pending"
-                          ? "思考中"
-                          : c.status === "aborted"
-                            ? "中止"
-                            : c.status === "error"
-                              ? "失败"
-                              : sec(c.durationMs)}
-                      </span>
-                    </div>
-                    <div className="request-intent">
-                      {c.tools[0]?.intent ||
-                        c.tools.map((t) => t.name).join(" · ") ||
-                        (c.status === "pending" ? "等待模型响应…" : "文本回复")}
-                    </div>
-                    <div className="request-bottom">
-                      <span>
-                        {transportName(c)} · {c.tools.map((t) => t.name).join(" + ") || "response"}
-                      </span>
-                      <span>
-                        {mb(requestBytes(c))} <b>·</b> {percent(c.cacheHit)}
-                      </span>
-                    </div>
-                    <div className="request-meter">
-                      <i
-                        style={{
-                          width: `${Math.min(100, ((c.headersMs ?? 0) / Math.max(1, c.durationMs ?? 1)) * 100)}%`,
-                        }}
-                      />
-                    </div>
-                  </button>
-                ))}
-                {data.calls.length === 0 && (
-                  <div className="empty">
-                    {compacting
-                      ? "OMP 正在压缩历史"
-                      : !data.selectedEpoch
-                        ? "尚未开启接管周期。"
-                        : "本周期尚无模型请求。"}
-                    <br />
-                    {compacting
-                      ? phase!.startedAt
-                        ? `已等待 ${sec(phase!.elapsedMs)}，完成后开始主循环。`
-                        : "压缩事件交叠，等待结束事件。"
-                      : !data.selectedEpoch
-                        ? "开启后将显示该周期的观测与请求。"
-                        : "等待本周期的主循环请求。"}
-                  </div>
+          )}
+          {view === "alice" ? (
+            <AliceSettings />
+          ) : !data ? (
+            <section className="surface empty-state main-empty">
+              <span className="empty-symbol">◫</span>
+              <h2>
+                {!catalogReady
+                  ? "正在发现工作空间"
+                  : !projects.length
+                    ? "还没有运行记录"
+                    : error
+                      ? "暂时无法读取运行"
+                      : "正在读取运行日志"}
+              </h2>
+              <p>
+                {!catalogReady
+                  ? "连接本地日志服务…"
+                  : !projects.length
+                    ? "在工作空间启动 RSA 后，画面、日志和性能会出现在这里。"
+                    : error
+                      ? "请检查本地日志服务，恢复连接后会自动更新。"
+                      : "保留每一次观察与行动。"}
+              </p>
+            </section>
+          ) : (
+            <>
+              <div className="run-status">
+                <span className={"status-dot " + (auto ? "online" : "")} />
+                <strong>{status}</strong>
+                {phase?.elapsedMs != null && (
+                  <span>已持续 {seconds(phase.elapsedMs)}</span>
                 )}
-              </div>
-            </aside>
-            <div className="inspection">
-              <div className="pane-heading">
-                <h2>
-                  {call
-                    ? `请求 #${String(call.index).padStart(3, "0")}`
-                    : "传感器画面"}{" "}
-                  <span>
-                    {observation
-                      ? (originName[observation.origin] ?? observation.origin)
-                      : ""}
-                  </span>
-                </h2>
-                <span className="dim mono">
-                  {observation ? time(observation.at) : "等待观测"}
+                <i />
+                <span>{data.manifest.model ?? "仅设备"}</span>
+                <span className="run-time">
+                  {Math.floor(s!.elapsedSeconds / 60)}分{" "}
+                  {Math.floor(s!.elapsedSeconds % 60)}秒 <b> / </b>预算{" "}
+                  {Math.floor(data.manifest.seconds / 60)}分钟
                 </span>
               </div>
-              <div className="screen">
-                {observation ? (
-                  observation.mediaType.startsWith("image/") ? (
-                    <img
-                      src={mediaUrl(observation)}
-                      alt={`传感器 ${observation.sensor} 在 ${time(observation.at)} 保存的观测`}
-                    />
-                  ) : (
-                    <audio controls src={mediaUrl(observation)} />
-                  )
+              <section className="metrics" aria-label="本轮概况">
+                <Metric
+                  label="完成请求"
+                  value={String(s!.completed)}
+                  detail={"共 " + data.calls.length + " 个请求"}
+                />
+                {view === "live" ? (
+                  <Metric
+                    label="控制动作"
+                    value={String(s!.actions)}
+                    detail={s!.explicitObserves + " 次主动观测"}
+                  />
                 ) : (
-                  <div className="empty">暂无可展示画面</div>
+                  <Metric
+                    label="P95 延迟"
+                    value={seconds(s!.p95Ms)}
+                    detail="完成请求 · nearest-rank"
+                  />
                 )}
-                <div className="screen-caption">
-                  <span>
-                    {observation?.sensor ?? "sensor"} /{" "}
-                    {observation?.id.slice(0, 8) ?? "—"}
-                  </span>
-                  {observation?.afterExecutionMs !== undefined && (
-                    <span>
-                      动作结束 → 采样请求{" "}
-                      {observation.afterExecutionMs.toFixed(1)} ms
-                    </span>
-                  )}
-                </div>
-              </div>
-              <div className="sample-row">
-                {samples.map((o) => (
-                  <button
-                    className={
-                      o.id === observation?.id ? "sample selected" : "sample"
-                    }
-                    key={o.id}
-                    onClick={() => setImageId(o.id)}
-                  >
-                    {o.mediaType.startsWith("image/") && (
-                      <img src={mediaUrl(o)} alt="观测缩略图" />
-                    )}
-                    <div>
-                      <strong>
-                        {call?.inputObservations.includes(o.id)
-                          ? "输入画面"
-                          : "工具后画面"}
-                      </strong>
+                <Metric
+                  label="请求中位数"
+                  value={seconds(s!.medianMs)}
+                  detail={"HTTP 响应头 " + seconds(s!.medianHeadersMs)}
+                />
+                <Metric
+                  label="缓存命中"
+                  value={percent(s!.cacheHit)}
+                  detail={"首请求后 " + percent(s!.warmCacheHit)}
+                />
+              </section>
+              {view === "live" ? (
+                <div className="live-grid">
+                  <div className="live-observation">
+                    <ObservationPanel
+                      data={data}
+                      call={call}
+                      selectedImage={selectedImage}
+                      onImage={(id) => navigate({ ...pinned, image: id })}
+                    />
+                    <div className="run-context">
+                      <button
+                        className="text-button"
+                        onClick={() => navigate({ view: "benchmark" })}
+                      >
+                        检查本轮性能 ↗
+                      </button>
+                      {query.has("call") && (
+                        <button
+                          className="text-button"
+                          onClick={() =>
+                            navigate({ call: null, image: null, block: null })
+                          }
+                        >
+                          回到最新请求 ↓
+                        </button>
+                      )}
                       <span>
-                        {originName[o.origin] ?? o.origin} · {time(o.at)}
+                        {data.manifest.drivers.map((d) => d.id).join(" · ")}
                       </span>
                     </div>
-                  </button>
-                ))}
-              </div>
-              {fallbackReason && (
-                <p className="transport-note">
-                  <strong>SSE 回退</strong> · {fallbackReason}
-                </p>
-              )}
-              {call && (
-                <div className="call-stats">
-                  <div>
-                    <small>模型总耗时</small>
-                    <b>{sec(call.durationMs)}</b>
                   </div>
-                  <div>
-                    <small>{call.transport === "websocket" ? "WS 首事件等待" : "HTTP 响应头前等待"}</small>
-                    <b>{sec(call.transport === "websocket" ? call.phases.afterDispatchMs : call.headersMs)}</b>
-                  </div>
-                  <div>
-                    <small>{call.transport === "websocket" ? "首事件后完成" : "响应头后完成"}</small>
-                    <b>{sec(call.transport === "websocket" ? call.phases.afterFirstStreamMs : call.phases.afterHeadersMs)}</b>
-                  </div>
-                  <div>
-                    <small>输入 tokens</small>
-                    <b>
-                      {call.inputTokens
-                        ? call.inputTokens.toLocaleString()
-                        : "—"}
-                    </b>
-                  </div>
-                  <div>
-                    <small>{call.transport === "websocket" ? "构建的 WS 帧" : "HTTP 尝试"}</small>
-                    <b>{(call.transport === "websocket" ? call.wsFrames : call.attempts) || "—"}</b>
-                  </div>
+                  <ActivityFeed
+                    key={key + "/" + data.selectedEpoch}
+                    blocks={blocks}
+                    selectedBlock={query.get("block") ?? undefined}
+                    loading={
+                      activity?.key !== key ||
+                      activity.epoch !== data.selectedEpoch
+                    }
+                    error={activityError}
+                    onSelect={(block) =>
+                      navigate({
+                        ...pinned,
+                        block: block.id,
+                        call: block.trace?.modelCallId ?? null,
+                        image: null,
+                      })
+                    }
+                  />
                 </div>
-              )}
-              <div className="detail-tabs">
-                <button
-                  className={panel === "tools" ? "active" : ""}
-                  onClick={() => setPanel("tools")}
-                >
-                  动作与观测 <span>{call?.tools.length ?? 0}</span>
-                </button>
-                <button
-                  className={panel === "skills" ? "active" : ""}
-                  onClick={() => setPanel("skills")}
-                >
-                  技能证据 <span>{data.skills.length}</span>
-                </button>
-                <button
-                  className={panel === "events" ? "active" : ""}
-                  onClick={() => setPanel("events")}
-                >
-                  错误与压缩 <span>{data.notices.length}</span>
-                </button>
-              </div>
-              <div className="details">
-                {panel === "tools" ? (
-                  <>
-                    {call?.tools.map((t) => (
-                      <article className="tool" key={t.id}>
-                        <div className="tool-title">
-                          <strong>{t.name}</strong>
-                          <span>{t.intent}</span>
-                          <em className={t.ok === false ? "failed" : ""}>
-                            {t.ok === null ? "执行中" : t.ok ? "完成" : "错误"}
-                          </em>
-                        </div>
-                        <pre>
-                          {t.args.command ?? JSON.stringify(t.args, null, 2)}
-                        </pre>
-                        <div className="observation-details">
-                          {t.name === "exec" && (
-                            <span>命令执行 {sec(t.commandMs)}</span>
-                          )}
-                          <span>工具全程（含后续观测）{sec(t.durationMs)}</span>
-                        </div>
-                        {t.name === "exec" && (
-                          <p className="note">
-                            命令执行已包含在工具全程内，两者不相加。
-                          </p>
-                        )}
-                      </article>
-                    ))}
-                    {call?.tools.length === 0 && (
-                      <p className="dim">本轮没有工具调用。</p>
-                    )}
-                    {observation && (
-                      <>
-                        <div className="observation-details">
-                          <span>观测耗时（含请求延迟）{sec(observation.captureMs)}</span>
-                          <span>编码 {sec(observation.encodeMs)}</span>
-                          <span>源帧 {observation.sourceSequence ?? "—"}</span>
+              ) : (
+                <>
+                  <section className="charts">
+                    {(["latency", "cache", "body"] as const).map((type) => (
+                      <div className="surface chart-card" key={type}>
+                        <div className="surface-heading">
+                          <h2>
+                            {type === "latency"
+                              ? "请求耗时"
+                              : type === "cache"
+                                ? "缓存命中"
+                                : "请求体大小"}
+                          </h2>
                           <span>
-                            帧增量 {observation.sourceSequenceDelta ?? "—"}
+                            {type === "latency"
+                              ? "秒 · 灰柱为响应头等待"
+                              : type === "cache"
+                                ? "%"
+                                : "MB · HTTP / WS 构建帧"}
                           </span>
                         </div>
-                        {observation.request && (
-                          <>
-                            <p className="note">原始观测请求</p>
-                            <pre aria-label="原始观测请求">
-                              {JSON.stringify(observation.request, null, 2)}
-                            </pre>
-                          </>
-                        )}
-                      </>
-                    )}
-                    <p className="note">
-                      响应头前等待包含传输与服务端处理，不能据此单独归因于上传或排队。
-                    </p>
-                  </>
-                ) : panel === "skills" ? (
-                  <>
-                    {[...data.skills].reverse().map((e) => (
-                      <button
-                        className="evidence"
-                        key={e.seq}
-                        onClick={() => e.modelCallId && select(e.modelCallId)}
-                      >
-                        <span className="badge">{e.action}</span>
-                        <div>
-                          <strong>{e.path}</strong>
-                          <small>
-                            {time(e.at)} ·{" "}
-                            {e.ok === null ? "执行中" : e.ok ? "成功" : "失败"}
-                            {e.hash ? ` · ${e.hash.slice(0, 12)}` : ""}
-                          </small>
-                        </div>
-                        <span>↗</span>
-                      </button>
-                    ))}
-                    {!data.skills.length && (
-                      <p className="dim">本次运行还没有技能读取或更新证据。</p>
-                    )}
-                  </>
-                ) : (
-                  <>
-                    {[...data.notices].reverse().map((n) => (
-                      <button
-                        className="evidence"
-                        key={n.seq}
-                        onClick={() => n.modelCallId && select(n.modelCallId)}
-                      >
-                        <span
-                          className={n.failed ? "event-dot error" : "event-dot"}
+                        <RequestChart
+                          type={type}
+                          calls={data.calls}
+                          selected={call?.id}
+                          onSelect={selectCall}
                         />
-                        <div>
-                          <strong>{n.type}</strong>
-                          <p>{n.text}</p>
-                          {n.details && n.details.length > 0 && (
-                            <dl className="event-details">
-                              {n.details.map((detail) => (
-                                <div key={detail.label}>
-                                  <dt>{detail.label}</dt>
-                                  <dd>{detail.value}</dd>
-                                </div>
-                              ))}
-                            </dl>
-                          )}
-                          <small>{time(n.at)}</small>
-                        </div>
-                      </button>
+                      </div>
                     ))}
-                    {!data.notices.length && (
-                      <p className="dim">本次运行没有错误或压缩事件。</p>
-                    )}
-                  </>
-                )}
-              </div>
-            </div>
-          </section>
-          <footer>
-            <span>
-              RSA OBSERVATORY <b>/</b> 仅使用本地事件与观测
-            </span>
-            <span>更新于 {time(data.updatedAt)} · Asia/Shanghai</span>
-          </footer>
-        </>
-      )}
-    </main>
-  );
-}
-function Metric({
-  label,
-  value,
-  suffix,
-  detail,
-}: {
-  label: string;
-  value: string;
-  suffix?: string;
-  detail: string;
-}) {
-  return (
-    <div className="metric">
-      <span>{label}</span>
-      <div>
-        {value}
-        <small>{suffix}</small>
+                  </section>
+                  <div className="benchmark-grid">
+                    <section className="surface request-timeline">
+                      <div className="surface-heading">
+                        <h2>请求时间轴</h2>
+                        <button
+                          className="text-button"
+                          onClick={() =>
+                            navigate({ call: null, image: null, block: null })
+                          }
+                        >
+                          跟随最新 ↓
+                        </button>
+                      </div>
+                      <div className="timeline-list">
+                        {data.calls
+                          .slice(-requestLimit)
+                          .reverse()
+                          .map((c) => (
+                            <button
+                              key={c.id}
+                              className={
+                                "request-row" +
+                                (c.id === call?.id ? " selected" : "")
+                              }
+                              aria-pressed={c.id === call?.id}
+                              onClick={() => selectCall(c.id)}
+                            >
+                              <div>
+                                <b>#{String(c.index).padStart(3, "0")}</b>
+                                <span className={"request-state " + c.status}>
+                                  {c.status === "pending"
+                                    ? "进行中"
+                                    : c.status === "error"
+                                      ? "失败"
+                                      : c.status === "aborted"
+                                        ? "已中止"
+                                        : seconds(c.durationMs)}
+                                </span>
+                              </div>
+                              <p>
+                                {c.tools[0]?.intent ||
+                                  c.tools.map((t) => t.name).join(" · ") ||
+                                  (c.status === "pending"
+                                    ? "等待模型响应"
+                                    : "文本回复")}
+                              </p>
+                              <small>
+                                {clockTime(c.at)} <span>{transport(c)}</span>
+                              </small>
+                              <small>
+                                {bytes(requestBytes(c))}
+                                <span>{percent(c.cacheHit)}</span>
+                              </small>
+                            </button>
+                          ))}
+                        {data.calls.length > requestLimit && (
+                          <button
+                            className="text-button load-more"
+                            onClick={() => setRequestLimit((n) => n + 100)}
+                          >
+                            显示更早的 100 个请求
+                          </button>
+                        )}
+                        {!data.calls.length && (
+                          <div className="empty-state">
+                            <p>
+                              {data.activeCompaction
+                                ? "正在压缩历史，等待主循环请求。"
+                                : data.selectedEpoch
+                                  ? "本周期尚无模型请求。"
+                                  : "尚未开启接管周期。"}
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    </section>
+                    <RequestDetails
+                      data={data}
+                      call={call}
+                      panel={panel}
+                      onPanel={setPanel}
+                      onSelect={selectCall}
+                      onInspect={() =>
+                        navigate({
+                          ...pinned,
+                          view: "live",
+                          call: call?.id ?? null,
+                        })
+                      }
+                    />
+                  </div>
+                  <section className="surface telemetry-summary">
+                    <div>
+                      <h2>运行事件来源</h2>
+                      <p>按职责追踪同一次执行。</p>
+                    </div>
+                    <div className="source-chips">
+                      {data.telemetry.sources.map((source) => (
+                        <span key={source.component}>
+                          <i className={"source-dot " + source.component} />
+                          {source.component}
+                          <b>{source.count.toLocaleString()}</b>
+                        </span>
+                      ))}
+                    </div>
+                    <div className="telemetry-counts">
+                      <span>
+                        原生循环{" "}
+                        <b>
+                          {hasTelemetry
+                            ? data.telemetry.shiori.nativeLoops.length
+                            : "—"}
+                        </b>
+                      </span>
+                      <span>
+                        能力调用{" "}
+                        <b>
+                          {hasTelemetry
+                            ? data.telemetry.capabilities.stats.started
+                            : "—"}
+                        </b>
+                      </span>
+                      <span>
+                        设备操作{" "}
+                        <b>
+                          {hasTelemetry ? data.telemetry.devices.started : "—"}
+                        </b>
+                      </span>
+                      <span>
+                        错误事件 <b>{s!.errors}</b>
+                      </span>
+                      <span>
+                        自动压缩 <b>{s!.compactions}</b>
+                      </span>
+                    </div>
+                  </section>
+                  <details className="run-provenance">
+                    <summary>运行配置与指标口径</summary>
+                    <dl className="fact-grid">
+                      <div>
+                        <dt>Shiori</dt>
+                        <dd>
+                          {data.manifest.shiori?.implementation ?? "未记录"}{" "}
+                          {data.manifest.shiori?.implementationVersion}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>压缩阈值</dt>
+                        <dd>
+                          {data.manifest.compactionThreshold?.toLocaleString() ??
+                            "默认"}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Workspace</dt>
+                        <dd>{data.manifest.workspace}</dd>
+                      </div>
+                      <div>
+                        <dt>Run</dt>
+                        <dd>{data.run}</dd>
+                      </div>
+                      <div>
+                        <dt>Epoch</dt>
+                        <dd>{data.selectedEpoch ?? "尚未接管"}</dd>
+                      </div>
+                    </dl>
+                    <p>
+                      请求统计仅含主循环，独立压缩请求单列于事件。Shiori、工具和嵌套能力的耗时与用量不能相加。WS
+                      字节是构建帧大小；网络与服务端等待无法进一步拆分。来源分布仅覆盖当前运行事件，不代表
+                      Pet 的在线状态。
+                    </p>
+                  </details>
+                </>
+              )}
+              <footer className="page-footer">
+                <span>
+                  ⓘ{" "}
+                  {view === "live"
+                    ? "日志记录执行事实，任务进展以画面为准。"
+                    : "包含关系的耗时不相加 · 模型统计不含独立压缩请求"}
+                </span>
+                <span>更新于 {clockTime(data.updatedAt)}</span>
+              </footer>
+            </>
+          )}
+        </main>
       </div>
-      <p>{detail}</p>
     </div>
   );
 }

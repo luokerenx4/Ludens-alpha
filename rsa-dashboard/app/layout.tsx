@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
 import "./globals.css";
 export const metadata: Metadata = {
-  title: "RSA · 观察台",
-  description: "Recursive Self-Adaptation — 本地运行观察与调试",
+  title: "Playness · 运行控制台",
+  description: "画面、活动日志与运行性能，共用一个本地控制台。",
 };
 export default function RootLayout({
   children,

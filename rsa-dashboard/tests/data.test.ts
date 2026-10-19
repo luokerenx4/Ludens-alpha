@@ -279,7 +279,9 @@ test("workspace index discovers external workspace logs alongside retained histo
     await writeFile(join(workspace, "logs/new/manifest.json"), manifest);
     assert.equal(await resolveRun("ws-workspace-a", "new", root), join(workspace, "logs/new"));
     assert.equal(await resolveRun("ws-workspace-a", "old", root), join(state, "runs/old"));
-    assert.deepEqual((await catalog(root))[0].runs.map((run) => run.id).sort(), ["new", "old"]);
+    const projects = await catalog(root);
+    assert.deepEqual(projects[0].runs.map((run) => run.id).sort(), ["new", "old"]);
+    assert.equal(projects[0].workspace, workspace);
     await symlink(join(state, "runs/old"), join(workspace, "logs/escape"));
     await assert.rejects(resolveRun("ws-workspace-a", "escape", root));
     await rm(join(workspace, "logs"), { recursive: true });

@@ -1,0 +1,458 @@
+.feed-panel {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  max-height: 840px;
+  background: #1c1e1c;
+  border: 1px solid #343730;
+  border-radius: 12px;
+  overflow: hidden;
+  color: #e8e8e0;
+  font-size: 14px;
+}
+.feed-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 18px 12px;
+}
+.feed-heading h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+.feed-heading > span {
+  color: #8d958a;
+  font-size: 12px;
+}
+.feed-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 18px 12px;
+}
+.feed-panel button {
+  font: inherit;
+  cursor: pointer;
+}
+.feed-filter {
+  border: 1px solid #393d35;
+  background: transparent;
+  color: #bcc1b7;
+  padding: 6px 11px;
+  border-radius: 6px;
+  font-size: 12px !important;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+.feed-filter:hover {
+  background: #2b2e27;
+  color: #eeeade;
+}
+.feed-filter-active {
+  background: #d1b278;
+  color: #201f19;
+  border-color: #d1b278;
+}
+.feed-filter-active:hover {
+  background: #dfc28c;
+  color: #201f19;
+}
+.feed-filter-diagnostic:not(.feed-filter-active) {
+  color: #8d958a;
+  border-style: dashed;
+}
+.feed-search-row {
+  display: flex;
+  gap: 8px;
+  padding: 0 18px 14px;
+  border-bottom: 1px solid #343730;
+}
+.feed-search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1;
+  min-width: 0;
+  background: #171916;
+  border: 1px solid #34392f;
+  border-radius: 6px;
+  padding: 8px 9px;
+  color: #8d958a;
+}
+.feed-search input {
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #e8e8e0;
+  font: inherit;
+  font-size: 12px;
+}
+.feed-search:focus-within {
+  border-color: #d1b278;
+}
+.feed-search input::placeholder {
+  color: #8d958a;
+}
+.feed-latest {
+  border: 1px solid #3a3f35;
+  border-radius: 6px;
+  background: transparent;
+  color: #c9cec2;
+  padding: 6px 10px;
+  white-space: nowrap;
+  font-size: 12px !important;
+}
+.feed-latest span {
+  margin-left: 6px;
+  color: #d1b278;
+}
+.feed-list {
+  overflow: auto;
+  min-height: 180px;
+  flex: 1;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: #4b5145 transparent;
+  overflow-anchor: auto;
+}
+.feed-earlier {
+  display: block;
+  width: calc(100% - 36px);
+  margin: 14px 18px 0;
+  padding: 10px;
+  border: 1px solid #3b4034;
+  border-radius: 6px;
+  color: #d1b278;
+  background: #23271e;
+  font-size: 12px !important;
+}
+.feed-earlier span {
+  margin-left: 8px;
+  color: #929b89;
+}
+.block-item {
+  display: flex;
+  gap: 12px;
+  padding: 20px 16px 20px 18px;
+  border-bottom: 1px solid #30352c;
+  scroll-margin: 12px;
+}
+.block-selected {
+  background: #2c2b22;
+  box-shadow: inset 3px 0 #d1b278;
+}
+.block-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: #303631;
+  color: #c1c9c3;
+}
+.block-thinking .block-icon {
+  background: #342e3c;
+  color: #bba0cf;
+}
+.block-tool .block-icon {
+  background: #3e3525;
+  color: #dfbd7e;
+}
+.block-system .block-icon {
+  background: #2b3a2b;
+  color: #a7c79a;
+}
+.block-diagnostic .block-icon {
+  background: #2a3032;
+  color: #91b2bd;
+}
+.block-error .block-icon {
+  background: #472d29;
+  color: #e6a296;
+}
+.block-main {
+  min-width: 0;
+  flex: 1;
+}
+.block-heading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  min-height: 21px;
+  font-size: 12px;
+}
+.block-source {
+  color: #e4e6de;
+  font-weight: 500;
+  font-size: 13px;
+}
+.block-kind {
+  padding: 1px 5px;
+  background: #30352f;
+  border-radius: 4px;
+  color: #bdc7b7;
+  line-height: 1.5;
+}
+.block-thinking .block-kind {
+  color: #bfa7d0;
+  background: #342c3c;
+}
+.block-tool .block-kind {
+  color: #d6b980;
+  background: #3a3426;
+}
+.block-heading time {
+  color: #8d958a;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.block-status {
+  margin-left: auto;
+  font-size: 12px;
+  color: #84917e;
+}
+.block-status-running {
+  color: #d7bc86;
+}
+.block-status-error {
+  color: #ee9b8e;
+}
+.block-title-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  margin: 7px 0 8px;
+}
+.block-title {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  color: #d4d8cc;
+  font-size: 12px !important;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+.block-thinking .block-title,
+.block-text .block-title {
+  color: #90998a;
+}
+.block-tool .block-title {
+  color: #ddbd80;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.block-title:is(button):hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.block-copy {
+  border: 0;
+  background: transparent;
+  color: #8d958a;
+  font-size: 12px !important;
+  padding: 0;
+  white-space: nowrap;
+  margin-left: auto;
+}
+.block-copy:hover {
+  color: #dfc28c;
+}
+.block-content {
+  min-width: 0;
+}
+.block-body {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 0;
+  color: #dee2d7;
+}
+.block-code {
+  background: #161915;
+  border: 1px solid #33392d;
+  border-radius: 6px;
+  padding: 10px 11px;
+}
+.block-code .block-body {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.65;
+  color: #c6d0bd;
+}
+.block-content summary {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  list-style: none;
+  cursor: pointer;
+  color: #c6ae7d;
+  font-size: 12px;
+  line-height: 1.6;
+  margin-bottom: 6px;
+}
+.block-content summary::before {
+  content: "▸";
+  font-size: 12px;
+}
+.block-content details[open] > summary::before {
+  content: "▾";
+}
+.block-content summary::-webkit-details-marker {
+  display: none;
+}
+.block-content summary span {
+  color: #7f8b77;
+  margin-left: auto;
+  font-size: 12px;
+}
+.block-full {
+  max-height: 480px;
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #4b5145 transparent;
+}
+.block-field {
+  margin: 10px 0 0;
+}
+.block-field h4 {
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  color: #929d88;
+  font-weight: 500;
+  margin: 0 0 5px;
+}
+.block-pending {
+  font-size: 12px;
+  color: #a99b7b;
+  margin: 10px 0 0;
+}
+.block-provenance {
+  margin-top: 10px;
+  color: #819078;
+  font-size: 12px;
+}
+.block-provenance summary {
+  cursor: pointer;
+  width: fit-content;
+}
+.block-provenance dl {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 5px 9px;
+  margin: 9px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.block-provenance dt {
+  color: #8f9b86;
+}
+.block-provenance dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: #abb6a1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.feed-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 18px;
+  color: #87917e;
+  font-size: 12px;
+  border-top: 1px solid #343730;
+  background: #1a1d18;
+}
+.feed-notice {
+  font-size: 12px;
+  line-height: 1.6;
+  padding: 10px 18px;
+  margin: 0;
+  color: #c4b38b;
+  background: #28281f;
+}
+.feed-error {
+  margin: 0;
+  padding: 12px 18px;
+  color: #eda89d;
+  background: #34231f;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.feed-pinned {
+  border-bottom: 1px solid #6d5f3d;
+}
+.feed-empty {
+  padding: 50px 24px;
+  text-align: center;
+  color: #929d87;
+}
+.feed-empty > svg {
+  width: 28px;
+  height: 28px;
+  opacity: 0.6;
+}
+.feed-empty p {
+  margin: 10px 0 6px;
+  font-size: 14px;
+}
+.feed-empty span {
+  font-size: 12px;
+  color: #798471;
+}
+.feed-panel :is(button, summary):focus-visible {
+  outline: 2px solid #d1b278;
+  outline-offset: 3px;
+}
+@media (max-width: 600px) {
+  .feed-panel {
+    max-height: 720px;
+  }
+  .feed-filters {
+    gap: 5px;
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+  .feed-filter {
+    padding: 5px 9px;
+  }
+  .feed-heading,
+  .feed-search-row {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+  .block-item {
+    padding-left: 14px;
+    padding-right: 14px;
+    gap: 9px;
+  }
+  .block-icon {
+    flex-basis: 29px;
+    height: 29px;
+  }
+  .block-heading {
+    gap: 5px;
+  }
+  .block-status {
+    margin-left: 0;
+  }
+  .feed-footer {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+  .block-full {
+    max-height: 340px;
+  }
+}

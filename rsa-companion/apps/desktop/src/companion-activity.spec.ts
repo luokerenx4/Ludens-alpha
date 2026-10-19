@@ -59,4 +59,16 @@ describe('companion notification IPC',()=>{
     expect(handlers.size).toBe(0)
     expect(vi.getTimerCount()).toBe(0)
   })
+  it('applies the Dashboard origin guard to owner settings IPC',()=>{
+    vi.useFakeTimers();state.home=mkdtempSync(join(tmpdir(),'rsa-origin-'))
+    const owner=windowStub(),pet=windowStub()
+    let trustedOrigin = true
+    installCompanionActivity(owner as never,pet as never,{trustedOwner:()=>trustedOrigin})
+    const event={sender:owner.webContents,senderFrame:owner.webContents.mainFrame}
+    const get=handlers.get('openalice:activity:preferences')!
+    expect(get(event)).toMatchObject({brief:false})
+    trustedOrigin=false
+    expect(()=>get(event)).toThrow('Unauthorized')
+    pet.emit('closed')
+  })
 })

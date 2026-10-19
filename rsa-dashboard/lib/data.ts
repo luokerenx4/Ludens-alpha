@@ -1,8 +1,9 @@
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
-import { join, resolve, basename } from "node:path";
+import { join, resolve, basename, dirname } from "node:path";
 import { connect } from "node:net";
 import { aggregate, parseEvents, selectCycle } from "./aggregate";
 import { getLivePhase } from "./live-phase";
+import { projectTelemetry } from "./telemetry";
 import type { Event, Manifest, Project, RunData, LiveStatus } from "./types";
 // Runtime state lives in artifacts beside the monorepo, outside its Git tree.
 export const artifactRoot = resolve(process.cwd(), "../../artifacts/rsa");
@@ -90,7 +91,8 @@ export async function catalog(root = artifactRoot): Promise<Project[]> {
             }
           }),
         );
-        return { id: d.name, runs: runs.filter((r) => r !== null) };
+        return { id: d.name, ...(roots.length > 1 ? { workspace: dirname(roots[0]) } : {}),
+          runs: runs.filter((r) => r !== null) };
       }),
   );
   return projects
@@ -199,6 +201,7 @@ export async function getRun(
     cycles: cycle.cycles,
     selectedEpoch: cycle.selectedEpoch,
     ...aggregate(cycle.events),
+    telemetry: projectTelemetry(cycle.events, events),
     live: matched ? live : null,
     livePhase: getLivePhase(cycle.events, run, cycle.selectedEpoch, live),
     controlAllowed,

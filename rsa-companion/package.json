@@ -6,38 +6,22 @@
   "main": "dist/electron/main.js",
   "scripts": {
     "build:native": "node scripts/build-native.mjs",
-    "build": "npm run build:native && vite build",
-    "typecheck": "tsc --noEmit && tsc -p tsconfig.ui.json --noEmit",
+    "build": "npm run build:native",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "preview": "npm run build:native && electron dist/electron/companion-preview.js",
     "smoke": "npm run build:native && electron dist/electron/companion-preview.js --smoke",
     "start": "electron dist/electron/main.js"
   },
   "dependencies": {
-    "@base-ui/react": "1.6.0",
-    "class-variance-authority": "0.7.1",
-    "clsx": "2.1.1",
-    "i18next": "26.3.1",
-    "react": "19.2.4",
-    "react-dom": "19.2.4",
-    "react-i18next": "17.0.8",
-    "tailwind-merge": "3.6.0",
-    "zod": "4.3.6",
-    "lucide-react": "1.14.0"
+    "zod": "4.3.6"
   },
   "devDependencies": {
-    "@tailwindcss/vite": "4.2.1",
-    "@testing-library/react": "16.3.2",
     "@types/node": "22.19.11",
-    "@types/react": "19.2.14",
-    "@types/react-dom": "19.2.3",
-    "@vitejs/plugin-react": "4.7.0",
     "electron": "39.8.10",
     "esbuild": "0.25.12",
     "jsdom": "29.0.0",
-    "tailwindcss": "4.2.1",
     "typescript": "5.9.3",
-    "vite": "7.3.6",
     "vitest": "4.1.5"
   },
   "packageManager": "pnpm@11.19.0"

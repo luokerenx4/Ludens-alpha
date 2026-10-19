@@ -4,8 +4,7 @@ OpenAlice's complete companion subsystem transplanted into Playness. The origina
 character, bubble artwork, click sound, native geometry, hit testing and
 audio settings are retained. Log content uses the approved type-specific layouts.
 `upstream.json` records the source commit and hashes;
-`LICENSE` and `ui/public/companion/NOTICE.md` retain attribution. The bundled
-Instrument Sans font has its own `ui/src/assets/fonts/OFL.txt` license.
+`LICENSE` and `ui/public/companion/NOTICE.md` retain attribution.
 
 ## Run
 
@@ -32,8 +31,10 @@ The launcher preserves cwd. `--workspace PATH` or `RSA_WORKSPACE` overrides it.
 The normal preferences live in macOS Application Support/RSA Alice Pet, independently
 of OpenAlice. No OpenAlice service, Guardian, model request or game input is started.
 
-The main window shows the selected workspace's latest run, current phase, recent
-tool intent and **the last model request's input image**. Closing that window hides
+The main window loads the same local Dashboard as the browser: live activity,
+Benchmark and Alice settings share one frontend. The old standalone Vite/React
+main UI has been removed; this package builds only the native Electron shell and
+keeps the original static pet renderer/assets. Closing that window hides
 it; Alice and the tray remain. Double-click Alice or click the tray to reopen it.
 The tray/right-click menu controls pet visibility, size and Quit. Settings retains
 the original click mute, volume, local audio import, preview and reset behavior.
@@ -52,7 +53,7 @@ text, tools and system events are visible by default; transport diagnostics can 
 enabled in settings. Stream increments update the same block. Each new visible
 block enters the display queue, instead of being discarded in favor of the latest
 message. Streaming blocks update in place; completed blocks remain for four
-seconds. 详情 brings up the complete block log. Errors can interrupt ordinary previews. The owner view
+seconds. 详情 opens the exact Dashboard project/run/epoch/block in the desktop window. Errors can interrupt ordinary previews. The owner view
 retains the full text and tool arguments/results, including longer blocks.
 
 Connecting baselines old history rather than replaying a whole session: a running
@@ -69,9 +70,11 @@ same, with more reading space for activity; Alice's size and audio are unchanged
 Long text is scrollable without truncation. Streaming updates keep scroll position
 and expanded results. Raw content is inserted as text, never executable HTML.
 
-The pet renderer cannot access the network. The local owner window displays the
-input image and settings. 详情 selects the run page, and its log button opens the
-matching dashboard project/run/epoch. 收起 does not stop the agent.
+The pet renderer cannot access the network. The owner loads only the configured
+local Dashboard origin; native settings IPC verifies the sender's main frame
+and that exact origin. Navigation to other origins and new windows is blocked.
+Browser users see the same Alice settings page with desktop-only controls disabled.
+收起 does not stop the agent.
 
 Block bubbles include their content for a fresh RSA profile. The optional brief
 mode hides details. Original Journal implementation and preferences remain in the

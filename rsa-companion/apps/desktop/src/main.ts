@@ -1,10 +1,11 @@
-import { app, BrowserWindow, ipcMain, Menu, nativeImage, shell, Tray } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu, nativeImage, Tray } from 'electron'
 import { mkdirSync, realpathSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { createCompanion } from './companion.js'
 import { consumerRecorder, RsaSource, type RsaPetSnapshot } from './rsa-source.js'
+import { dashboardSender, isDashboardUrl } from './dashboard-window.js'
 
 const { values } = parseArgs({ args: process.argv.slice(2), options: {
   workspace: { type: 'string' }, dashboard: { type: 'string' }, profile: { type: 'string' },
@@ -46,25 +47,30 @@ if (values.help) {
     app.on('window-all-closed', () => app.quit())
     void app.whenReady().then(async () => {
       owner = new BrowserWindow({
-        title: 'Alice Pet · RSA', width: 980, height: 760, minWidth: 700, minHeight: 540,
-        show: false, backgroundColor: '#131313',
+        title: 'Playness · Console', width: 1440, height: 940, minWidth: 960, minHeight: 640,
+        show: false, backgroundColor: '#202321',
         webPreferences: { preload: join(here, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: false },
       })
       owner.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
-      owner.webContents.on('will-navigate', event => event.preventDefault())
+      const navigation = (event: Electron.Event, url: string) => { if (!isDashboardUrl(url, dashboard.origin)) event.preventDefault() }
+      owner.webContents.on('will-navigate', navigation)
+      owner.webContents.on('will-redirect', navigation)
       owner.on('close', event => { if (!quitting) { event.preventDefault(); owner?.hide() } })
-      const pet = createCompanion(owner)
+      const trusted = (event: Electron.IpcMainInvokeEvent) => !!owner && dashboardSender(owner, dashboard.origin, event)
+      const openDetails = (url: string) => {
+        if (!owner || owner.isDestroyed() || !isDashboardUrl(url, dashboard.origin)) return
+        void owner.loadURL(url).catch(error => console.error('[alice-pet] dashboard navigation failed:', error))
+      }
+      const pet = createCompanion(owner, { trustedOwner: trusted, openDetails })
       if (!pet) throw new Error('Alice Pet is disabled by OPENALICE_DISABLE_COMPANION')
-      const trusted = (event: Electron.IpcMainInvokeEvent) =>
-        !!owner && event.sender === owner.webContents && event.senderFrame === owner.webContents.mainFrame
       ipcMain.handle('rsa-pet:snapshot', event => {
         if (!trusted(event)) throw new Error('Unauthorized pet access')
         return snapshot
       })
       ipcMain.handle('rsa-pet:open-dashboard', async event => {
         if (!trusted(event)) throw new Error('Unauthorized pet access')
-        // This URL is derived in main from the configured local dashboard, never renderer input.
-        await shell.openExternal(snapshot.dashboardUrl)
+        openDetails(snapshot.dashboardUrl)
+        showOwner()
       })
       owner.webContents.on('did-finish-load', () => owner?.webContents.send('rsa-pet:snapshot', snapshot))
       source = new RsaSource({ workspace, dashboardUrl: dashboard.href, record: consumerRecorder(workspace), onSnapshot: value => {
@@ -87,7 +93,10 @@ if (values.help) {
         { role: 'editMenu' },
         { role: 'windowMenu' },
       ]))
-      await owner.loadFile(resolve(here, '../ui/index.html'))
+      const initial = new URL(dashboard.origin)
+      initial.searchParams.set('workspace', workspace)
+      initial.searchParams.set('view', 'live')
+      await owner.loadURL(initial.href)
       if (values['show-window']) showOwner()
       console.log(`[alice-pet] workspace=${workspace} dashboard=${dashboard.origin} profile=${app.getPath('userData')}`)
     }).catch(error => { console.error(error); app.exit(1) })

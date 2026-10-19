@@ -1,4 +1,5 @@
 import type { Event, Call, Observation, Notice, SkillEvidence } from "./types";
+import { p95 } from "./telemetry";
 export function parseEvents(text: string): Event[] {
   const lines = text.split("\n");
   if (!text.endsWith("\n")) lines.pop(); // An append in progress is not a malformed event.
@@ -367,6 +368,7 @@ export function aggregate(events: Event[], now = Date.now()) {
       compactions: events.filter((e) => e.type === "auto_compaction_end")
         .length,
       medianMs: median(completed.map((c) => c.durationMs!)),
+      p95Ms: p95(completed.map((c) => c.durationMs!)),
       medianHeadersMs: median(
         completed.flatMap((c) => (c.headersMs === null ? [] : [c.headersMs])),
       ),

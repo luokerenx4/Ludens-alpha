@@ -8,10 +8,12 @@
 | --- | --- | --- |
 | [baseware/](baseware/README.md) | 独立设备进程、mGBA / Ryubing driver、CLI / API / MCP | Bun 1.4、Python 3.9+ |
 | [rsa/](rsa/README.md) | Harness、Shiori（当前 OMP）、工作区 Python 能力、会话与日志 | Bun 1.4、Python 3.9+ |
-| [rsa-dashboard/](rsa-dashboard/README.md) | 读取运行日志、显示看板，并为 Pet 提供本地 HTTP API | Node.js 22+、npm |
-| [rsa-companion/](rsa-companion/README.md) | 从 OpenAlice 移植的 Alice Pet，消费日志并呈现气泡、画面与声音 | Node.js 22+、pnpm 11 |
+| [rsa-dashboard/](rsa-dashboard/README.md) | 统一运行 / Benchmark / Alice 界面、日志解析与本地 HTTP API | Node.js 22+、npm |
+| [rsa-companion/](rsa-companion/README.md) | Electron 桌面壳与 Alice 原生浮窗、托盘、声音；主窗口加载 Dashboard | Node.js 22+、pnpm 11 |
 
 RSA 写入工作区日志，Dashboard 读取日志，Pet 消费 Dashboard API。各组件保留自己的锁文件；OMP 的固定版本修改保存在 `rsa/patches/`。旧研究网站不属于这个仓库。
+
+浏览器和 Electron 使用同一个控制台 URL、同一份页面与指标。运行视图展示输入画面和活动流，Benchmark 展示请求及调用链，Alice 页面管理桌面展示和声音；浏览器没有原生桥时，会说明这些设置需在桌面端使用。Pet 的气泡、动作与音频资源继续保留，点击详情会定位到原始 run / epoch / block。界面设计与范围见 [统一控制台 PRD](docs/unified-console/prd.html)。
 
 Shiori 是 Agent Loop 内核的稳定语义名称，OMP 是当前实现。日志分别保留职责来源、实现版本、原事件身份与跨进程调用关系，方便以后比较不同内核；原生 telemetry 与现有模型/设备记录合流到本地日志。详见 [日志契约](rsa/docs/logging.md)。
 
@@ -40,6 +42,8 @@ rsa auto on
 ```
 
 `init` 写入本工作区的 `rsa.json`；`up --dry-run` 先显示将使用的命令和路径。`up` 在 macOS 后台启动模拟器、Baseware、Host、Dashboard 和 Pet，已有的本工作区服务会复用。Dashboard 共用 `http://127.0.0.1:3015`；Pet 跟随当前工作区。新 Host 启动后保持手动，执行 `auto on` 才开始模型请求与游戏操作，默认每次接管 30 分钟、最多 1000 次请求。复用已在接管中的 Host 时，`up` 保留现有状态，不打断运行。
+
+只开发控制台时，可在 `rsa-dashboard/` 执行 `npm run dev`，用浏览器打开该地址；需要桌面壳时，在另一个终端进入已有工作区，执行 `rsa-companion --show-window`。它连接同一个本地 Dashboard，不启动模型或模拟器。两种入口都支持通过 URL 选择 `project`、`run`、`epoch`，`view=live|benchmark|alice` 选择页面。
 
 停止接管或关闭本工作区：
 

@@ -1,6 +1,16 @@
 export interface Event {
-  source?: { component: string; implementation?: string; implementationVersion?: string };
-  origin?: { eventId: string; clockId: string; seq: number; at: string; atMs: number };
+  source?: {
+    component: string;
+    implementation?: string;
+    implementationVersion?: string;
+  };
+  origin?: {
+    eventId: string;
+    clockId: string;
+    seq: number;
+    at: string;
+    atMs: number;
+  };
   seq: number;
   at: string;
   atMs: number;
@@ -9,6 +19,7 @@ export interface Event {
   data: Record<string, any>;
 }
 export interface Manifest {
+  shiori?: { implementation: string; implementationVersion: string } | null;
   runId: string;
   workspace: string;
   socket: string;
@@ -26,6 +37,7 @@ export interface RunInfo {
 }
 export interface Project {
   id: string;
+  workspace?: string;
   runs: RunInfo[];
 }
 export interface Observation {
@@ -111,11 +123,64 @@ export interface LiveStatus {
   maxSeconds?: number;
 }
 export interface LivePhase {
-  kind: "prepare" | "headers" | "first-stream" | "ws-first-event" | "stream" | "command" | "tool" | "capture" | "observation" | "compaction" | "idle";
+  kind:
+    | "prepare"
+    | "headers"
+    | "first-stream"
+    | "ws-first-event"
+    | "stream"
+    | "command"
+    | "tool"
+    | "capture"
+    | "observation"
+    | "compaction"
+    | "idle";
   label: string;
   startedAt: string | null;
   elapsedMs: number | null;
   sourceSeq: number;
+}
+export type SpanOutcome =
+  "success" | "error" | "cancelled" | "pending" | "unknown";
+export interface TraceSpan {
+  id: string;
+  kind: "shiori" | "capability" | "python" | "discovery" | "device";
+  traceId: string;
+  spanId: string;
+  parentSpanId?: string;
+  modelCallId?: string;
+  toolCallId?: string;
+  source?: Event["source"];
+  name: string;
+  operation?: string;
+  startedAt: string;
+  endedAt: string | null;
+  startSeq: number;
+  endSeq: number | null;
+  outcome: SpanOutcome;
+  durationMs: number | null;
+  codeSHA?: string;
+  error?: string;
+}
+export interface SpanStats {
+  started: number;
+  outcomes: Record<SpanOutcome, number>;
+  durationMs: { median: number | null; p95: number | null };
+}
+export interface NativeLoop {
+  traceId: string;
+  spanId: string;
+  at: string;
+  source?: Event["source"];
+  summary: Record<string, unknown>;
+  coverage: Record<string, unknown>;
+}
+export interface RunTelemetry {
+  sources: { component: string; count: number }[];
+  spans: TraceSpan[];
+  shiori: { stats: SpanStats; nativeLoops: NativeLoop[] };
+  capabilities: { stats: SpanStats; python: SpanStats; discovery: SpanStats };
+  devices: SpanStats;
 }
 export interface RunData {
   project: string;
@@ -127,6 +192,7 @@ export interface RunData {
   observations: Observation[];
   notices: Notice[];
   skills: SkillEvidence[];
+  telemetry: RunTelemetry;
   lastControl: Record<string, any> | null;
   activeCompaction: {
     startedAt: string;
@@ -145,6 +211,7 @@ export interface RunData {
     errors: number;
     compactions: number;
     medianMs: number | null;
+    p95Ms: number | null;
     medianHeadersMs: number | null;
     cacheHit: number | null;
     warmCacheHit: number | null;

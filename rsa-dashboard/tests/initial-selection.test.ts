@@ -29,3 +29,13 @@ test("a project-only link retains follow-latest behavior", () => {
     project: "workspace-a", run: "", epoch: "",
   });
 });
+
+test("desktop workspace paths resolve through the catalog while explicit project links take precedence", () => {
+  const catalog = projects.map((project) => ({ ...project, workspace: `/work/${project.id}` }));
+  assert.deepEqual(initialSelection("?workspace=%2Fwork%2Fworkspace-a&view=alice", catalog), {
+    project: "workspace-a", run: "", epoch: "",
+  });
+  assert.deepEqual(initialSelection("?project=first&workspace=%2Fwork%2Fworkspace-a", catalog), {
+    project: "first", run: "", epoch: "",
+  });
+});

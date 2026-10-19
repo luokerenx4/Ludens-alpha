@@ -1,4 +1,4 @@
-import { installCompanionActivity } from './companion-activity.js'
+import { installCompanionActivity, type OwnerAccess } from './companion-activity.js'
 import type { RsaActivitySource } from './rsa-source.js'
 import { app, BrowserWindow, ipcMain, Menu, screen } from 'electron'
 import { readFileSync } from 'node:fs'
@@ -37,7 +37,7 @@ export interface CompanionHandle {
  * Press/release, mirroring, bubble timing and snapping follow that MIT project;
  * OpenAlice owns the native lifecycle/IPC adaptation. See companion/NOTICE.md.
  */
-export function createCompanion(owner: BrowserWindow): CompanionHandle | undefined {
+export function createCompanion(owner: BrowserWindow, access: OwnerAccess = {}): CompanionHandle | undefined {
   if (process.env.OPENALICE_DISABLE_COMPANION === '1') return
   const here = dirname(fileURLToPath(import.meta.url))
   const assets = app.isPackaged
@@ -136,6 +136,7 @@ export function createCompanion(owner: BrowserWindow): CompanionHandle | undefin
   }
   const ownerTrusted = (event: Electron.IpcMainInvokeEvent) =>
     event.sender === owner.webContents && event.senderFrame === owner.webContents.mainFrame
+      && (!access.trustedOwner || access.trustedOwner(event))
   const visibilityChannel = 'openalice:companion:get-visible'
   const toggleChannel = 'openalice:companion:toggle'
   const defaultSound: CompanionSound = {
@@ -187,7 +188,7 @@ export function createCompanion(owner: BrowserWindow): CompanionHandle | undefin
     ipcMain.removeHandler(soundUpdate)
     ipcMain.removeHandler(soundReset)
   })
-  const activity = installCompanionActivity(owner, pet)
+  const activity = installCompanionActivity(owner, pet, access)
   const trayMenuItems = (): Electron.MenuItemConstructorOptions[] => [
     { label: enabled ? 'Hide pet' : 'Show pet', click: toggle },
     { label: 'Size', submenu: [170, 220, 280].map(value => ({

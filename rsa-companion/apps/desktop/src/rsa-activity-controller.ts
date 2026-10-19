@@ -2,6 +2,7 @@ import type { ActivityDisplay, ActivitySurface } from './activity-controller.js'
 import type { AgentActivitySignal } from './activity-projection.js'
 import { briefNotification, type ActivityPreferences, type SerializedNotification } from './activity-policy.js'
 import type { ConsumerRecord, LogBlock, RsaActivitySnapshot, RsaActivitySource } from './rsa-source.js'
+import { blockUrl } from './dashboard-window.js'
 
 const PREVIEW_MS = 4_000
 type Displayed = { blockId: string; displayId: string; surface: 'main' | 'pet'; input: SerializedNotification }
@@ -17,13 +18,14 @@ export class RsaActivityController {
   private progress = ''
   private throughSeq = 0
   private context: { runId?: string | null; epoch?: string | null } = {}
+  private dashboardUrl = ''
   private current: Displayed | null = null
   private serial = 0
   private timer: ReturnType<typeof setTimeout> | undefined
   private busy = false
   private abort: AbortController | null = null
   private stopped = false
-  constructor(private source: RsaActivitySource, private surface: ActivitySurface, private prefs: ActivityPreferences,
+  constructor(private source: RsaActivitySource, private surface: Omit<ActivitySurface, 'open'> & { open(url: string): void }, private prefs: ActivityPreferences,
     private record: ConsumerRecord = (...args) => source.record?.(...args)) {}
 
   private chosenSurface(): 'main' | 'pet' | null {
@@ -76,8 +78,9 @@ export class RsaActivityController {
     this.finish(displayId as string); return true
   }
   open(displayId: unknown, surface: 'main' | 'pet') {
-    if (!this.target(displayId, surface)) return false
-    this.surface.open('office')
+    const target = this.target(displayId, surface)
+    if (!target) return false
+    this.surface.open(blockUrl(this.dashboardUrl, target.blockId))
     this.finish(displayId as string); return true
   }
   stop() {
@@ -135,6 +138,7 @@ export class RsaActivityController {
   private accept(snapshot: RsaActivitySnapshot) {
     const changed = snapshot.identity !== this.runId
     this.context = { runId: snapshot.current.runId, epoch: snapshot.current.epoch }
+    this.dashboardUrl = snapshot.current.dashboardUrl
     this.throughSeq = snapshot.projection?.throughSeq ?? 0
     this.activity = snapshot.activity
     if (changed) {
