@@ -82,8 +82,8 @@ test("Runtime discovers non-game catalog entries and reads through its device se
       { id: "joint-7", requiresControl: true, help: "rotate <degrees>" },
       { id: "thermal-9", requiresControl: false, mediaTypes: ["text/plain"], help: "sample" },
     ] });
-    const observations = await runtime.observe({ controllerId: "thermal-9", argv: ["sample"] }, new AbortController().signal);
-    expect(observations).toMatchObject([{ controllerId: "thermal-9", mediaType: "text/plain" }]);
+    const result = await runtime.observe({ controllerId: "thermal-9", argv: ["sample"] }, new AbortController().signal);
+    expect(result).toMatchObject({ status: "completed", observations: [{ controllerId: "thermal-9", mediaType: "text/plain" }] });
     expect(acquire).not.toHaveBeenCalled();
     const { epoch } = await runtime.start();
     expect(owner()).toBe(epoch!);

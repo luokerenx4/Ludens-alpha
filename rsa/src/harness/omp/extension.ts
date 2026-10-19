@@ -4,7 +4,7 @@ import { delimiter, resolve } from "node:path";
 import type { ExtensionFactory, CustomTool, ReadToolResultEvent } from "@oh-my-pi/pi-coding-agent";
 import { resizeImage } from "@oh-my-pi/pi-coding-agent/utils/image-resize";
 import * as z from "@oh-my-pi/omptype/zod";
-import type { Observation, ControllerRequest } from "@playness/baseware/contracts";
+import type { Observation, ControllerRequest, ExecutionResult } from "@playness/baseware/contracts";
 import type { Runtime } from "../runtime.ts";
 import { Workspace } from "../workspace.ts";
 import type { EventTrace, RecordEvent } from "../events.ts";
@@ -12,6 +12,9 @@ import { pythonModulePaths } from "../python-capabilities.ts";
 
 export async function media(observations: Observation[], record?: RecordEvent, trace?: EventTrace) {
   return Promise.all(observations.map(async (observation) => {
+    if (observation.mediaType.startsWith("text/") || observation.mediaType === "application/json") {
+      return { type: "text" as const, text: await readFile(observation.path, "utf8") };
+    }
     if (!observation.mediaType.startsWith("image/")) throw new Error(`Unsupported model media: ${observation.mediaType}`);
     // Use OMP's normal image path once, before persistence. Re-encoding history
     // during each request would waste work and risk changing cache prefixes.
@@ -43,8 +46,8 @@ export function createRsaExtension(options: {
   let requests = 0;
   let requestEpoch: string | undefined;
   const pendingTools = new Set<string>();
-  const observed = new Map<string, Observation[]>();
-  let latestContext: { observations: string[]; skills: Awaited<ReturnType<Workspace["snapshot"]>> };
+  const observed = new Map<string, ExecutionResult>();
+  let latestContext: { observations: string[]; executions: string[]; skills: Awaited<ReturnType<Workspace["snapshot"]>> };
   const trace = (toolCallId?: string): EventTrace => ({ epoch: options.cycle().epoch, ...options.trace?.(toolCallId), ...(toolCallId ? { toolCallId } : {}) });
   const observeParameters = z.object({
     controllerId: z.string().describe("Controller ID without the controller/ prefix used in the catalog."),
@@ -67,14 +70,14 @@ export function createRsaExtension(options: {
 
   const observe: CustomTool<typeof observeParameters> = {
     name: "observe", label: "Observe", loadMode: "essential", approval: "read",
-    description: "Call an injected controller for an additional observation when the media supplied automatically by the loop is insufficient. Use rsa controller list and rsa controller <id> --help to discover controller arguments.",
+    description: "Call an injected read-only controller for additional information or media when the loop's observation is insufficient. Use rsa controller list and rsa controller <id> --help to discover controller arguments.",
     parameters: observeParameters,
     async execute(id, params, _onUpdate, _ctx, signal) {
       const cycle = options.cycle();
-      const observations = await runtime.observe(params, signal ? AbortSignal.any([signal, cycle.signal]) : cycle.signal, trace(id), "explicit");
-      const images = await media(observations, runtime.record, trace(id));
-      observed.set(params.controllerId, observations);
-      return { content: [{ type: "text", text: JSON.stringify(observations) }, ...images], details: observations };
+      const result = await runtime.observe(params, signal ? AbortSignal.any([signal, cycle.signal]) : cycle.signal, trace(id), "explicit");
+      const content = await media(result.observations ?? [], runtime.record, trace(id));
+      observed.set(params.controllerId, result);
+      return { content: [{ type: "text", text: JSON.stringify(result) }, ...content], details: result };
     },
   };
 
@@ -123,22 +126,33 @@ export function createRsaExtension(options: {
     try {
       const consolidating = cycle.purpose === "consolidate";
       // An explicit sample's chosen arguments take precedence over this controller's defaults.
-      const fresh = consolidating ? [] : (await Promise.all(options.autoObserve.filter(request => !observed.has(request.controllerId))
-        .map(request => runtime.observe(request, cycle.signal, parent, origin)))).flat();
-      const reused = consolidating ? [] : options.autoObserve.flatMap(request => observed.get(request.controllerId) ?? []);
-      const observations = [...reused, ...fresh];
+      const fresh = consolidating ? [] : await Promise.all(options.autoObserve.filter(request => !observed.has(request.controllerId))
+        .map(async request => ({ controllerId: request.controllerId, result: await runtime.observe(request, cycle.signal, parent, origin) })));
+      const reused = consolidating ? [] : options.autoObserve.flatMap(request => {
+        const result = observed.get(request.controllerId);
+        return result ? [{ controllerId: request.controllerId, result }] : [];
+      });
+      const samples = [...reused, ...fresh];
+      const observations = samples.flatMap(({ result }) => result.observations ?? []);
       const skills = await workspace.snapshot();
-      // Explicit observe results already contain their images in history.
-      const images = await media(fresh, runtime.record, parent);
+      // Explicit observe results already contain their text and media in history.
+      const content = await media(fresh.flatMap(({ result }) => result.observations ?? []), runtime.record, parent);
+      const controllerOutputs = fresh.filter(({ result }) => result.stdout || result.stderr).map(({ controllerId, result }) => ({
+        controllerId, executionId: result.id, stdout: result.stdout, stderr: result.stderr,
+      }));
       cycle.signal.throwIfAborted();
-      latestContext = { observations: observations.map((o) => o.id), skills };
+      latestContext = { observations: observations.map((o) => o.id), executions: samples.map(({ result }) => result.id), skills };
       runtime.record("observation_context", { origin, observations: latestContext.observations,
-        purpose: cycle.purpose, freshObservations: fresh.map(o => o.id), reusedObservations: reused.map(o => o.id),
+        executions: latestContext.executions, purpose: cycle.purpose,
+        freshObservations: fresh.flatMap(({ result }) => result.observations?.map(o => o.id) ?? []),
+        reusedObservations: reused.flatMap(({ result }) => result.observations?.map(o => o.id) ?? []),
+        freshExecutions: fresh.map(({ result }) => result.id), reusedExecutions: reused.map(({ result }) => result.id),
         skillVersion: skills.version, memoryVersion: skills.memory.version }, parent);
       return [{ type: "text" as const, text: JSON.stringify({
         ...(consolidating ? { purpose: cycle.purpose } : {}),
         control: runtime.status(), observations, skills,
-      }) }, ...images];
+        ...(controllerOutputs.length ? { controllerOutputs } : {}),
+      }) }, ...content];
     } catch (error) { await runtime.stop(`observation failed: ${error}`); throw error; }
   }
 
@@ -195,6 +209,6 @@ export function createRsaExtension(options: {
       pendingTools.add(event.toolCallId);
     });
   };
-  return { factory, tools: [observe, exec], context: () => ({ observations: latestContext?.observations,
+  return { factory, tools: [observe, exec], context: () => ({ observations: latestContext?.observations, executions: latestContext?.executions,
     skillVersion: latestContext?.skills.version, memoryVersion: latestContext?.skills.memory.version }) };
 }

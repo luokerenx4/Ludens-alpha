@@ -18,7 +18,7 @@ class FakeServices implements LaunchIO {
   basewareMode = "manual";
   preparedBridgePid: number | null = null;
   bridgeClientPids: number[] = [];
-  bridgePort: number;
+  bridgePort: number | undefined;
   dashboard = false;
   mode = "manual";
   cleanupReads = 0;
@@ -114,6 +114,39 @@ test("launch config keeps limits explicit and paths as literal argv entries", as
   expect(value.commands.pet).toContain("/tmp/Workspace with spaces");
 });
 
+test("Cua launch config uses its native service and desktop observation without an emulator port", async () => {
+  const config = parseConfig({ driver: "cua", cuaCommand: "/Applications/Cua Driver/cua-driver", dashboard: false, pet: false });
+  const value = await launchPlan(config, "/tmp/Desktop workspace", "/tmp/Source", "/tmp/cua-baseware.sock");
+  expect(config.port).toBeUndefined();
+  expect(value.commands.emulator).toBeUndefined();
+  expect(value.commands.baseware).toEqual(["/tmp/Source/baseware/bin/baseware", "serve", "--driver", "cua",
+    "--cua-command", "/Applications/Cua Driver/cua-driver", "--socket", "/tmp/cua-baseware.sock",
+    "--data-dir", "/tmp/Desktop workspace/logs/baseware"]);
+  const observeIndex = value.commands.host!.indexOf("--auto-observe");
+  expect(JSON.parse(value.commands.host![observeIndex + 1]!)).toEqual([{ controllerId: "cua.get_desktop_state", argv: [] }]);
+  const defaults = await launchPlan(parseConfig({ driver: "cua" }), "/tmp/Desktop workspace", "/tmp/Source", "/tmp/cua-baseware.sock");
+  expect(defaults.commands.baseware).not.toContain("--cua-command");
+  expect(defaults.commands.baseware).not.toContain("--port");
+  expect(() => parseConfig({ driver: "cua", port: 47663 })).toThrow("bridge port");
+  expect(() => parseConfig({ driver: "cua", game: "game.nsp" })).toThrow("game");
+  expect(() => parseConfig({ driver: "mgba", cuaCommand: "cua-driver" })).toThrow("cuaCommand");
+});
+
+test("Cua startup and shutdown only manage its services, without emulator bridge probes", async () => {
+  const value = await launchPlan(parseConfig({ driver: "cua", dashboard: false, pet: false }), "/tmp/Desktop workspace", "/tmp/Source", "/tmp/cua-baseware.sock");
+  const io = new FakeServices(value);
+  const launcher = new WorkspaceLauncher(value, io);
+  const status = await launcher.up();
+  expect(status.host?.mode).toBe("manual");
+  expect(io.starts).toEqual(["baseware", "host"]);
+  await launcher.up();
+  expect(io.starts).toEqual(["baseware", "host"]);
+  await launcher.down(false);
+  expect(io.calls.filter(argv => argv[1] === "bootout").map(argv => argv[2])).toEqual(
+    ["host", "baseware"].map(name => io.target(name)));
+  expect(io.calls.some(argv => ["pgrep", "lsof"].includes(argv[0]!))).toBe(false);
+});
+
 test("init and dry-run preserve existing workspace files and never invoke service commands", async () => {
   const directory = await mkdtemp(join(tmpdir(), "rsa-launch-"));
   try {
@@ -145,6 +178,12 @@ test("init and dry-run preserve existing workspace files and never invoke servic
     expect(await readFile(join(workspace, "rsa.json"), "utf8")).toBe(configBefore);
     expect(await readFile(join(workspace, "AGENTS.md"), "utf8")).toBe("My existing workspace instructions\n");
     expect((await readdir(workspace)).sort()).toEqual(["AGENTS.md", "rsa.json"]);
+    const desktop = join(directory, "Desktop workspace");
+    expect((await run("--workspace", desktop, "init", "--driver", "cua", "--cua-command", "./tools/cua-driver")).code).toBe(0);
+    const desktopPreview = await run("--workspace", desktop, "up", "--dry-run");
+    expect(desktopPreview.code).toBe(0);
+    expect(JSON.parse(desktopPreview.stdout)).toMatchObject({ config: { driver: "cua", cuaCommand: "./tools/cua-driver" } });
+    expect(JSON.parse(desktopPreview.stdout).commands.emulator).toBeUndefined();
     expect(await Bun.file(marker).exists()).toBe(false);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

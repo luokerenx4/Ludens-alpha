@@ -26,8 +26,8 @@ test.each([1, 26])("OMP persists batches of %i images and reuses the Codex prefi
     async execute() {
       const position = Bun.file(join(workspace, "position"));
       states.push(await position.exists() ? await position.text() : "initial");
-      return captureResult(Array.from({ length: batchSize }, () => ({ id: `sample-${++captures}`, controllerId: "camera", mediaType: "image/png", path: image,
-        timing: { clock: "test", requestedAtMs: captures, receivedAtMs: captures } })));
+      return { ...captureResult(Array.from({ length: batchSize }, () => ({ id: `sample-${++captures}`, controllerId: "camera", mediaType: "image/png", path: image,
+        timing: { clock: "test", requestedAtMs: captures, receivedAtMs: captures } }))), stdout: `interface-state-${captures}` };
     },
   }] }, (type, data) => { events.push({ type, data }); });
   const control = new AbortController();
@@ -57,12 +57,16 @@ test.each([1, 26])("OMP persists batches of %i images and reuses the Codex prefi
   let responseItems: NonNullable<Awaited<ReturnType<typeof buildTransformedCodexRequestBody>>["input"]> = [];
   const deltas: unknown[] = [];
   const imageCounts: number[] = [];
+  const textCounts: number[] = [];
   // Replace the transport itself: this exercises the SDK's real loop and persistence offline.
   const streamFn: typeof session.agent.streamFn = async (_model, context) => {
     const body = await buildTransformedCodexRequestBody(model, context, { reasoning: "low", sessionId: "offline" });
     if (previous) deltas.push(buildResponsesDeltaInput(previous, responseItems, body, { service_tier: true }));
     previous = structuredClone(body);
     imageCounts.push(context.messages.flatMap((m) => Array.isArray(m.content) ? m.content : []).filter((p) => p.type === "image").length);
+    const text = context.messages.flatMap(m => Array.isArray(m.content) ? m.content : [])
+      .filter(part => part.type === "text").map(part => part.text).join("\n");
+    textCounts.push((text.match(/interface-state-\d+/g) ?? []).length);
     const index = ++requests;
     const done = index >= 7;
     const exec = (suffix: string, command: string) => ({ type: "toolCall" as const, id: `call_${index}_${suffix}`, name: "exec", arguments: { command } });
@@ -104,6 +108,7 @@ test.each([1, 26])("OMP persists batches of %i images and reuses the Codex prefi
     // One automatic capture per batch; an explicit final observe is reused.
     // The larger batch also crosses Codex's SDK cap of 200 retained images.
     expect(imageCounts).toEqual([1, 2, 3, 5, 6, 7, 8, 9, 10].map(n => n * batchSize));
+    expect(textCounts).toEqual([1, 2, 3, 5, 6, 7, 8, 9, 10]);
     expect(states).toEqual(["initial", "second", "third", "third", ...Array(6).fill("fourth")]);
     expect(events.filter(e => e.type === "observation" && e.data.origin === "explicit")).toHaveLength(4 * batchSize);
     const contexts = events.filter(e => e.type === "observation_context");

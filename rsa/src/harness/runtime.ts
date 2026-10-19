@@ -1,4 +1,4 @@
-import type { Observation, ControllerRequest, ExecutionResult } from "@playness/baseware/contracts";
+import type { ControllerRequest, ExecutionResult } from "@playness/baseware/contracts";
 import type { Catalog } from "@playness/baseware/protocol";
 import type { EventTrace, RecordEvent } from "./events.ts";
 import type { WorkspaceController } from "./controller.ts";
@@ -158,7 +158,7 @@ export class Runtime {
     this.record("disconnected", error.message);
   }
 
-  async observe(request: ControllerRequest, signal: AbortSignal, parent: EventTrace = {}, origin: ObservationOrigin = "cli"): Promise<Observation[]> {
+  async observe(request: ControllerRequest, signal: AbortSignal, parent: EventTrace = {}, origin: ObservationOrigin = "cli"): Promise<ExecutionResult> {
     // The read-only model tool and automatic sampling use the same controller
     // protocol, but must not turn an observation request into an input action.
     const controller = this.devices.catalog.controllers.find(item => item.id === request.controllerId);
@@ -166,7 +166,7 @@ export class Runtime {
     const result = await this.devices.execute(request.controllerId, request.argv,
       this.mode === "auto" ? this.epoch : undefined, signal, parent, origin);
     if (result.status !== "completed" || result.exitCode !== 0) throw new Error(`Observation failed: ${result.stderr || result.status}`);
-    return result.observations ?? [];
+    return result;
   }
 
   async close() {

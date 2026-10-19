@@ -15,8 +15,8 @@ flowchart LR
     F --> C[Baseware Client]
     C --> B[Baseware 独立进程]
     M[独立 CLI / API / MCP 客户端] --> B
-    B --> D[Driver: Sensor / Controller]
-    D --> E[模拟器或其他设备]
+    B --> D[Driver: Controller]
+    D --> E[模拟器、桌面或其他设备]
     B -->|设备事件| R
     R --> L[workspace/logs]
     L --> V[Dashboard / Alice Pet]
@@ -33,45 +33,41 @@ flowchart LR
 
 ## Driver 与 Baseware
 
-Driver 是当前环境的最小能力实现。目前有 mGBA 和 Ryubing；每个 driver 提供 Sensor / Controller 集合、设备连接生命周期和自身的 help。
+Driver 是当前环境的最小能力实现。目前有 mGBA、Ryubing 和 Cua；每个 driver 提供统一 Controller 集合、设备连接生命周期和自身的 help。传感器是返回信息或媒体的 Controller。
 
 ```ts
-interface Sensor {
-  id: string;
-  mediaTypes: readonly string[];
-  help(): string;
-  read(argv: readonly string[], signal: AbortSignal): Promise<Observation[]>;
-}
 interface Controller {
   id: string;
+  requiresControl: boolean;
+  mediaTypes?: readonly string[];
   help(): string;
-  acquire(epoch: string): Promise<void>;
+  acquire?(epoch: string): Promise<void>;
   execute(argv: readonly string[], context: {
-    epoch: string; signal: AbortSignal;
+    epoch?: string; signal: AbortSignal;
   }): Promise<ExecutionResult>;
-  release(epoch: string): Promise<void>;
+  release?(epoch: string): Promise<void>;
 }
 ```
 
 契约只约定发现、help、读取/执行、媒体与时序、取消和交接。help 说明真实设备通道、参数与效果，不说明某个按键在游戏中做什么。`screen`、`pad`、`keyboard` 是已有 driver 选择的 ID，Harness 不解析它们。能力 ID 在同类集合内唯一；当前 CLI 每个 Baseware 进程装配一个 driver，不增加热插拔或插件管理器。
 
-观测包含媒体类型、不可变文件路径、时钟 ID、请求和返回时刻，可带源帧序号。执行结果包含状态、退出码、stdout/stderr 和时序。同一设备时钟下可以关联动作后的观测；帧号前进不等于动画完成，也不等于游戏推进。
+观测包含媒体类型、不可变文件路径、时钟 ID、请求和返回时刻，可带源帧序号。执行结果包含状态、退出码、stdout/stderr、时序和可选 observations；只读 Controller 可以只返回文字，也可同时返回文字与媒体。同一设备时钟下可以关联动作后的观测；帧号前进不等于动画完成，也不等于游戏推进。
 
 三种调用入口走同一服务：
 
-- CLI：`baseware list`、`baseware sensor <id> ...`、`baseware controller <id> ...`。
+- CLI：`baseware list`、`baseware controller <id> ...`。
 - API：TS `BasewareClient`，Python `from baseware import Client`。
-- MCP：`baseware mcp` 通过官方 SDK 暴露目录、help、sensor 和 controller 工具。
+- MCP：`baseware mcp` 通过官方 SDK 暴露目录、help 和 controller 工具。
 
 本地 Unix socket 使用逐行 JSON，区分请求 ID、结果与设备事件。TS 客户端可多路复用连接；Python 每次调用建立短连接。MCP stdio 进程连接同一 Baseware，不能再装配一份 driver；当前 RSA 不把它接入 OMP，也不新增 RSA MCP 适配器。接口取消最终都传递到同一 driver；没有入口自行重试有副作用的动作。
 
 ## 操作权与人工接管
 
-RSA 创建每轮 epoch，通过一条持久连接向 Baseware 申请一次有期限的服务操作权；即使目录只有 Sensor，也使用同一交接流程。普通 CLI、API、MCP 调用携带该 epoch；它们不因打开连接而取得操作权。
+RSA 创建每轮 epoch，通过一条持久连接向 Baseware 申请一次有期限的服务操作权；即使目录只有只读 Controller，也使用同一交接流程。普通 CLI、API、MCP 输入调用携带该 epoch；它们不因打开连接而取得操作权，只读调用无需接管。
 
 Baseware 独立负责：
 
-1. 同一时刻只接受一个拥有者；授予后才能执行 controller。
+1. 同一时刻只接受一个拥有者；授予后才能执行 requiresControl 的 Controller。
 2. 动作完成、取消与释放由 driver 保证；不规定统一的按键或关节归零方式。
 3. 拥有者连接断开、预算到期或人类 `revoke` 时释放设备。
 4. 普通短连接关闭只取消这个客户端的在途请求，不结束整轮接管。
@@ -79,7 +75,9 @@ Baseware 独立负责：
 
 RSA 负责停止 Agent、取消 shell/Python 进程组、更新会话和日志。设备交还不等待模型结束。Baseware 的交还事件也会停止 RSA 循环，避免独立设备服务已经释放而模型还继续操作。正在交还或清理时不接受新的接管。
 
-动作时长由调用方选择，不设两秒上限；各 driver 只检查自己的数值表示、最小采样单位和输入格式。预算与人工接管依然能打断长动作。
+动作时长由调用方选择，不设两秒上限；各 driver 只检查自己的数值表示、最小采样单位和输入格式。预算与人工接管请求取消长动作，清理完成才报告 manual；底层已开始的调用可先收尾。
+
+Cua driver 通过一个持久 MCP 客户端连接未修改的 CuaDriver.app，动态将上游工具及 JSON schema 映射为 `cua.<name>` Controller。readOnlyHint 决定是否需要操作权。窗口、浏览器、键鼠、剪贴板和脚本执行都沿同一目录进入。Baseware 保持上游会话并在交还时清理，下一轮按需恢复；桌面权限由 CuaDriver.app 持有，不向 OMP 增加 Cua 工具。
 
 ## 工作区与可执行能力
 
@@ -99,13 +97,13 @@ workspace/
     consumers/            # Pet 消费、排队和展示提交的独立日志
 ```
 
-`rsa controller list` 返回短能力目录，`rsa controller <id> --help` 返回所选能力的完整用法。公共 ID 分为 `controller/<id>`、`sensor/<id>` 和 `python/<相对路径.py>:<函数名>`；原始设备由 Baseware 的实际目录预填，Harness 不列举具体设备名称。CLI 是默认调用入口；Python `from rsa_tools import Client` 提供 `list/help/call`，共用相同目录与执行器，方便函数组合。
+`rsa controller list` 返回短能力目录，`rsa controller <id> --help` 返回所选能力的完整用法。公共 ID 分为 `controller/<id>` 和 `python/<相对路径.py>:<函数名>`；原始设备由 Baseware 的实际目录预填，Harness 不列举具体设备名称。CLI 是默认调用入口；Python `from rsa_tools import Client` 提供 `list/help/call`，共用相同目录与执行器，方便函数组合。
 
 未标记的 Python 文件是普通脚本。RSA 在 list 及 Python help/call 时静态扫描 `.py` 中用 `@capability` 标记的顶层函数，读取签名、类型标注和 docstring。扫描不执行 import 或顶层代码，排除日志、依赖、虚拟环境与 Git 目录。新增、修改、删除在下一次查询或调用时生效；错误签名作为诊断返回，由 Agent 修正。发现的函数不注册为 OMP 工具，也不逐轮注入目录与 schema。
 
 设备参数为原始 `string[]`，CLI 直接透传；Python 参数为对象，CLI 使用 `--args '<JSON object>'`。实际调用 Python 时在 workspace 启动进程，校验参数和发现时的源码版本，导入对应模块并返回 JSON 值，失败向调用方报错。调用日志保留文件、函数、源码 hash、参数和结果。函数可以通过 `Client().call()` 组合原始设备或其他工作区能力，也可调用普通 Python 辅助函数。它们仍是工作区里的代码，不被复制成 Harness 插件。
 
-目录与 help 无需接管；实际调用须携带当前 epoch，由 Runtime 检查和绑定取消信号。CLI/API 连接关闭会取消自身调用，人工交还会取消本周期全部调用及 Python 进程组。嵌套调用复用同一宿主和 epoch，不使用会阻塞嵌套请求的全局队列。设备自身的并发约束仍由 Baseware driver 执行。
+目录、help 与只读 Controller 无需接管；输入和 Python 函数须携带当前 epoch，由 Runtime 检查和绑定取消信号。CLI/API 连接关闭会取消自身调用，人工交还会取消本周期全部调用及 Python 进程组。嵌套调用复用同一宿主和 epoch，不使用会阻塞嵌套请求的全局队列。设备自身的并发约束仍由 Baseware driver 执行。
 
 shell/Python 自动继承 RSA 与 Baseware 地址、本轮 epoch 与 trace。设备操作最终进入 Baseware，传感器调用通过 RSA 观测路径落盘，模型工具和脚本内多次设备操作能关联到同一日志链。一次 shell 中的复合操作结束后，循环仍统一补充观测。不同工作区默认不共享这些派生能力。此实现是可信本机执行环境，不提供 OS 沙箱或多用户权限边界。
 

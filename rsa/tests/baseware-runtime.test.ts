@@ -150,8 +150,9 @@ test("owner connection loss revokes a separate caller and disconnects RSA", asyn
 test("remote observations and event paths keep distinct durable files inside the RSA run", async () => {
   const f = await fixture();
   try {
-    const observations = await f.runtime.observe({ controllerId: "screen", argv: ["capture"] }, new AbortController().signal,
+    const result = await f.runtime.observe({ controllerId: "screen", argv: ["capture"] }, new AbortController().signal,
       { toolCallId: "capture-call" }, "explicit");
+    const observations = result.observations!;
     expect(new Set(observations.map(observation => observation.path)).size).toBe(2);
     const recorded = f.events.filter(event => event.type === "observation");
     expect(recorded).toHaveLength(2);

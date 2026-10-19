@@ -1,6 +1,6 @@
 # RSA 实验
 
-给模型统一的设备能力 CLI 和一个空工作区，让它自行探索并积累技能。`rsa controller` 统一发现和调用设备能力与工作区 Python 函数；设备由独立 Baseware 服务的 mGBA / Ryubing driver 提供。RSA 使用同一份 OMP 18.9.1 循环。模型凭据复用本机 OMP 登录，默认 `openai-codex/gpt-6.1-sol`。
+给模型统一的设备能力 CLI 和一个空工作区，让它自行探索并积累技能。`rsa controller` 统一发现和调用设备能力与工作区 Python 函数；设备由独立 Baseware 服务的 mGBA / Ryubing / Cua driver 提供。RSA 使用同一份 OMP 18.9.1 循环。模型凭据复用本机 OMP 登录，默认 `openai-codex/gpt-6.1-sol`。
 
 ## 启动
 
@@ -44,7 +44,7 @@ rsa auto on
 }
 ```
 
-`driver` 为 `ryubing` 或 `mgba`。`game` 是 Ryubing 启动的游戏路径，相对路径以工作区为基准；省略时连接外部已准备好的模拟器。可选 `port` 指定桥端口，默认 mGBA 47653、Ryubing 47663。其余字段的默认值如上；`seconds` 和 `requests` 是每次接管的预算，达到任一预算即交还控制。
+`driver` 为 `ryubing`、`mgba` 或 `cua`。`game` 是 Ryubing 启动的游戏路径，相对路径以工作区为基准；省略时连接外部已准备好的模拟器。可选 `port` 指定桥端口，默认 mGBA 47653、Ryubing 47663。Cua 不使用 `game` 或 `port`，可用 `cuaCommand` 指定 Cua Driver 可执行路径，默认从 PATH 查找 `cua-driver`。其余字段的默认值如上；`seconds` 和 `requests` 是每次接管的预算，达到任一预算即交还控制。
 
 有 `game` 时使用现有 `launch.sh` 启动已安装的带桥 Ryubing；安装及设备前提见下方 [Switch / Ryubing](#switch--ryubing)。mGBA 的 ROM 和 Lua 桥仍按下一节手动准备，再执行 `rsa init --driver mgba` 和 `rsa up`。
 
@@ -67,6 +67,23 @@ rsa auto on
 ```
 
 后台进程继续复用 `scripts/launch-background.py`，工作目录是当前 workspace，日志与 job 描述写入 `logs/background/`。它们独立于交互式终端，不自动重启、不注册开机启动。启动失败时先运行 `rsa services` 查看现有服务及退出状态，再检查对应日志；避免另外手动启动一组重复进程。
+
+### Cua 桌面
+
+按 [Baseware 文档](../baseware/README.md) 安装 Cua Driver 并完成系统权限准备，然后在独立工作区启动：
+
+```sh
+mkdir -p /absolute/path/to/desktop-workspace
+cd /absolute/path/to/desktop-workspace
+rsa init --driver cua --seconds 1800
+# 如未加入 PATH：rsa init --driver cua --cua-command /absolute/path/to/cua-driver
+rsa up --dry-run
+rsa up
+rsa controller list
+rsa controller controller/cua.get_desktop_state
+```
+
+Baseware 持有一个 Cua Driver MCP 子进程，桌面能力仍通过同一 `rsa controller` 目录和 Python API 使用，不注入 OMP 工具列表。Cua 工作区启动不探测模拟器或 TCP 桥；自动观测使用 `cua.get_desktop_state`，将图像和文本一起交给现有循环。需要接管时执行 `rsa auto on`，`rsa auto off` 交还控制；`rsa down` 结束本工作区的服务。桌面应用仍留在当前系统，工作区只隔离 Agent 的文件与会话。
 
 ### mGBA 设备准备
 

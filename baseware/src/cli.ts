@@ -1,7 +1,7 @@
 import { BasewareClient } from "./client.ts";
 import type { Request } from "./protocol.ts";
 
-export const HELP = `baseware serve --driver mgba|ryubing [--port <n>] [--socket <path>] [--data-dir <path>]
+export const HELP = `baseware serve --driver mgba|ryubing|cua [--port <n>] [--cua-command <path>] [--socket <path>] [--data-dir <path>]
 baseware status
 baseware list
 baseware driver list

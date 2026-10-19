@@ -6,7 +6,7 @@
 
 | 目录 | 职责 | 开发入口 |
 | --- | --- | --- |
-| [baseware/](baseware/README.md) | 独立设备进程、mGBA / Ryubing driver、CLI / API / MCP | Bun 1.4、Python 3.9+ |
+| [baseware/](baseware/README.md) | 独立设备进程、mGBA / Ryubing / Cua driver、CLI / API / MCP | Bun 1.4、Python 3.9+ |
 | [rsa/](rsa/README.md) | Harness、Shiori（当前 OMP）、工作区 Python 能力、会话与日志 | Bun 1.4、Python 3.9+ |
 | [rsa-dashboard/](rsa-dashboard/README.md) | 统一运行 / Benchmark / Alice 界面、日志解析与本地 HTTP API | Node.js 22+、npm |
 | [rsa-companion/](rsa-companion/README.md) | Electron 桌面壳与 Alice 原生浮窗、托盘、声音；主窗口加载 Dashboard | Node.js 22+、pnpm 11 |

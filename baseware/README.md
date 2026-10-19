@@ -20,9 +20,38 @@ baseware controller screen --help
 baseware controller screen capture
 ```
 
+For a desktop, install the upstream [Cua Driver](https://github.com/trycua/cua/tree/main/libs/cua-driver)
+and grant its native app Accessibility and Screen Recording permissions on macOS. Baseware connects
+through one persistent `cua-driver mcp` proxy; CuaDriver.app owns the native runtime and permissions.
+Upstream code and application settings are not bundled or modified.
+
+```sh
+baseware serve --driver cua --cua-command /absolute/path/to/cua-driver
+baseware controller list
+baseware controller cua.get_desktop_state
+baseware controller cua.list_windows --args '{"app":"Calculator"}'
+baseware controller cua.get_window_state --help
+```
+
+Every tool returned by the installed Driver's MCP catalog is exposed as `cua.<tool-name>`.
+Its original JSON input schema and description are available through help; pass literal JSON with
+`--args`, or omit it for an empty object. Read-only annotations determine whether the controller
+requires a lease; missing annotations require control. RSA does not inject Cua tools into OMP.
+Text and structured output stay in the execution result; binary media are archived as observations.
+An accepted action can still report `unverifiable` or `suspected_noop`: inspect the original result
+and subsequent state rather than treating completion as task success.
+
+The proxy retains Cua's implicit and named sessions across CLI/API calls. Returning control stops
+admitting new input, requests cancellation and ends sessions used by that connection. An already
+running native call or script can finish before Cua completes cleanup; Baseware stays `releasing`
+until then, and only reports `manual` after cleanup. The next call recreates its session.
+Upstream cancellation and native input cleanup remain in Cua Driver. `down` closes the private proxy,
+not the shared CuaDriver.app daemon or the user's applications. Separate workspaces still share
+the real desktop. Use separate OS sessions or VMs when independent desktops are needed.
+
 `baseware/bin/baseware` is the repository CLI. The default socket uses the canonical current directory: `/tmp/playness-baseware-<uid>-<sha256-first16>.sock`. Device data defaults to `$XDG_STATE_HOME/playness/baseware/<socket-name>`, or `~/.local/state/playness/baseware/<socket-name>`. A service starts in manual mode. Device files referenced by calls should use absolute paths.
 
-A persistent client acquires a lease and shares its epoch with temporary callers. Controllers marked `requiresControl: true` must supply that epoch. Read-only controllers such as `screen` work without a lease. Closing the owner connection, expiration, driver disconnection or `baseware revoke` restores manual input. Closing a temporary caller only cancels its pending calls. Revocation does not wait for an action or model request to finish, and the driver stays connected for the next lease.
+A persistent client acquires a lease and shares its epoch with temporary callers. Controllers marked `requiresControl: true` must supply that epoch. Read-only controllers such as `screen` work without a lease. Closing the owner connection, expiration, driver disconnection or `baseware revoke` restores manual input. Closing a temporary caller only cancels its pending calls. Revocation stops new input immediately and waits for the driver's cleanup before reporting manual; it does not wait for model requests. The driver stays connected for the next lease.
 
 ```ts
 import { BasewareClient } from "@playness/baseware/client";

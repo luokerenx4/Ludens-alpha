@@ -54,6 +54,8 @@ test("OMP's SDK adapter delivers the abort signal correctly and returns real ima
   const directory = await mkdtemp(join(tmpdir(), "rsa-omp-"));
   await mkdir(join(directory, "workspace", "skills"), { recursive: true });
   const file = join(directory, "sample.png");
+  const tree = join(directory, "tree.json");
+  await Bun.write(tree, '{"role":"window","title":"Document"}');
   const png = "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg==";
   await Bun.write(file, Buffer.from(png, "base64"));
   const runtime = createTestRuntime({ controllers: [{
@@ -61,8 +63,10 @@ test("OMP's SDK adapter delivers the abort signal correctly and returns real ima
     async execute(argv, { signal }) {
       signal.throwIfAborted();
       if (argv.join() !== "sample") throw new Error("bad sensor command");
-      return captureResult([{ id: "sample", controllerId: "camera-q", mediaType: "image/png", path: file,
-        timing: { clock: "test", requestedAtMs: 0, receivedAtMs: 1 } }]);
+      return { ...captureResult([{ id: "sample", controllerId: "camera-q", mediaType: "image/png", path: file,
+        timing: { clock: "test", requestedAtMs: 0, receivedAtMs: 1 } },
+        { id: "tree", controllerId: "camera-q", mediaType: "application/json", path: tree,
+          timing: { clock: "test", requestedAtMs: 0, receivedAtMs: 1 } }]), stdout: "active-window:Document" };
     },
   }] }, () => {});
   const control = new AbortController();
@@ -78,6 +82,8 @@ test("OMP's SDK adapter delivers the abort signal correctly and returns real ima
     const result = await observe.execute("capture", { controllerId: "camera-q", argv: ["sample"] }, control.signal, () => {}, ctx);
     const resized = await resizeImage({ bytes: Buffer.from(png, "base64"), mimeType: "image/png" });
     expect(result.content.find((p) => p.type === "image")).toMatchObject({ type: "image", data: resized.data, mimeType: resized.mimeType });
+    expect(result.details).toMatchObject({ stdout: "active-window:Document" });
+    expect(result.content).toContainEqual({ type: "text", text: '{"role":"window","title":"Document"}' });
     expect(resized.width).toBe(200);
     expect(resized.decodeFailed).toBeUndefined();
     const executed = await exec.execute("shell", { command: "printf '%s|%s|%s|%s' \"$BASEWARE_EPOCH\" \"${RSA_EPOCH-unset}\" \"${RSA_TRACE-unset}\" \"${RSA_SOCKET-unset}\"" }, control.signal, () => {}, ctx);
@@ -88,7 +94,45 @@ test("OMP's SDK adapter delivers the abort signal correctly and returns real ima
   } finally { await runtime.close(); await rm(directory, { recursive: true }); }
 });
 
-test("tool batches reuse the latest explicit sample per sensor and invalidate all samples after failed exec", async () => {
+test("text-only controllers reach automatic context and explicit samples are not duplicated", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "rsa-text-observation-"));
+  const workspace = join(directory, "workspace");
+  await mkdir(join(workspace, "skills"), { recursive: true });
+  let calls = 0;
+  const runtime = createTestRuntime({ controllers: [{
+    id: "desktop", requiresControl: false, help: () => "windows",
+    async execute() {
+      return { ...captureResult([]), id: `windows-${++calls}`, stdout: JSON.stringify({ title: `Window ${calls}` }) };
+    },
+  }] }, () => {});
+  const control = new AbortController();
+  const extension = createRsaExtension({ runtime, workspace: new Workspace(workspace, join(directory, "versions")),
+    basewareSocket: "/tmp/unused.sock", binDir: "/tmp", maxRequests: 3,
+    autoObserve: [{ controllerId: "desktop", argv: ["windows"] }],
+    cycle: () => ({ epoch: "test", signal: control.signal }),
+  });
+  const handlers: Record<string, (event: any) => any> = {};
+  await extension.factory({ on(name: string, handler: (event: any) => any) { handlers[name] = handler; } } as ExtensionAPI);
+  try {
+    const first = await handlers.before_agent_start({});
+    const persisted = JSON.stringify(first);
+    expect(JSON.parse(first.message.content[0].text).controllerOutputs).toEqual([
+      { controllerId: "desktop", executionId: "windows-1", stdout: '{"title":"Window 1"}', stderr: "" },
+    ]);
+    await handlers.assistant_message({});
+    await handlers.tool_call({ toolCallId: "explicit" });
+    const observe = customToolToDefinition(extension.tools[0]);
+    const result = await observe.execute("explicit", { controllerId: "desktop", argv: ["windows"] }, control.signal, () => {}, {} as ExtensionContext);
+    const enriched = await handlers.tool_result({ toolCallId: "explicit", toolName: "observe", input: {}, ...result });
+    expect(calls).toBe(2);
+    expect(JSON.stringify(enriched).match(/Window 2/g)).toHaveLength(1);
+    expect(JSON.parse(enriched.content.at(-1).text).controllerOutputs).toBeUndefined();
+    expect(extension.context().executions).toEqual(["windows-2"]);
+    expect(JSON.stringify(first)).toBe(persisted);
+  } finally { await runtime.close(); await rm(directory, { recursive: true }); }
+});
+
+test("tool batches reuse the latest explicit sample per controller and invalidate all samples after failed exec", async () => {
   const directory = await mkdtemp(join(tmpdir(), "rsa-observe-reuse-"));
   const workspace = join(directory, "workspace");
   await mkdir(join(workspace, "skills"), {recursive: true});
