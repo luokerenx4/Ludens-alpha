@@ -382,6 +382,8 @@ mGBA 0.10.5 的 socket 析构会再次关闭未置为无效的描述符（[源�
 
 ## 验证
 
+可重复的 Harness 基准用例复用同一日志和看板：`rsa bench list` 查看四个 case，`rsa bench run all` 执行离线可靠性验证，`rsa bench run capability-reuse --live` 在全新 workspace 中评测真实模型的能力创建与复用。结果在 **Benchmark → 基准用例** 查看；不会操作当前游戏。执行参数、判定和限制见 [Benchmark 说明](benchmarks/README.md)。
+
 ```sh
 bun run check
 bun test

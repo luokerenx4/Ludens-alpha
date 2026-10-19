@@ -36,9 +36,10 @@ async function main() {
     args.splice(0, 2);
   }
   if (!args.length || args[0] === "--help" || (args[0] === "run" && args.includes("--help"))) {
-    console.log(`${WORKSPACE_HELP}\n\n${RUN_HELP}\n${HELP}`);
+    console.log(`${WORKSPACE_HELP}\n\n${RUN_HELP}\n${HELP}\nrsa bench <list|run> — isolated Harness benchmarks; rsa bench --help`);
     return;
   }
+  if (args[0] === "bench") return (await import("../benchmark/runner.ts")).benchmarkCommand(args.slice(1), artifactRoot);
   if (["init", "up", "services", "down"].includes(args[0]!)) return workspaceCommand(args[0]!, args.slice(1), selectedWorkspace);
   if (args[0] !== "run") {
     const socket = process.env.RSA_SOCKET ?? (await resolveWorkspaceState(selectedWorkspace, artifactRoot)).socket;

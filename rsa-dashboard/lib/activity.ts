@@ -2,8 +2,7 @@ import { readFile, realpath, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { gunzip } from "node:zlib";
 import { promisify } from "node:util";
-import { loadRun } from "./data";
-import { selectCycle } from "./aggregate";
+import { loadRun, selectRunEvents } from "./data";
 import type { Event } from "./types";
 
 export interface LogBlock {
@@ -241,9 +240,9 @@ export async function activityBlocks(path: string, events: Event[]): Promise<Log
 }
 
 export async function getActivity(project: string, run: string, epoch?: string) {
-  const { path, events } = await loadRun(project, run);
+  const { path, manifest, events } = await loadRun(project, run);
   const started = performance.now();
-  const selected = selectCycle(events, epoch).events;
+  const selected = selectRunEvents(manifest, events, epoch).events;
   const blocks = await activityBlocks(path, selected);
   const latest = selected.at(-1);
   return { blocks, projection: { source: { component: "dashboard" }, throughSeq: latest?.seq ?? 0,

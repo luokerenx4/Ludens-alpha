@@ -83,6 +83,7 @@ export async function catalog(root = artifactRoot): Promise<Project[]> {
                 model: m.model,
                 seconds: m.seconds,
                 drivers: m.drivers,
+                ...(m.benchmark ? { benchmark: m.benchmark } : {}),
               };
             } catch (error) {
               if ((error as NodeJS.ErrnoException).code === "ENOENT")
@@ -173,6 +174,14 @@ export function canControl(
     selectedEpoch === status.epoch
   );
 }
+export function selectRunEvents(manifest: Manifest, events: Event[], epoch?: string) {
+  const selected = selectCycle(events, epoch);
+  // Offline fixtures have trace epochs, but do not claim a Runtime takeover.
+  // Their original run is still inspectable as a whole, without inventing cycles.
+  if (manifest.benchmark && !selected.cycles.length && !epoch)
+    return { ...selected, events };
+  return selected;
+}
 export async function getRun(
   project: string,
   run: string,
@@ -182,11 +191,11 @@ export async function getRun(
     loadRun(project, run),
     catalog(),
   ]);
-  const cycle = selectCycle(events, epoch);
+  const cycle = selectRunEvents(manifest, events, epoch);
   const latest = projects.find((p) => p.id === project)?.runs[0].id;
   let live: LiveStatus | null = null;
   // Only the newest manifest may designate a live socket. Archived runs never contact hosts.
-  if (latest === run)
+  if (latest === run && !manifest.benchmark)
     live = await hostRequest(manifest.socket, {
       kind: "status",
       argv: [],

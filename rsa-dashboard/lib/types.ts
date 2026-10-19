@@ -19,6 +19,7 @@ export interface Event {
   data: Record<string, any>;
 }
 export interface Manifest {
+  benchmark?: { caseId: string; caseVersion: number; mode: "offline" | "live" };
   shiori?: { implementation: string; implementationVersion: string } | null;
   runId: string;
   workspace: string;
@@ -30,6 +31,7 @@ export interface Manifest {
   compactionThreshold: number | null;
 }
 export interface RunInfo {
+  benchmark?: Manifest["benchmark"];
   id: string;
   model: string | null;
   seconds: number;

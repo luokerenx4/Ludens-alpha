@@ -1,6 +1,6 @@
 # 运行日志契约
 
-日志是事实来源。分析器、Dashboard 和 Pet 从中生成各自视图；模型或函数执行成功不等于环境任务成功。本阶段提供可核对的数据，不实现游戏评分器或 benchmark runner。
+日志是事实来源。分析器、Dashboard、Pet 和 Benchmark 从中生成各自视图；模型或函数执行成功不等于环境任务成功。固定评测由独立 case 判定，不把游戏评分规则写入 Harness。
 
 ## 职责与来源
 
@@ -11,6 +11,7 @@
 | `baseware` | 设备操作权、Controller、Sensor | 独立 Baseware 服务；driver 信息见 manifest |
 | `dashboard` | 日志投影、读取高水位 | Dashboard activity API |
 | `pet` | 读取日志、气泡队列、提交展示 | Alice Pet |
+| `benchmark` | 固定场景、故障注入、环境任务事实与独立评测 | `rsa bench` |
 
 Shiori 是稳定的架构角色，不是 OMP 的另一个包名。代码仍在 `src/harness/omp/`；换内核时保留角色，改变实现标注。实现配置和模型仍分别记录，不能仅凭角色名比较性能。
 
@@ -68,3 +69,11 @@ Dashboard 的 activity 投影保留来源和调用关联，并返回投影耗时
 **禁止相加的包含关系**：原生 Shiori usage 与现有 model usage；工具耗时与其内部 exec/宏/设备耗时；capability span 与 Python 细节耗时。上述数据描述同一工作的不同层次。
 
 现有 hooks 仍不能拆开上传、网络和服务端排队。源帧号前进、宏 exit 0、skill 被读取或写入都不证明任务推进。环境评分、能力收益和固定 benchmark case 留给独立评测层，不能把游戏知识放进 Harness。
+
+## 固定基准
+
+`rsa bench` 复用上述事件与 manifest，并在每次新 workspace 的 run 中保存 `benchmark.json`：每项检查有 expected / actual / evidenceSeq，指标与适用范围独立保存。case/version、参数和 provenance 决定是否适合比较，状态明确区分未通过、证据不足、基础设施异常和跳过。见 [四个基准用例](../benchmarks/README.md)。
+
+离线 WS/压缩 case 会产生真实实现的 trace epoch，但没有 Runtime 接管，因此不伪造 `control`。看板对没有接管周期的基准读取完整 run；事件的原 trace 仍可核对。故障注入中的预期错误不能直接当成真实运行故障率。
+
+`benchmark_reuse_inventory` 是结束后的只读 AST 盘点，只证明 Agent 创建了有效能力；不能算 Agent 主动发现或调用。后两项仍须使用 Agent 的 discovery / capability / Baseware 原调用链。直接 import helper 是脚本使用证据，不能冒充统一能力接口复用。

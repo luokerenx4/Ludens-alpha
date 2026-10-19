@@ -25,10 +25,10 @@ npm run dev
 ## 三个共享视图
 
 - **运行**：输入画面、当前执行状态与完整活动流；thinking、text、tool、system 和诊断内容使用不同排版，可筛选和查看详情。Pet 点击详情带上原始 project / run / epoch / block，定位到同一活动流。
-- **Benchmark**：保留请求、缓存、传输、压缩和观测统计，并展示 Shiori、能力调用及 Baseware 的关联记录。这里是运行观测与复盘，目前不包含固定测试集调度或跨版本排行榜。
+- **Benchmark**：“运行剖析”保留请求、缓存、传输、压缩和观测统计，以及 Shiori、能力调用和 Baseware 的关联记录；“基准用例”展示四个固定 case 的真实结果、检查证据、执行条件和历史基线差值。用例由 `rsa bench` 显式运行，页面只读，不调度在线模型。见 [用例说明](../rsa/benchmarks/README.md) 与 [PRD](../docs/benchmarks/prd.html)。
 - **Alice**：桌宠可见性、日志展示梯度、通知暂停、声音开关 / 音量 / 文件导入 / 试听。浏览器显示桌面能力说明并禁用原生设置；偏好保存在本机 Alice profile，不写入工作区。
 
-三个视图共用工作区、run 和 epoch 选择，URL 使用 `view=live|benchmark|alice`，详情可带 `block`。Alice 隐藏时，已启用的窗口内通知仍会在桌面控制台显示。
+运行剖析共用工作区、run 和 epoch 选择，URL 使用 `view=live|benchmark|alice`，详情可带 `block`。基准用例是跨工作区视图，使用 `view=benchmark&bench=cases`，URL 保存 case / result / baseline。没有真实接管周期的离线基准可回放完整 run，保留原 trace，不伪造 control。Alice 隐藏时，已启用的窗口内通知仍会在桌面控制台显示。
 
 ## 日志与指标
 

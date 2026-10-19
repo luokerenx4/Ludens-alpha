@@ -7,6 +7,7 @@ import { medianRequestWaits } from "@/lib/transport";
 import { ActivityFeed } from "@/components/activity-feed";
 import { AliceSettings } from "@/components/alice-settings";
 import { DesktopBridge } from "@/components/desktop-bridge";
+import { BenchmarkCases } from "@/components/benchmark-cases";
 import {
   Metric,
   ObservationPanel,
@@ -108,6 +109,7 @@ export default function Dashboard() {
       : query.get("view") === "alice"
         ? "alice"
         : "live";
+  const benchmarkCases = view === "benchmark" && query.get("bench") === "cases";
   const [projects, setProjects] = useState<Project[]>([]);
   const [catalogReady, setCatalogReady] = useState(false);
   const [catalogError, setCatalogError] = useState("");
@@ -186,7 +188,7 @@ export default function Dashboard() {
     };
   }, []);
   useEffect(() => {
-    if (!selection.project || !run) return;
+    if (benchmarkCases || !selection.project || !run) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     const params = new URLSearchParams({
@@ -237,7 +239,15 @@ export default function Dashboard() {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [selection.project, run, selection.epoch, key, refresh, view]);
+  }, [
+    selection.project,
+    run,
+    selection.epoch,
+    key,
+    refresh,
+    view,
+    benchmarkCases,
+  ]);
   const live = data?.live;
   const isCurrent =
     !!data && live?.runId === data.run && data.selectedEpoch === live?.epoch;
@@ -313,29 +323,35 @@ export default function Dashboard() {
           <span>Playness</span>
         </a>
         <div className="workspace-picker">
-          <label htmlFor="workspace">工作空间</label>
-          <select
-            id="workspace"
-            value={selection.project}
-            onChange={(e) =>
-              navigate({
-                project: e.target.value,
-                workspace: null,
-                run: null,
-                epoch: null,
-                call: null,
-                block: null,
-                image: null,
-              })
-            }
-          >
-            {!projects.length && <option value="">暂无工作空间</option>}
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {workspaceName(p)}
-              </option>
-            ))}
-          </select>
+          <label htmlFor="workspace">
+            {benchmarkCases ? "基准用例 · 跨工作空间" : "工作空间"}
+          </label>
+          {benchmarkCases ? (
+            <div className="bench-global-workspace">所有工作空间</div>
+          ) : (
+            <select
+              id="workspace"
+              value={selection.project}
+              onChange={(e) =>
+                navigate({
+                  project: e.target.value,
+                  workspace: null,
+                  run: null,
+                  epoch: null,
+                  call: null,
+                  block: null,
+                  image: null,
+                })
+              }
+            >
+              {!projects.length && <option value="">暂无工作空间</option>}
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {workspaceName(p)}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
         <nav aria-label="控制台导航">
           {(Object.keys(views) as View[]).map((id) => (
@@ -374,57 +390,68 @@ export default function Dashboard() {
       <div className="console-main">
         <header className="context-bar">
           <div className="breadcrumb">
-            <span>{workspaceName(project)}</span>
+            <span>
+              {benchmarkCases ? "所有工作空间" : workspaceName(project)}
+            </span>
             <i>/</i>
             <strong>{views[view][0]}</strong>
           </div>
           <div className="context-controls">
-            <select
-              aria-label="运行记录"
-              value={selection.run}
-              onChange={(e) =>
-                navigate({
-                  run: e.target.value,
-                  epoch: null,
-                  call: null,
-                  block: null,
-                  image: null,
-                })
-              }
-            >
-              <option value="">
-                最新运行
-                {project?.runs[0] ? " · " + runDate(project.runs[0].id) : ""}
-              </option>
-              {project?.runs.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {runDate(r.id)}
-                </option>
-              ))}
-            </select>
-            <select
-              aria-label="接管周期"
-              value={selection.epoch}
-              onChange={(e) =>
-                navigate({
-                  project: selection.project,
-                  run,
-                  epoch: e.target.value,
-                  call: null,
-                  block: null,
-                  image: null,
-                })
-              }
-            >
-              <option value="">
-                最新周期{data?.cycles.length ? " · #" + data.cycles.length : ""}
-              </option>
-              {[...(data?.cycles ?? [])].reverse().map((c, i) => (
-                <option key={c.epoch} value={c.epoch}>
-                  #{data!.cycles.length - i} · {clockTime(c.startedAt)}
-                </option>
-              ))}
-            </select>
+            {!benchmarkCases && (
+              <>
+                <select
+                  aria-label="运行记录"
+                  value={selection.run}
+                  onChange={(e) =>
+                    navigate({
+                      run: e.target.value,
+                      epoch: null,
+                      call: null,
+                      block: null,
+                      image: null,
+                    })
+                  }
+                >
+                  <option value="">
+                    最新运行
+                    {project?.runs[0]
+                      ? " · " + runDate(project.runs[0].id)
+                      : ""}
+                  </option>
+                  {project?.runs.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {runDate(r.id)}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  aria-label="接管周期"
+                  value={selection.epoch}
+                  onChange={(e) =>
+                    navigate({
+                      project: selection.project,
+                      run,
+                      epoch: e.target.value,
+                      call: null,
+                      block: null,
+                      image: null,
+                    })
+                  }
+                >
+                  <option value="">
+                    {data?.manifest.benchmark && !data.cycles.length
+                      ? "完整基准运行"
+                      : "最新周期"}
+                    {data?.cycles.length ? " · #" + data.cycles.length : ""}
+                  </option>
+                  {[...(data?.cycles ?? [])].reverse().map((c, i) => (
+                    <option key={c.epoch} value={c.epoch}>
+                      #{data!.cycles.length - i} · {clockTime(c.startedAt)}
+                    </option>
+                  ))}
+                </select>
+              </>
+            )}
             <button
               className={"refresh-toggle" + (refresh ? " active" : "")}
               aria-pressed={refresh}
@@ -439,10 +466,12 @@ export default function Dashboard() {
         <main className="page-content">
           <div className="page-heading">
             <div>
-              <h1>{views[view][1]}</h1>
-              <p>{views[view][2]}</p>
+              <h1>{benchmarkCases ? "基准用例" : views[view][1]}</h1>
+              <p>
+                {benchmarkCases ? "固定场景，可核对的改进。" : views[view][2]}
+              </p>
             </div>
-            {view !== "alice" && (
+            {view !== "alice" && !benchmarkCases && (
               <button
                 className="control-button handback"
                 disabled={!data?.controlAllowed || !auto || stopping}
@@ -453,7 +482,28 @@ export default function Dashboard() {
               </button>
             )}
           </div>
-          {(catalogError || error) && (
+          {view === "benchmark" && (
+            <nav className="benchmark-tabs" aria-label="Benchmark 视图">
+              {[
+                ["analysis", "运行剖析"],
+                ["cases", "基准用例"],
+              ].map(([tab, title]) => (
+                <button
+                  key={tab}
+                  aria-pressed={benchmarkCases === (tab === "cases")}
+                  className={
+                    benchmarkCases === (tab === "cases") ? "active" : ""
+                  }
+                  onClick={() =>
+                    navigate({ bench: tab === "cases" ? "cases" : null })
+                  }
+                >
+                  {title}
+                </button>
+              ))}
+            </nav>
+          )}
+          {!benchmarkCases && (catalogError || error) && (
             <div className="error-banner" role="alert">
               {catalogError || error}
               {data && (
@@ -463,6 +513,13 @@ export default function Dashboard() {
           )}
           {view === "alice" ? (
             <AliceSettings />
+          ) : benchmarkCases ? (
+            <BenchmarkCases
+              search={search}
+              refresh={refresh}
+              navigate={navigate}
+              onNavigate={navigateUrl}
+            />
           ) : !data ? (
             <section className="surface empty-state main-empty">
               <span className="empty-symbol">◫</span>
@@ -681,7 +738,9 @@ export default function Dashboard() {
                                 ? "正在压缩历史，等待主循环请求。"
                                 : data.selectedEpoch
                                   ? "本周期尚无模型请求。"
-                                  : "尚未开启接管周期。"}
+                                  : data.manifest.benchmark
+                                    ? "此基准没有主循环模型请求。"
+                                    : "尚未开启接管周期。"}
                             </p>
                           </div>
                         )}
@@ -774,7 +833,12 @@ export default function Dashboard() {
                       </div>
                       <div>
                         <dt>Epoch</dt>
-                        <dd>{data.selectedEpoch ?? "尚未接管"}</dd>
+                        <dd>
+                          {data.selectedEpoch ??
+                            (data.manifest.benchmark
+                              ? "完整运行 · 无接管周期"
+                              : "尚未接管")}
+                        </dd>
                       </div>
                     </dl>
                     <p>
