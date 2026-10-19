@@ -1,14 +1,15 @@
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { delimiter, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import type { ExtensionFactory, CustomTool, ReadToolResultEvent } from "@oh-my-pi/pi-coding-agent";
 import { resizeImage } from "@oh-my-pi/pi-coding-agent/utils/image-resize";
 import * as z from "@oh-my-pi/omptype/zod";
-import type { Observation, ControllerRequest, ExecutionResult } from "@playness/baseware/contracts";
+import type { Clock, Observation, ControllerRequest, ExecutionResult } from "@playness/baseware/contracts";
 import type { Runtime } from "../runtime.ts";
 import { Workspace } from "../workspace.ts";
 import type { EventTrace, RecordEvent } from "../events.ts";
 import { pythonModulePaths } from "../python-capabilities.ts";
+import { runObserveHook } from "../observe-hook.ts";
 
 export async function media(observations: Observation[], record?: RecordEvent, trace?: EventTrace) {
   return Promise.all(observations.map(async (observation) => {
@@ -38,11 +39,14 @@ export function createRsaExtension(options: {
   rsaSocket?: string;
   binDir: string;
   autoObserve: ControllerRequest[];
+  runDir?: string;
+  clock?: Clock;
   cycle(): Cycle;
   maxRequests: number;
   trace?(toolCallId?: string): EventTrace;
 }) {
   const { runtime, workspace } = options;
+  const hookClock = options.clock ?? { id: crypto.randomUUID(), now: () => performance.now() };
   let requests = 0;
   let requestEpoch: string | undefined;
   const pendingTools = new Set<string>();
@@ -125,10 +129,26 @@ export function createRsaExtension(options: {
     cycle.signal.throwIfAborted();
     try {
       const consolidating = cycle.purpose === "consolidate";
-      // An explicit sample's chosen arguments take precedence over this controller's defaults.
-      const fresh = consolidating ? [] : await Promise.all(options.autoObserve.filter(request => !observed.has(request.controllerId))
+      // A workspace hook owns automatic collection; explicit observe remains independent.
+      let hook = consolidating ? undefined : await runObserveHook({
+        workspace: workspace.path, runDir: options.runDir ?? join(workspace.versions, "observer-run"),
+        env: commandEnvironment(cycle, parent), signal: cycle.signal, trace: parent,
+        clock: hookClock, record: runtime.record,
+      });
+      let hookContent: Awaited<ReturnType<typeof media>> | undefined;
+      if (hook?.result) {
+        try { hookContent = await media(hook.result.observations ?? [], runtime.record, parent); }
+        catch (error) {
+          cycle.signal.throwIfAborted();
+          const message = error instanceof Error ? error.message : String(error);
+          runtime.record("observe_hook_error", { hook: hook.hook, phase: "media", error: message }, parent);
+          hook = { ...hook, result: undefined, error: message };
+        }
+      }
+      const fresh = hook?.result ? [{ controllerId: hook.hook!.id, result: hook.result }]
+        : consolidating ? [] : await Promise.all(options.autoObserve.filter(request => !observed.has(request.controllerId))
         .map(async request => ({ controllerId: request.controllerId, result: await runtime.observe(request, cycle.signal, parent, origin) })));
-      const reused = consolidating ? [] : options.autoObserve.flatMap(request => {
+      const reused = consolidating || hook?.result ? [] : options.autoObserve.flatMap(request => {
         const result = observed.get(request.controllerId);
         return result ? [{ controllerId: request.controllerId, result }] : [];
       });
@@ -136,7 +156,7 @@ export function createRsaExtension(options: {
       const observations = samples.flatMap(({ result }) => result.observations ?? []);
       const skills = await workspace.snapshot();
       // Explicit observe results already contain their text and media in history.
-      const content = await media(fresh.flatMap(({ result }) => result.observations ?? []), runtime.record, parent);
+      const content = hookContent ?? await media(fresh.flatMap(({ result }) => result.observations ?? []), runtime.record, parent);
       const controllerOutputs = fresh.filter(({ result }) => result.stdout || result.stderr).map(({ controllerId, result }) => ({
         controllerId, executionId: result.id, stdout: result.stdout, stderr: result.stderr,
       }));
@@ -144,6 +164,7 @@ export function createRsaExtension(options: {
       latestContext = { observations: observations.map((o) => o.id), executions: samples.map(({ result }) => result.id), skills };
       runtime.record("observation_context", { origin, observations: latestContext.observations,
         executions: latestContext.executions, purpose: cycle.purpose,
+        hook: hook?.hook, hookError: hook?.error,
         freshObservations: fresh.flatMap(({ result }) => result.observations?.map(o => o.id) ?? []),
         reusedObservations: reused.flatMap(({ result }) => result.observations?.map(o => o.id) ?? []),
         freshExecutions: fresh.map(({ result }) => result.id), reusedExecutions: reused.map(({ result }) => result.id),
@@ -152,6 +173,9 @@ export function createRsaExtension(options: {
         ...(consolidating ? { purpose: cycle.purpose } : {}),
         control: runtime.status(), observations, skills,
         ...(controllerOutputs.length ? { controllerOutputs } : {}),
+        ...(hook?.hook ? { observeHook: hook.hook } : {}),
+        ...(hook?.error ? { observeHookError: hook.error } : {}),
+        ...(hook?.diagnostics.length ? { capabilityDiagnostics: hook.diagnostics } : {}),
       }) }, ...content];
     } catch (error) { await runtime.stop(`observation failed: ${error}`); throw error; }
   }

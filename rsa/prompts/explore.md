@@ -7,6 +7,12 @@ workspace functions and reuse them. Mark typed functions with `@capability` from
 `rsa_tools`; their docstrings and signatures make them discoverable through the
 same CLI and API.
 
+When useful, adapt automatic observation with one zero-argument function marked
+`@capability(hook="observe")`. Collect and process data yourself; return
+`{"text":"...","media":[{"path":"...","mediaType":"image/png"}]}` (both fields optional).
+Edits apply at the next observation. Hook errors arrive with default observations
+so you can repair the function.
+
 The loop supplies observations and file indexes; use `observe` only when more
 samples are needed. The environment continues while you think.
 

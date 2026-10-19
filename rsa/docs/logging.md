@@ -48,6 +48,8 @@ Shiori invoke_agent
 
 `python_capability/result` 是能力 span 的细节，保存函数位置、源码 hash、参数与结果。进程启动异常和取消均记录终态后沿原路径抛出；普通 Python helper 内部语句不逐行打点。`python_capabilities_start/python_capabilities` 对应独立 discovery 子 span。直接调用 Python runner 也生成独立 span。
 
+自动观察每次发现工作区 hook。`observe_hook_start/end` 记录选中函数、源码 hash、结果、耗时与终态，内部 Python 和设备调用沿同一 trace 继续；选择失败或媒体编码失败记录 `observe_hook_error`。`observation_context` 的 `hook/hookError` 表示这一批模型输入使用的观察方式和回退原因。源码留在 run 的 `observer-sources/<hash>.py`，返回媒体复制到 `observations/`，便于核对实际输入。没有 hook 时只保留 discovery 与既有默认观测事件。
+
 Baseware 为每次 Controller 调用生成子 span，`command/execution/execution_error` 为统一执行生命周期，记录 `controllerId` 与已知的 `requiresControl`。媒体调用的 `observation_start/end/error` 和每条 `observation` 共用这个 span，保留采样区间、帧号与媒体路径；它们是同一次操作的采样详情，不另算一次设备调用。采样结果使用 `controllerId`；历史日志读取时仍识别旧 `sensorId`。trace 是观测信息，不授予操作权；epoch 校验和取消行为保持独立。
 
 OMP 的 `shiori_span_start/end` 使用原生 OTel ID；局部 BasicTracerProvider 负责生成真实 ID 和取得最终状态，不注册全局 provider。`captureMessageContent=none` 避免再复制一份正文；原始请求仍保留在现有 payload 中。`shiori_run_end` 原样保存原生 summary/coverage，范围是一次 `agentLoop`，一次 RSA 接管可含多个 loop。OMP 工具覆盖只认识 read/write/edit/exec/observe；宏覆盖须看能力日志。

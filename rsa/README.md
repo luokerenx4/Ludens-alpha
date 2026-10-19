@@ -85,6 +85,8 @@ rsa controller controller/cua.get_desktop_state
 
 Baseware 持有一个 Cua Driver MCP 子进程，桌面能力仍通过同一 `rsa controller` 目录和 Python API 使用，不注入 OMP 工具列表。Cua 工作区启动不探测模拟器或 TCP 桥；自动观测使用 `cua.get_desktop_state`，将图像和文本一起交给现有循环。需要接管时执行 `rsa auto on`，`rsa auto off` 交还控制；`rsa down` 结束本工作区的服务。桌面应用仍留在当前系统，工作区只隔离 Agent 的文件与会话。
 
+NDS 的 [melonDS](https://github.com/melonDS-emu/melonDS/releases) 和 3DS 的 [Azahar](https://github.com/azahar-emu/azahar/releases) 也按桌面应用接入：启动原装模拟器，在各自工作区执行上述 Cua 启动流程，再通过目录发现窗口、键鼠和采样能力。无需给模拟器打桥接补丁。屏幕布局、裁剪和观测选择由工作区代码自行适配，Baseware 不预设双屏含义。两种模拟器各自加载本地游戏文件；空窗口连通不等于游戏兼容性验证。
+
 ### mGBA 设备准备
 
 在 mGBA 0.10.5 打开游戏，然后进入 **Tools → Scripting**。在底部输入框执行以下代码，路径换成自己 checkout 中的绝对路径（可在 `rsa/` 下运行 `realpath ../baseware/src/drivers/mgba/bridge.lua` 获取）：
@@ -272,6 +274,24 @@ RSA 按需扫描 workspace 中的 `.py` 文件，只登记 `@capability` / `@cap
 `logs/`、`.git/`、依赖和虚拟环境目录不参与扫描。脚本可放在工作区根目录、`scripts/` 或技能目录，未标记的辅助函数保持普通 Python 用法。签名与语法诊断通过目录返回，供 Agent 自行修正。OMP 仍只暴露 `read/write/edit/exec/observe`，不会逐轮注入完整能力目录或各函数 schema；模型通过 CLI 按需发现。
 
 shell 与 Python 能力自动获得 RSA/Baseware CLI、Python 包路径及当前 `RSA_SOCKET` / `BASEWARE_SOCKET` / `BASEWARE_EPOCH` / `BASEWARE_TRACE`。Python API 连接同一 RSA 宿主，原始设备调用最终交给 Baseware，观测与调用 trace 保持连通。人工接管会取消在途调用和脚本进程组，并由 Baseware 释放设备；脚本不自行获取操作权。这里是可信本机 shell，不是 Python 沙箱。
+
+### 工作区观察 hook
+
+工作区可用一个无参数函数替换循环的自动观测：
+
+```python
+from rsa_tools import capability
+
+@capability(hook="observe")
+def observe() -> dict:
+    """Collect the information useful for the current task."""
+    # 在这里调用已发现的能力、处理数据并保存需要返回的媒体。
+    return {"text": "...", "media": [{"path": "view.png", "mediaType": "image/png"}]}
+```
+
+`text` 和 `media` 均可省略；媒体路径相对于 workspace，也可用绝对路径。函数负责采集与处理，不会预先强制截取默认画面。每个观察边界重新发现当前代码，新增、修改或移除标记从下一次观测生效；只允许一个有效的 observe hook。它仍可通过 `rsa controller` 单独调用，不添加新的 OMP 工具。
+
+无 hook 时沿用默认观测；函数异常、多个 hook 或返回格式错误时，将诊断和默认观测一起交给模型，供它自行修复。取消会结束该次调用，不再追加默认采样。原有 `observe` 工具保留，用于按需读取原始设备。运行日志保存 hook 身份、源码 hash、采样结果和失败信息；源码与媒体分别归档到本次 run 的 `observer-sources/` 和 `observations/`，修改工作区文件不改变历史。
 
 ## 边界与数据
 

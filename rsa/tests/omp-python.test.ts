@@ -71,7 +71,7 @@ def calculate(value: int = 4):
       expect(snapshot.messages).not.toContain("workspaceCapabilities");
     }
     expect(events.find(event => event.type === "exec_result")?.data).toMatchObject({exitCode: 0, stdout: `${rsaSocket}|python-epoch`});
-    expect(events.some(event => event.type.startsWith("python_capability"))).toBe(false);
+    expect(events.some(event => event.type === "python_capability" || event.type === "python_capability_result")).toBe(false);
     expect(session.sessionManager.getEntries().filter(entry => entry.type === "message" && entry.message.role === "toolResult")).toHaveLength(3);
 
     await writeFile(join(workspace, "actions.py"), source);

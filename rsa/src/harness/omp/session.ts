@@ -65,7 +65,7 @@ export async function createOmpAgent(options: {
   let cycle: Cycle | undefined;
   // Native background summaries can finish between control cycles.
   const trace = new ModelTrace(options.log, () => ({ epoch: cycle?.epoch, ...extension.context() }));
-  const extension = createRsaExtension({ ...options, trace: trace.current, workspace: new Workspace(options.workspace, options.state.versionsDir),
+  const extension = createRsaExtension({ ...options, clock: options.log.clock, trace: trace.current, workspace: new Workspace(options.workspace, options.state.versionsDir),
     cycle: () => {
       if (!cycle) throw new Error("No active control cycle");
       return cycle;
