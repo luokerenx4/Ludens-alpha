@@ -139,6 +139,153 @@ test("epoch selection includes late terminals and native summaries only for the 
   assert.equal(latest.shiori.nativeLoops.length, 0);
 });
 
+test("compaction candidates keep late HTTP children and finish at armed without becoming model or Shiori totals", () => {
+  const e = fixture();
+  const candidateTrace = {
+    parentSpanId: "loop",
+    operationId: "candidate-one",
+    modelCallId: "trigger",
+  };
+  const httpTrace = { parentSpanId: "candidate", operationId: "candidate-one" };
+  const events = [
+    e("control", "", { mode: "auto" }),
+    e("shiori_span_start", "loop", { operation: "invoke_agent" }),
+    e(
+      "compaction_speculation",
+      "candidate",
+      { stage: "started" },
+      candidateTrace,
+    ),
+    e("compaction_http_start", "http", {}, httpTrace),
+    e("control", "", { mode: "manual" }),
+    e("control", "", { mode: "auto" }, { epoch: "new" }),
+    e(
+      "compaction_http_end",
+      "http",
+      { status: 200, durationMs: 30_000 },
+      httpTrace,
+    ),
+    e(
+      "compaction_speculation",
+      "candidate",
+      { stage: "armed", durationMs: 80_000 },
+      candidateTrace,
+    ),
+    e(
+      "compaction_speculation",
+      "candidate",
+      { stage: "applied", durationMs: 99_999 },
+      candidateTrace,
+    ),
+    e(
+      "compaction_speculation",
+      "candidate",
+      { stage: "invalidated", durationMs: 99_999 },
+      candidateTrace,
+    ),
+    // Old snapshots or a matching leaf name provide no explicit span identity.
+    {
+      ...e("compaction_speculation", "", {
+        stage: "started",
+        snapshotLeafId: "leaf",
+      }),
+      trace: { epoch: "old" },
+    },
+    {
+      ...e("compaction_speculation", "", {
+        stage: "armed",
+        snapshotLeafId: "leaf",
+        durationMs: 100,
+      }),
+      trace: { epoch: "old" },
+    },
+    {
+      ...e("compaction_http_start", ""),
+      trace: { epoch: "old", httpId: "legacy-http" },
+    },
+    {
+      ...e("compaction_http_end", "", { status: 200 }),
+      trace: { epoch: "old", httpId: "legacy-http" },
+    },
+  ];
+  const armed = events.find((event) => event.data.stage === "armed")!;
+  const selected = selectCycle(events, "old").events;
+  const projected = projectTelemetry(selected, events);
+  const candidate = projected.spans.find((span) => span.kind === "compaction")!;
+  const http = projected.spans.find((span) => span.kind === "compaction-http")!;
+  assert.equal(projected.spans.length, 3);
+  assert.equal(candidate.name, "准备压缩候选");
+  assert.equal(candidate.parentSpanId, "loop");
+  assert.equal(candidate.modelCallId, "trigger");
+  assert.equal(candidate.operationId, "candidate-one");
+  assert.equal(candidate.outcome, "success");
+  assert.equal(candidate.endSeq, armed.seq);
+  assert.equal(candidate.durationMs, 80_000);
+  assert.equal(http.name, "压缩 HTTP · 响应头");
+  assert.equal(http.parentSpanId, candidate.spanId);
+  assert.equal(http.operationId, candidate.operationId);
+  assert.equal(http.outcome, "success");
+  assert.equal(http.durationMs, 30_000);
+  assert.equal(projected.shiori.stats.started, 1);
+  assert.equal(projected.shiori.stats.durationMs.median, null);
+  assert.equal(aggregate(selected).summary.completed, 0);
+  assert.equal(
+    projectTelemetry(selectCycle(events, "new").events, events).spans.length,
+    0,
+  );
+});
+
+test("foreground compaction HTTP belongs to its maintenance span without requiring a new summary result", () => {
+  const e = fixture();
+  const trace = { operationId: "maintenance-operation", parentSpanId: "loop" };
+  const events = [
+    e("auto_compaction_start", "maintenance", { reason: "threshold" }, trace),
+    e(
+      "compaction_http_start",
+      "http",
+      {},
+      { ...trace, parentSpanId: "maintenance" },
+    ),
+    e(
+      "compaction_http_end",
+      "http",
+      { status: 200, durationMs: 500 },
+      { ...trace, parentSpanId: "maintenance" },
+    ),
+    e(
+      "auto_compaction_end",
+      "maintenance",
+      { aborted: false, durationMs: 900 },
+      trace,
+    ),
+  ];
+  const projected = projectTelemetry(events);
+  const maintenance = projected.spans.find(
+    (span) => span.operation === "maintenance",
+  )!;
+  const http = projected.spans.find((span) => span.kind === "compaction-http")!;
+  assert.equal(projected.spans.length, 2);
+  assert.equal(maintenance.name, "压缩维护");
+  assert.equal(maintenance.outcome, "success");
+  assert.equal(maintenance.durationMs, 900);
+  assert.equal(http.parentSpanId, maintenance.spanId);
+  assert.equal(http.operationId, maintenance.operationId);
+  assert.equal(projected.shiori.stats.started, 0);
+  assert.equal(aggregate(events).summary.completed, 0);
+  for (const [data, outcome] of [
+    [{ aborted: true, error: "cancelled" }, "cancelled"],
+    [{ aborted: false, errorMessage: "failed" }, "error"],
+  ] as const) {
+    const terminal = { ...events.at(-1)!, data };
+    assert.equal(
+      projectTelemetry([...events.slice(0, -1), terminal]).spans.find(
+        (span) => span.operation === "maintenance",
+      )?.outcome,
+      outcome,
+    );
+  }
+});
+
 test("native chat and tool spans gain business IDs only from facts with the same explicit identity", () => {
   const e = fixture();
   const selected = [

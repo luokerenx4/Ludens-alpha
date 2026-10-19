@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import type { Project, RunData } from "@/lib/types";
 import type { LogBlock } from "@/lib/activity";
 import { initialSelection } from "@/lib/initial-selection";
+import { medianRequestWaits } from "@/lib/transport";
 import { ActivityFeed } from "@/components/activity-feed";
 import { AliceSettings } from "@/components/alice-settings";
 import { DesktopBridge } from "@/components/desktop-bridge";
@@ -290,6 +291,9 @@ export default function Dashboard() {
     }
   };
   const s = data?.summary;
+  const waitSummary = medianRequestWaits(data?.calls ?? [])
+    .map((wait) => wait.label + " " + seconds(wait.ms))
+    .join(" · ");
   const hasTelemetry = data?.telemetry.sources.some(
     (source) => source.component !== "unlabelled",
   );
@@ -519,7 +523,7 @@ export default function Dashboard() {
                 <Metric
                   label="请求中位数"
                   value={seconds(s!.medianMs)}
-                  detail={"HTTP 响应头 " + seconds(s!.medianHeadersMs)}
+                  detail={waitSummary || "传输等待未记录"}
                 />
                 <Metric
                   label="缓存命中"
@@ -592,7 +596,7 @@ export default function Dashboard() {
                           </h2>
                           <span>
                             {type === "latency"
-                              ? "秒 · 灰柱为响应头等待"
+                              ? "灰柱：HTTP 响应头 / WS 首事件 · 秒"
                               : type === "cache"
                                 ? "%"
                                 : "MB · HTTP / WS 构建帧"}
@@ -775,7 +779,8 @@ export default function Dashboard() {
                     </dl>
                     <p>
                       请求统计仅含主循环，独立压缩请求单列于事件。Shiori、工具和嵌套能力的耗时与用量不能相加。WS
-                      字节是构建帧大小；网络与服务端等待无法进一步拆分。来源分布仅覆盖当前运行事件，不代表
+                      字节是构建帧大小；HTTP 等待截至响应头，WS
+                      等待从发送截至首事件，概况分别取完成请求的中位数。两者都不能进一步拆分网络与服务端耗时。来源分布仅覆盖当前运行事件，不代表
                       Pet 的在线状态。
                     </p>
                   </details>

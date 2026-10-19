@@ -12,6 +12,9 @@ const operations: {
   kind: SpanKind;
   start: string;
   ends: string[];
+  startStage?: string;
+  endStages?: string[];
+  name?: string;
   operation?: string;
 }[] = [
   { kind: "shiori", start: "shiori_span_start", ends: ["shiori_span_end"] },
@@ -39,6 +42,29 @@ const operations: {
     start: "observation_start",
     ends: ["observation_end", "observation_error"],
     operation: "observe",
+  },
+  {
+    kind: "compaction",
+    start: "compaction_speculation",
+    startStage: "started",
+    ends: ["compaction_speculation"],
+    endStages: ["armed", "failed", "cancelled"],
+    name: "准备压缩候选",
+    operation: "prepare_compaction",
+  },
+  {
+    kind: "compaction-http",
+    start: "compaction_http_start",
+    ends: ["compaction_http_end", "compaction_http_error"],
+    name: "压缩 HTTP · 响应头",
+    operation: "fetch_compaction_headers",
+  },
+  {
+    kind: "compaction",
+    start: "auto_compaction_start",
+    ends: ["auto_compaction_end"],
+    name: "压缩维护",
+    operation: "maintenance",
   },
 ];
 const key = (event: Event) =>
@@ -108,23 +134,59 @@ export function projectTelemetry(
     }
   const spans: TraceSpan[] = [];
   for (const definition of operations) {
-    const finishes = new Map(
-      allEvents
-        .filter(
-          (event) => identified(event) && definition.ends.includes(event.type),
-        )
-        .map((event) => [key(event), event]),
-    );
+    const finishes = new Map<string, Event>();
+    for (const event of allEvents)
+      if (
+        identified(event) &&
+        definition.ends.includes(event.type) &&
+        (!definition.endStages ||
+          definition.endStages.includes(event.data.stage)) &&
+        !finishes.has(key(event))
+      )
+        finishes.set(key(event), event);
     for (const start of selected) {
-      if (start.type !== definition.start || !identified(start)) continue;
+      if (
+        start.type !== definition.start ||
+        !identified(start) ||
+        (definition.startStage && start.data.stage !== definition.startStage)
+      )
+        continue;
       const finish = finishes.get(key(start));
       const trace = { ...related.get(key(start)), ...start.trace };
       const result = finish?.data;
-      const outcome: SpanOutcome = !finish
+      let outcome: SpanOutcome = !finish
         ? "pending"
         : ["success", "error", "cancelled"].includes(result?.outcome)
           ? result!.outcome
           : "unknown";
+      if (finish && outcome === "unknown") {
+        if (definition.kind === "compaction") {
+          if (definition.operation === "maintenance")
+            outcome = result?.aborted
+              ? "cancelled"
+              : result?.errorMessage || result?.error
+                ? "error"
+                : "success";
+          else
+            outcome =
+              result?.stage === "armed"
+                ? "success"
+                : result?.stage === "cancelled"
+                  ? "cancelled"
+                  : "error";
+        }
+        if (definition.kind === "compaction-http")
+          outcome =
+            finish.type === "compaction_http_error"
+              ? result?.aborted
+                ? "cancelled"
+                : "error"
+              : typeof result?.status === "number"
+                ? result.status >= 400
+                  ? "error"
+                  : "success"
+                : "unknown";
+      }
       let durationMs = duration(result?.durationMs);
       // Device events are forwarded by RSA. Only the original clock measures
       // the device span; receipt timestamps include transport and scheduling.
@@ -145,9 +207,11 @@ export function projectTelemetry(
         parentSpanId: trace.parentSpanId,
         modelCallId: trace.modelCallId,
         toolCallId: trace.toolCallId,
+        operationId: trace.operationId,
         source: start.source,
         name: String(
-          start.data.name ??
+          definition.name ??
+            start.data.name ??
             start.data.id ??
             start.data.capabilityId ??
             start.data.sensorId ??
@@ -164,7 +228,7 @@ export function projectTelemetry(
         outcome,
         durationMs,
         codeSHA: start.data.codeSHA,
-        error: errorText(result?.error),
+        error: errorText(result?.errorMessage ?? result?.error),
       });
     }
   }

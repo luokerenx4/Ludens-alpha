@@ -33,15 +33,18 @@ npm run dev
 ## 日志与指标
 
 - 环境项目、运行、接管周期选择；默认跟随最新 epoch，每 2.5 秒刷新，手动选中请求后保持回放位置。统计与回放严格按 `trace.epoch` 隔离，晚到清理保留在原周期；无 epoch 不推断归属。
-- 请求耗时 / 响应头等待、缓存命中率、实际 HTTP 请求体曲线；点击图表或请求时间轴联动动作与前后观测。
+- 请求耗时 / HTTP 响应头等待 / WS 首事件等待、缓存命中率、实际 HTTP 请求体曲线；点击图表或请求时间轴联动动作与前后观测。
 - 观测来源、动作完成到采样请求间隔、源帧变化、采样与编码耗时。工具卡单列命令执行（exec → exec_result）与工具全程（tool_start → tool_end，含后续观测），按 epoch/modelCallId/toolCallId 关联；两者为包含关系，不相加，未完成显示未知。
 - skill 的 read / write / edit 工具证据，成功状态和可用的读取哈希；错误、正常中止、OMP 压缩事件。
 - Shiori 原生 span / run summary、CLI 与 Python 能力及 Baseware 调用关系。使用明确的 trace / span 身份关联；来源、错误与取消状态保留，缺失数据不补成成功。父子耗时存在包含关系，不相加；OMP 原生 usage 不与主循环 usage 重复求和。
+- 压缩候选准备、前台维护及其 HTTP 子 span 使用同一调用树；候选就绪与响应头到达分别展示，不与主循环指标相加。
 - 当前 Host 状态与交还控制权按钮。仅允许最新 run、在线 `status.runId` 与所选周期 `status.epoch` 都匹配；通过 Unix socket 发送 `runId` 与 `expectedEpoch`，由 Host 原子校验。历史 run 或历史周期不发控制命令。看板不会启动 AI 接管。
 
 运行目录、观测路径都检查真实路径，只读取已索引工作区的 logs 和原运行目录；HTTP API 限本地主机，控制请求要求同源。不是联网多用户服务。
 
 统计口径：请求数、耗时和缓存仅覆盖主循环，不包含 OMP 独立压缩请求。压缩通过 start/end 事件显示开始时间与实时等待时长；成功结束的原生 usage 和独立 compaction_http 请求、响应头等待与错误在事件面板单列，HTTP 响应头返回不代表压缩完成，HTTP 序号不推断逻辑重试关系。完成请求排除 `error` / `aborted`；实际动作统计成功 `execution`；缓存分母是 input + cacheRead + cacheWrite；“首请求后”仅排除本次运行首个完成请求，**不排除中途压缩后的冷缓存**。响应头等待包含各次尝试的等待（新日志优先使用 fetchToHeadersMs），无法独立区分上传、网络与服务端处理。预算导致的正常中止展示于事件面板，但不计为错误。
+
+HTTP 等待使用响应头时间；WS 等待使用发送到首个入站事件的 `afterDispatchMs`，缺失保持未知，不用包含请求构建的 `firstStreamMs` 代替。概况分别统计完成请求的两种等待中位数，图表和详情使用同一口径。
 
 ## 验证
 

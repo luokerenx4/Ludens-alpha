@@ -1,6 +1,6 @@
 "use client";
 import type { Call, Observation, RunData, TraceSpan } from "@/lib/types";
-import { sseFallbackReason } from "@/lib/transport";
+import { requestWait, sseFallbackReason } from "@/lib/transport";
 
 export const seconds = (ms: number | null | undefined) =>
   ms == null ? "—" : (ms / 1000).toFixed(1) + " s";
@@ -65,6 +65,7 @@ export function RequestChart({
   selected?: string;
   onSelect(id: string): void;
 }) {
+  const waits = calls.map(requestWait);
   const values = calls.map((c) =>
     type === "latency"
       ? c.durationMs == null
@@ -85,7 +86,9 @@ export function RequestChart({
           1,
           ...values.filter((v): v is number => v !== null),
           ...(type === "latency"
-            ? calls.map((c) => (c.headersMs ?? 0) / 1000)
+            ? waits.flatMap((wait) =>
+                wait.ms === null ? [] : [wait.ms / 1000],
+              )
             : []),
         ) * 1.15;
   const x = (i: number) => 38 + ((i + 0.5) * 310) / Math.max(1, calls.length);
@@ -112,7 +115,7 @@ export function RequestChart({
       role="img"
       aria-label={
         type === "latency"
-          ? "请求耗时与HTTP响应头等待，秒"
+          ? "请求耗时，灰柱为 HTTP 响应头等待或 WS 发送至首事件等待，秒"
           : type === "cache"
             ? "缓存命中百分比"
             : "请求体大小，MB"
@@ -134,13 +137,13 @@ export function RequestChart({
       ))}
       {type === "latency" &&
         calls.map((c, i) =>
-          c.headersMs == null ? null : (
+          waits[i].ms === null ? null : (
             <rect
               key={c.id}
               x={x(i) - Math.max(1, 70 / calls.length)}
-              y={y(c.headersMs / 1000)}
+              y={y(waits[i].ms! / 1000)}
               width={Math.max(2, 140 / calls.length)}
-              height={Math.max(0, 133 - y(c.headersMs / 1000))}
+              height={Math.max(0, 133 - y(waits[i].ms! / 1000))}
               fill="var(--wait)"
             />
           ),
@@ -174,6 +177,8 @@ export function RequestChart({
           >
             <title>
               {"#" + c.index + " · " + (values[i]?.toFixed(2) ?? "无数据")}
+              {type === "latency" &&
+                " · " + waits[i].label + " " + seconds(waits[i].ms)}
             </title>
           </rect>
         </g>
@@ -388,7 +393,8 @@ function TraceList({ data, call }: { data: RunData; call?: Call }) {
     <>
       <p className="help-text">
         按显式调用关系连接。Python
-        细节合并到同一能力节点，包含关系的耗时不相加。
+        细节合并到同一能力节点，包含关系的耗时不相加。压缩 HTTP
+        仅记录到响应头，候选就绪也不代表已经应用。
       </p>
       {!primary.length ? (
         <div className="empty-state">
@@ -415,7 +421,13 @@ function TraceList({ data, call }: { data: RunData; call?: Call }) {
                 </span>
                 <span className="mono">{seconds(s.durationMs)}</span>
                 <span className={"outcome " + s.outcome}>
-                  {outcomeLabel[s.outcome]}
+                  {s.outcome === "success" && s.kind === "compaction"
+                    ? s.operation === "maintenance"
+                      ? "维护结束"
+                      : "候选就绪"
+                    : s.outcome === "success" && s.kind === "compaction-http"
+                      ? "响应头已到"
+                      : outcomeLabel[s.outcome]}
                 </span>
               </summary>
               <dl className="fact-grid">
@@ -427,6 +439,12 @@ function TraceList({ data, call }: { data: RunData; call?: Call }) {
                   <dt>Span</dt>
                   <dd>{s.spanId}</dd>
                 </div>
+                {s.operationId && (
+                  <div>
+                    <dt>Operation</dt>
+                    <dd>{s.operationId}</dd>
+                  </div>
+                )}
                 <div>
                   <dt>开始</dt>
                   <dd>{clockTime(s.startedAt)}</dd>
@@ -479,6 +497,7 @@ export function RequestDetails({
   const fallback = call
     ? sseFallbackReason(call, Date.parse(data.updatedAt))
     : null;
+  const wait = call ? requestWait(call) : null;
   return (
     <section className="surface request-details">
       <div className="surface-heading">
@@ -497,16 +516,8 @@ export function RequestDetails({
               <strong>{seconds(call.durationMs)}</strong>
             </div>
             <div>
-              <span>
-                {call.transport === "websocket" ? "首事件等待" : "响应头等待"}
-              </span>
-              <strong>
-                {seconds(
-                  call.transport === "websocket"
-                    ? call.phases.afterDispatchMs
-                    : call.headersMs,
-                )}
-              </strong>
+              <span>{wait!.label}</span>
+              <strong>{seconds(wait!.ms)}</strong>
             </div>
             <div>
               <span>
@@ -587,7 +598,8 @@ export function RequestDetails({
               <p className="empty-state">这次请求没有工具调用。</p>
             )}
             <p className="help-text">
-              响应头前等待包含网络与服务端处理，不能单独归因于上传或排队。
+              HTTP 响应头等待和 WS
+              首事件等待都包含网络与服务端处理，不能单独归因于上传或排队。
             </p>
           </>
         ) : panel === "skills" ? (

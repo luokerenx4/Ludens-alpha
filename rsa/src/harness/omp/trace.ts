@@ -1,9 +1,11 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import { channel } from "node:diagnostics_channel";
 import type { StreamFn } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import { getOpenAICodexTransportDetails } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent";
 import { logger } from "@oh-my-pi/pi-utils";
-import { EventLog, type EventTrace } from "../events.ts";
+import { childTrace, EventLog, type EventTrace } from "../events.ts";
 import { SHIORI_SOURCE, ShioriTelemetry } from "./shiori.ts";
 
 // Only transport diagnostics; never copy authentication headers or stream options.
@@ -33,9 +35,19 @@ function compactionRequest(input: Parameters<typeof fetch>[0], init?: RequestIni
   return { url, headers };
 }
 
+// The OMP patch enters this scope at candidate creation, before its first await.
+// One OMP session lives in this host; foreground work never enters this store.
+const speculationChannel = channel("omp.compaction.speculation");
+const speculationContext = new AsyncLocalStorage<EventTrace>();
+
 /** Keep native compaction lifecycle events alongside the host's request timeline. */
 export function installCompactionSpeculationTrace(log: EventLog, context: () => EventTrace = () => ({})) {
   const record = log.recorder(SHIORI_SOURCE);
+  const operations = new Map<string, { trace: EventTrace; startedAt?: number }>();
+  speculationChannel.bindStore(speculationContext, (message: unknown) => {
+    const { operationId } = message as { operationId: string };
+    return { ...childTrace(context()), operationId };
+  });
   const stages = new Map([
     ["Speculative compaction started", "started"],
     ["Speculative compaction armed", "armed"],
@@ -43,8 +55,9 @@ export function installCompactionSpeculationTrace(log: EventLog, context: () => 
     ["Waiting for speculative compaction", "waiting"],
     ["Applying armed speculative compaction", "applied"],
     ["Speculative compaction failed", "failed"],
+    ["Speculative compaction cancelled", "cancelled"],
   ]);
-  return logger.registerLogSink((event) => {
+  const unsubscribe = logger.registerLogSink((event) => {
     // V2 may receive HTTP 200 and then fail inside the SSE stream. Its own
     // warning is explicit retry evidence; adjacent HTTP attempts are not.
     const retry = event.level === "warn"
@@ -54,19 +67,35 @@ export function installCompactionSpeculationTrace(log: EventLog, context: () => 
       for (const key of ["model", "error"]) {
         if (typeof event.context?.[key] === "string") data[key] = event.context[key];
       }
-      record("compaction_retry", data, { epoch: context().epoch });
+      const parent = context();
+      record("compaction_retry", data, speculationContext.getStore() ?? (parent.operationId ? parent : { epoch: parent.epoch }));
       return;
     }
     const stage = stages.get(event.message);
     if (!stage) return;
+    const operationId = event.context?.operationId;
+    let operation = typeof operationId === "string" ? operations.get(operationId) : undefined;
+    const scope = speculationContext.getStore();
+    // An unknown candidate must stay unassociated, never inherit the latest epoch.
+    const trace = operation?.trace ?? (typeof operationId === "string"
+      ? (scope?.operationId === operationId ? scope : { operationId }) : {});
+    if (stage === "started" && typeof operationId === "string" && scope?.operationId === operationId) {
+      operation = { trace, startedAt: log.clock.now() };
+      operations.set(operationId, operation);
+    }
     const data: Record<string, unknown> = { stage };
     for (const key of ["method", "snapshotLeafId", "contextTokensAtStart", "contextTokens", "thresholdTokens", "durationMs", "tokensBefore", "reason"]) {
       const value = event.context?.[key];
       if (typeof value === "string" || typeof value === "number") data[key] = value;
     }
     if (stage === "failed" && typeof event.context?.error === "string") data.error = event.context.error;
-    record("compaction_speculation", data, { epoch: context().epoch });
+    if (["failed", "cancelled"].includes(stage) && operation?.startedAt !== undefined)
+      data.durationMs = log.clock.now() - operation.startedAt;
+    record("compaction_speculation", data, trace);
+    if (typeof operationId === "string" && ["applied", "invalidated", "failed", "cancelled"].includes(stage))
+      operations.delete(operationId);
   });
+  return () => { unsubscribe(); speculationChannel.unbindStore(speculationContext); operations.clear(); };
 }
 
 /** OMP's native compaction bypasses agent.streamFn. Observe its HTTP boundary in this dedicated host. */
@@ -77,7 +106,7 @@ export function installCompactionHttpTrace(log: EventLog, context: () => EventTr
     const [input, init] = args;
     const request = compactionRequest(input, init);
     if (!request) return original(...args);
-    const trace = { ...context(), httpId: crypto.randomUUID() };
+    const trace = { ...childTrace(speculationContext.getStore() ?? context()), httpId: crypto.randomUUID() };
     const started = log.clock.now();
     const body = init?.body;
     // Snapshot only bodies already in memory; never open a Request/body stream.
@@ -116,6 +145,7 @@ export class ModelTrace {
   readonly shiori: ShioriTelemetry;
   private nativeChat: EventTrace = {};
   private nativeRun: EventTrace = {};
+  private maintenance: { trace: EventTrace; startedAt: number } | undefined;
   private readonly record: ReturnType<EventLog["recorder"]>;
   constructor(private log: EventLog, private context: () => { epoch?: string; observations?: string[]; skillVersion?: string; memoryVersion?: string }) {
     this.record = log.recorder(SHIORI_SOURCE);
@@ -142,10 +172,19 @@ export class ModelTrace {
     return { ...trace };
   };
 
+  compactionParent = (): EventTrace => {
+    if (this.maintenance) return { ...this.maintenance.trace };
+    const epoch = this.context().epoch;
+    // Parent to the native loop, not its most recently completed tool/chat span.
+    return epoch && this.nativeRun.epoch === epoch
+      ? { ...this.nativeRun, modelCallId: this.active.modelCallId }
+      : { epoch };
+  };
+
   attach(session: AgentSession) {
     const original = session.agent.streamFn;
     session.agent.streamFn = this.wrap(original);
-    const disposeCompactionTrace = installCompactionSpeculationTrace(this.log, this.context);
+    const disposeCompactionTrace = installCompactionSpeculationTrace(this.log, this.compactionParent);
     const unsubscribe = session.subscribe((event) => {
       if (event.type === "tool_execution_start") this.record("tool_start", event, this.current(event.toolCallId));
       if (event.type === "tool_execution_end") this.record("tool_end", {
@@ -153,7 +192,11 @@ export class ModelTrace {
         result: this.log.artifact(event.result),
       }, this.current(event.toolCallId));
       if (event.type === "auto_compaction_start" || event.type === "auto_compaction_end") {
-        this.record(event.type, event, { epoch: this.context().epoch });
+        if (event.type === "auto_compaction_start")
+          this.maintenance = { trace: { ...childTrace(this.compactionParent()), operationId: crypto.randomUUID() }, startedAt: this.log.clock.now() };
+        this.record(event.type, { ...event, ...(event.type === "auto_compaction_end" && this.maintenance
+          ? { durationMs: this.log.clock.now() - this.maintenance.startedAt } : {}) }, this.maintenance?.trace ?? {});
+        if (event.type === "auto_compaction_end") this.maintenance = undefined;
       }
     });
     return () => { unsubscribe(); disposeCompactionTrace(); session.agent.streamFn = original; };

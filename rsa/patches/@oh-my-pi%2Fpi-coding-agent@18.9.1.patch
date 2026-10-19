@@ -1,8 +1,15 @@
 diff --git a/src/session/session-maintenance.ts b/src/session/session-maintenance.ts
-index 6cfe40635e3f152cab63bd94062249ea469b47e7..9deb8f6bca4c8c699a220000ad968b6ca164a323 100644
+index 6cfe40635e3f152cab63bd94062249ea469b47e7..483b5794080b8d62185beb5dfb8f41a5d2b9fb21 100644
 --- a/src/session/session-maintenance.ts
 +++ b/src/session/session-maintenance.ts
-@@ -63,7 +63,7 @@ import * as AIError from "@oh-my-pi/pi-ai/error";
+@@ -1,5 +1,6 @@
+ /** Context maintenance for an active coding-agent session. */
+ 
++import { channel } from "node:diagnostics_channel";
+ import { scheduler } from "node:timers/promises";
+ import {
+ 	type Agent,
+@@ -63,7 +64,7 @@ import * as AIError from "@oh-my-pi/pi-ai/error";
  import { resolvePromptCacheLookback } from "@oh-my-pi/pi-catalog/compat/prompt-cache-lookback";
  import { preferredDialect } from "@oh-my-pi/pi-catalog/identity";
  import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
@@ -11,7 +18,19 @@ index 6cfe40635e3f152cab63bd94062249ea469b47e7..9deb8f6bca4c8c699a220000ad968b6c
  import * as snapcompact from "@oh-my-pi/snapcompact";
  import { writeArtifact } from "./artifacts";
  import type { ModelRegistry } from "../config/model-registry";
-@@ -347,7 +347,7 @@ interface ArmedSpeculation {
+@@ -339,15 +340,19 @@ const SNAPCOMPACT_POST_COMPACTION_TARGET = 0.6;
+  *  occupancy stays under this ceiling (≥10% headroom) and reported usage stays within the window (#9235). */
+ const PAYLOAD_REJECTION_OCCUPANCY_CEILING = 0.9;
+ 
++// Hosts can bind async trace context without coupling this engine to a log backend.
++const speculationChannel = channel("omp.compaction.speculation");
++
+ /** A speculation-produced compaction result, ready to commit at threshold. */
+ interface ArmedSpeculation {
++	operationId: string;
+ 	result: CompactionResult;
+ 	action: "context-full" | "handoff" | "remote";
+ 	method: CompactionMethod;
  	codexCompaction?: CodexCompactionContext;
  	/** Last branch entry covered by the speculated summary's source snapshot. */
  	snapshotLeafId: string;
@@ -20,15 +39,39 @@ index 6cfe40635e3f152cab63bd94062249ea469b47e7..9deb8f6bca4c8c699a220000ad968b6c
  	contextTokensAtStart: number;
  }
  
-@@ -364,6 +364,7 @@ type CompactionProjectionArgs = {
+@@ -364,6 +369,9 @@ type CompactionProjectionArgs = {
  
  /** One background speculative-compaction run and (once resolved) its armed result. */
  interface SpeculationRun {
++	operationId: string;
++	startedAt?: number;
 +	method: "remote" | "handoff" | "soft";
  	controller: AbortController;
  	promise: Promise<void>;
  	contextTokensAtStart: number;
-@@ -2101,16 +2102,19 @@ export class SessionMaintenance {
+@@ -641,10 +649,20 @@ export class SessionMaintenance {
+ 	}
+ 
+ 	/** Abort and discard any in-flight or armed speculative compaction. */
+-	cancelSpeculation(): void {
++	cancelSpeculation(reason = "cancelled", contextTokens?: number): void {
+ 		const run = this.#speculation;
+ 		if (!run) return;
+ 		this.#speculation = undefined;
++		if (run.armed) {
++			logger.debug("Speculative compaction invalidated", {
++				operationId: run.armed.operationId,
++				method: run.armed.method,
++				snapshotLeafId: run.armed.snapshotLeafId,
++				contextTokensAtStart: run.armed.contextTokensAtStart,
++				contextTokens,
++				reason,
++			});
++		}
+ 		run.controller.abort();
+ 	}
+ 
+@@ -2101,17 +2119,13 @@ export class SessionMaintenance {
  		const current = this.#speculation;
  		if (current) {
  			if (!current.armed) return; // one run at a time
@@ -42,37 +85,107 @@ index 6cfe40635e3f152cab63bd94062249ea469b47e7..9deb8f6bca4c8c699a220000ad968b6c
 -				this.#armedSpeculationValid(current.armed, contextTokens)
 -			)
 -				return;
+-			this.cancelSpeculation();
 +			// Keep a usable result: fast-growing multimodal history can exceed
 +			// keepRecentTokens while summarizing. Refreshing just for that growth
 +			// throws away the ready summary right before the threshold and makes
 +			// the live loop wait for another request. Validation already checks
 +			// projected headroom; commit replays the full post-snapshot tail.
 +			if (this.#armedSpeculationValid(current.armed, contextTokens)) return;
-+			logger.debug("Speculative compaction invalidated", {
-+				method: current.armed.method,
-+				snapshotLeafId: current.armed.snapshotLeafId,
-+				contextTokensAtStart: current.armed.contextTokensAtStart,
-+				contextTokens,
-+				reason: "branch-or-headroom",
-+			});
- 			this.cancelSpeculation();
++			this.cancelSpeculation("branch-or-headroom", contextTokens);
  		}
  		const model = this.#model;
-@@ -2125,7 +2129,7 @@ export class SessionMaintenance {
+ 		if (!model) return;
+@@ -2125,32 +2139,51 @@ export class SessionMaintenance {
  	/** Install and launch one background speculation run for `method`. */
  	#startSpeculationRun(contextTokens: number, method: "remote" | "handoff" | "soft"): void {
  		const controller = new AbortController();
 -		const run: SpeculationRun = { controller, promise: Promise.resolve(), contextTokensAtStart: contextTokens };
-+		const run: SpeculationRun = { method, controller, promise: Promise.resolve(), contextTokensAtStart: contextTokens };
++		const run: SpeculationRun = { operationId: Snowflake.next(), method, controller, promise: Promise.resolve(), contextTokensAtStart: contextTokens };
  		const model = this.#model;
  		// Keyed now: the session can switch before the run settles.
  		const nativeKey = model && this.#nativeSpeculationKey(model);
-@@ -2233,6 +2237,13 @@ export class SessionMaintenance {
+ 		this.#speculation = run;
+-		run.promise = this.#runSpeculation(run, method, contextTokens).catch(error => {
+-			logger.debug("Speculative compaction failed", {
+-				method,
+-				error: error instanceof Error ? error.message : String(error),
+-			});
+-			if (this.#speculation === run) this.#speculation = undefined;
+-			// Keyed by the live model even when a compaction-model candidate made the
+-			// failing request: every consumer checks the live model, and a false hit
+-			// only moves this cycle to the next configured method. Errors with no
+-			// HTTP status classify by message text, so an unrecognised transient
+-			// failure costs the same single early fallback.
+-			if (
+-				method === "remote" &&
+-				model &&
+-				!controller.signal.aborted &&
+-				error instanceof NativeCompactionError &&
+-				!AIError.retriable(AIError.classify(error.cause, model.api))
+-			) {
+-				this.#failedNativeSpeculation = nativeKey;
+-			}
+-		});
++		run.promise = speculationChannel.runStores(
++			{ operationId: run.operationId, sessionId: this.#host.sessionId(), method },
++			() => {
++				let failed = false;
++				return this.#runSpeculation(run, method, contextTokens).catch(error => {
++					failed = true;
++					logger.debug(controller.signal.aborted ? "Speculative compaction cancelled" : "Speculative compaction failed", {
++						operationId: run.operationId,
++						method,
++						durationMs: run.startedAt === undefined ? undefined : performance.now() - run.startedAt,
++						error: error instanceof Error ? error.message : String(error),
++					});
++					if (this.#speculation === run) this.#speculation = undefined;
++					// Keyed by the live model even when a compaction-model candidate made the
++					// failing request: every consumer checks the live model, and a false hit
++					// only moves this cycle to the next configured method. Errors with no
++					// HTTP status classify by message text, so an unrecognised transient
++					// failure costs the same single early fallback.
++					if (
++						method === "remote" &&
++						model &&
++						!controller.signal.aborted &&
++						error instanceof NativeCompactionError &&
++						!AIError.retriable(AIError.classify(error.cause, model.api))
++					) {
++						this.#failedNativeSpeculation = nativeKey;
++					}
++				}).finally(() => {
++					// Early clears and superseded work have no armed result or thrown error.
++					if (!failed && run.startedAt !== undefined && !run.armed) {
++						logger.debug("Speculative compaction cancelled", {
++							operationId: run.operationId,
++							method,
++							reason: controller.signal.aborted ? "aborted" : "discarded",
++							durationMs: performance.now() - run.startedAt,
++						});
++					}
++				});
++			},
++		);
+ 	}
+ 
+ 	/** Identity of `model`'s native speculation in the current session. */
+@@ -2204,7 +2237,7 @@ export class SessionMaintenance {
+ 		if (run) {
+ 			if (run.armed) {
+ 				if (!this.#armedSpeculationValid(run.armed, contextTokens)) {
+-					this.cancelSpeculation();
++					this.cancelSpeculation("branch-or-headroom", contextTokens);
+ 					return false;
+ 				}
+ 				return false; // ready — the real pass splices it in now
+@@ -2233,6 +2266,14 @@ export class SessionMaintenance {
  		if (!snapshotLeafId) return clear();
  		const preparation = prepareCompaction(branch, effectiveSettings, model, this.#tokenizer);
  		if (!preparation) return clear();
-+		const startedAt = performance.now();
++		const startedAt = run.startedAt = performance.now();
 +		logger.debug("Speculative compaction started", {
++			operationId: run.operationId,
 +			method,
 +			snapshotLeafId,
 +			contextTokensAtStart: contextTokens,
@@ -81,7 +194,15 @@ index 6cfe40635e3f152cab63bd94062249ea469b47e7..9deb8f6bca4c8c699a220000ad968b6c
  		const signal = run.controller.signal;
  		let armed: ArmedSpeculation;
  		if (method === "handoff") {
-@@ -2285,6 +2296,7 @@ export class SessionMaintenance {
+@@ -2243,6 +2284,7 @@ export class SessionMaintenance {
+ 			if (!generated) return clear();
+ 			const { summary, details } = handoffSummaryFromDocument(generated.document, preparation);
+ 			armed = {
++				operationId: run.operationId,
+ 				result: {
+ 					summary,
+ 					shortSummary: undefined,
+@@ -2285,11 +2327,13 @@ export class SessionMaintenance {
  					// sticky provider sessions by sessionId, and a speculation
  					// overlapping the live stream must never interleave with it.
  					sessionId: `${this.#host.sessionId()}:spec:${Snowflake.next()}`,
@@ -89,8 +210,17 @@ index 6cfe40635e3f152cab63bd94062249ea469b47e7..9deb8f6bca4c8c699a220000ad968b6c
  					preferWebsockets: false,
  				},
  				candidates,
-@@ -2306,6 +2318,8 @@ export class SessionMaintenance {
+ 			);
+ 			armed = {
++				operationId: run.operationId,
+ 				result: {
+ 					...result,
+ 					preserveData: mergeLlmCompactionPreserveData(compactionPrep.preserveData, result.preserveData),
+@@ -2304,8 +2348,11 @@ export class SessionMaintenance {
+ 		if (signal.aborted || this.#speculation !== run) return;
+ 		run.armed = armed;
  		logger.debug("Speculative compaction armed", {
++			operationId: run.operationId,
  			method,
  			snapshotLeafId,
 +			contextTokensAtStart: contextTokens,
@@ -98,21 +228,36 @@ index 6cfe40635e3f152cab63bd94062249ea469b47e7..9deb8f6bca4c8c699a220000ad968b6c
  			tokensBefore: armed.result.tokensBefore,
  		});
  	}
-@@ -2402,9 +2416,12 @@ export class SessionMaintenance {
- 		if (settings.asyncEnabled === false) return undefined;
- 		if (this.#host.extensionRunner?.hasHandlers("session_before_compact")) return undefined;
- 		if (!this.#armedSpeculationValid(run.armed, triggerContextTokens, pendingContextTokens)) {
--			logger.debug("Armed speculative compaction invalidated by branch growth or headroom check", {
-+			logger.debug("Speculative compaction invalidated", {
- 				method: run.armed.method,
- 				snapshotLeafId: run.armed.snapshotLeafId,
-+				contextTokensAtStart: run.armed.contextTokensAtStart,
-+				contextTokens: triggerContextTokens,
-+				reason: "branch-or-headroom",
- 			});
+@@ -2393,21 +2440,20 @@ export class SessionMaintenance {
+ 	#claimArmedSpeculation(triggerContextTokens?: number, pendingContextTokens?: number): ArmedSpeculation | undefined {
+ 		const run = this.#speculation;
+ 		if (!run) return undefined;
+-		this.#speculation = undefined;
+ 		if (!run.armed) {
+-			run.controller.abort();
++			this.cancelSpeculation();
  			return undefined;
  		}
-@@ -3510,10 +3527,12 @@ export class SessionMaintenance {
+ 		const settings = this.#compactionSettings;
+-		if (settings.asyncEnabled === false) return undefined;
+-		if (this.#host.extensionRunner?.hasHandlers("session_before_compact")) return undefined;
++		if (settings.asyncEnabled === false || this.#host.extensionRunner?.hasHandlers("session_before_compact")) {
++			this.cancelSpeculation("configuration-changed");
++			return undefined;
++		}
+ 		if (!this.#armedSpeculationValid(run.armed, triggerContextTokens, pendingContextTokens)) {
+-			logger.debug("Armed speculative compaction invalidated by branch growth or headroom check", {
+-				method: run.armed.method,
+-				snapshotLeafId: run.armed.snapshotLeafId,
+-			});
++			this.cancelSpeculation("branch-or-headroom", triggerContextTokens);
+ 			return undefined;
+ 		}
++		this.#speculation = undefined;
+ 		return run.armed;
+ 	}
+ 
+@@ -3510,10 +3556,12 @@ export class SessionMaintenance {
  						// (xai-oauth/grok-build) don't trip requireSupportedEffort.
  						thinkingLevel: this.#host.thinkingLevel(),
  						tools: this.#host.agent.state.tools,
@@ -127,7 +272,7 @@ index 6cfe40635e3f152cab63bd94062249ea469b47e7..9deb8f6bca4c8c699a220000ad968b6c
  						// Route every summarization HTTP request through the
  						// session's side-stream transport so the provider
  						// concurrency cap (e.g. providers.ollama-cloud.maxConcurrency)
-@@ -4464,14 +4483,24 @@ export class SessionMaintenance {
+@@ -4464,14 +4512,24 @@ export class SessionMaintenance {
  
  		if (!method) return COMPACTION_CHECK_NONE;
  
@@ -151,19 +296,20 @@ index 6cfe40635e3f152cab63bd94062249ea469b47e7..9deb8f6bca4c8c699a220000ad968b6c
  		// only when settings/model changed since arming) never overrides it.
 -		const claimedSpec = this.#claimArmedSpeculation(options.triggerContextTokens, options.pendingContextTokens);
 -		const armedSpec = method === "snapcompact" ? undefined : claimedSpec;
-+		const claimedSpec = pendingSpec
++		if (method === "snapcompact") this.cancelSpeculation("method-changed");
++		let armedSpec = pendingSpec || method === "snapcompact"
 +			? undefined
 +			: this.#claimArmedSpeculation(options.triggerContextTokens, options.pendingContextTokens);
-+		let armedSpec = method === "snapcompact" ? undefined : claimedSpec;
  
  		const effectiveSettings = resolveMethodSettings(compactionSettings, method);
  		const fallbackFromShake = options.fallbackFromShake === true;
-@@ -4520,6 +4549,27 @@ export class SessionMaintenance {
+@@ -4520,6 +4578,28 @@ export class SessionMaintenance {
  			// queue, not the core steering queue (which handoff's agent.reset() would wipe).
  			const startEvent = { type: "auto_compaction_start" as const, reason, action };
  			await this.#emitLifecycleEvent(startEvent, false);
 +			if (pendingSpec) {
 +				logger.debug("Waiting for speculative compaction", {
++					operationId: pendingSpec.operationId,
 +					method: pendingSpec.method,
 +					contextTokensAtStart: pendingSpec.contextTokensAtStart,
 +					contextTokens: options.triggerContextTokens,
@@ -186,9 +332,11 @@ index 6cfe40635e3f152cab63bd94062249ea469b47e7..9deb8f6bca4c8c699a220000ad968b6c
  			if (armedSpec) {
  				// A background speculation already produced this compaction's
  				// summary; splice it in instead of paying for a blocking
-@@ -4528,6 +4578,8 @@ export class SessionMaintenance {
+@@ -4527,7 +4607,10 @@ export class SessionMaintenance {
+ 				// known — the armed value measured the smaller prefix at compute
  				// time.
  				logger.debug("Applying armed speculative compaction", {
++					operationId: armedSpec.operationId,
  					method: armedSpec.method,
 +					snapshotLeafId: armedSpec.snapshotLeafId,
 +					contextTokensAtStart: armedSpec.contextTokensAtStart,

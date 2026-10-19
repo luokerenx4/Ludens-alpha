@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { sseFallbackReason } from "../lib/transport";
+import { medianRequestWaits, requestWait, sseFallbackReason } from "../lib/transport";
 import { aggregate } from "../lib/aggregate";
 import type { Call, Event } from "../lib/types";
 
@@ -41,4 +41,40 @@ test("model end updates that request's transport state without borrowing it for 
     event("a", "model_end", { transportDetails: { sizeBlockedUntilCompaction: false } }),
   ]).calls;
   assert.equal(sseFallbackReason(cleared, 0), null);
+});
+
+test("mixed runs show HTTP and WS wait medians separately without inventing missing milestones", () => {
+  let seq = 0;
+  const event = (modelCallId: string, type: string, data = {}): Event => ({
+    seq: ++seq, type, at: new Date(seq * 100).toISOString(), atMs: seq * 100,
+    trace: { epoch: "cycle", modelCallId }, data,
+  });
+  const { calls } = aggregate([
+    event("http", "model_start"),
+    event("http", "model_http_start"),
+    event("http", "model_http_end", { fetchToHeadersMs: 1800 }),
+    event("http", "model_end", { durationMs: 4000 }),
+    event("ws", "model_start"),
+    event("ws", "model_ws_dispatch"),
+    event("ws", "model_stream_start", { modelElapsedMs: 1200, afterDispatchMs: 650 }),
+    event("ws", "model_end", { durationMs: 5000, firstStreamEventMs: 1200 }),
+    event("missing", "model_start"),
+    event("missing", "model_ws_dispatch"),
+    event("missing", "model_end", { durationMs: 5000, firstStreamEventMs: 1100 }),
+    event("pending", "model_start"),
+    event("pending", "model_ws_dispatch"),
+    event("pending", "model_stream_start", { modelElapsedMs: 5000, afterDispatchMs: 4900 }),
+  ]);
+  assert.deepEqual(requestWait(calls[1]), { label: "WS 首事件等待", ms: 650 });
+  assert.deepEqual(requestWait(calls[2]), { label: "WS 首事件等待", ms: null });
+  assert.deepEqual(medianRequestWaits(calls), [
+    { label: "HTTP 响应头等待", ms: 1800 },
+    { label: "WS 首事件等待", ms: 650 },
+  ]);
+  assert.deepEqual(medianRequestWaits(calls.slice(2)), [
+    { label: "WS 首事件等待", ms: null },
+  ]);
+  assert.deepEqual(requestWait({ ...calls[0], transport: null }), {
+    label: "等待（传输未记录）", ms: null,
+  });
 });

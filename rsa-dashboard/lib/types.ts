@@ -144,12 +144,20 @@ export type SpanOutcome =
   "success" | "error" | "cancelled" | "pending" | "unknown";
 export interface TraceSpan {
   id: string;
-  kind: "shiori" | "capability" | "python" | "discovery" | "device";
+  kind:
+    | "shiori"
+    | "capability"
+    | "python"
+    | "discovery"
+    | "device"
+    | "compaction"
+    | "compaction-http";
   traceId: string;
   spanId: string;
   parentSpanId?: string;
   modelCallId?: string;
   toolCallId?: string;
+  operationId?: string;
   source?: Event["source"];
   name: string;
   operation?: string;

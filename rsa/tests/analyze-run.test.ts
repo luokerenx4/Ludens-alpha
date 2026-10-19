@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 const script = new URL("../scripts/analyze-run.py", import.meta.url).pathname;
 const emptyStats = { count: 0, min: null, median: null, p95: null, max: null, sum: 0 };
-const emptySpeculation = { started: 0, armed: 0, invalidated: 0, waiting: 0, applied: 0, failed: 0, armedDurationMs: emptyStats };
+const emptySpeculation = { started: 0, armed: 0, invalidated: 0, waiting: 0, applied: 0, failed: 0, cancelled: 0, armedDurationMs: emptyStats };
 
 function fixture() {
   let seq = 0;
@@ -75,7 +75,7 @@ test("analysis pairs concurrent capabilities by span, keeps late cancellation, a
   expect(report.pythonCapabilities[0].codeSHA).toBe("version-a");
   expect(report.summary.shiori.nativeLoops).toBe(1);
   expect(report.shiori.runs[0].summary.usage.totalTokens).toBe(100);
-  expect(report.summary.sources.shiori).toBe(1);
+  expect(report.summary.sources.shiori).toBe(3);
   expect(report.summary.completedRequests).toBe(0);
 });
 
@@ -94,7 +94,8 @@ test("analysis retains ready and applied boundaries and reports candidate durati
   ];
   const report = await analyze(events);
   expect(report.compactionSpeculation).toHaveLength(7);
-  expect(report.compactionSpeculation[0]).toEqual({ seq: events[1]!.seq, at: events[1]!.at, atMs: events[1]!.atMs, data: events[1]!.data });
+  expect(report.compactionSpeculation[0]).toEqual({ seq: events[1]!.seq, at: events[1]!.at, atMs: events[1]!.atMs,
+    trace: { epoch: "one" }, data: events[1]!.data });
   expect(report.compactionSpeculation[2].data).toEqual({ stage: "armed", snapshotLeafId: "first-leaf", durationMs: 80_000, tokensBefore: 224_100 });
   expect(report.compactionSpeculation.filter((item: { data: { stage: string } }) => item.data.stage === "applied").map((item: { data: { snapshotLeafId: string } }) => item.data.snapshotLeafId)).toEqual(["first-leaf", "second-leaf"]);
   expect(report.summary.compactionSpeculation).toEqual({ ...emptySpeculation, started: 2, armed: 2, waiting: 1, applied: 2,
@@ -125,8 +126,8 @@ test("analysis isolates lifecycle to the chosen epoch and retains its late HTTP 
   ];
   const report = await analyze(events, "selected");
   expect(report.window).toMatchObject({ epoch: "selected", stopReason: "time budget", observedElapsedMs: 4000 });
-  expect(report.compactionSpeculation.map((item: { seq: number }) => item.seq)).toEqual([5]);
-  expect(report.summary.compactionSpeculation).toEqual({ ...emptySpeculation, started: 1 });
+  expect(report.compactionSpeculation.map((item: { seq: number }) => item.seq)).toEqual([5, 10]);
+  expect(report.summary.compactionSpeculation).toEqual({ ...emptySpeculation, started: 1, failed: 1 });
   expect(report.summary.compactionHttp).toMatchObject({ attempts: 1, abortedAttempts: 1, responsesReceived: 0, preparedBodyBytes: 123 });
   expect(report.compactionHttpAttempts[0]).toMatchObject({ epoch: "selected", startSeq: 6, endSeq: 9, state: "aborted", error: "cancelled" });
   await expect(analyze(events)).rejects.toThrow("select one with --epoch");
@@ -149,7 +150,7 @@ test("analysis counts invalidation and failure without inventing a request pairi
   expect(report.compactionHttpAttempts).toEqual([]);
 });
 
-test("analysis measures closed foreground compaction windows and preserves unfinished maintenance", async () => {
+test("analysis measures foreground compaction windows including late cancellation", async () => {
   const event = fixture();
   const report = await analyze([
     event("control", "one", { mode: "auto", epoch: "one" }),
@@ -167,19 +168,42 @@ test("analysis measures closed foreground compaction windows and preserves unfin
   ]);
   expect(report.compactions[0]).toMatchObject({ seq: 2, atMs: 2000, epoch: "one" });
   expect(report.compactionMaintenance).toEqual([
-    { epoch: "one", startSeq: 2, endSeq: 4, startAtMs: 2000, endAtMs: 4000, state: "completed", durationMs: 2000 },
-    { epoch: "one", startSeq: 5, endSeq: 6, startAtMs: 5000, endAtMs: 6000, state: "aborted", durationMs: 1000 },
-    { epoch: "one", startSeq: 7, endSeq: 8, startAtMs: 7000, endAtMs: 8000, state: "error", durationMs: 1000 },
-    { epoch: "one", startSeq: 9, endSeq: null, startAtMs: 9000, endAtMs: null, state: "pending", durationMs: null },
+    { epoch: "one", trace: { epoch: "one" }, startSeq: 2, endSeq: 4, startAtMs: 2000, endAtMs: 4000, state: "completed", durationMs: 2000 },
+    { epoch: "one", trace: { epoch: "one" }, startSeq: 5, endSeq: 6, startAtMs: 5000, endAtMs: 6000, state: "aborted", durationMs: 1000 },
+    { epoch: "one", trace: { epoch: "one" }, startSeq: 7, endSeq: 8, startAtMs: 7000, endAtMs: 8000, state: "error", durationMs: 1000 },
+    { epoch: "one", trace: { epoch: "one" }, startSeq: 9, endSeq: 12, startAtMs: 9000, endAtMs: 12_000, state: "aborted", durationMs: 3000 },
   ]);
-  expect(report.summary.compactionMaintenance).toEqual({ completed: 1, aborted: 1, error: 1, pending: 1,
-    durationMs: { count: 3, min: 1000, median: 1000, p95: 2000, max: 2000, sum: 4000 } });
+  expect(report.summary.compactionMaintenance).toEqual({ completed: 1, aborted: 2, error: 1, pending: 0,
+    durationMs: { count: 4, min: 1000, median: 1500, p95: 3000, max: 3000, sum: 7000 } });
   expect(report.summary.compactionStarts).toBe(4);
-  expect(report.summary.compactionEnds).toBe(3);
+  expect(report.summary.compactionEnds).toBe(4);
   expect(report.summary.compactionSpeculation.armedDurationMs.sum).toBe(80_000);
 });
 
-test("analysis reports explicit native retry warnings despite HTTP 200 and isolates the takeover interval", async () => {
+test("analysis pairs interleaved maintenance identities and preserves explicit durations and cancelled candidates", async () => {
+  const event = fixture();
+  const first = { operationId: "maintenance-a", traceId: "trace", spanId: "span-a" };
+  const second = { traceId: "trace", spanId: "span-b" };
+  const report = await analyze([
+    event("control", "one", { mode: "auto", epoch: "one" }),
+    event("auto_compaction_start", "one", { reason: "threshold" }, first),
+    event("auto_compaction_start", "one", { reason: "threshold" }, second),
+    event("auto_compaction_end", "one", { aborted: false, durationMs: 500 }, first),
+    event("control", "one", { mode: "manual", reason: "time budget" }),
+    event("auto_compaction_end", "one", { errorMessage: "candidate unavailable", durationMs: 750 }, second),
+    event("compaction_speculation", "one", { stage: "cancelled" }, first),
+  ]);
+  expect(report.compactionMaintenance).toEqual([
+    { epoch: "one", trace: { epoch: "one", ...first }, startSeq: 2, endSeq: 4,
+      startAtMs: 2000, endAtMs: 4000, state: "completed", durationMs: 500 },
+    { epoch: "one", trace: { epoch: "one", ...second }, startSeq: 3, endSeq: 6,
+      startAtMs: 3000, endAtMs: 6000, state: "error", durationMs: 750 },
+  ]);
+  expect(report.summary.compactionSpeculation).toEqual({ ...emptySpeculation, cancelled: 1 });
+  expect(report.compactions[3].error).toBe("candidate unavailable");
+});
+
+test("analysis reports explicit native retry warnings despite HTTP 200 and preserves late epoch events", async () => {
   const event = fixture();
   const error = "V2 compaction stream error (server_error): fixture failure";
   const events = [
@@ -193,14 +217,15 @@ test("analysis reports explicit native retry warnings despite HTTP 200 and isola
     event("compaction_retry", "one", { attempt: 2, retryDelayMs: 2000, model: { name: "private-model" }, error: { message: "private-error" } }),
     event("compaction_retry", "other", { attempt: 1, retryDelayMs: 1000, error: "private-other-epoch" }),
     event("control", "one", { mode: "manual", reason: "time budget" }),
-    event("compaction_retry", "one", { attempt: 1, retryDelayMs: 1000, error: "private-late-event" }),
+    event("compaction_retry", "one", { attempt: 1, retryDelayMs: 1000, error: "late retry" }),
   ];
   const report = await analyze(events, "one");
   expect(report.compactionRetries).toEqual([
-    { seq: 4, at: events[3]!.at, atMs: 4000, data: { attempt: 1, retryDelayMs: 1000, model: "gpt-6.1-sol", error } },
-    { seq: 7, at: events[6]!.at, atMs: 7000, data: { attempt: 2, retryDelayMs: 2000 } },
+    { seq: 4, at: events[3]!.at, atMs: 4000, trace: { epoch: "one" }, data: { attempt: 1, retryDelayMs: 1000, model: "gpt-6.1-sol", error } },
+    { seq: 7, at: events[6]!.at, atMs: 7000, trace: { epoch: "one" }, data: { attempt: 2, retryDelayMs: 2000 } },
+    { seq: 10, at: events[9]!.at, atMs: 10_000, trace: { epoch: "one" }, data: { attempt: 1, retryDelayMs: 1000, error: "late retry" } },
   ]);
-  expect(report.summary.compactionRetries).toEqual({ announcedRetries: 2, errorReasons: { [error]: 1 } });
+  expect(report.summary.compactionRetries).toEqual({ announcedRetries: 3, errorReasons: { [error]: 1, "late retry": 1 } });
   expect(report.summary.compactionHttp).toMatchObject({ attempts: 2, responsesReceived: 2, failedAttempts: 0, retryCount: null });
   expect(report.summary.retryCount).toBe(0);
   expect(JSON.stringify(report)).not.toContain("private-");
@@ -325,12 +350,57 @@ test("analysis retains controller errors when the shell batch succeeds and isola
     event("execution_error", "next", { error: "next error", aborted: false }, failed),
   ];
   const report = await analyze(events, "selected");
-  expect(report.summary).toMatchObject({ toolErrors: 0, controllerExecutionErrors: 1,
+  expect(report.summary).toMatchObject({ toolErrors: 0, controllerExecutionErrors: 2,
     controllerActions: 1, controllerExecutionStatuses: { completed: 1 } });
   expect(report.tools[0]).toMatchObject({ state: "completed", isError: false,
     exec: { state: "completed", exitCode: 0 } });
   expect(report.controllerExecutionErrors).toEqual([{
     seq: 11, at: events[10]!.at, atMs: 11_000, epoch: "selected", ...failed,
     commandSeq: 8, controller: "keyboard", argv: ["press", "--key", "ESC"], error, aborted: false,
+  }, {
+    seq: 17, at: events[16]!.at, atMs: 17_000, epoch: "selected", ...failed,
+    commandSeq: 8, controller: "keyboard", argv: ["press", "--key", "ESC"], error: "late error", aborted: true,
   }]);
+});
+
+test("analysis attributes late compaction lifecycle to its epoch without extending active time or guessing missing identities", async () => {
+  const event = fixture();
+  const first = { operationId: "candidate-a", traceId: "trace-a", spanId: "span-a" };
+  const second = { operationId: "candidate-b", traceId: "trace-b", spanId: "span-b" };
+  const http = { ...first, spanId: "http-span-a", parentSpanId: first.spanId, httpId: "http-a", unknownField: "private-value" };
+  const events = [
+    event("control", "one", { mode: "auto", epoch: "one" }),
+    event("compaction_speculation", "one", { stage: "started", snapshotLeafId: "same-leaf" }, first),
+    event("auto_compaction_start", "one", { reason: "threshold" }, first),
+    event("compaction_speculation", "one", { stage: "armed", durationMs: 999_999 }, { epoch: null }),
+    event("control", "one", { mode: "manual", reason: "time budget" }),
+    event("control", "two", { mode: "auto", epoch: "two" }),
+    event("compaction_speculation", "two", { stage: "started", snapshotLeafId: "same-leaf" }, second),
+    event("compaction_http_start", "one", { bodyBytes: 100 }, http),
+    event("compaction_http_end", "one", { status: 200 }, http),
+    event("compaction_speculation", "one", { stage: "armed", durationMs: 80_000 }, first),
+    event("auto_compaction_end", "one", { aborted: false }, first),
+    event("compaction_speculation", "one", { stage: "applied" }, first),
+    event("compaction_speculation", "two", { stage: "failed", error: "unattributed" }, { epoch: null }),
+    event("compaction_speculation", "two", { stage: "failed", error: "candidate-b failed" }, second),
+    event("control", "two", { mode: "manual", reason: "time budget" }),
+  ].map(row => ({ ...row, source: { component: row.type === "control" ? "rsa" : "shiori" } }));
+  const report = await analyze(events, "one");
+  expect(report.window.observedElapsedMs).toBe(4000);
+  expect(report.summary.sources).toEqual({ rsa: 2, shiori: 7 });
+  expect(report.compactionSpeculation.map((item: { seq: number }) => item.seq)).toEqual([2, 10, 12]);
+  expect(report.compactionSpeculation.map((item: { trace: unknown }) => item.trace)).toEqual([
+    { epoch: "one", ...first }, { epoch: "one", ...first }, { epoch: "one", ...first },
+  ]);
+  expect(report.summary.compactionSpeculation).toEqual({ ...emptySpeculation, started: 1, armed: 1, applied: 1,
+    armedDurationMs: { count: 1, min: 80_000, median: 80_000, p95: 80_000, max: 80_000, sum: 80_000 } });
+  expect(report.compactionHttpAttempts[0]).toMatchObject({ epoch: "one", startSeq: 8, endSeq: 9, bodyBytes: 100,
+    trace: { epoch: "one", ...first, spanId: "http-span-a", parentSpanId: first.spanId } });
+  expect(JSON.stringify(report)).not.toContain("private-value");
+  expect(report.compactionMaintenance[0]).toMatchObject({ epoch: "one", startSeq: 3, endSeq: 11, durationMs: 8000 });
+  const next = await analyze(events, "two");
+  expect(next.summary.sources).toEqual({ rsa: 2, shiori: 2 });
+  expect(next.summary.compactionSpeculation).toEqual({ ...emptySpeculation, started: 1, failed: 1 });
+  expect(next.compactionHttpAttempts).toEqual([]);
+  expect(next.compactionMaintenance).toEqual([]);
 });

@@ -328,11 +328,11 @@ WS 握手超时、socket 错误，以及连接到期（`websocket_connection_lim
 
 Agent Loop 内核语义上称为 **Shiori**，当前实现 OMP 18.9.1。schema 2 事件新增 `source`（职责/实现/版本）、`origin`（原事实身份/时钟）与跨进程 span 关系；旧事件名与 payload/stream 存储方式继续使用。OMP 原生 telemetry 现在写入 `shiori_span_start/end` 和 `shiori_run_end`，使用局部 tracer、不配置远程 exporter。统一能力入口用 `capability_start/end` 记录完整终态，Python/设备细节沿同一调用树关联。完整字段及分析口径见 [日志契约](docs/logging.md)。
 
-每次启动默认记录到该次 run 的 `events.jsonl`。每行带 `schemaVersion: 1`、`runId`、递增 `seq`、UTC 时间 `at`、宿主单调时间 `atMs`、`type`、`trace` 和 `data`。`trace` 使用以下关联字段：
+每次启动默认记录到该次 run 的 `events.jsonl`。每行带 `schemaVersion: 2`、`runId`、递增 `seq`、UTC 时间 `at`、宿主单调时间 `atMs`、`type`、`trace` 和 `data`。`trace` 使用以下关联字段：
 
 - `epoch`：一次接管；`modelCallId`：一次主循环模型调用。
 - `requestId`：OMP 构造的一次提供者请求；`httpId`：一次实际 HTTP 发送。同一请求的传输重试有不同 `httpId`。
-- `toolCallId`：模型工具调用；`operationId`：一次传感器读取或控制器执行。
+- `toolCallId`：模型工具调用；`operationId`：一次传感器读取、控制器执行或压缩操作。
 
 模型调用的 `model_start` 引用本轮观测 ID 与技能版本，`model_end` 保存用量、首 token 耗时、调用耗时、结束原因及响应文件引用。`model_request` 保存经过 OMP 提供者转换和扩展处理后的完整请求，包括 messages、图片、工具定义和推理参数。`model_http_start` 另外保存 HTTP 实际发送的 body 字节，`model_http_end/error` 保存响应状态、失败正文或传输错误。HTTP 结束事件计时到收到响应头，模型结束事件计时到流结束。
 
@@ -363,16 +363,16 @@ gzip -dc "$rsa_payload" | jq .
 
 Codex 原生压缩另用 `compaction_http_start/end/error` 观察 HTTP 边界：只识别 Codex 端点与 `request_kind=compaction`，保留原始调用和 Response，不读取或复制请求／响应流。每次 HTTP 有独立 ID，记录已知内存请求体的字节数、响应头等待和安全错误字段。`start.body` 复用 payload 文件保存 string、ArrayBuffer 或 view 的实际字节（尊重 view 的 offset/length）；未知流不读取、不保存。2026-10-16 出现压缩缓存为 0、邻近主请求仍命中 96.8% 的情况，这份正文用于离线比较缓存标识及历史前缀。落盘完成后才开始 `fetchToHeadersMs` 计时，落盘开销包含在较大的 `durationMs` 中。`end` 只表示响应头返回，不表示摘要完成。成功压缩的 usage 从 OMP 原生结果单独读取。后台准备与最终提交可能相隔数分钟，因此不能用 `auto_compaction_start/end` 的间隔代表完整网络耗时，也不能仅凭相邻 HTTP 失败就认定下一次是重试。
 
-`compaction_speculation` 将 OMP 已有 logger 的后台生命周期接入同一事件流，stage 为 `started`、`armed`（摘要完成）、`invalidated`、`waiting`、`applied`、`failed`；仅记录白名单中的方法、snapshot leaf、上下文大小、阈值、耗时与原因。`armed.durationMs` 是从快照准备后到摘要可用的时间，`waiting` 是主循环开始等待的时刻；结合最终 `auto_compaction_end` 可区分摘要生成慢、结果失效重做和提交等待。`applied` 表示选中结果进入提交，最终是否成功以 `auto_compaction_end` 为准。
+`compaction_speculation` 将 OMP 已有 logger 的后台生命周期接入同一事件流，stage 为 `started`、`armed`（摘要完成）、`invalidated`、`waiting`、`applied`、`failed`、`cancelled`；仅记录白名单中的方法、snapshot leaf、上下文大小、阈值、耗时与原因。`armed.durationMs` 是从快照准备后到摘要可用的时间，`waiting` 是主循环开始等待的时刻；结合最终 `auto_compaction_end` 可区分摘要生成慢、结果失效重做和提交等待。`applied` 表示选中结果进入提交，最终是否成功以 `auto_compaction_end` 为准。
 
-`compaction_retry` 复用该 logger sink，严格匹配 OMP 原生 V2 压缩的重试警告，仅记录失败的 attempt、声明的退避毫秒、模型和字符串错误原因。2026-10-17 一次压缩先收到 HTTP 200，约 198 秒后流内返回 `server_error`，随后由原生 V2 逻辑重试；单看 HTTP 日志无法发现这类失败。分析器的 `summary.compactionRetries.announcedRetries` 统计选定接管期间明确的重试声明，`errorReasons` 汇总原因；警告发生在退避之前，不代表已经重新发出请求。没有重试事件时计数保持 `null`（包括旧日志），不从连续的 HTTP 200 推断重试，也不关联到某个摘要候选。此观测不改变上游重试行为。
+`compaction_retry` 复用该 logger sink，严格匹配 OMP 原生 V2 压缩的重试警告，仅记录失败的 attempt、声明的退避毫秒、模型和字符串错误原因。2026-10-17 一次压缩先收到 HTTP 200，约 198 秒后流内返回 `server_error`，随后由原生 V2 逻辑重试；单看 HTTP 日志无法发现这类失败。分析器的 `summary.compactionRetries.announcedRetries` 统计选定接管期间明确的重试声明，`errorReasons` 汇总原因；警告发生在退避之前，不代表已经重新发出请求。没有重试事件时计数保持 `null`（包括旧日志），不从连续的 HTTP 200 推断重试；新日志用同一 operationId 关联到摘要候选。此观测不改变上游重试行为。
 
 本地 [Next.js 观察台](../rsa-dashboard/README.md) 读取这些日志，显示逐请求延迟、请求体、缓存、动作与截图、技能证据和压缩事件。可切换环境与历史运行，并对匹配的当前宿主交还控制权；不发诊断模型请求。
 
 `python3 scripts/analyze-run.py <run目录>` 离线生成 `analysis.json`，用 `--output <路径>` 指定其他位置。同一宿主多次接管时必须用 `--epoch <UUID>` 选择周期，模型、工具和压缩 HTTP 按周期及关联 ID 隔离，保留停止后的清理事件。支持空日志、未完成请求和只有一个完成请求；成功压缩的原生 usage 与独立 HTTP 统计单列，不混入主循环缓存指标。该脚本不打开完整 payload，也不访问模型或设备。
 观测明细的 `argv` 按 epoch 和 operationId 关联 `observation_start`，缺失时为 `null`；`captureMsByOrigin` 按观测来源分组统计完整采样区间，和 `captureMs` 一样包含主动等待，不解析传感器参数来推断纯捕获耗时。
 
-分析结果中的 `compactionSpeculation` 保留后台生命周期；其 summary 统计六种阶段次数与摘要就绪耗时。`compactionMaintenance` 单独记录前台 `auto_compaction_start/end` 的窗口，汇总已结束窗口的阻塞耗时（包括失败或取消），未结束的保持 pending。两者不与 HTTP 请求强行配对：后台摘要耗时和主循环停顿是不同指标。
+分析结果中的 `compactionSpeculation` 保留后台生命周期；其 summary 统计各阶段次数与摘要就绪耗时。`compactionMaintenance` 单独记录前台 `auto_compaction_start/end` 的窗口，汇总已结束窗口的阻塞耗时（包括失败或取消），未结束的保持 pending。新日志的 HTTP 子 span 与所属候选／维护显式关联，后台摘要耗时和主循环停顿仍是不同指标。候选通过 OMP 的诊断通道在创建时固定 operationId 与 epoch；晚到完成、重试、应用与清理保留原身份。分析器与看板统一按 trace.epoch 选择事件，控制边界只计算活跃时长。旧日志缺少身份时不补猜，详见 [日志契约](docs/logging.md)。
 
 `summary.toolErrors` 与 `toolErrorsByName` 从工具明细的 `isError: true` 汇总总数及工具名分布，与模型请求失败数 `failedRequests` 分开；工具用法错误即使随后自行纠正仍保留计数，不据此判定环境故障。
 

@@ -1,4 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { channel } from "node:diagnostics_channel";
+import { logger } from "@oh-my-pi/pi-utils";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import * as compaction from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, UserMessage } from "@oh-my-pi/pi-ai";
@@ -262,4 +265,77 @@ test("budget cancellation interrupts the native speculation wait without resend 
     expect(f.compactions()).toHaveLength(0);
     expect(f.maintenance.speculationState).toBe("idle");
   } finally { await f.close(); }
+});
+
+
+test.each(["application", "cancellation"] as const)("speculation keeps one operation context across background completion and later foreground %s", async disposition => {
+  const f = await fixture();
+  const diagnostics = channel("omp.compaction.speculation");
+  const storage = new AsyncLocalStorage<{operationId: string; epoch: string}>();
+  let epoch = "original-epoch";
+  const logs: {message: string; operationId: unknown; trace: ReturnType<typeof storage.getStore>}[] = [];
+  diagnostics.bindStore(storage, message => ({operationId: (message as {operationId: string}).operationId, epoch}));
+  const dispose = logger.registerLogSink(event => {
+    if (event.message.includes("peculative compaction")) logs.push({
+      message: event.message, operationId: event.context?.operationId, trace: storage.getStore(),
+    });
+  });
+  try {
+    const source = await f.start();
+    const completion = f.maintenance.speculationCompletion;
+    epoch = "next-epoch";
+    f.first.resolve(nativeResult(source.preparation, "late summary"));
+    await completion;
+    const started = logs.find(event => event.message === "Speculative compaction started")!;
+    const armed = logs.find(event => event.message === "Speculative compaction armed")!;
+    expect(started.operationId).toEqual(expect.any(String));
+    expect(armed.operationId).toBe(started.operationId);
+    expect(started.trace).toEqual({operationId: String(started.operationId), epoch: "original-epoch"});
+    expect(armed.trace).toEqual(started.trace);
+    expect(storage.getStore()).toBeUndefined();
+    if (disposition === "application") await (await f.block()).completion;
+    else {
+      f.maintenance.cancelSpeculation();
+      f.maintenance.cancelSpeculation(); // Clearing an already cleared slot emits nothing.
+    }
+    const finalMessage = disposition === "application"
+      ? "Applying armed speculative compaction" : "Speculative compaction invalidated";
+    const settled = logs.filter(event => event.message === finalMessage);
+    expect(settled).toHaveLength(1);
+    expect(settled[0]!.operationId).toBe(started.operationId);
+    expect(settled[0]!.trace).toBeUndefined(); // Explicit identity handles later foreground maintenance.
+    expect(logs.filter(event => event.message === "Speculative compaction armed")).toHaveLength(1);
+    expect(logs.some(event => event.message === "Speculative compaction cancelled")).toBe(false);
+  } finally {
+    await f.close();
+    dispose();
+    diagnostics.unbindStore(storage);
+  }
+});
+
+test.each(["return", "throw"] as const)("cancelled speculation settles once when the provider later %ss", async mode => {
+  const f = await fixture();
+  const logs: {message: string; operationId: unknown}[] = [];
+  const dispose = logger.registerLogSink(event => {
+    if (event.message.startsWith("Speculative compaction ")) logs.push({
+      message: event.message, operationId: event.context?.operationId,
+    });
+  });
+  try {
+    const source = await f.start();
+    const completion = f.maintenance.speculationCompletion;
+    f.maintenance.cancelSpeculation();
+    if (mode === "return") f.first.resolve(nativeResult(source.preparation, "ignored summary"));
+    else f.first.reject(new Error("abort from provider"));
+    await completion;
+    expect(logs.map(event => event.message)).toEqual([
+      "Speculative compaction started", "Speculative compaction cancelled",
+    ]);
+    expect(logs[1]!.operationId).toBe(logs[0]!.operationId);
+    expect(f.maintenance.speculationState).toBe("idle");
+    expect(f.compactions()).toHaveLength(0);
+  } finally {
+    await f.close();
+    dispose();
+  }
 });

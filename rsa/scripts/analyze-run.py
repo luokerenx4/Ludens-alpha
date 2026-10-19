@@ -51,6 +51,12 @@ def trace_key(event, *fields):
     return tuple(trace.get(field) for field in ("epoch", *fields))
 
 
+def compaction_trace(event):
+    return {key: value for key, value in event.get("trace", {}).items()
+            if key in ("epoch", "traceId", "spanId", "parentSpanId", "operationId")
+            and isinstance(value, str)}
+
+
 def operation_spans(inside, events, start_type, end_type):
     """Use explicit span identities, including late cleanup; never pair by function name or order."""
     finishes = {trace_key(event, "traceId", "spanId"): event for event in events
@@ -150,6 +156,7 @@ def compaction_http_attempts(inside, events):
                  else "http_error" if status is not None and status >= 400 else "headers_received")
         cause = result.get("cause")
         attempts.append({"httpId": http_id, "epoch": start.get("trace", {}).get("epoch"),
+            "trace": compaction_trace(start),
             "startSeq": start["seq"], "endSeq": finish["seq"] if finish else None,
             "at": start["at"], "startAtMs": start["atMs"],
             "endAt": finish["at"] if finish else None, "endAtMs": finish["atMs"] if finish else None,
@@ -172,16 +179,20 @@ def compaction_maintenance_spans(compactions):
     pending = {}
     for event in compactions:
         epoch = event["epoch"]
+        trace = event["trace"]
+        identity = "operationId" if trace.get("operationId") else "spanId" if trace.get("spanId") else None
+        key = (epoch, identity, trace.get(identity) if identity else None)
         if event["type"] == "auto_compaction_start":
-            span = {"epoch": epoch, "startSeq": event["seq"], "endSeq": None,
+            span = {"epoch": epoch, "trace": trace, "startSeq": event["seq"], "endSeq": None,
                     "startAtMs": event["atMs"], "endAtMs": None, "state": "pending", "durationMs": None}
             spans.append(span)
-            pending[epoch] = span
-        elif epoch in pending:
-            span = pending.pop(epoch)
+            pending[key] = span
+        elif key in pending:
+            span = pending.pop(key)
             span.update({"endSeq": event["seq"], "endAtMs": event["atMs"],
                          "state": "aborted" if event["aborted"] else "error" if event["error"] else "completed",
-                         "durationMs": event["atMs"] - span["startAtMs"]})
+                         "durationMs": event["durationMs"] if event["durationMs"] is not None
+                                       else event["atMs"] - span["startAtMs"]})
     return spans
 
 
@@ -199,11 +210,11 @@ def analyze(run, epoch=None):
     stopped = next((event for event in controls if enabled and event["seq"] > enabled["seq"]
                     and event["data"]["mode"] == "manual"
                     and event.get("trace", {}).get("epoch") == selected_epoch), None)
-    # Analyze the selected takeover interval. Retain its late request cleanup events,
-    # but do not mix later manual captures or a new takeover into the measurements.
-    inside = [event for event in events if (not enabled or event["seq"] >= enabled["seq"])
-              and (not stopped or event["seq"] <= stopped["seq"])
-              and (not enabled or event.get("trace", {}).get("epoch") in (None, selected_epoch))]
+    # Match the dashboard: explicit epoch ownership survives handback and a later
+    # takeover. Control boundaries measure active time, not event membership.
+    # Unattributed events remain unknown; proximity is not evidence of ownership.
+    inside = [event for event in events
+              if not enabled or event.get("trace", {}).get("epoch") == selected_epoch]
     starts = [event for event in inside if event["type"] == "model_start"]
     call_ids = {trace_key(event, "modelCallId") for event in starts}
     by_call = defaultdict(list)
@@ -231,8 +242,7 @@ def analyze(run, epoch=None):
                  else "error" if final.get("error") or final.get("stopReason") == "error" else "completed")
         dispatch_ms = next((attempt["dispatchAtMs"] for attempt in attempts if attempt["dispatchAtMs"] is not None), None)
         headers_ms = next((attempt["headersAtMs"] for attempt in reversed(attempts) if attempt["headersAtMs"] is not None), None)
-        tools = [event["data"]["toolName"] for event in related if event["type"] == "tool_start"
-                 and (not stopped or event["seq"] <= stopped["seq"])]
+        tools = [event["data"]["toolName"] for event in related if event["type"] == "tool_start"]
         calls.append({"index": index, "modelCallId": call_id, "startSeq": start["seq"],
             "endSeq": end["seq"] if end else None, "at": start["at"], "state": state,
             "stopReason": final.get("stopReason"), "totalMs": final.get("durationMs"),
@@ -350,9 +360,11 @@ def analyze(run, epoch=None):
         result = data.get("result") or {}
         remote = result.get("preserveData", {}).get("openaiRemoteCompaction", {})
         compactions.append({"seq": event["seq"], "at": event["at"], "atMs": event["atMs"], "type": event["type"],
+            "trace": compaction_trace(event),
             "epoch": event.get("trace", {}).get("epoch"),
             "action": data.get("action"), "reason": data.get("reason"),
             "aborted": data.get("aborted"), "error": data.get("errorMessage", data.get("error")),
+            "durationMs": data.get("durationMs"),
             "tokensBefore": result.get("tokensBefore"), "usage": remote.get("usage"),
             "retainedImageCount": remote.get("retainedImageCount")})
     compaction_maintenance = compaction_maintenance_spans(compactions)
@@ -361,11 +373,13 @@ def analyze(run, epoch=None):
     speculation_fields = ("stage", "method", "snapshotLeafId", "contextTokensAtStart", "contextTokens",
                           "thresholdTokens", "durationMs", "tokensBefore", "reason", "error")
     speculation = [{"seq": event["seq"], "at": event["at"], "atMs": event["atMs"],
+                    "trace": compaction_trace(event),
                     "data": {key: value for key, value in event["data"].items()
                              if key in speculation_fields and type(value) in (str, int, float)}}
                    for event in inside if event["type"] == "compaction_speculation"]
     speculation_counts = Counter(event["data"].get("stage") for event in speculation)
     compaction_retries = [{"seq": event["seq"], "at": event["at"], "atMs": event["atMs"],
+                          "trace": compaction_trace(event),
                           "data": {key: value for key, value in event["data"].items()
                                    if ((key in ("attempt", "retryDelayMs") and type(value) is int)
                                        or (key in ("model", "error") and isinstance(value, str)))}}
@@ -442,7 +456,7 @@ def analyze(run, epoch=None):
             ("inputTokens", "outputTokens", "cachedInputTokens", "totalTokens", "reasoningOutputTokens")}},
         "compactionSpeculation": {
             **{stage: speculation_counts[stage] for stage in
-               ("started", "armed", "invalidated", "waiting", "applied", "failed")},
+               ("started", "armed", "invalidated", "waiting", "applied", "failed", "cancelled")},
             "armedDurationMs": stats(event["data"].get("durationMs") for event in speculation
                                      if event["data"].get("stage") == "armed")},
         "compactionRetries": {
@@ -472,7 +486,7 @@ def analyze(run, epoch=None):
         "capabilities": span_summary(capabilities), "pythonCapabilities": span_summary(python_calls),
         "capabilityDiscovery": span_summary(discovery),
         "shiori": {"spans": span_summary(shiori_spans), "nativeLoops": len(native_runs)}}
-    return {"analysisVersion": 3, "runDir": str(run), "generatedAt": datetime.now(timezone.utc).isoformat(),
+    return {"analysisVersion": 4, "runDir": str(run), "generatedAt": datetime.now(timezone.utc).isoformat(),
         "source": {"path": "events.jsonl", "eventCount": len(events), "lastSeq": events[-1]["seq"] if events else None,
                    "lastEventAt": events[-1]["at"] if events else None, "ignoredPartialLastLine": partial},
         "window": {"epoch": selected_epoch,
@@ -491,11 +505,13 @@ def analyze(run, epoch=None):
         "shiori": {"spans": shiori_spans, "runs": native_runs},
         "notes": [
             "Offline snapshot of the selected takeover epoch; multiple takeovers require explicit selection. Control mode refers to that epoch and does not prove the host process is live. Pending requests and a partial final line may complete later.",
+            "Event membership uses explicit trace.epoch, including late events after handback or a new takeover; unattributed events are not assigned by time. Control boundaries only define observedElapsedMs and action-rate denominators, not event membership. This matches dashboard epoch filtering.",
             "Main-loop metrics exclude independent OMP compaction HTTP requests. Successful compaction usage is listed separately; failed/cancelled compaction usage may be unavailable. Compaction lifecycle events do not measure full HTTP latency.",
+            "Compaction event and HTTP trace fields preserve explicit epoch/traceId/spanId/parentSpanId/operationId. These identify a candidate operation and its child requests when instrumented; absent identities in old logs remain unknown.",
             "compactionHttp is independent of main-loop metrics. compaction_http_end only means response headers arrived, not stream completion; HTTP status >=400 counts as a failed attempt. retryCount is unknown without logical compaction request IDs, so consecutive attempts are not assumed to be retries.",
-            "compactionRetries records explicit OMP V2 retry warnings within the selected takeover interval. announcedRetries counts warnings before backoff, not confirmed redispatches; without warnings it remains unknown (null), including older logs. Error reasons are reported strings. No retry-to-HTTP or retry-to-candidate pairing is inferred.",
-            "compactionSpeculation preserves lifecycle events within the selected takeover interval. armedDurationMs is the reported time to prepare a candidate; waiting counts waits, not their duration. snapshotLeafId identifies the summarized branch boundary, not an HTTP request; no HTTP-to-candidate pairing is inferred.",
-            "compactionMaintenance pairs serial auto_compaction_start/end events within the same epoch and takeover interval. durationMs measures the foreground maintenance window, including closed aborted/error windows, not full background summary generation. A start with no end remains pending and contributes no duration.",
+            "compactionRetries records explicit OMP V2 retry warnings belonging to the selected epoch, including late events. announcedRetries counts warnings before backoff, not confirmed redispatches; without warnings it remains unknown (null), including older logs. Error reasons are reported strings. Explicit trace IDs can link retries, HTTP attempts and candidates; no pairing is inferred from time or order.",
+            "compactionSpeculation preserves lifecycle events belonging to the selected epoch, including late events. armedDurationMs is the reported time to prepare a candidate; waiting counts waits, not their duration. snapshotLeafId identifies the summarized branch boundary, not an HTTP request. Explicit trace IDs can link HTTP attempts and candidates; no pairing is inferred from time or order.",
+            "compactionMaintenance pairs auto_compaction_start/end by explicit epoch and operationId (or spanId), including late ends; only older events without identities use serial pairing within an epoch. durationMs uses the reported duration when available, otherwise the recording-host interval. It measures foreground maintenance, not full background summary generation. A start with no end remains pending and contributes no duration.",
             "fetchWaitMs sums completed HTTP attempt waits, including failed attempts. Upload, connection/TLS, network and server queue/processing cannot be separated by these logs.",
             "localPreparationMs is the first HTTP or WS dispatch minus model_start. Retry backoff and later attempt preparation are not separately measured; timing buckets need not sum to totalMs.",
             "WS attempts are matched by modelCallId/requestId; HTTP attempts additionally use httpId. A WS build without dispatch is retained but contributes no wire bytes or retry. retryCount counts additional transport attempts, including WS-to-HTTP fallback, not just repeated requests on one transport.",
@@ -503,7 +519,7 @@ def analyze(run, epoch=None):
             "firstInboundMs and dispatchToFirstInboundMs describe the first inbound stream event, not the first token. Only the event's matching attempt gets that timing; later fallback attempts may have no first-event record. WS has no HTTP fetch/header timing, so those fields remain null.",
             "Cache denominator is usage.input + cacheRead + cacheWrite. Warm excludes request index 1, not later post-compaction cache resets.",
             "controllerActions counts successful controller executions; inspect argv for state queries/releases or multi-step sequences. independentObserveRequests counts completed requests whose sole executed tool is observe.",
-            "controllerExecutionErrors counts explicit execution_error events within the selected takeover interval, including those marked aborted. Details retain the original error and match command by epoch/operationId. This is independent of toolErrors: a shell batch can finish successfully after an inner controller command fails. Stderr is not parsed to infer errors.",
+            "controllerExecutionErrors counts explicit execution_error events belonging to the selected epoch, including late events and those marked aborted. Details retain the original error and match command by epoch/operationId. This is independent of toolErrors: a shell batch can finish successfully after an inner controller command fails. Stderr is not parsed to infer errors.",
             "toolExecution measures tool_start to tool_end, including any capture/result preparation; execCommandMs measures only exec to exec_result. Commands are nested within tools: do not add these durations together. Pending spans have no duration, and command text is not parsed to infer waiting or action time.",
             "Skill read/write/edit counts use successful tool completion and named SKILL.md paths. They do not prove the quality of learned content or that an edit changed its hash.",
             "Capture intervals include waiting, GPU readback and file encoding. sourceSequence advance does not prove that the frame reflects the preceding action.",

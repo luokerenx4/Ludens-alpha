@@ -33,6 +33,8 @@ RSA 和 Baseware 的 schema 2 JSONL 包含：
 ```text
 Shiori invoke_agent
 ├── chat                    模型请求及其 HTTP/WS 记录
+├── compaction              后台候选准备 / 前台维护（独立 operation）
+│   └── compaction-http     HTTP 到响应头，不代表摘要就绪
 └── execute_tool            OMP 工具调用
     └── capability          rsa controller / rsa_tools.Client
         ├── discovery       静态发现 Python 函数
@@ -49,7 +51,9 @@ Baseware 为每次设备操作生成子 span，`command/execution/execution_erro
 
 OMP 的 `shiori_span_start/end` 使用原生 OTel ID；局部 BasicTracerProvider 负责生成真实 ID 和取得最终状态，不注册全局 provider。`captureMessageContent=none` 避免再复制一份正文；原始请求仍保留在现有 payload 中。`shiori_run_end` 原样保存原生 summary/coverage，范围是一次 `agentLoop`，一次 RSA 接管可含多个 loop。OMP 工具覆盖只认识 read/write/edit/exec/observe；宏覆盖须看能力日志。
 
-后台压缩的原生 span 与已有 `compaction_*` 边界事件都保留。旧式 logger/HTTP 钩子未提供完整候选到请求关系时保持未知，不把相邻 HTTP 当作重试，也不补造父子关系。logger 生命周期事件的 epoch 表示记录时的控制周期，不能据此认定后台候选起源于该周期；HTTP 请求保留其启动时的 trace。
+后台候选在 OMP 创建时通过 `omp.compaction.speculation` diagnostics channel 固定 `operationId`，RSA 用 AsyncLocalStorage 保留创建时的 epoch 和子 span；HTTP 是该候选的子 span，重试声明复用候选身份。候选准备以 `started → armed / failed / cancelled` 闭合，后续 `waiting / applied / invalidated` 仍引用同一 operation。`armed` 表示摘要可用，`applied` 只表示选中候选进入提交；HTTP end 只表示收到响应头。前台 `auto_compaction_start/end` 是另一段维护 span，结束事件保留开始时身份与单调时钟耗时。以上均不改变压缩调度、阈值或请求内容。
+
+事件归属按显式 `trace.epoch`，不按写入时的当前周期或控制事件序号截断；交还控制后的完成、重试和清理仍留在原 epoch。控制起止只决定活跃时长和动作频率分母。旧日志缺失的候选身份保持未知，不按时间相邻、snapshot leaf 或当前 epoch 补猜。
 
 ## 消费与分析
 

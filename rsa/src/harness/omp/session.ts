@@ -87,7 +87,7 @@ export async function createOmpAgent(options: {
   const authStorage = await discoverAuthStorage(undefined, { settings, cwd: options.workspace });
   // OMP's remote/background compactor bypasses agent.streamFn. This host-local
   // observer leaves its native requests and response streams untouched.
-  const untraceCompaction = installCompactionHttpTrace(options.log, () => ({ epoch: cycle?.epoch }));
+  const untraceCompaction = installCompactionHttpTrace(options.log, trace.compactionParent);
   let manager: SessionManager | undefined;
   let initializedSession: AgentSession | undefined;
   try {
@@ -137,9 +137,8 @@ export async function createOmpAgent(options: {
       },
       abort: () => session.abort(),
       async close() {
-        unsubscribe();
         try { await session.dispose(); }
-        finally { untraceCompaction(); await trace.shiori.close(); authStorage.close(); }
+        finally { unsubscribe(); untraceCompaction(); await trace.shiori.close(); authStorage.close(); }
       },
     };
   } catch (error) {

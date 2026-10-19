@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { channel } from "node:diagnostics_channel";
 import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -20,6 +21,7 @@ import { Workspace } from "../src/harness/workspace.ts";
 import { createRsaExtension } from "../src/harness/omp/extension.ts";
 import { createOmpSession } from "../src/harness/omp/session.ts";
 
+const speculation = channel("omp.compaction.speculation");
 const png = "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg==";
 const lines = async (path: string) => (await readFile(path, "utf8")).trim().split("\n").map(line => JSON.parse(line));
 const artifact = async (directory: string, ref: {path: string}) => gunzipSync(await readFile(join(directory, ref.path)));
@@ -33,37 +35,39 @@ test("native compaction lifecycle tracing preserves stages and epochs with only 
   const directory = await mkdtemp(join(tmpdir(), "rsa-compaction-lifecycle-"));
   let now = 10, epoch = "first-epoch";
   const log = new EventLog(directory, {id: "compaction-lifecycle", now: () => now});
-  const dispose = installCompactionSpeculationTrace(log, () => ({epoch, modelCallId: "unrelated-model"}));
+  const dispose = installCompactionSpeculationTrace(log, () => ({epoch}));
   const fields = {method: "summary", snapshotLeafId: "leaf", contextTokensAtStart: 200_000,
     contextTokens: 256_000, thresholdTokens: 256_000, durationMs: 80_000, tokensBefore: 256_100, reason: "history changed"};
   const messages = ["Speculative compaction started", "Speculative compaction armed", "Speculative compaction invalidated",
-    "Waiting for speculative compaction", "Applying armed speculative compaction", "Speculative compaction failed"];
+    "Waiting for speculative compaction", "Applying armed speculative compaction", "Speculative compaction failed", "Speculative compaction cancelled"];
   try {
     logger.debug("Unrelated compaction diagnostic", {token: "private-unrelated"});
     expect(await Bun.file(join(directory, "events.jsonl")).exists()).toBe(false);
     for (const [index, message] of messages.entries()) {
       now = 10 + index;
       epoch = index < 3 ? "first-epoch" : "next-epoch";
-      logger.debug(message, {...fields, stage: "private-override", prompt: "private-prompt", headers: {authorization: "private-token"}, error: "fixture failure"});
+      speculation.runStores({operationId: `candidate-${index}`}, () => logger.debug(message, {...fields, operationId: `candidate-${index}`, stage: "private-override", prompt: "private-prompt", headers: {authorization: "private-token"}, error: "fixture failure"}));
     }
     logger.debug("Speculative compaction failed", {error: {message: "private-object"}, method: {token: "private-object"}});
     const events = await lines(join(directory, "events.jsonl"));
-    expect(events.map(e => e.type)).toEqual(Array(7).fill("compaction_speculation"));
-    expect(events.slice(0, 6).map(e => e.data.stage)).toEqual(["started", "armed", "invalidated", "waiting", "applied", "failed"]);
-    for (const [index, event] of events.slice(0, 6).entries()) {
-      expect(event.trace).toEqual({epoch: index < 3 ? "first-epoch" : "next-epoch"});
+    expect(events.map(e => e.type)).toEqual(Array(8).fill("compaction_speculation"));
+    expect(events.slice(0, 7).map(e => e.data.stage)).toEqual(["started", "armed", "invalidated", "waiting", "applied", "failed", "cancelled"]);
+    for (const [index, event] of events.slice(0, 7).entries()) {
+      expect(event.trace).toMatchObject({epoch: index < 3 ? "first-epoch" : "next-epoch", operationId: `candidate-${index}`});
+      expect(event.trace.spanId).toBeString();
       expect(event.atMs).toBe(10 + index);
       expect(event.data).toEqual({...fields, stage: event.data.stage, ...(index === 5 ? {error: "fixture failure"} : {})});
     }
-    expect(events[6].data).toEqual({stage: "failed"});
+    expect(events[7].data).toEqual({stage: "failed"});
+    expect(events[7].trace).toEqual({});
     expect(JSON.stringify(events)).not.toContain("private-");
     dispose();
     logger.debug("Speculative compaction started", fields);
-    expect(await lines(join(directory, "events.jsonl"))).toHaveLength(7);
+    expect(await lines(join(directory, "events.jsonl"))).toHaveLength(8);
   } finally { dispose(); await rm(directory, {recursive: true, force: true}); }
 });
 
-test("background compaction completion between takeovers is recorded without an active epoch", async () => {
+test("background candidate, HTTP and retry keep their epoch across takeovers without leaking into foreground", async () => {
   const directory = await mkdtemp(join(tmpdir(), "rsa-compaction-gap-"));
   const log = new EventLog(directory, {id: "compaction-gap", now: () => performance.now()});
   let cycle: {epoch: string} | undefined = {epoch: "first-epoch"};
@@ -73,24 +77,59 @@ test("background compaction completion between takeovers is recorded without an 
     agent: {streamFn: async () => { throw new Error("No model request expected"); }},
     subscribe(listener: typeof emit) { emit = listener; return () => {}; },
   } as unknown as AgentSession;
+  const originalFetch = globalThis.fetch;
+  const headersReady = Promise.withResolvers<Response>();
+  const summaryReady = Promise.withResolvers<void>();
+  let calls = 0;
+  globalThis.fetch = Object.assign(async () => ++calls === 1 ? headersReady.promise : new Response("foreground"),
+    {preconnect: originalFetch.preconnect});
   const detach = trace.attach(session);
+  const untraceHttp = installCompactionHttpTrace(log, trace.compactionParent);
+  const endpoint = "https://chatgpt.com/backend-api/codex/responses";
+  const init = {headers: {"x-codex-turn-metadata": '{"request_kind":"compaction"}'}};
+  const fields = {operationId: "candidate", snapshotLeafId: "leaf"};
   try {
-    logger.debug("Speculative compaction started", {snapshotLeafId: "leaf"});
+    const preparation = speculation.runStores(fields, async () => {
+      logger.debug("Speculative compaction started", fields);
+      await fetch(endpoint, init);
+      await summaryReady.promise;
+      logger.warn("V2 compaction attempt 1 failed, retrying in 1000ms", {error: "fixture"});
+      logger.debug("Speculative compaction armed", {...fields, durationMs: 80_000});
+    });
     cycle = undefined;
-    logger.debug("Speculative compaction armed", {snapshotLeafId: "leaf", durationMs: 80_000});
-    emit!({type: "auto_compaction_start", reason: "threshold", action: "context-full"});
-    emit!({type: "auto_compaction_end", action: "context-full", result: undefined, aborted: false, willRetry: false});
+    headersReady.resolve(new Response("unconsumed summary stream"));
     cycle = {epoch: "next-epoch"};
-    logger.debug("Applying armed speculative compaction", {snapshotLeafId: "leaf"});
+    emit!({type: "auto_compaction_start", reason: "threshold", action: "context-full"});
+    await fetch(endpoint, init);
+    summaryReady.resolve();
+    await preparation;
+    logger.debug("Applying armed speculative compaction", fields);
+    cycle = undefined;
+    emit!({type: "auto_compaction_end", action: "context-full", result: undefined, aborted: false, willRetry: false});
+    logger.debug("Speculative compaction armed", {operationId: "unknown-candidate"});
     const events = await lines(join(directory, "events.jsonl"));
-    expect(events.map(event => event.type)).toEqual([
-      "compaction_speculation", "compaction_speculation", "auto_compaction_start", "auto_compaction_end", "compaction_speculation",
-    ]);
-    expect(events[0].trace).toEqual({epoch: "first-epoch"});
-    expect(events[1].data).toMatchObject({stage: "armed", snapshotLeafId: "leaf", durationMs: 80_000});
-    for (const event of events.slice(1, 4)) expect(event.trace).toEqual({});
-    expect(events[4].trace).toEqual({epoch: "next-epoch"});
-  } finally { detach(); await rm(directory, {recursive: true, force: true}); }
+    const stages = events.filter(e => e.type === "compaction_speculation");
+    expect(stages.map(e => e.data.stage)).toEqual(["started", "armed", "applied", "armed"]);
+    expect(stages[0].trace.epoch).toBe("first-epoch");
+    expect(stages[1].trace).toEqual(stages[0].trace);
+    expect(stages[2].trace).toEqual(stages[0].trace);
+    expect(stages[3].trace).toEqual({operationId: "unknown-candidate"});
+    const http = events.filter(e => e.type === "compaction_http_start");
+    expect(http[0].trace).toMatchObject({epoch: "first-epoch", operationId: "candidate",
+      traceId: stages[0].trace.traceId, parentSpanId: stages[0].trace.spanId});
+    expect(http[0].trace.spanId).not.toBe(stages[0].trace.spanId);
+    expect(events.find(e => e.type === "compaction_http_end" && e.trace.httpId === http[0].trace.httpId).trace).toEqual(http[0].trace);
+    expect(events.find(e => e.type === "compaction_retry").trace).toEqual(stages[0].trace);
+    const maintenance = events.filter(e => e.type.startsWith("auto_compaction_"));
+    expect(maintenance[0].trace.epoch).toBe("next-epoch");
+    expect(maintenance[1].trace).toEqual(maintenance[0].trace);
+    expect(http[1].trace.parentSpanId).toBe(maintenance[0].trace.spanId);
+    expect(http[1].trace.operationId).toBe(maintenance[0].trace.operationId);
+  } finally {
+    headersReady.resolve(new Response()); summaryReady.resolve();
+    detach(); untraceHttp(); globalThis.fetch = originalFetch;
+    await rm(directory, {recursive: true, force: true});
+  }
 });
 
 test("native V2 retry warnings preserve explicit evidence without copying arbitrary logger context", async () => {
