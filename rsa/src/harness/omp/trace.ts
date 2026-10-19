@@ -4,6 +4,7 @@ import { getOpenAICodexTransportDetails } from "@oh-my-pi/pi-ai/providers/openai
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent";
 import { logger } from "@oh-my-pi/pi-utils";
 import { EventLog, type EventTrace } from "../events.ts";
+import { SHIORI_SOURCE, ShioriTelemetry } from "./shiori.ts";
 
 // Only transport diagnostics; never copy authentication headers or stream options.
 function responseHeaders(headers: Headers) {
@@ -34,6 +35,7 @@ function compactionRequest(input: Parameters<typeof fetch>[0], init?: RequestIni
 
 /** Keep native compaction lifecycle events alongside the host's request timeline. */
 export function installCompactionSpeculationTrace(log: EventLog, context: () => EventTrace = () => ({})) {
+  const record = log.recorder(SHIORI_SOURCE);
   const stages = new Map([
     ["Speculative compaction started", "started"],
     ["Speculative compaction armed", "armed"],
@@ -52,7 +54,7 @@ export function installCompactionSpeculationTrace(log: EventLog, context: () => 
       for (const key of ["model", "error"]) {
         if (typeof event.context?.[key] === "string") data[key] = event.context[key];
       }
-      log.record("compaction_retry", data, { epoch: context().epoch });
+      record("compaction_retry", data, { epoch: context().epoch });
       return;
     }
     const stage = stages.get(event.message);
@@ -63,12 +65,13 @@ export function installCompactionSpeculationTrace(log: EventLog, context: () => 
       if (typeof value === "string" || typeof value === "number") data[key] = value;
     }
     if (stage === "failed" && typeof event.context?.error === "string") data.error = event.context.error;
-    log.record("compaction_speculation", data, { epoch: context().epoch });
+    record("compaction_speculation", data, { epoch: context().epoch });
   });
 }
 
 /** OMP's native compaction bypasses agent.streamFn. Observe its HTTP boundary in this dedicated host. */
 export function installCompactionHttpTrace(log: EventLog, context: () => EventTrace = () => ({})) {
+  const record = log.recorder(SHIORI_SOURCE);
   const original = globalThis.fetch;
   const wrapped = Object.assign(async (...args: Parameters<typeof fetch>): Promise<Response> => {
     const [input, init] = args;
@@ -82,7 +85,7 @@ export function installCompactionHttpTrace(log: EventLog, context: () => EventTr
       : body instanceof ArrayBuffer ? new Uint8Array(body)
       : ArrayBuffer.isView(body) ? new Uint8Array(body.buffer, body.byteOffset, body.byteLength) : undefined;
     const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
-    log.record("compaction_http_start", {
+    record("compaction_http_start", {
       method: init?.method ?? (input instanceof Request ? input.method : "GET"),
       endpoint: `${request.url.origin}${request.url.pathname}`, bodyBytes: bytes?.byteLength,
       body: bytes === undefined ? undefined : log.bytes(bytes),
@@ -93,11 +96,11 @@ export function installCompactionHttpTrace(log: EventLog, context: () => EventTr
       const response = await original(...args);
       const headersAtMs = log.clock.now();
       // This is response headers, not stream completion or upload completion.
-      log.record("compaction_http_end", { status: response.status, headers: responseHeaders(response.headers),
+      record("compaction_http_end", { status: response.status, headers: responseHeaders(response.headers),
         durationMs: headersAtMs - started, dispatchAtMs, headersAtMs, fetchToHeadersMs: headersAtMs - dispatchAtMs }, trace);
       return response;
     } catch (error) {
-      log.record("compaction_http_error", { error: String(error), ...errorDetails(error), aborted: signal?.aborted ?? false,
+      record("compaction_http_error", { error: String(error), ...errorDetails(error), aborted: signal?.aborted ?? false,
         durationMs: log.clock.now() - started, dispatchAtMs, fetchDurationMs: log.clock.now() - dispatchAtMs }, trace);
       throw error;
     }
@@ -110,7 +113,27 @@ export function installCompactionHttpTrace(log: EventLog, context: () => EventTr
 export class ModelTrace {
   private active: EventTrace = {};
   private tools = new Map<string, EventTrace>();
-  constructor(private log: EventLog, private context: () => { epoch?: string; observations?: string[]; skillVersion?: string; memoryVersion?: string }) {}
+  readonly shiori: ShioriTelemetry;
+  private nativeChat: EventTrace = {};
+  private nativeRun: EventTrace = {};
+  private readonly record: ReturnType<EventLog["recorder"]>;
+  constructor(private log: EventLog, private context: () => { epoch?: string; observations?: string[]; skillVersion?: string; memoryVersion?: string }) {
+    this.record = log.recorder(SHIORI_SOURCE);
+    this.shiori = new ShioriTelemetry(log, context, (event, trace) => {
+      if (event.kind === "invoke_agent") {
+        this.active = { ...trace };
+        this.nativeRun = { ...trace };
+        this.nativeChat = {};
+        this.tools.clear();
+      } else if (event.kind === "execute_tool" && event.toolCallId) {
+        // Keep the producing model/request IDs, but the native tool owns its
+        // own span. Nested CLI/API calls inherit this actual execute_tool span.
+        this.tools.set(event.toolCallId, { ...this.current(event.toolCallId), ...trace });
+      } else if (event.kind === "chat" && this.nativeRun.spanId && trace.parentSpanId === this.nativeRun.spanId) {
+        this.nativeChat = { ...trace };
+      }
+    });
+  }
 
   current = (toolCallId?: string): EventTrace => {
     if (!toolCallId) return { ...this.active };
@@ -124,13 +147,13 @@ export class ModelTrace {
     session.agent.streamFn = this.wrap(original);
     const disposeCompactionTrace = installCompactionSpeculationTrace(this.log, this.context);
     const unsubscribe = session.subscribe((event) => {
-      if (event.type === "tool_execution_start") this.log.record("tool_start", event, this.current(event.toolCallId));
-      if (event.type === "tool_execution_end") this.log.record("tool_end", {
+      if (event.type === "tool_execution_start") this.record("tool_start", event, this.current(event.toolCallId));
+      if (event.type === "tool_execution_end") this.record("tool_end", {
         toolName: event.toolName, toolCallId: event.toolCallId, isError: event.isError,
         result: this.log.artifact(event.result),
       }, this.current(event.toolCallId));
       if (event.type === "auto_compaction_start" || event.type === "auto_compaction_end") {
-        this.log.record(event.type, event, { epoch: this.context().epoch });
+        this.record(event.type, event, { epoch: this.context().epoch });
       }
     });
     return () => { unsubscribe(); disposeCompactionTrace(); session.agent.streamFn = original; };
@@ -139,7 +162,7 @@ export class ModelTrace {
   wrap(streamFn: StreamFn): StreamFn {
     return async (model, context, options) => {
       const source = this.context();
-      const trace: EventTrace = { epoch: source.epoch, modelCallId: crypto.randomUUID() };
+      const trace: EventTrace = { ...this.nativeChat, epoch: source.epoch, modelCallId: crypto.randomUUID() };
       this.tools.clear();
       this.active = trace;
       const started = this.log.clock.now();
@@ -149,14 +172,14 @@ export class ModelTrace {
       let firstStreamAtMs: number | undefined, dispatchAtMs: number | undefined, headersAtMs: number | undefined;
       const transportDetails = () => model.api === "openai-codex-responses"
         ? getOpenAICodexTransportDetails(model as Model<"openai-codex-responses">, options) : undefined;
-      this.log.record("model_start", { provider: model.provider, api: model.api, model: model.id,
+      this.record("model_start", { provider: model.provider, api: model.api, model: model.id,
         observations: source.observations, skillVersion: source.skillVersion, memoryVersion: source.memoryVersion, streamPath,
         transportDetails: transportDetails() }, trace);
       const finish = (message: AssistantMessage) => {
         for (const block of message.content) if (block.type === "toolCall" && !this.tools.has(block.id)) {
           this.tools.set(block.id, { ...trace, toolCallId: block.id });
         }
-        this.log.record("model_end", { stopReason: message.stopReason, usage: message.usage,
+        this.record("model_end", { stopReason: message.stopReason, usage: message.usage,
           durationMs: this.log.clock.now() - started, providerDurationMs: message.duration,
           ttftMs: message.ttft, responseId: message.responseId, error: message.errorMessage,
           firstStreamEventMs: firstStreamAtMs === undefined ? undefined : firstStreamAtMs - started,
@@ -164,7 +187,7 @@ export class ModelTrace {
           payloadCaptureMs, httpInspectionMs, streamLogMs,
           requests, httpAttempts, frames, response: this.log.artifact(message), transportDetails: transportDetails() }, trace);
       };
-      const fail = (error: unknown) => this.log.record("model_end", {
+      const fail = (error: unknown) => this.record("model_end", {
         stopReason: options?.signal?.aborted ? "aborted" : "error", error: String(error),
         durationMs: this.log.clock.now() - started, requests, httpAttempts, frames, transportDetails: transportDetails(),
       }, trace);
@@ -181,7 +204,7 @@ export class ModelTrace {
             const payloadRef = this.log.artifact(actual);
             const websocket = actual !== null && typeof actual === "object"
               && "type" in actual && actual.type === "response.create";
-            this.log.record("model_request", { attempt: ++requests, payload: payloadRef,
+            this.record("model_request", { attempt: ++requests, payload: payloadRef,
               bodyBytes: payloadRef.bytes, transport: websocket ? "websocket" : undefined,
               incremental: websocket ? "previous_response_id" in actual && !!actual.previous_response_id : undefined,
             }, trace);
@@ -195,32 +218,32 @@ export class ModelTrace {
             const request = new Request(input, init);
             const bytes = new Uint8Array(await request.clone().arrayBuffer());
             const url = new URL(request.url);
-            this.log.record("model_http_start", { attempt: ++httpAttempts, method: request.method,
+            this.record("model_http_start", { attempt: ++httpAttempts, method: request.method,
               endpoint: `${url.origin}${url.pathname}`, contentType: request.headers.get("content-type"),
               contentEncoding: request.headers.get("content-encoding"), body: this.log.bytes(bytes) }, httpTrace);
             const inspectionMs = this.log.clock.now() - start;
             httpInspectionMs += inspectionMs;
-            this.log.record("model_http_dispatch", { inspectionMs, modelElapsedMs: this.log.clock.now() - started }, httpTrace);
+            this.record("model_http_dispatch", { inspectionMs, modelElapsedMs: this.log.clock.now() - started }, httpTrace);
             dispatchAtMs = this.log.clock.now();
             headersAtMs = undefined;
             try {
               const response = await (options?.fetch ?? fetch)(input, init);
               headersAtMs = this.log.clock.now();
-              this.log.record("model_http_end", { status: response.status,
+              this.record("model_http_end", { status: response.status,
                 headers: responseHeaders(response.headers), durationMs: headersAtMs - start,
                 dispatchAtMs, headersAtMs, fetchToHeadersMs: headersAtMs - dispatchAtMs,
                 errorBody: response.ok ? undefined : this.log.bytes(new Uint8Array(await response.clone().arrayBuffer())),
               }, httpTrace);
               return response;
             } catch (error) {
-              this.log.record("model_http_error", { error: String(error), ...errorDetails(error),
+              this.record("model_http_error", { error: String(error), ...errorDetails(error),
                 aborted: options?.signal?.aborted ?? false, durationMs: this.log.clock.now() - start,
                 dispatchAtMs, fetchDurationMs: this.log.clock.now() - dispatchAtMs }, httpTrace);
               throw error;
             }
           },
           onResponse: async (response, target, signal) => {
-            this.log.record("model_response", { status: response.status, providerRequestId: response.requestId,
+            this.record("model_response", { status: response.status, providerRequestId: response.requestId,
               headers: responseHeaders(new Headers(response.headers)) }, trace);
             await options?.onResponse?.(response, target, signal);
           },
@@ -230,16 +253,16 @@ export class ModelTrace {
             // request dispatch, not the server's first response event.
             if (event.raw[0]?.startsWith(": ws →")) {
               dispatchAtMs = now;
-              this.log.record("model_ws_dispatch", { bodyBytes: Buffer.byteLength(event.data),
+              this.record("model_ws_dispatch", { bodyBytes: Buffer.byteLength(event.data),
                 modelElapsedMs: now - started }, trace);
             } else if (firstStreamAtMs === undefined) {
               firstStreamAtMs = now;
-              this.log.record("model_stream_start", { modelElapsedMs: now - started,
+              this.record("model_stream_start", { modelElapsedMs: now - started,
                 afterHeadersMs: headersAtMs === undefined ? undefined : now - headersAtMs,
                 afterDispatchMs: dispatchAtMs === undefined ? undefined : now - dispatchAtMs,
               }, trace);
             }
-            this.log.stream(streamPath, event, trace); frames++;
+            this.log.stream(streamPath, event, trace, SHIORI_SOURCE); frames++;
             streamLogMs += this.log.clock.now() - now;
             options?.onSseEvent?.(event, target);
           },

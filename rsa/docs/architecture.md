@@ -1,12 +1,12 @@
 # Recursive Self-Adaptation 工程架构
 
-当前边界：Baseware 提供环境的原始操作与观测，RSA 管理模型会话、固定交互循环和工作区中形成的能力。Dashboard 与 Alice Pet 消费运行日志。设备协议不进入 Harness，工作区不包含 runtime 源码。
+当前边界：Baseware 提供环境的原始操作与观测；Shiori 是 Agent Loop 内核，负责推理、工具调度、会话与上下文，当前实现为 OMP；RSA 装配 Shiori，管理观测循环、接管预算和工作区能力。Dashboard 与 Alice Pet 消费运行日志。设备协议不进入 Harness，工作区不包含 runtime 源码。
 
 ## 组件与进程
 
 ```mermaid
 flowchart LR
-    H[人类接管] --> R[RSA / OMP]
+    H[人类接管] --> R[RSA / Shiori: OMP]
     R <--> W[普通 workspace]
     R --> S[exec / rsa controller CLI]
     S --> F[RSA 能力目录与执行器]
@@ -25,7 +25,7 @@ flowchart LR
 | 组件 | 拥有的职责 | 不包含的职责 |
 | --- | --- | --- |
 | `baseware/` | driver 装配、设备连接、能力目录、操作权、动作取消、CLI / TS API / Python API / MCP、设备日志 | 模型、OMP、技能、工作区脚本发现 |
-| `rsa/` | Agent 生命周期、OMP 会话、观测循环、预算、统一能力 CLI/API、Python 发现与执行、工作区与运行日志 | 设备私有协议、按键含义、游戏策略 |
+| `rsa/` | Shiori 装配、Agent 生命周期、观测循环、预算、统一能力 CLI/API、Python 发现与执行、工作区与运行日志 | 设备私有协议、按键含义、游戏策略 |
 | `rsa-dashboard/` | 日志读取、模型与动作统计、媒体展示、人工交还入口 | 模型推理与设备执行 |
 | `rsa-companion/` | 消费日志，在 Alice Pet 气泡中呈现活动、画面与声音 | 策略、driver、独立模型调用 |
 
@@ -96,6 +96,7 @@ workspace/
     <run-id>/             # RSA 事件、模型记录、观测
     baseware/             # 设备服务日志与源观测
     background/           # 本机进程日志与 launchd 描述
+    consumers/            # Pet 消费、排队和展示提交的独立日志
 ```
 
 `rsa controller list` 返回短能力目录，`rsa controller <id> --help` 返回所选能力的完整用法。公共 ID 分为 `controller/<id>`、`sensor/<id>` 和 `python/<相对路径.py>:<函数名>`；原始设备由 Baseware 的实际目录预填，Harness 不列举具体设备名称。CLI 是默认调用入口；Python `from rsa_tools import Client` 提供 `list/help/call`，共用相同目录与执行器，方便函数组合。
@@ -108,7 +109,9 @@ workspace/
 
 shell/Python 自动继承 RSA 与 Baseware 地址、本轮 epoch 与 trace。设备操作最终进入 Baseware，传感器调用通过 RSA 观测路径落盘，模型工具和脚本内多次设备操作能关联到同一日志链。一次 shell 中的复合操作结束后，循环仍统一补充观测。不同工作区默认不共享这些派生能力。此实现是可信本机执行环境，不提供 OS 沙箱或多用户权限边界。
 
-## OMP 循环与经验
+## Shiori、OMP 循环与经验
+
+Shiori 定义职责，不要求独立进程或新包。当前适配代码仍在 `src/harness/omp/`，日志标记 `source.component=shiori`、`implementation=omp` 和实现版本。以后替换内核仍使用相同职责名；RSA 的周期预算与原生内核一次 loop 是两种范围。
 
 在一次宿主生命周期内复用同一 OMP 会话；再次接管只重置预算与 epoch。重启宿主默认续接该 workspace 的当前会话。新 workspace 从空文件和空会话开始，显式复制的文件属于其初始内容。
 
@@ -122,7 +125,9 @@ OMP 原生压缩阈值保持 256000，图片数量预算为 Infinity，观测入
 
 Baseware 独立记录设备事件，并向订阅者发送相同事件。RSA 将它们放入当前 run 的 `events.jsonl`，观测复制到该 run 的 `observations/`；Dashboard 和 Pet 因此仍能读取完整的单次运行。
 
-设备事件携带 operationId；模型、工具和 Python 调用通过 modelCallId / toolCallId / epoch 关联。Baseware 的控制事件使用 `baseware_control`，与 RSA 的 `control` 分开。请求取消与动作失败均保留结果；不把文件写入、调用成功或帧数增加当成学习效果。
+设备事件保留 Baseware 的 source/origin，RSA 转发只新增本地收件时序和观测路径。`traceId/spanId/parentSpanId` 串起 Shiori 工具、工作区能力、嵌套 Python 与设备动作；`modelCallId/toolCallId/operationId/epoch` 继续标识各自职责。能力查询、调用、异常和取消都有终态。Baseware 的控制事件使用 `baseware_control`，与 RSA 的 `control` 分开；不把文件写入、调用成功或帧数增加当成学习效果。
+
+OMP 原生 telemetry 经 session 局部 tracer 写入同一 EventLog，无外部 exporter 或全局 tracer 替换。原生 loop 汇总单独保存，不与已有模型用量相加。消费者保留日志来源并记录自己的进度；日志协议、指标口径与边界见 [logging.md](logging.md)。
 
 模型大请求、响应、流记录继续使用已有 payload/stream 文件。认证头和凭据不写入传输日志。运行数据位于任务 workspace 或仓库外的会话索引目录，不提交 Git。
 

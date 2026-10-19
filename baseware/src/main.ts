@@ -33,17 +33,20 @@ export async function main(args = process.argv.slice(2)) {
   try {
     const serviceId = crypto.randomUUID();
     const clock = { id: serviceId, now: () => performance.now() };
-    const log = new EventLog(dataDir, clock);
+    const log = new EventLog(dataDir);
     const factory = values.driver === "mgba" ? createGbaProvider : createSwitchProvider;
     provider = await factory({ port, artifactsDir: join(dataDir, "observations", serviceId), clock });
     core = new BasewareCore({ capabilities: provider.capabilities, record: log.record, serviceId,
       drivers: [{ id: values.driver, version: values.driver === "mgba" ? "0.10.5" : "1.3.351-rsa.2" }] });
     provider.onDisconnect(error => { void core!.disconnected(error); });
-    log.record("service_start", { driver: values.driver, port, socket: values.socket, dataDir });
+    core.record("service_start", { driver: values.driver, port, socket: values.socket, dataDir });
     console.log(JSON.stringify({ ready: true, socket: values.socket, dataDir, ...core.status() }));
     await new Promise<void>(done => { process.once("SIGINT", done); process.once("SIGTERM", done); });
-    log.record("service_end", core.status());
-  } finally { await closeServer(); provider?.close(); }
+  } finally {
+    await closeServer();
+    provider?.close();
+    core?.record("service_end", core.status());
+  }
 }
 
 if (import.meta.main) main().catch(error => { console.error(String(error)); process.exitCode = 1; });

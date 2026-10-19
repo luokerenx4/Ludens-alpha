@@ -18,11 +18,12 @@ function setup() {
   const read = vi.fn().mockResolvedValue(state())
   const sent: { surface: string; event: ActivityDisplay }[] = []
   const open = vi.fn()
+  const record = vi.fn()
   const controller = new RsaActivityController({ identity: () => identity, read }, {
     foreground: () => foreground, petVisible: () => petVisible, open,
     send: (surface, event) => sent.push({ surface, event }),
-  }, structuredClone(DEFAULT_ACTIVITY_PREFERENCES))
-  return { controller, read, sent, open,
+  }, structuredClone(DEFAULT_ACTIVITY_PREFERENCES), record)
+  return { controller, read, sent, open, record,
     shows: () => sent.filter((item): item is { surface: string; event: Extract<ActivityDisplay, { type: 'show' }> } => item.event.type === 'show'),
     switchSource: () => { identity = 'workspace-b' },
     foreground: () => { foreground = true; controller.transition() },
@@ -35,6 +36,24 @@ beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-17T13:
 afterEach(() => vi.useRealTimers())
 
 describe('RSA block speech', () => {
+  it('records queue pressure and dispatch with provenance without claiming renderer paint', async () => {
+    const s = setup(); await s.poll(); s.hidePet()
+    const item = { ...block('first'), source: { component: 'shiori', implementation: 'omp' },
+      trace: { traceId: 'trace', spanId: 'span' }, eventId: 'host:12', seq: 12 }
+    await s.poll(state([item, block('second')]))
+    expect(s.record).toHaveBeenLastCalledWith('queue_changed', expect.objectContaining({ pendingBlocks: 2, queuedBlocks: 2 }),
+      { runId: 'run', epoch: 'epoch' })
+    const count = s.record.mock.calls.length
+    await s.poll(state([item, block('second')]))
+    expect(s.record).toHaveBeenCalledTimes(count)
+    await vi.advanceTimersByTimeAsync(500)
+    s.showPet()
+    expect(s.record).toHaveBeenCalledWith('display_dispatched', expect.objectContaining({ blockId: 'first',
+      eventId: 'host:12', source: item.source, queueWaitMs: expect.any(Number), surface: 'pet' }),
+      { runId: 'run', epoch: 'epoch', trace: item.trace })
+    expect(s.record.mock.calls.map(call => call[0])).not.toContain('painted')
+    s.controller.stop()
+  })
   it.each(['thinking', 'text', 'tool', 'system', 'diagnostic'] as const)('passes the complete %s block to the content renderer', async (kind) => {
     const s = setup(); await s.poll()
     s.controller.setPreferences({ ...structuredClone(DEFAULT_ACTIVITY_PREFERENCES),

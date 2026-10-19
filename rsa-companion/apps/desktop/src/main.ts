@@ -4,7 +4,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { createCompanion } from './companion.js'
-import { RsaSource, type RsaPetSnapshot } from './rsa-source.js'
+import { consumerRecorder, RsaSource, type RsaPetSnapshot } from './rsa-source.js'
 
 const { values } = parseArgs({ args: process.argv.slice(2), options: {
   workspace: { type: 'string' }, dashboard: { type: 'string' }, profile: { type: 'string' },
@@ -67,7 +67,7 @@ if (values.help) {
         await shell.openExternal(snapshot.dashboardUrl)
       })
       owner.webContents.on('did-finish-load', () => owner?.webContents.send('rsa-pet:snapshot', snapshot))
-      source = new RsaSource({ workspace, dashboardUrl: dashboard.href, onSnapshot: value => {
+      source = new RsaSource({ workspace, dashboardUrl: dashboard.href, record: consumerRecorder(workspace), onSnapshot: value => {
         snapshot = value
         if (owner && !owner.isDestroyed()) owner.webContents.send('rsa-pet:snapshot', value)
       } })

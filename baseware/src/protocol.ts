@@ -1,6 +1,9 @@
-export type Trace = Record<string, unknown>;
-export interface DeviceEvent { type: string; data: unknown; trace: Trace }
-export type RecordEvent = (type: string, data: unknown, trace?: Trace) => void;
+export interface Trace extends Record<string, unknown> { traceId?: string; spanId?: string; parentSpanId?: string }
+export interface EventSource { component: string; implementation?: string; implementationVersion?: string }
+export interface EventOrigin { eventId: string; clockId: string; seq: number; at: string; atMs: number }
+export interface EventMetadata { source?: EventSource; origin?: EventOrigin }
+export interface DeviceEvent { type: string; data: unknown; trace: Trace; source: EventSource; origin: EventOrigin }
+export type RecordEvent = (type: string, data: unknown, trace?: Trace, metadata?: EventMetadata) => void;
 /** Serializable service discovery; driver implementation objects never cross this boundary. */
 export interface Catalog {
   drivers: { id: string; version: string }[];

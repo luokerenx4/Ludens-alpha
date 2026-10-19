@@ -15,7 +15,15 @@ export interface LogBlock {
   status: "running" | "complete" | "error";
   tool?: { intent?: string; args?: unknown; result?: unknown };
   data?: Record<string, unknown>;
+  source?: Event["source"];
+  trace?: Event["trace"];
+  eventId?: string;
+  seq?: number;
+  updatedAt?: string;
 }
+
+const provenance = (event: Partial<Event>) => ({ source: event.source, trace: event.trace,
+  eventId: event.origin?.eventId, seq: event.seq, updatedAt: event.at });
 
 type Json = Record<string, any>;
 const unpack = promisify(gunzip);
@@ -47,16 +55,17 @@ function resultText(value: any): string {
 }
 
 /** Project raw provider output only; request input/history is never a new block. */
-export function streamBlocks(text: string, model: string, anchor: Pick<Event, "at" | "atMs">): LogBlock[] {
+export function streamBlocks(text: string, model: string, anchor: Pick<Event, "at" | "atMs"> & Partial<Event>): LogBlock[] {
   const blocks = new Map<string, LogBlock>();
   const aliases = new Map<string, string>();
   const toolNames = new Map<string, string>();
   const seen = new Set<string>();
   let responseId = "";
+  let origin = provenance(anchor);
   const clock = Date.parse(anchor.at) - anchor.atMs;
   const put = (id: string, kind: LogBlock["kind"], at: string, title: string, value: string, done = false, append = false) => {
     const old = blocks.get(id);
-    blocks.set(id, { id, kind, at: old?.at ?? at, title,
+    blocks.set(id, { id, kind, at: old?.at ?? at, title, ...origin, updatedAt: at,
       text: append ? (old?.text ?? "") + value : value,
       status: done ? "complete" : "running" });
   };
@@ -82,6 +91,7 @@ export function streamBlocks(text: string, model: string, anchor: Pick<Event, "a
   for (const [lineIndex, line] of lines.entries()) {
     if (!line.trim()) continue;
     const row = JSON.parse(line);
+    origin = { ...provenance(anchor), source: row.source ?? anchor.source, trace: { ...anchor.trace, ...row.trace } };
     const wire = row.event ?? row;
     // A WS upload may contain the entire conversation and base64 observations.
     if (wire.event === "response.create" || wire.type === "response.create" || wire.data === "[DONE]") continue;
@@ -199,14 +209,15 @@ export async function activityBlocks(path: string, events: Event[]): Promise<Log
       if (event.type === "exec_result") tool.result = readable(data);
       if (event.type === "tool_end" && data.result !== undefined) tool.result = await payloadText(path, data.result);
       tools.set(id, tool);
-      blocks.set(id, { id, kind: "tool", at: previous?.at ?? event.at, title: tool.name,
+      blocks.set(id, { id, kind: "tool", at: previous?.at ?? event.at, title: tool.name, ...provenance(event),
         text: [tool.intent && `意图：${tool.intent}`, tool.args && `参数：\n${tool.args}`, tool.result && `结果：\n${tool.result}`].filter(Boolean).join("\n\n"),
         tool: { ...(tool.intent ? { intent: tool.intent } : {}), args: structuredText(tool.args),
           ...(tool.result ? { result: structuredText(tool.result) } : {}) },
         status: data.isError || previous?.status === "error" || (event.type === "exec_result" && data.exitCode !== 0) ? "error" : event.type === "tool_end" ? "complete" : "running" });
       continue;
     }
-    const failed = !data.aborted && (event.type.endsWith("_error") || data.isError === true || data.stopReason === "error");
+    const failed = data.outcome === "error" || (data.outcome !== "cancelled" && !data.aborted
+      && (event.type.endsWith("_error") || data.isError === true || data.stopReason === "error"));
     if (event.type === "model_end") {
       for (const block of blocks.values()) {
         if (!block.id.startsWith(`${trace.modelCallId}:`) || block.status !== "running") continue;
@@ -222,13 +233,20 @@ export async function activityBlocks(path: string, events: Event[]): Promise<Log
     blocks.set(`event:${path.split("/").at(-1)}:${event.seq}`, {
       id: `event:${path.split("/").at(-1)}:${event.seq}`, kind: system ? "system" : "diagnostic",
       at: event.at, title: event.type, text: readable(data), data: structuredText(readable(data)) as Record<string, unknown>,
+      ...provenance(event),
       status: failed ? "error" : "complete",
     });
   }
   return [...blocks.values()].sort((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id));
 }
 
-export async function getActivity(project: string, run: string, epoch?: string): Promise<{ blocks: LogBlock[] }> {
+export async function getActivity(project: string, run: string, epoch?: string) {
   const { path, events } = await loadRun(project, run);
-  return { blocks: await activityBlocks(path, selectCycle(events, epoch).events) };
+  const started = performance.now();
+  const selected = selectCycle(events, epoch).events;
+  const blocks = await activityBlocks(path, selected);
+  const latest = selected.at(-1);
+  return { blocks, projection: { source: { component: "dashboard" }, throughSeq: latest?.seq ?? 0,
+    latestEventAt: latest?.at ?? null, latestSourceAt: latest?.origin?.at ?? latest?.at ?? null,
+    generatedAt: new Date().toISOString(), durationMs: performance.now() - started, blockCount: blocks.length } };
 }

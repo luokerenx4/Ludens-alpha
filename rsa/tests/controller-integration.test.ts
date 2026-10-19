@@ -59,14 +59,15 @@ async function fixture() {
   devices.onHandback(reason => { void runtime.stop(reason); });
   devices.onDisconnect(error => { void runtime.disconnected(error); });
   const closeRsa = await listenRsa(rsaSocket, runtime);
+  const parentTrace = { traceId: "1234567890abcdef1234567890abcdef", spanId: "1234567890abcdef", toolCallId: "integration-call" };
   async function run(command: string[], epoch?: string) {
     const child = Bun.spawn(command, {cwd: workspace,
-      env: {...env, BASEWARE_EPOCH: epoch, BASEWARE_TRACE: JSON.stringify({toolCallId: "integration-call"})},
+      env: {...env, BASEWARE_EPOCH: epoch, BASEWARE_TRACE: JSON.stringify(parentTrace)},
       stdout: "pipe", stderr: "pipe"});
     const [stdout, stderr, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     return {stdout, stderr, exitCode};
   }
-  return {workspace, runDir, source, rsaSocket, runtime, core, actions, events,
+  return {workspace, runDir, source, rsaSocket, runtime, core, actions, events, parentTrace,
     held: () => held, cancelled: () => cancelled, released: () => released,
     cli: (argv: string[], epoch?: string) => run([join(import.meta.dir, "../bin/rsa"), "controller", ...argv], epoch),
     python: (source: string, epoch: string) => run(["python3", "-B", "-c", source], epoch),
@@ -121,9 +122,26 @@ print(json.dumps(Client().call("python/scripts/actions.py:combined", {"label": "
     expect(f.actions).toEqual([{argv: ["--args", "literal", "--help"], epoch}, {argv: ["echo", "前进"], epoch}]);
     const nested = f.events.filter(event => event.type === "python_capability");
     expect(nested).toHaveLength(2);
-    for (const event of [...nested, ...f.events.filter(event => event.type === "execution")]) {
-      expect(event.trace).toMatchObject({epoch, toolCallId: "integration-call"});
+    expect(nested[0]!.trace).toMatchObject({traceId: f.parentTrace.traceId, parentSpanId: f.parentTrace.spanId});
+    expect(nested[1]!.trace).toMatchObject({traceId: f.parentTrace.traceId, parentSpanId: nested[0]!.trace.spanId});
+    expect(nested[1]!.trace.spanId).not.toBe(nested[0]!.trace.spanId);
+    for (const event of nested) {
+      expect(f.events.filter(item => item.type === "capability_start" && item.trace.spanId === event.trace.spanId)).toHaveLength(1);
+      expect(f.events.filter(item => item.type === "python_capability_result" && item.trace.spanId === event.trace.spanId)).toHaveLength(1);
+      expect(f.events.find(item => item.type === "capability_end" && item.trace.spanId === event.trace.spanId)?.data).toMatchObject({outcome: "success"});
     }
+    const nestedDriver = f.events.find(event => event.type === "capability_start" && event.data.id === "controller/pad"
+      && event.trace.parentSpanId === nested[0]!.trace.spanId)!;
+    expect(nestedDriver).toBeDefined();
+    expect(f.events.find(event => event.type === "execution" && event.trace.parentSpanId === nestedDriver.trace.spanId)).toBeDefined();
+    for (const event of [...nested, ...f.events.filter(event => event.type === "execution")]) {
+      expect(event.trace).toMatchObject({epoch, toolCallId: "integration-call", traceId: f.parentTrace.traceId});
+    }
+    const concurrent = await Promise.all([f.cli(["python/scripts/actions.py:echo"], epoch), f.cli(["python/scripts/actions.py:echo"], epoch)]);
+    expect(concurrent.map(result => result.exitCode)).toEqual([0, 0]);
+    const siblings = f.events.filter(event => event.type === "python_capability").slice(-2);
+    expect(new Set(siblings.map(event => event.trace.spanId)).size).toBe(2);
+    for (const event of siblings) expect(event.trace).toMatchObject({traceId: f.parentTrace.traceId, parentSpanId: f.parentTrace.spanId});
 
     const captured = await f.cli(["sensor/screen", "capture"], epoch);
     expect(captured.exitCode).toBe(0);
@@ -143,6 +161,17 @@ print(json.dumps(Client().call("python/scripts/actions.py:combined", {"label": "
     expect(removed.exitCode).toBe(1);
     expect(removed.stderr).toContain("Unknown capability");
     expect((await f.cli(["controller/pad", "fail"], epoch)).exitCode).toBe(17);
+    await expect(send(f.rsaSocket, {kind: "controller", argv: [], action: "call", id: "controller/pad", arguments: {}, epoch})).rejects.toThrow("array of strings");
+    const completed = f.events.filter(event => event.type === "capability_end");
+    expect(completed.filter(event => event.data.outcome === "error")).toHaveLength(3);
+    expect(completed.find(event => event.data.exitCode === 17)?.data).toMatchObject({outcome: "error", status: "failed"});
+    for (const started of f.events.filter(event => event.type === "capability_start")) {
+      expect(completed.filter(event => event.trace.spanId === started.trace.spanId)).toHaveLength(1);
+    }
+    for (const started of f.events.filter(event => event.type === "python_capabilities_start")) {
+      expect(f.events.filter(event => event.type === "python_capabilities" && event.trace.spanId === started.trace.spanId)).toHaveLength(1);
+      expect(f.events.find(event => event.type === "capability_start" && event.trace.spanId === started.trace.parentSpanId)).toBeDefined();
+    }
   } finally { await f.close(); }
 }, 15000);
 
@@ -206,9 +235,19 @@ def wait(nested: bool = False):
     const stale = await f.cli(["controller/pad", "echo", "stale"], epoch);
     expect(stale.exitCode).toBe(1);
     expect(stale.stderr).toContain("STALE_EPOCH");
+    expect(f.events.find(event => event.type === "capability_end" && event.data.error?.includes("STALE_EPOCH"))?.data).toMatchObject({outcome: "error"});
     expect(f.actions).toHaveLength(2);
     expect(await send(f.rsaSocket, call(nextEpoch, "controller/pad", ["echo", "current"]))).toMatchObject({status: "completed"});
     expect(f.actions[2]).toEqual({argv: ["echo", "current"], epoch: nextEpoch});
+    const completed = f.events.filter(event => event.type === "capability_end");
+    expect(completed.filter(event => event.data.outcome === "cancelled")).toHaveLength(4);
+    for (const started of f.events.filter(event => event.type === "capability_start")) {
+      expect(completed.filter(event => event.trace.spanId === started.trace.spanId)).toHaveLength(1);
+    }
+    for (const started of f.events.filter(event => event.type === "python_capability")) {
+      expect(f.events.filter(event => event.type === "python_capability_result" && event.trace.spanId === started.trace.spanId))
+        .toEqual([expect.objectContaining({data: expect.objectContaining({outcome: "cancelled"})})]);
+    }
   } finally {
     for (const socket of clients) socket.destroy();
     await f.close();

@@ -6,6 +6,7 @@ import { BasewareCore } from "@playness/baseware/core";
 import { BasewareClient } from "@playness/baseware/client";
 import { listen } from "@playness/baseware/server";
 import type { Capabilities, ExecutionResult } from "@playness/baseware/contracts";
+import type { EventMetadata } from "@playness/baseware/protocol";
 import { connectBaseware } from "../src/harness/baseware.ts";
 import { Runtime } from "../src/harness/runtime.ts";
 
@@ -34,7 +35,8 @@ async function fixture(seconds = 60, acquisition?: Promise<void>, releaseFailure
   let agentCalls = 0, cancellations = 0;
   const acquiring = Promise.withResolvers<void>();
   const acting = Promise.withResolvers<void>();
-  const events: { type: string; data: any; trace: any }[] = [];
+  const events: ({ type: string; data: any; trace: any } & EventMetadata)[] = [];
+  const deviceEvents: ({ type: string; data: any; trace: any } & EventMetadata)[] = [];
   const capabilities: Capabilities = {
     controllers: [{ id: "motor", help: () => "wait",
       async acquire(epoch) { acquiring.resolve(); await acquisition; owner = epoch; },
@@ -52,9 +54,10 @@ async function fixture(seconds = 60, acquisition?: Promise<void>, releaseFailure
     }],
   };
   capabilities.controllers = Array.from({ length: controllerCount }, (_, index) => ({ ...capabilities.controllers[0]!, id: index ? `motor-${index}` : "motor" }));
-  const core = new BasewareCore({ capabilities, drivers: [{ id: "fake", version: "1" }] });
+  const core = new BasewareCore({ capabilities, drivers: [{ id: "fake", version: "1" }],
+    record: (type, data, trace, metadata) => deviceEvents.push({ type, data, trace, ...metadata }) });
   const closeServer = await listen(socket, core);
-  const adapter = await connectBaseware({ socket, seconds, runDir, record: (type, data, trace) => events.push({ type, data, trace }) });
+  const adapter = await connectBaseware({ socket, seconds, runDir, record: (type, data, trace, metadata) => events.push({ type, data, trace, ...metadata }) });
   const runtime = new Runtime(adapter, () => {}, seconds);
   adapter.onHandback(reason => { void runtime.stop(reason); });
   adapter.onDisconnect(error => { void runtime.disconnected(error); });
@@ -66,7 +69,7 @@ async function fixture(seconds = 60, acquisition?: Promise<void>, releaseFailure
     consolidate: async () => {}, abort: async () => {}, close: async () => {},
   };
   const external = await BasewareClient.connect(socket);
-  return { socket, runDir, sources, pixels, core, runtime, adapter, external, events,
+  return { socket, runDir, sources, pixels, core, runtime, adapter, external, events, deviceEvents,
     acquiring: acquiring.promise, acting: acting.promise,
     agentCalls: () => agentCalls, owner: () => owner, cancellations: () => cancellations,
     async close() {
@@ -152,6 +155,11 @@ test("remote observations and event paths keep distinct durable files inside the
     for (const [index, observation] of observations.entries()) {
       expect(observation.path.startsWith(join(f.runDir, "observations") + "/")).toBe(true);
       expect(recorded[index]).toMatchObject({ data: { id: observation.id, path: observation.path }, trace: { toolCallId: "capture-call" } });
+      const original = f.deviceEvents.find(event => event.type === "observation" && event.data.id === observation.id)!;
+      expect(recorded[index]!.source).toEqual({ component: "baseware", implementation: "baseware" });
+      expect(recorded[index]!.origin).toEqual(original.origin);
+      expect(recorded[index]!.trace).toEqual(original.trace);
+      expect(recorded[index]!.data.path).not.toBe(original.data.path);
       await rm(f.sources[index]!);
       expect(await readFile(observation.path)).toEqual(f.pixels[index]!);
     }

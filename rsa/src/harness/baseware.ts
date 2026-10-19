@@ -33,7 +33,7 @@ export async function connectBaseware(options: { socket: string; seconds: number
         copyFileSync(observation.path, path, constants.COPYFILE_FICLONE);
         event = { ...event, data: { ...observation, path } };
       }
-      options.record(event.type, event.data, event.trace as EventTrace);
+      options.record(event.type, event.data, event.trace as EventTrace, { source: event.source, origin: event.origin });
       if (event.type === "baseware_control") {
         const state = event.data as { mode: string; connected: boolean; reason?: string };
         if (state.mode === "manual" && (event.trace.epoch === owner || event.trace.epoch === pendingOwner)

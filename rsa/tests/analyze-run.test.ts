@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const script = new URL("../scripts/analyze-run.py", import.meta.url).pathname;
-const emptyStats = { count: 0, min: null, median: null, max: null, sum: 0 };
+const emptyStats = { count: 0, min: null, median: null, p95: null, max: null, sum: 0 };
 const emptySpeculation = { started: 0, armed: 0, invalidated: 0, waiting: 0, applied: 0, failed: 0, armedDurationMs: emptyStats };
 
 function fixture() {
@@ -46,6 +46,39 @@ test("analysis without speculation events has zero lifecycle counts and no model
   expect(report.firstRequest).toBeNull();
 });
 
+test("analysis pairs concurrent capabilities by span, keeps late cancellation, and separates native loop summaries", async () => {
+  const event = fixture();
+  const trace = (spanId: string, parentSpanId?: string) => ({ traceId: "trace", spanId, parentSpanId });
+  const native = (row: ReturnType<ReturnType<typeof fixture>>) => ({ ...row,
+    source: { component: "shiori", implementation: "omp", implementationVersion: "18.9.1" } });
+  const report = await analyze([
+    event("control", "one", { mode: "auto", epoch: "one" }),
+    native(event("shiori_span_start", "one", { operation: "invoke_agent", name: "agent" }, trace("loop"))),
+    event("capability_start", "one", { action: "call", id: "python/macros.py:move" }, trace("a", "tool")),
+    event("python_capability", "one", { capabilityId: "macro", codeSHA: "version-a" }, trace("a", "tool")),
+    event("capability_start", "one", { action: "call", id: "python/macros.py:move" }, trace("b", "tool")),
+    event("python_capability", "one", { capabilityId: "macro", codeSHA: "version-a" }, trace("b", "tool")),
+    event("python_capability_result", "one", { outcome: "success", durationMs: 10 }, trace("b", "tool")),
+    event("capability_end", "one", { outcome: "success", durationMs: 12 }, trace("b", "tool")),
+    event("control", "one", { mode: "manual", reason: "time budget" }),
+    event("python_capability_result", "one", { outcome: "cancelled", durationMs: 30 }, trace("a", "tool")),
+    event("capability_end", "one", { outcome: "cancelled", durationMs: 32 }, trace("a", "tool")),
+    native(event("shiori_run_end", "one", { scope: "agent_loop", summary: { usage: { totalTokens: 100 } }, coverage: {} }, trace("loop"))),
+    native(event("shiori_span_end", "one", { outcome: "cancelled", durationMs: 50 }, trace("loop"))),
+    event("control", "two", { mode: "auto", epoch: "two" }),
+    event("capability_start", "two", { action: "call", id: "python/macros.py:move" }, trace("c")),
+  ], "one");
+  expect(report.summary.capabilities).toMatchObject({ started: 2, outcomes: { cancelled: 1, success: 1 },
+    durationMs: { median: 22, p95: 32 } });
+  expect(report.capabilities.map((span: any) => [span.trace.spanId, span.outcome])).toEqual([["a", "cancelled"], ["b", "success"]]);
+  expect(report.summary.pythonCapabilities.started).toBe(2);
+  expect(report.pythonCapabilities[0].codeSHA).toBe("version-a");
+  expect(report.summary.shiori.nativeLoops).toBe(1);
+  expect(report.shiori.runs[0].summary.usage.totalTokens).toBe(100);
+  expect(report.summary.sources.shiori).toBe(1);
+  expect(report.summary.completedRequests).toBe(0);
+});
+
 test("analysis retains ready and applied boundaries and reports candidate duration separately from waiting", async () => {
   const event = fixture();
   const events = [
@@ -65,7 +98,7 @@ test("analysis retains ready and applied boundaries and reports candidate durati
   expect(report.compactionSpeculation[2].data).toEqual({ stage: "armed", snapshotLeafId: "first-leaf", durationMs: 80_000, tokensBefore: 224_100 });
   expect(report.compactionSpeculation.filter((item: { data: { stage: string } }) => item.data.stage === "applied").map((item: { data: { snapshotLeafId: string } }) => item.data.snapshotLeafId)).toEqual(["first-leaf", "second-leaf"]);
   expect(report.summary.compactionSpeculation).toEqual({ ...emptySpeculation, started: 2, armed: 2, waiting: 1, applied: 2,
-    armedDurationMs: { count: 2, min: 80_000, median: 83_000, max: 86_000, sum: 166_000 } });
+    armedDurationMs: { count: 2, min: 80_000, median: 83_000, p95: 86_000, max: 86_000, sum: 166_000 } });
   expect(JSON.stringify(report)).not.toContain("private-");
   expect(report.summary.compactionHttp.attempts).toBe(0);
   expect(report.summary.compactionHttp.retryCount).toBeNull();
@@ -140,7 +173,7 @@ test("analysis measures closed foreground compaction windows and preserves unfin
     { epoch: "one", startSeq: 9, endSeq: null, startAtMs: 9000, endAtMs: null, state: "pending", durationMs: null },
   ]);
   expect(report.summary.compactionMaintenance).toEqual({ completed: 1, aborted: 1, error: 1, pending: 1,
-    durationMs: { count: 3, min: 1000, median: 1000, max: 2000, sum: 4000 } });
+    durationMs: { count: 3, min: 1000, median: 1000, p95: 2000, max: 2000, sum: 4000 } });
   expect(report.summary.compactionStarts).toBe(4);
   expect(report.summary.compactionEnds).toBe(3);
   expect(report.summary.compactionSpeculation.armedDurationMs.sum).toBe(80_000);
@@ -254,11 +287,11 @@ test("analysis links observation arguments by operation and epoch while retainin
     { id: "missing", argv: null },
     { id: "unidentified", argv: null },
   ]);
-  expect(report.summary.captureMs).toEqual({ count: 4, min: 120, median: 4630.5, max: 18_131, sum: 27_512 });
+  expect(report.summary.captureMs).toEqual({ count: 4, min: 120, median: 4630.5, p95: 18_131, max: 18_131, sum: 27_512 });
   expect(report.summary.captureMsByOrigin).toEqual({
-    tool_batch: { count: 1, min: 130, median: 130, max: 130, sum: 130 },
-    explicit: { count: 2, min: 9131, median: 13_631, max: 18_131, sum: 27_262 },
-    unknown: { count: 1, min: 120, median: 120, max: 120, sum: 120 },
+    tool_batch: { count: 1, min: 130, median: 130, p95: 130, max: 130, sum: 130 },
+    explicit: { count: 2, min: 9131, median: 13_631, p95: 18_131, max: 18_131, sum: 27_262 },
+    unknown: { count: 1, min: 120, median: 120, p95: 120, max: 120, sum: 120 },
   });
 });
 

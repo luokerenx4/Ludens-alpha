@@ -4,6 +4,7 @@ import argparse
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 import json
+import math
 from pathlib import Path
 import re
 import statistics
@@ -12,9 +13,10 @@ import statistics
 def stats(values):
     values = sorted(value for value in values if value is not None)
     if not values:
-        return {"count": 0, "min": None, "median": None, "max": None, "sum": 0}
+        return {"count": 0, "min": None, "median": None, "p95": None, "max": None, "sum": 0}
     return {"count": len(values), "min": round(values[0], 3),
-            "median": round(statistics.median(values), 3), "max": round(values[-1], 3),
+            "median": round(statistics.median(values), 3), "p95": round(values[math.ceil(len(values) * .95) - 1], 3),
+            "max": round(values[-1], 3),
             "sum": round(sum(values), 3)}
 
 
@@ -47,6 +49,31 @@ def read_events(path):
 def trace_key(event, *fields):
     trace = event.get("trace", {})
     return tuple(trace.get(field) for field in ("epoch", *fields))
+
+
+def operation_spans(inside, events, start_type, end_type):
+    """Use explicit span identities, including late cleanup; never pair by function name or order."""
+    finishes = {trace_key(event, "traceId", "spanId"): event for event in events
+                if event["type"] == end_type and event.get("trace", {}).get("spanId")}
+    spans = []
+    for start in inside:
+        if start["type"] != start_type or not start.get("trace", {}).get("spanId"):
+            continue
+        finish = finishes.get(trace_key(start, "traceId", "spanId"))
+        result = finish["data"] if finish else {}
+        spans.append({"trace": start["trace"], "source": start.get("source"),
+                      "startSeq": start["seq"], "endSeq": finish["seq"] if finish else None,
+                      "operation": start["data"].get("operation", start["data"].get("action")),
+                      "name": start["data"].get("name", start["data"].get("id", start["data"].get("capabilityId"))),
+                      "codeSHA": start["data"].get("codeSHA"),
+                      "outcome": result.get("outcome", "unknown") if finish else "pending",
+                      "durationMs": result.get("durationMs"), "error": result.get("error")})
+    return spans
+
+
+def span_summary(spans):
+    return {"started": len(spans), "outcomes": dict(Counter(span["outcome"] for span in spans)),
+            "durationMs": stats(span["durationMs"] for span in spans)}
 
 
 def model_attempts(related):
@@ -356,6 +383,16 @@ def analyze(run, epoch=None):
     active_end_ms = stopped["atMs"] if stopped else inside[-1]["atMs"] if inside else None
     elapsed_ms = active_end_ms - enabled["atMs"] if enabled and active_end_ms is not None else None
     successful_actions = sum(execution["status"] == "completed" for execution in executions)
+    capabilities = operation_spans(inside, events, "capability_start", "capability_end")
+    python_calls = operation_spans(inside, events, "python_capability", "python_capability_result")
+    discovery = operation_spans(inside, events, "python_capabilities_start", "python_capabilities")
+    shiori_spans = operation_spans(inside, events, "shiori_span_start", "shiori_span_end")
+    # A native loop can end after control was handed back; attach its summary to the loop we actually started.
+    loop_keys = {trace_key(event, "traceId", "spanId") for event in inside
+                 if event["type"] == "shiori_span_start" and event["data"].get("operation") == "invoke_agent"}
+    native_runs = [{"trace": event["trace"], "source": event.get("source"), **event["data"]}
+                   for event in events if event["type"] == "shiori_run_end"
+                   and trace_key(event, "traceId", "spanId") in loop_keys]
     summary = {"startedRequests": len(calls), "completedRequests": len(completed),
         "pendingRequests": sum(call["state"] == "pending" for call in calls),
         "abortedRequests": sum(call["state"] == "aborted" for call in calls),
@@ -430,8 +467,12 @@ def analyze(run, epoch=None):
         "captureMsByOrigin": {origin: stats(values) for origin, values in capture_by_origin.items()},
         "firstAutomaticCaptureAfterActionMs": stats(observation["captureRequestedAfterMs"] for observation in first_after_action.values()),
         "firstAutomaticCaptureReturnedAfterActionMs": stats(observation["captureReceivedAfterMs"] for observation in first_after_action.values()),
-        "mediaEncodingMs": stats(event["data"].get("durationMs") for event in inside if event["type"] == "observation_media")}
-    return {"analysisVersion": 2, "runDir": str(run), "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "mediaEncodingMs": stats(event["data"].get("durationMs") for event in inside if event["type"] == "observation_media"),
+        "sources": dict(Counter(event.get("source", {}).get("component", "unlabelled") for event in inside)),
+        "capabilities": span_summary(capabilities), "pythonCapabilities": span_summary(python_calls),
+        "capabilityDiscovery": span_summary(discovery),
+        "shiori": {"spans": span_summary(shiori_spans), "nativeLoops": len(native_runs)}}
+    return {"analysisVersion": 3, "runDir": str(run), "generatedAt": datetime.now(timezone.utc).isoformat(),
         "source": {"path": "events.jsonl", "eventCount": len(events), "lastSeq": events[-1]["seq"] if events else None,
                    "lastEventAt": events[-1]["at"] if events else None, "ignoredPartialLastLine": partial},
         "window": {"epoch": selected_epoch,
@@ -446,6 +487,8 @@ def analyze(run, epoch=None):
         "compactionSpeculation": speculation,
         "compactionRetries": compaction_retries,
         "compactionHttpAttempts": compaction_http,
+        "capabilities": capabilities, "pythonCapabilities": python_calls, "capabilityDiscovery": discovery,
+        "shiori": {"spans": shiori_spans, "runs": native_runs},
         "notes": [
             "Offline snapshot of the selected takeover epoch; multiple takeovers require explicit selection. Control mode refers to that epoch and does not prove the host process is live. Pending requests and a partial final line may complete later.",
             "Main-loop metrics exclude independent OMP compaction HTTP requests. Successful compaction usage is listed separately; failed/cancelled compaction usage may be unavailable. Compaction lifecycle events do not measure full HTTP latency.",
@@ -463,7 +506,10 @@ def analyze(run, epoch=None):
             "controllerExecutionErrors counts explicit execution_error events within the selected takeover interval, including those marked aborted. Details retain the original error and match command by epoch/operationId. This is independent of toolErrors: a shell batch can finish successfully after an inner controller command fails. Stderr is not parsed to infer errors.",
             "toolExecution measures tool_start to tool_end, including any capture/result preparation; execCommandMs measures only exec to exec_result. Commands are nested within tools: do not add these durations together. Pending spans have no duration, and command text is not parsed to infer waiting or action time.",
             "Skill read/write/edit counts use successful tool completion and named SKILL.md paths. They do not prove the quality of learned content or that an edit changed its hash.",
-            "Capture intervals include waiting, GPU readback and file encoding. sourceSequence advance does not prove that the frame reflects the preceding action."]}
+            "Capture intervals include waiting, GPU readback and file encoding. sourceSequence advance does not prove that the frame reflects the preceding action.",
+            "P95 uses the nearest-rank percentile. Capability and Shiori spans pair only by explicit epoch/traceId/spanId; older untraced calls are not inferred.",
+            "Native Shiori run summaries cover one agent loop, not a whole takeover. They overlap existing model/tool metrics and must not be added to token/cost totals. Python detail spans overlap their enclosing capability calls; durations are inclusive, not additive.",
+            "Event atMs belongs to the recording host; origin retains the source clock and identity. Do not subtract monotonic timestamps from different clocks. Macro execution success does not prove task success or learning."]}
 
 
 def main():

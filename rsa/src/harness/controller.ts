@@ -26,8 +26,8 @@ export class WorkspaceController {
     this.python = new PythonCapabilities(options.workspace, options.env.RSA_PYTHON, options.record);
   }
 
-  async list(signal: AbortSignal) {
-    const discovered = await this.python.discover(signal);
+  async list(signal: AbortSignal, trace: EventTrace = {}) {
+    const discovered = await this.python.discover(signal, trace);
     const { controllers, sensors } = this.options.devices.catalog;
     return {
       capabilities: [
@@ -39,7 +39,7 @@ export class WorkspaceController {
     };
   }
 
-  async help(id: string, signal: AbortSignal): Promise<string> {
+  async help(id: string, signal: AbortSignal, trace: EventTrace = {}): Promise<string> {
     signal.throwIfAborted();
     const device = this.device(id);
     if (device) {
@@ -47,7 +47,7 @@ export class WorkspaceController {
       const help = device.help.replaceAll(`baseware ${kind} ${device.id}`, `rsa controller ${id}`);
       return `Usage: rsa controller ${id} <arguments...>\n\n${help}`;
     }
-    const capability = await this.pythonCapability(id, signal);
+    const capability = await this.pythonCapability(id, signal, trace);
     return JSON.stringify({ id, usage: `rsa controller ${id} --args '<JSON object>'`,
       description: capability.description, parameters: capability.parameters }, null, 2);
   }
@@ -64,9 +64,9 @@ export class WorkspaceController {
       if (id.startsWith("controller/")) return this.options.devices.execute(device.id, argv, epoch, signal, trace);
       return this.options.devices.observe({ sensorId: device.id, argv }, signal, trace, "cli");
     }
-    const capability = await this.pythonCapability(id, signal);
+    const capability = await this.pythonCapability(id, signal, trace);
     const result = await this.python.invoke(capability.id, args === undefined ? {} : args, {
-      signal, trace, env: { ...this.options.env, BASEWARE_EPOCH: epoch, BASEWARE_TRACE: JSON.stringify(trace) },
+      signal, invocationTrace: trace.spanId ? trace : undefined, env: { ...this.options.env, BASEWARE_EPOCH: epoch, BASEWARE_TRACE: JSON.stringify(trace) },
     });
     if (result.isError) throw new Error(`${result.details.error?.type ?? "PythonError"}: ${result.details.error?.message ?? "Capability failed"}`);
     return result.details.result;
@@ -78,9 +78,9 @@ export class WorkspaceController {
       ?? sensors.find(item => id === `sensor/${item.id}`);
   }
 
-  private async pythonCapability(id: string, signal: AbortSignal): Promise<PythonCapability> {
+  private async pythonCapability(id: string, signal: AbortSignal, trace: EventTrace): Promise<PythonCapability> {
     if (id.startsWith("python/")) {
-      const discovered = await this.python.discover(signal);
+      const discovered = await this.python.discover(signal, trace);
       const capability = discovered.capabilities.find(item => pythonId(item) === id);
       if (capability) return capability;
       const diagnostic = discovered.diagnostics.find(item => id.startsWith(`python/${item.path}:`));

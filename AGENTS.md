@@ -1,6 +1,7 @@
 # 开发约定
 
-- `baseware/` 是独立设备服务、driver、CLI/API/MCP；`rsa/` 是 Harness、OMP 循环和工作区能力；`rsa-dashboard/` 是日志 API 和看板；`rsa-companion/` 是 Alice Pet。
+- `baseware/` 是独立设备服务、driver、CLI/API/MCP；`rsa/` 是 Harness、Shiori 和工作区能力；`rsa-dashboard/` 是日志 API 和看板；`rsa-companion/` 是 Alice Pet。Shiori 是 Agent Loop 内核的语义名称，当前实现为 OMP，代码仍在 `rsa/src/harness/omp/`。
+- 日志来源按职责标注 source.component，实现/版本独立标注；转发保留 origin，跨进程调用传 traceId/spanId/parentSpanId。Shiori 复用 OMP 原生 telemetry，分析与 UI 消费已有事实；不要把调用成功当任务成功。契约见 `rsa/docs/logging.md`。
 - Harness 通过 Baseware 客户端发现和调用 Sensor / Controller，不导入具体 driver。设备协议与输入仲裁留在 Baseware；RSA 用 `rsa controller` / `rsa_tools.Client` 统一访问原始设备和工作区 Python 装饰器能力，按需查询，不自动注册为 OMP 工具。MCP 不默认注入。
 - 各组件独立安装和验证，使用各自锁文件。运行数据和任务 workspace 不进仓库。
 - 工作区由模型生成的 skill / memory 不手工整理，不注入游戏攻略。

@@ -1,8 +1,14 @@
+import { randomBytes } from "node:crypto";
 import type { Capabilities, ExecutionResult, Observation, ObservationRequest } from "./contracts.ts";
 import type { Catalog, DeviceEvent, RecordEvent, Request, Trace } from "./protocol.ts";
 
 export interface DriverInfo { id: string; version: string }
 export interface ClientContext { id: string; onEvent?(event: DeviceEvent): void }
+
+function operationTrace(parent: Trace, operationId: string): Trace {
+  return { ...parent, operationId, traceId: parent.traceId ?? randomBytes(16).toString("hex"),
+    spanId: randomBytes(8).toString("hex"), parentSpanId: parent.spanId };
+}
 
 /** Device ownership and observations, independent of agents and their workspaces. */
 export class BasewareCore {
@@ -24,6 +30,7 @@ export class BasewareCore {
   private deadline = 0;
   private lastExecution?: { result: ExecutionResult; trace: Trace };
   private previousObservations = new Map<string, Observation>();
+  private sequence = 0;
 
   constructor(options: { capabilities: Capabilities; drivers: DriverInfo[]; record?: RecordEvent; serviceId?: string }) {
     this.capabilities = options.capabilities;
@@ -40,10 +47,14 @@ export class BasewareCore {
   }
 
   readonly record: RecordEvent = (type, data, trace = {}) => {
-    this.sink(type, data, trace);
+    const seq = ++this.sequence;
+    const metadata = { source: { component: "baseware", implementation: "baseware" },
+      origin: { eventId: `${this.serviceId}:${seq}`, clockId: this.serviceId, seq,
+        at: new Date().toISOString(), atMs: performance.now() } };
+    this.sink(type, data, trace, metadata);
     const recipients = new Map(this.clients);
     if (this.owner) recipients.set(this.owner.id, this.owner);
-    for (const client of recipients.values()) client.onEvent?.({ type, data, trace });
+    for (const client of recipients.values()) client.onEvent?.({ type, data, trace, ...metadata });
   };
 
   status() {
@@ -142,7 +153,7 @@ export class BasewareCore {
   }
 
   async observe(request: ObservationRequest, signal: AbortSignal, parent: Trace = {}, origin = "cli", operationId: string = crypto.randomUUID()) {
-    const trace = { ...parent, operationId };
+    const trace = operationTrace(parent, operationId);
     const execution = this.lastExecution;
     this.record("observation_start", { ...request, origin }, trace);
     try {
@@ -165,53 +176,69 @@ export class BasewareCore {
             ? observation.sourceSequence - previous.sourceSequence : undefined }, trace);
         this.previousObservations.set(key, observation);
       }
-      this.record("observation_end", { observations: observations.map(o => o.id) }, trace);
+      this.record("observation_end", { observations: observations.map(o => o.id), outcome: "success" }, trace);
       return observations;
     } catch (error) {
-      this.record("observation_error", { error: String(error), aborted: signal.aborted }, trace);
+      this.record("observation_error", { error: String(error), aborted: signal.aborted,
+        outcome: signal.aborted ? "cancelled" : "error" }, trace);
       throw error;
     }
   }
 
   async execute(id: string, argv: string[], epoch: string | undefined, signal: AbortSignal, parent: Trace = {}, operationId: string = crypto.randomUUID()) {
-    const trace = { ...parent, epoch, operationId };
+    const trace = operationTrace({ ...parent, epoch }, operationId);
     this.record("command", { id, argv, epoch }, trace);
+    let combined: AbortSignal | undefined;
     try {
       if (this.mode !== "auto" || !epoch || epoch !== this.epoch) throw new Error("STALE_EPOCH: acquire control and use its original epoch");
       const controller = this.capabilities.controllers.find(c => c.id === id);
       if (!controller) throw new Error(`Unknown controller: ${id}`);
-      const combined = AbortSignal.any([signal, this.control!.signal]);
+      combined = AbortSignal.any([signal, this.control!.signal]);
       combined.throwIfAborted();
       const result = await controller.execute(argv, { epoch, signal: combined });
       // A revoked operation may settle after a new owner acquired the device.
       if (epoch === this.epoch) this.lastExecution = { result, trace };
-      this.record("execution", result, trace);
+      this.record("execution", { ...result, outcome: combined.aborted || result.status === "interrupted" ? "cancelled"
+        : result.status === "completed" && result.exitCode === 0 ? "success" : "error" }, trace);
       return result;
     } catch (error) {
-      this.record("execution_error", { error: String(error), aborted: signal.aborted || this.control?.signal.aborted || false }, trace);
+      const aborted = signal.aborted || combined?.aborted || false;
+      this.record("execution_error", { error: String(error), aborted, outcome: aborted ? "cancelled" : "error" }, trace);
       throw error;
     }
   }
 
   async handle(request: Request, client: ClientContext, signal = new AbortController().signal): Promise<unknown> {
-    const argv = request.argv ?? [];
-    if (!Array.isArray(argv) || argv.some(arg => typeof arg !== "string")) throw new Error("argv must be strings");
-    switch (request.kind) {
-      case "status": return this.status();
-      case "list": return this.list();
-      case "subscribe": this.clients.set(client.id, client); return this.status();
-      case "help": if (!request.id) throw new Error("Missing capability ID"); return this.help(request.id, argv[0]);
-      case "acquire": return await this.acquire(request.epoch!, request.seconds!, client, signal);
-      case "release": if (!request.epoch) throw new Error("release requires an epoch"); return await this.release(request.epoch);
-      case "revoke": return await this.release(undefined, "human");
-      case "sensor":
-        if (!request.id) throw new Error("Missing sensor ID");
-        return await this.observe({ sensorId: request.id, argv }, signal,
-          { ...request.trace, ...(request.epoch ? { epoch: request.epoch } : {}) }, request.origin, request.operationId);
-      case "controller":
-        if (!request.id) throw new Error("Missing controller ID");
-        return await this.execute(request.id, argv, request.epoch, signal, request.trace, request.operationId);
-      default: throw new Error(`Unknown request kind: ${request.kind}`);
+    let deviceOperation = false;
+    try {
+      const argv = request.argv ?? [];
+      if (!Array.isArray(argv) || argv.some(arg => typeof arg !== "string")) throw new Error("argv must be strings");
+      switch (request.kind) {
+        case "status": return this.status();
+        case "list": return this.list();
+        case "subscribe": this.clients.set(client.id, client); return this.status();
+        case "help": if (!request.id) throw new Error("Missing capability ID"); return this.help(request.id, argv[0]);
+        case "acquire": return await this.acquire(request.epoch!, request.seconds!, client, signal);
+        case "release": if (!request.epoch) throw new Error("release requires an epoch"); return await this.release(request.epoch);
+        case "revoke": return await this.release(undefined, "human");
+        case "sensor":
+          if (!request.id) throw new Error("Missing sensor ID");
+          deviceOperation = true;
+          return await this.observe({ sensorId: request.id, argv }, signal,
+            { ...request.trace, ...(request.epoch ? { epoch: request.epoch } : {}) }, request.origin, request.operationId);
+        case "controller":
+          if (!request.id) throw new Error("Missing controller ID");
+          deviceOperation = true;
+          return await this.execute(request.id, argv, request.epoch, signal, request.trace, request.operationId);
+        default: throw new Error(`Unknown request kind: ${request.kind}`);
+      }
+    } catch (error) {
+      // Device operations already record their terminal event, including rejection.
+      if (!deviceOperation) this.record("request_error", {
+        kind: request.kind, id: request.id, error: String(error), aborted: signal.aborted,
+        outcome: signal.aborted ? "cancelled" : "error",
+      }, operationTrace({ ...request.trace, epoch: request.epoch }, request.operationId ?? crypto.randomUUID()));
+      throw error;
     }
   }
 

@@ -64,6 +64,26 @@ test("partial tool arguments stay source text until they form JSON", () => {
   assert.deepEqual(streamBlocks(complete, "model", anchor)[0].tool, { args: { command: "inspect" } });
 });
 
+test("activity blocks retain fact provenance and stream blocks link to their model anchor", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "rsa-provenance-")));
+  try {
+    await mkdir(join(root, "streams"));
+    const source = { component: "shiori", implementation: "omp", implementationVersion: "18.9.1" };
+    const trace = { traceId: "a".repeat(32), spanId: "b".repeat(16), modelCallId: "model" };
+    const origin = { eventId: "host:1", clockId: "host", seq: 1, at: anchor.at, atMs: 0 };
+    const start = { ...event("model_start", 1), source, trace, origin };
+    await writeFile(join(root, "streams/model.jsonl"), frame({ type: "response.output_text.delta", item_id: "message", delta: "Hello" }));
+    const blocks = await activityBlocks(root, [start]);
+    for (const block of blocks) {
+      assert.deepEqual(block.source, source);
+      assert.deepEqual(block.trace, trace);
+      assert.equal(block.eventId, origin.eventId);
+      assert.equal(block.seq, 1);
+      assert.ok(block.updatedAt);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("DeepSeek chat chunks retain readable thinking, assistant text and function arguments", () => {
   const chunk = (delta: unknown, finish_reason: string | null = null) => frame({
     id: "deepseek-response", object: "chat.completion.chunk", choices: [{ index: 0, delta, finish_reason }],
@@ -144,6 +164,21 @@ test("cycle selection keeps other epochs' blocks out and rejects unknown epochs"
     assert.equal(latest.length, 2); assert.equal(JSON.stringify(latest).includes("old-image"), false);
     assert.throws(() => selectCycle(events, "missing"), /所选周期/);
   } finally { await rm(temporary, { recursive: true, force: true }); }
+});
+
+test("explicit failed outcomes are visible system blocks while cancellations remain non-errors", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "rsa-activity-outcome-")));
+  try {
+    const events = ["capability_end", "shiori_span_end", "python_capabilities"]
+      .map((type, index) => event(type, index + 1, { outcome: "error", error: "fixture failed" }));
+    events.push(event("capability_end", 4, { outcome: "cancelled" }),
+      event("execution_error", 5, { outcome: "cancelled", isError: true, stopReason: "error" }));
+    const blocks = await activityBlocks(root, events);
+    assert.deepEqual(blocks.map(block => [block.kind, block.status]), [
+      ["system", "error"], ["system", "error"], ["system", "error"],
+      ["diagnostic", "complete"], ["diagnostic", "complete"],
+    ]);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test("model cancellation closes partial output without inventing a failure or completing an executing tool", async () => {

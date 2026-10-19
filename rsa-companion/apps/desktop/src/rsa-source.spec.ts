@@ -1,8 +1,8 @@
-import { mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { projectRsaRun, rsaProjectId, RsaSource, type RsaRunView, type LogBlock } from './rsa-source.js'
+import { consumerRecorder, projectRsaRun, rsaProjectId, RsaSource, type RsaRunView, type LogBlock } from './rsa-source.js'
 
 function run(overrides: Partial<RsaRunView> = {}): RsaRunView {
   return {
@@ -84,5 +84,32 @@ describe('RSA dashboard block source', () => {
     expect(onSnapshot).not.toHaveBeenCalled()
     source.stop(); await expect(source.read()).rejects.toThrow()
     expect(onSnapshot).not.toHaveBeenCalled()
+  })
+  it('records changed consumption and failures once in a separate workspace journal', async () => {
+    const directory = realpathSync(mkdtempSync(join(tmpdir(), 'rsa-pet-journal-'))); directories.push(directory)
+    const projection = { source: { component: 'dashboard' }, throughSeq: 42, latestEventAt: run().updatedAt,
+      latestSourceAt: run().updatedAt, generatedAt: run().updatedAt, durationMs: 2, blockCount: blocks.length }
+    const source = new RsaSource({ workspace: directory, dashboardUrl: 'http://localhost:3015', onSnapshot: () => {},
+      record: consumerRecorder(directory) })
+    let fail = false
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => {
+      if (fail) throw new Error('connection refused')
+      if (url.includes('/api/catalog')) return Response.json([{ id: rsaProjectId(directory), runs: [{ id: run().run }] }])
+      if (url.includes('/api/run?')) return Response.json(run({ manifest: { workspace: directory } }))
+      return Response.json({ blocks, projection })
+    }))
+    expect((await source.read()).projection).toEqual(projection)
+    await source.read()
+    fail = true; await source.read(); await source.read()
+    const files = readdirSync(join(directory, 'logs', 'consumers'))
+    expect(files).toHaveLength(1)
+    const rows = readFileSync(join(directory, 'logs', 'consumers', files[0]), 'utf8').trim().split('\n').map(line => JSON.parse(line))
+    expect(rows.map(row => row.type)).toEqual(['read', 'read_error'])
+    expect(rows[0]).toMatchObject({ schemaVersion: 2, source: { component: 'pet' }, runId: run().run,
+      seq: 1, trace: { epoch: 'epoch-a' }, data: { projection: { throughSeq: 42 }, blocks: 3 } })
+    expect(rows[0].origin.clockId).toBe(rows[1].origin.clockId)
+    expect(rows[0].origin.eventId).not.toBe(rows[1].origin.eventId)
+    expect(rows[1].data.error).toContain('connection refused')
+    source.stop()
   })
 })

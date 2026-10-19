@@ -7,11 +7,13 @@
 | 目录 | 职责 | 开发入口 |
 | --- | --- | --- |
 | [baseware/](baseware/README.md) | 独立设备进程、mGBA / Ryubing driver、CLI / API / MCP | Bun 1.4、Python 3.9+ |
-| [rsa/](rsa/README.md) | Harness、OMP 循环、工作区 Python 能力、会话与日志 | Bun 1.4、Python 3.9+ |
+| [rsa/](rsa/README.md) | Harness、Shiori（当前 OMP）、工作区 Python 能力、会话与日志 | Bun 1.4、Python 3.9+ |
 | [rsa-dashboard/](rsa-dashboard/README.md) | 读取运行日志、显示看板，并为 Pet 提供本地 HTTP API | Node.js 22+、npm |
 | [rsa-companion/](rsa-companion/README.md) | 从 OpenAlice 移植的 Alice Pet，消费日志并呈现气泡、画面与声音 | Node.js 22+、pnpm 11 |
 
 RSA 写入工作区日志，Dashboard 读取日志，Pet 消费 Dashboard API。各组件保留自己的锁文件；OMP 的固定版本修改保存在 `rsa/patches/`。旧研究网站不属于这个仓库。
+
+Shiori 是 Agent Loop 内核的稳定语义名称，OMP 是当前实现。日志分别保留职责来源、实现版本、原事件身份与跨进程调用关系，方便以后比较不同内核；原生 telemetry 与现有模型/设备记录合流到本地日志。详见 [日志契约](rsa/docs/logging.md)。
 
 ## 安装与启动
 

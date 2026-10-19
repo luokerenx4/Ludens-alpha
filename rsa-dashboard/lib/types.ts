@@ -1,4 +1,6 @@
 export interface Event {
+  source?: { component: string; implementation?: string; implementationVersion?: string };
+  origin?: { eventId: string; clockId: string; seq: number; at: string; atMs: number };
   seq: number;
   at: string;
   atMs: number;

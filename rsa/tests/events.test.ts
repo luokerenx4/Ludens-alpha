@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { gunzipSync } from "node:zlib";
-import { EventLog } from "../src/harness/events.ts";
+import { childTrace, EventLog } from "../src/harness/events.ts";
 
 test("run events have ordered identities and immutable, lossless payload references", async () => {
   const directory = await mkdtemp(join(tmpdir(), "rsa-events-"));
@@ -22,6 +22,19 @@ test("run events have ordered identities and immutable, lossless payload referen
     const events = (await readFile(join(directory, "events.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
     expect(events.map(e => e.seq)).toEqual([1, 2]);
     expect(events.map(e => e.atMs)).toEqual([1, 2]);
-    expect(events.every(e => e.runId === "run-test" && e.schemaVersion === 1 && e.trace.requestId === "request")).toBe(true);
+    expect(events.every(e => e.runId === "run-test" && e.schemaVersion === 2 && e.trace.requestId === "request")).toBe(true);
+    expect(events[0].source).toEqual({ component: "rsa" });
+    expect(events[0].origin).toEqual({ eventId: "run-test:1", clockId: "run-test", seq: 1, at: events[0].at, atMs: 1 });
+
+    const deviceOrigin = { eventId: "device:7", clockId: "device", seq: 7, at: "2026-10-19T00:00:00.000Z", atMs: 500 };
+    const parent = childTrace({ epoch: "epoch" });
+    const child = childTrace(parent);
+    log.record("execution", { status: "completed" }, child, { source: { component: "baseware" }, origin: deviceOrigin });
+    const forwarded = JSON.parse((await readFile(join(directory, "events.jsonl"), "utf8")).trim().split("\n").at(-1)!);
+    expect(forwarded.origin).toEqual(deviceOrigin);
+    expect(forwarded.atMs).toBe(3);
+    expect(forwarded.trace.traceId).toBe(parent.traceId);
+    expect(forwarded.trace.parentSpanId).toBe(parent.spanId);
+    expect(forwarded.trace.spanId).not.toBe(parent.spanId);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

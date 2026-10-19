@@ -8,6 +8,8 @@ import { streamOpenAICompletions } from "@oh-my-pi/pi-ai/providers/openai-comple
 import { getBundledModels } from "@oh-my-pi/pi-catalog";
 import type { StreamFn } from "@oh-my-pi/pi-agent-core";
 import { logger } from "@oh-my-pi/pi-utils";
+import { trace as otelTrace } from "@opentelemetry/api";
+import { SHIORI_SOURCE } from "../src/harness/omp/shiori.ts";
 import { EventLog } from "../src/harness/events.ts";
 import { installCompactionHttpTrace, installCompactionSpeculationTrace, ModelTrace } from "../src/harness/omp/trace.ts";
 import { BasewareCore } from "@playness/baseware/core";
@@ -274,6 +276,7 @@ test("compaction HTTP failures and cancellation retain safe diagnostics and inde
 });
 
 test("real OMP HTTP bodies retain DeepSeek image prefixes beyond five images and correlate through shell IPC", async () => {
+  const globalProvider = otelTrace.getTracerProvider();
   const directory = await mkdtemp(join(tmpdir(), "rsa-wire-"));
   const workspace = join(directory, "workspace");
   await mkdir(join(workspace, "skills"), {recursive: true});
@@ -323,7 +326,7 @@ test("real OMP HTTP bodies retain DeepSeek image prefixes beyond five images and
   const registry = new ModelRegistry(auth, undefined, {settings});
   const model = {...registry.find("deepseek", "deepseek-flash")!, baseUrl: `http://127.0.0.1:${server.port}`};
   const {session} = await createOmpSession({cwd: workspace, agentDir: join(directory, "omp"), model, settings,
-    authStorage: auth, modelRegistry: registry, sessionManager: SessionManager.create(workspace, join(directory, "session")),
+    authStorage: auth, modelRegistry: registry, sessionManager: SessionManager.create(workspace, join(directory, "session")), telemetry: trace.shiori.config,
     systemPrompt: "Use the supplied tools.", cacheWarming: false, skills: [], rules: [], contextFiles: [], promptTemplates: [], slashCommands: [],
     enableMCP: false, enableLsp: false, enableIrc: false, skipPythonPreflight: true, disableExtensionDiscovery: true,
     restrictToolNames: true, allowRestrictedCustomTools: true, toolNames: ["exec", "read"], customTools: extension.tools,
@@ -370,12 +373,50 @@ test("real OMP HTTP bodies retain DeepSeek image prefixes beyond five images and
       expect(ends[i].data.payloadCaptureMs).toBeGreaterThanOrEqual(0);
       expect(ends[i].data.httpInspectionMs).toBeGreaterThanOrEqual(0);
     }
+    const nativeStarts = events.filter(e => e.type === "shiori_span_start");
+    const nativeEnds = events.filter(e => e.type === "shiori_span_end");
+    const nativeRun = nativeStarts.find(e => e.data.operation === "invoke_agent");
+    const nativeChats = nativeStarts.filter(e => e.data.operation === "chat");
+    const nativeTools = nativeStarts.filter(e => e.data.operation === "execute_tool");
+    expect(nativeRun.trace.traceId).toMatch(/^[a-f0-9]{32}$/);
+    expect(nativeRun.trace.traceId).not.toBe("0".repeat(32));
+    expect(nativeChats).toHaveLength(7);
+    expect(nativeTools).toHaveLength(7);
+    expect(nativeEnds).toHaveLength(nativeStarts.length);
+    for (const event of nativeStarts) {
+      expect(event.source).toEqual(SHIORI_SOURCE);
+      expect(event.trace.epoch).toBe(epoch);
+      expect(event.trace.traceId).toBe(nativeRun.trace.traceId);
+      expect(event.trace.spanId).toMatch(/^[a-f0-9]{16}$/);
+      const end = nativeEnds.find(e => e.trace.spanId === event.trace.spanId);
+      expect(end.data.durationMs).toBeGreaterThanOrEqual(0);
+      expect(end.data.outcome).toBe("success");
+      if (event !== nativeRun) expect(event.trace.parentSpanId).toBe(nativeRun.trace.spanId);
+    }
+    const summaries = events.filter(e => e.type === "shiori_run_end");
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0].data).toMatchObject({ scope: "agent_loop", summary: {chats: {total: 7}, tools: {total: 7, ok: 7}},
+      coverage: {toolsAvailable: ["exec", "read"], toolsInvoked: ["exec", "read"]} });
+    expect(summaries[0].trace.spanId).toBe(nativeRun.trace.spanId);
+    expect(otelTrace.getTracerProvider()).toBe(globalProvider);
+    for (const [index, request] of requests.entries()) {
+      expect(request.source).toEqual(SHIORI_SOURCE);
+      expect(request.trace.spanId).toBe(nativeChats[index].trace.spanId);
+    }
+    expect(JSON.stringify(nativeEnds)).not.toContain("gen_ai.input.messages");
+    expect(JSON.stringify(nativeEnds)).not.toContain("gen_ai.tool.call.arguments");
     const firstCall = requests[0].trace.modelCallId;
     for (const tool of ["tool-1", "tool-2"]) {
       for (const type of ["tool_start", "tool_end", "exec", "exec_result", "command", "execution"]) {
         const event = events.find(e => e.type === type && e.trace.toolCallId === tool);
         expect(event, `${tool} ${type}`).toBeDefined();
         expect(event.trace).toMatchObject({epoch, modelCallId: firstCall, requestId: requests[0].trace.requestId});
+      }
+    }
+    for (const tool of nativeTools) {
+      for (const type of ["tool_start", "tool_end", "exec", "exec_result"].filter(type => tool.data.toolName === "exec" || type.startsWith("tool_"))) {
+        const event = events.find(e => e.type === type && e.trace.toolCallId === tool.trace.toolCallId);
+        expect(event.trace.spanId, `${type} native parent`).toBe(tool.trace.spanId);
       }
     }
     expect(events.filter(e => e.type === "observation" && e.trace.modelCallId === firstCall)
@@ -390,7 +431,14 @@ test("real OMP HTTP bodies retain DeepSeek image prefixes beyond five images and
       requestedPath: "skills/notes.md:2-3", path: notes, isError: false,
       hash: new Bun.SHA256().update(await Bun.file(notes).arrayBuffer()).digest("hex"),
     });
-    expect(events.filter(e => e.type === "command").map(e => e.trace.operationId)).toHaveLength(2);
+    const commands = events.filter(e => e.type === "command");
+    expect(commands.map(e => e.trace.operationId)).toHaveLength(2);
+    for (const command of commands) {
+      const nativeTool = nativeTools.find(e => e.trace.toolCallId === command.trace.toolCallId);
+      expect(command.trace.traceId).toBe(nativeTool.trace.traceId);
+      expect(command.trace.parentSpanId).toBe(nativeTool.trace.spanId);
+      expect(command.trace.spanId).not.toBe(nativeTool.trace.spanId);
+    }
     expect(events.filter(e => e.type === "execution").map(e => e.trace.operationId))
       .toEqual(events.filter(e => e.type === "command").map(e => e.trace.operationId));
     const starts = events.filter(e => e.type === "model_start");
@@ -401,7 +449,7 @@ test("real OMP HTTP bodies retain DeepSeek image prefixes beyond five images and
     expect(eventText).not.toContain("private-fake-api-key");
     expect(eventText).not.toContain("private-response-cookie");
   } finally {
-    detach(); await session.dispose(); auth.close(); await runtime.close(); devices.close(); await closeSocket();
+    detach(); await session.dispose(); await trace.shiori.close(); auth.close(); await runtime.close(); devices.close(); await closeSocket();
     server.stop(true); await rm(directory, {recursive: true, force: true});
   }
 }, 30_000);

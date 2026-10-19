@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, mkdir, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -154,6 +154,7 @@ def inspect(button: str):
 
 test("aborting invocation kills its Python process group, including child processes", async () => {
   const directory = await workspace();
+  const events: {type: string; data: any; trace: any}[] = [];
   try {
     await writeFile(join(directory, "actions.py"), `from rsa_tools import capability
 import subprocess, sys, time
@@ -164,7 +165,7 @@ def wait():
     child = subprocess.Popen([sys.executable, "-c", "import time; from pathlib import Path; Path('ready').touch(); time.sleep(0.7); Path('survived').touch()"])
     time.sleep(30)
 `);
-    const registry = new PythonCapabilities(directory);
+    const registry = new PythonCapabilities(directory, undefined, (type, data, trace) => events.push({type, data, trace}));
     const {capabilities: [capability]} = await registry.discover();
     const controller = new AbortController();
     const running = registry.invoke(capability!.id, {}, {signal: controller.signal});
@@ -177,6 +178,40 @@ def wait():
     await Bun.sleep(800);
     expect(await Bun.file(join(directory, "survived")).exists()).toBe(false);
     await expect(registry.invoke(capability!.id, {}, {signal: controller.signal})).rejects.toThrow();
+    const started = events.filter(event => event.type === "python_capability");
+    const finished = events.filter(event => event.type === "python_capability_result");
+    expect(new Set(started.map(event => event.trace.spanId)).size).toBe(2);
+    for (const event of started) {
+      expect(finished.filter(item => item.trace.spanId === event.trace.spanId))
+        .toEqual([expect.objectContaining({data: expect.objectContaining({outcome: "cancelled"})})]);
+    }
+  } finally { await rm(directory, {recursive: true, force: true}); }
+});
+
+test("Python spawn failure closes discovery and invocation spans without losing function identity", async () => {
+  const directory = await workspace();
+  const events: {type: string; data: any; trace: any}[] = [];
+  const parent = {traceId: "1234567890abcdef1234567890abcdef", spanId: "1234567890abcdef"};
+  try {
+    const executable = join(directory, "python");
+    await writeFile(executable, "#!/bin/sh\nexec python3 \"$@\"\n");
+    await chmod(executable, 0o755);
+    await writeFile(join(directory, "actions.py"), 'from rsa_tools import capability\n@capability\ndef echo(value: str = "hi"):\n    """Return the supplied text."""\n    return value\n');
+    const registry = new PythonCapabilities(directory, executable, (type, data, trace) => events.push({type, data, trace}));
+    const {capabilities: [capability]} = await registry.discover(undefined, parent);
+    await rm(executable);
+    await expect(registry.invoke(capability!.id, {}, {trace: parent})).rejects.toThrow();
+    await expect(registry.discover(undefined, parent)).rejects.toThrow();
+    const invocation = events.find(event => event.type === "python_capability")!;
+    expect(invocation.trace).toMatchObject({traceId: parent.traceId, parentSpanId: parent.spanId});
+    expect(invocation.trace.spanId).not.toBe(parent.spanId);
+    expect(events.find(event => event.type === "python_capability_result")).toMatchObject({
+      trace: invocation.trace, data: {outcome: "error", capabilityId: capability!.id, codeSHA: capability!.codeSHA, origin: capability!.origin},
+    });
+    const discoveries = events.filter(event => event.type === "python_capabilities");
+    expect(discoveries.map(event => event.data.outcome)).toEqual(["success", "error"]);
+    expect(discoveries[1]!.trace).toMatchObject({traceId: parent.traceId, parentSpanId: parent.spanId});
+    expect(discoveries[1]!.trace.spanId).not.toBe(discoveries[0]!.trace.spanId);
   } finally { await rm(directory, {recursive: true, force: true}); }
 });
 

@@ -15,7 +15,7 @@ export function installCompanionActivity(owner: BrowserWindow, pet: BrowserWindo
   const controller = new RsaActivityController({ identity: () => source?.identity() ?? null, read: signal => {
     if (!source) throw new Error('No activity source')
     return source.read(signal)
-  }, stop: () => source?.stop?.() }, {
+  }, stop: () => source?.stop?.(), record: (...args) => source?.record?.(...args) }, {
     signals: signals => { if (!owner.isDestroyed()) owner.webContents.send('openalice:activity:signals', signals) },
     foreground, petVisible: () => !pet.isDestroyed() && pet.isVisible(),
     send: (surface, event) => {

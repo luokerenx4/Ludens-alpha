@@ -1,7 +1,7 @@
 import { createServer, connect } from "node:net";
 import { lstat, unlink } from "node:fs/promises";
 import type { Runtime } from "./runtime.ts";
-import type { EventTrace } from "./events.ts";
+import { childTrace, type EventTrace } from "./events.ts";
 
 export interface Request {
   kind: string; argv: string[]; epoch?: string; runId?: string; expectedEpoch?: string | null;
@@ -54,12 +54,36 @@ export async function dispatch(runtime: Runtime, request: Request, signal = new 
   const { kind, argv, epoch } = request;
   if (kind === "status") return runtime.status();
   if (kind === "controller") {
-    if (!runtime.controller) throw new Error("Workspace controller is unavailable");
-    if (request.action === "list") return runtime.controller.list(signal);
-    if (!request.id) throw new Error("Missing capability ID; see rsa controller --help");
-    if (request.action === "help") return runtime.controller.help(request.id, signal);
-    if (request.action === "call") return runtime.callController(request.id, request.arguments, epoch, signal, request.trace);
-    throw new Error("Unknown controller action; see rsa controller --help");
+    // One span owns the public call, including rejected calls. A Python function
+    // reuses it; calls made from that function arrive here as children.
+    const trace = childTrace({ ...request.trace, ...(epoch ? { epoch } : {}) });
+    const started = performance.now();
+    const operation = { action: request.action, id: request.id };
+    runtime.record("capability_start", operation, trace);
+    try {
+      if (!runtime.controller) throw new Error("Workspace controller is unavailable");
+      let value: unknown;
+      if (request.action === "list") value = await runtime.controller.list(signal, trace);
+      else {
+        if (!request.id) throw new Error("Missing capability ID; see rsa controller --help");
+        if (request.action === "help") value = await runtime.controller.help(request.id, signal, trace);
+        else if (request.action === "call") value = await runtime.callController(request.id, request.arguments, epoch, signal, trace);
+        else throw new Error("Unknown controller action; see rsa controller --help");
+      }
+      // Driver failures are successful RPC replies with a nonzero exitCode.
+      const execution = request.action === "call" && request.id?.startsWith("controller/")
+        ? value as { status?: string; exitCode?: number } : undefined;
+      const outcome = signal.aborted || execution?.status === "interrupted" ? "cancelled"
+        : execution?.exitCode || execution?.status === "failed" ? "error" : "success";
+      runtime.record("capability_end", { ...operation, outcome, durationMs: performance.now() - started,
+        ...(execution ? { exitCode: execution.exitCode, status: execution.status } : {}) }, trace);
+      return value;
+    } catch (error) {
+      runtime.record("capability_end", { ...operation,
+        outcome: signal.aborted || (error instanceof Error && error.name === "AbortError") ? "cancelled" : "error",
+        durationMs: performance.now() - started, error: String(error) }, trace);
+      throw error;
+    }
   }
   if (kind === "auto" || kind === "consolidate") {
     if (epoch !== undefined) throw new Error("Control management belongs to the human, not an agent cycle");

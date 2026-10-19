@@ -1,9 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { BasewareCore } from "../src/core.ts";
 import { BasewareClient } from "../src/client.ts";
+import { EventLog } from "../src/events.ts";
 import { listen } from "../src/server.ts";
 import type { Capabilities, ExecutionResult } from "../src/contracts.ts";
 import type { DeviceEvent } from "../src/protocol.ts";
@@ -38,7 +39,8 @@ async function fixture(execute?: Capabilities["controllers"][number]["execute"])
           stdout: String(actions), stderr: "", timing: { clock: "device", requestedAtMs: 0, receivedAtMs: 1 } };
       }) }],
   };
-  const core = new BasewareCore({ capabilities, drivers: [{ id: "fake", version: "1" }], record: (type, data, trace = {}) => events.push({ type, data, trace }) });
+  const core = new BasewareCore({ capabilities, drivers: [{ id: "fake", version: "1" }],
+    record: (type, data, trace = {}, metadata) => events.push({ type, data, trace, source: metadata!.source!, origin: metadata!.origin! }) });
   const directory = await mkdtemp(join(tmpdir(), "baseware-test-"));
   const socket = join(directory, "service.sock");
   const close = await listen(socket, core);
@@ -146,4 +148,58 @@ test("duplicate capability IDs fail registration", () => {
     { id: "same", mediaTypes: [], help: () => "", read: async () => [] },
     { id: "same", mediaTypes: [], help: () => "", read: async () => [] },
   ] } })).toThrow("Duplicate");
+});
+
+test("service journal and subscribers share each fact's original identity and clock", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "baseware-journal-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  const log = new EventLog(directory);
+  const core = new BasewareCore({ capabilities: { sensors: [], controllers: [] }, drivers: [], record: log.record });
+  const received: DeviceEvent[] = [];
+  await core.handle({ kind: "subscribe" }, { id: "subscriber", onEvent: event => received.push(event) });
+  core.record("service_start", {});
+  await core.acquire("lease", 30, { id: "owner" });
+  await core.close();
+  core.record("service_end", core.status());
+  const stored = (await readFile(join(directory, "events.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
+  expect(stored).toHaveLength(4);
+  for (const [index, event] of received.entries()) {
+    expect(event.origin).toEqual(stored[index].origin);
+    expect(event.source).toEqual({ component: "baseware", implementation: "baseware" });
+    expect(stored[index]).toMatchObject({ schemaVersion: 2, serviceId: core.serviceId, seq: index + 1,
+      at: event.origin.at, atMs: event.origin.atMs,
+      origin: { eventId: `${core.serviceId}:${index + 1}`, clockId: core.serviceId } });
+  }
+});
+
+test("device operations have distinct child spans and terminal events for success, failure and cancellation", async () => {
+  const f = await fixture();
+  const parent = { traceId: "a".repeat(32), spanId: "b".repeat(16), toolCallId: "parent-tool" };
+  await f.client.request({ kind: "acquire", epoch: f.epoch, seconds: 30 });
+  await f.client.request({ kind: "controller", id: "motor", argv: ["step"], epoch: f.epoch, trace: parent });
+  await f.client.request({ kind: "sensor", id: "thermal", trace: parent });
+  await expect(f.client.request({ kind: "controller", id: "motor", epoch: "stale", trace: parent })).rejects.toThrow("STALE_EPOCH");
+  await expect(f.client.request({ kind: "sensor", id: "absent", trace: parent })).rejects.toThrow("Unknown sensor");
+  const abort = new AbortController();
+  abort.abort();
+  await expect(f.core.observe({ sensorId: "thermal", argv: [] }, abort.signal, parent)).rejects.toThrow();
+  const starts = f.events.filter(event => event.type === "command" || event.type === "observation_start");
+  expect(starts).toHaveLength(5);
+  expect(new Set(starts.map(event => event.trace.spanId)).size).toBe(5);
+  const outcomes = ["success", "success", "error", "error", "cancelled"];
+  for (const [index, event] of starts.entries()) {
+    expect(event.trace).toMatchObject({ traceId: parent.traceId, parentSpanId: parent.spanId, toolCallId: parent.toolCallId });
+    expect(event.trace.spanId).toMatch(/^[0-9a-f]{16}$/);
+    const terminals = f.events.filter(candidate => candidate.trace.spanId === event.trace.spanId
+      && ["execution", "execution_error", "observation_end", "observation_error"].includes(candidate.type));
+    expect(terminals).toHaveLength(1);
+    expect(terminals[0]!.trace).toEqual(event.trace);
+    expect(terminals[0]!.data).toMatchObject({ outcome: outcomes[index] });
+  }
+  await expect(f.client.request({ kind: "sensor" })).rejects.toThrow("Missing sensor ID");
+  const rejected = f.events.at(-1)!;
+  expect(rejected.type).toBe("request_error");
+  expect(rejected.trace.traceId).toMatch(/^[0-9a-f]{32}$/);
+  expect(rejected.trace.spanId).toMatch(/^[0-9a-f]{16}$/);
+  expect(rejected.data).toMatchObject({ outcome: "error" });
 });

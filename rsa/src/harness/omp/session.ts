@@ -12,6 +12,7 @@ import { openWorkspaceSession, selectWorkspaceSession } from "./workspace-sessio
 import { createRsaExtension, type Cycle } from "./extension.ts";
 import type { EventLog } from "../events.ts";
 import { installCompactionHttpTrace, ModelTrace } from "./trace.ts";
+import { SHIORI_SOURCE } from "./shiori.ts";
 import prompt from "../../../prompts/explore.md" with { type: "text" };
 import continuation from "../../../prompts/continue.md" with { type: "text" };
 import consolidation from "../../../prompts/consolidate.md" with { type: "text" };
@@ -100,7 +101,7 @@ export async function createOmpAgent(options: {
     manager = await openWorkspaceSession(options.state, options.resume);
     const { session } = await createOmpSession({
       cwd: options.workspace, agentDir: join(options.runDir, "omp"),
-      model, authStorage, modelRegistry, settings, sessionManager: manager,
+      model, authStorage, modelRegistry, settings, sessionManager: manager, telemetry: trace.shiori.config,
       customSystemPrompt: prompt, thinkingLevel: ThinkingLevel.Low, cacheWarming: false,
       skills: [], rules: [], contextFiles: [{ path: join(options.workspace, "AGENTS.md"),
         content: await readFile(join(options.workspace, "AGENTS.md"), "utf8") }],
@@ -114,7 +115,7 @@ export async function createOmpAgent(options: {
     initializedSession = session;
     const sessionFile = await selectWorkspaceSession(options.state, manager);
     const unsubscribe = trace.attach(session);
-    options.runtime.record("session", { file: sessionFile, model: options.model, tools: session.getActiveToolNames() });
+    options.log.recorder(SHIORI_SOURCE)("session", { file: sessionFile, model: options.model, tools: session.getActiveToolNames() });
     return {
       async run(context) {
         cycle = context;
@@ -138,14 +139,14 @@ export async function createOmpAgent(options: {
       async close() {
         unsubscribe();
         try { await session.dispose(); }
-        finally { untraceCompaction(); authStorage.close(); }
+        finally { untraceCompaction(); await trace.shiori.close(); authStorage.close(); }
       },
     };
   } catch (error) {
     try {
       if (initializedSession) await initializedSession.dispose();
       else await manager?.close();
-    } finally { untraceCompaction(); authStorage.close(); }
+    } finally { untraceCompaction(); await trace.shiori.close(); authStorage.close(); }
     throw error;
   }
 }
