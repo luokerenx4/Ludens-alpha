@@ -44,7 +44,7 @@ rsa auto on
 }
 ```
 
-`driver` 为 `ryubing`、`mgba`、`azahar` 或 `cua`。`game` 是 Ryubing / Azahar 启动的游戏路径，相对路径以工作区为基准；省略时连接外部已准备好的模拟器。可选 `port` 指定桥端口，默认 mGBA 47653、Ryubing 47663、Azahar 47673。Cua 不使用 `game` 或 `port`；Cua 和 Azahar 可用 `cuaCommand` 指定 Cua Driver 可执行路径，默认从 PATH 查找 `cua-driver`。其余字段的默认值如上；`seconds` 和 `requests` 是每次接管的预算，达到任一预算即交还控制。
+`driver` 为 `ryubing`、`mgba`、`azahar` 或 `cua`。`game` 是 Ryubing / Azahar 启动的游戏路径，相对路径以工作区为基准；省略时连接外部已准备好的模拟器。可选 `port` 指定桥端口，默认 mGBA 47653、Ryubing 47663、Azahar 47673。Cua 不使用 `game` 或 `port`；只有 Cua 可用 `cuaCommand` 指定 Cua Driver 可执行路径，默认从 PATH 查找 `cua-driver`。其余字段的默认值如上；`seconds` 和 `requests` 是每次接管的预算，达到任一预算即交还控制。
 
 有 `game` 时使用对应的 `launch.sh` 启动带桥 Ryubing / Azahar；安装及设备前提见下方 [Switch / Ryubing](#switch--ryubing) 和 [3DS / Azahar](#3ds--azahar)。mGBA 的 ROM 和 Lua 桥仍按下一节手动准备，再执行 `rsa init --driver mgba` 和 `rsa up`。
 
@@ -89,7 +89,7 @@ NDS 的 [melonDS](https://github.com/melonDS-emu/melonDS/releases) 可按桌面�
 
 ### 3DS / Azahar
 
-Azahar 装配将原生触屏与现有 Cua 观察、键盘及桌面操作放在同一能力目录。先按 [Azahar driver 文档](../baseware/src/drivers/azahar/README.md) 构建带桥模拟器，并准备 Cua Driver，然后在独立工作区启动：
+Azahar 是独立的 3DS driver，提供原生 `pad`、`touch` 和 `screen`，不依赖 Cua。先按 [Azahar driver 文档](../baseware/src/drivers/azahar/README.md) 构建并安装带桥模拟器，再在独立工作区启动：
 
 ```sh
 rsa init --driver azahar --game /absolute/path/to/game.3ds --seconds 1800
@@ -99,7 +99,7 @@ rsa controller list
 rsa controller controller/touch --help
 ```
 
-已有带桥模拟器运行时可省略 `--game`；默认原生桥端口为 47673。触屏通过模拟器内部输入状态注入，不依赖桌面鼠标坐标或窗口焦点；观察仍来自 Cua。初始自动观测是 `cua.get_desktop_state`，Agent 可在 workspace 中自行写 observe hook 选择窗口或处理画面。驱动不识别上下屏、不裁剪、不推导屏幕到触点的坐标关系。
+已有带桥模拟器运行时可省略 `--game`；默认原生桥端口为 47673。按键、摇杆和触屏通过模拟器内部输入状态注入，不依赖桌面鼠标坐标或窗口焦点。初始自动观测使用 `screen capture`，返回模拟器当前完整渲染布局。Agent 可在 workspace 中自行写 observe hook 处理画面；驱动不识别上下屏、不裁剪、不推导屏幕到触点的坐标关系。
 
 `touch` 只提供 `down --x <整数> --y <整数>`、`move --x <整数> --y <整数>`、`up`。3DS 范围为 x=0..319、y=0..239，均包含端点；原点在左上，x 向右、y 向下。状态跨调用保留，down 要求当前未按下，move 要求已经按下，释放操作权或取消会抬起。点按、拖拽、等待和画面坐标转换由 Agent 自己组合成 workspace 脚本，仍优先通过 `rsa controller` 发现和使用。
 

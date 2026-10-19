@@ -65,12 +65,14 @@ after the emulator samples it. Cancellation or returning control lifts the conta
 There are no built-in tap, drag, timing, screen-layout or screenshot-coordinate
 conversion commands. Callers compose those behaviors in workspace code.
 
-Azahar combines its native touch bridge with the existing Cua controllers for raw
-observations, keyboard and desktop operations. Prepare the patched emulator using
-the [Azahar driver instructions](src/drivers/azahar/README.md), then connect:
+Azahar provides its own native `pad`, `touch` and `screen` controllers. It has no
+Cua dependency or desktop capabilities. Screen capture returns the emulator's
+complete current framebuffer layout; interpretation and transformation belong to
+workspace code. Prepare the patched emulator using the
+[Azahar driver instructions](src/drivers/azahar/README.md), then connect:
 
 ```sh
-baseware serve --driver azahar --port 47673 --cua-command /absolute/path/to/cua-driver
+baseware serve --driver azahar --port 47673
 baseware controller touch --help
 ```
 

@@ -147,17 +147,17 @@ test("Cua startup and shutdown only manage its services, without emulator bridge
   expect(io.calls.some(argv => ["pgrep", "lsof"].includes(argv[0]!))).toBe(false);
 });
 
-test("Azahar combines its native bridge with desktop observation in one workspace", async () => {
-  const config = parseConfig({ driver: "azahar", game: "games/3DS game.cci", cuaCommand: "/tools/cua-driver" });
+test("Azahar launches its own native device without desktop dependencies", async () => {
+  const config = parseConfig({ driver: "azahar", game: "games/3DS game.cci" });
   const value = await launchPlan(config, "/tmp/3DS workspace", "/tmp/Source", "/tmp/3ds-baseware.sock");
   expect(config.port).toBe(47673);
   expect(value.commands.emulator).toEqual(["env", "RSA_BRIDGE_PORT=47673",
     "/tmp/Source/baseware/src/drivers/azahar/launch.sh", "/tmp/3DS workspace/games/3DS game.cci"]);
   expect(value.commands.baseware).toContain("azahar");
   expect(value.commands.baseware).toContain("47673");
-  expect(value.commands.baseware).toContain("/tools/cua-driver");
-  expect(value.commands.host![value.commands.host!.indexOf("--auto-observe") + 1])
-    .toBe(JSON.stringify([{ controllerId: "cua.get_desktop_state", argv: [] }]));
+  expect(value.commands.baseware).not.toContain("--cua-command");
+  expect(value.commands.host).not.toContain("--auto-observe");
+  expect(() => parseConfig({ driver: "azahar", cuaCommand: "/tools/cua-driver" })).toThrow("cua driver");
   const io = new FakeServices(value);
   io.bridgePort = 47673;
   expect((await new WorkspaceLauncher(value, io).up()).host?.mode).toBe("manual");

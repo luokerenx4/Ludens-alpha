@@ -49,9 +49,9 @@ interface Controller {
 }
 ```
 
-契约只约定发现、help、读取/执行、媒体与时序、取消和交接。help 说明真实设备通道、参数与效果，不说明某个按键在游戏中做什么。`screen`、`pad`、`keyboard`、`touch` 是已有 driver 选择的 ID，Harness 不解析它们。能力 ID 在同类集合内唯一；当前 CLI 每个 Baseware 进程选择一个设备装配，Azahar 装配组合原生触屏和 Cua driver；不增加热插拔或插件管理器。
+契约只约定发现、help、读取/执行、媒体与时序、取消和交接。help 说明真实设备通道、参数与效果，不说明某个按键在游戏中做什么。`screen`、`pad`、`keyboard`、`touch` 是已有 driver 选择的 ID，Harness 不解析它们。能力 ID 在同类集合内唯一；当前 CLI 每个 Baseware 进程选择一个 driver；游戏模拟器 driver 独立提供该设备的能力，不混入 Cua 桌面操作。不增加热插拔或插件管理器。
 
-Ryubing 与 Azahar 原生触屏使用同一个单触点 `touch` Controller，只公开 `down / move / up` 和原生整数坐标范围：Switch 为 x=0..1279、y=0..719，3DS 为 x=0..319、y=0..239，左上为原点，x 向右、y 向下。触点状态跨调用保留，转换在设备输入采样后完成；取消和交还释放触点。点按、拖拽、时序和画面坐标转换由 Agent 在 workspace 中组合，设备层不处理屏幕布局。Azahar 的原生触屏和 Cua 原始观察仍是可分别调用的能力，模型优先经 `rsa controller` 发现和使用，API 为组合代码提供同一入口。
+Ryubing 与 Azahar 原生触屏使用同一个单触点 `touch` Controller，只公开 `down / move / up` 和原生整数坐标范围：Switch 为 x=0..1279、y=0..719，3DS 为 x=0..319、y=0..239，左上为原点，x 向右、y 向下。触点状态跨调用保留，转换在设备输入采样后完成；取消和交还释放触点。点按、拖拽、时序和画面坐标转换由 Agent 在 workspace 中组合，设备层不处理屏幕布局。Azahar 自身的 `pad`、`touch` 和 `screen` 是可分别调用的能力；截图复用模拟器当前完整渲染布局，模型优先经 `rsa controller` 发现和使用，API 为组合代码提供同一入口。
 
 观测包含媒体类型、不可变文件路径、时钟 ID、请求和返回时刻，可带源帧序号。执行结果包含状态、退出码、stdout/stderr、时序和可选 observations；只读 Controller 可以只返回文字，也可同时返回文字与媒体。同一设备时钟下可以关联动作后的观测；帧号前进不等于动画完成，也不等于游戏推进。
 

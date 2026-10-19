@@ -19,7 +19,7 @@ Use down --keep-emulator before changing host settings to preserve the current g
 The shared Dashboard stays up unless --dashboard is given by its owning workspace.
 Without game, prepare the emulator bridge yourself. mGBA always uses this mode.
 cua starts the installed Cua Driver (cua-driver by default); it needs no emulator or bridge port.
-azahar combines native touch with Cua desktop observation and keyboard channels.`;
+azahar provides native gamepad, touch and screen capture through its emulator bridge.`;
 
 export interface LaunchConfig {
   driver: "mgba" | "ryubing" | "azahar" | "cua";
@@ -43,8 +43,8 @@ export function parseConfig(value: unknown): LaunchConfig {
   if (config.game !== undefined && (typeof config.game !== "string" || !config.game.trim())) throw new Error("game must be a non-empty path");
   if (config.driver === "mgba" && config.game !== undefined) throw new Error("mGBA: open the ROM and load bridge.lua in Tools → Scripting, then omit game from rsa.json");
   if (config.driver === "cua" && (config.game !== undefined || config.port !== undefined)) throw new Error("cua does not use game or a bridge port");
-  if (config.cuaCommand !== undefined && (!["cua", "azahar"].includes(String(config.driver)) || typeof config.cuaCommand !== "string" || !config.cuaCommand.trim())) {
-    throw new Error("cuaCommand must be a non-empty executable path for the cua or azahar driver");
+  if (config.cuaCommand !== undefined && (config.driver !== "cua" || typeof config.cuaCommand !== "string" || !config.cuaCommand.trim())) {
+    throw new Error("cuaCommand must be a non-empty executable path for the cua driver");
   }
   const result = { ...(config.driver !== "cua" ? { port: config.driver === "mgba" ? 47653 : config.driver === "azahar" ? 47673 : 47663 } : {}), model: "openai-codex/gpt-6.1-sol",
     seconds: 1800, requests: 1000, compactionThreshold: 256000, dashboard: true, pet: true, ...config } as LaunchConfig;
@@ -87,7 +87,7 @@ export async function launchPlan(config: LaunchConfig, workspace: string, repo =
         "--data-dir", join(workspace, "logs/baseware")],
       host: [rsa, "run", "--baseware-socket", basewareSocket, "--model", config.model,
         "--seconds", String(config.seconds), "--requests", String(config.requests), "--compaction-threshold", String(config.compactionThreshold),
-        ...(["cua", "azahar"].includes(config.driver) ? ["--auto-observe", JSON.stringify([{ controllerId: "cua.get_desktop_state", argv: [] }])] : [])],
+        ...(config.driver === "cua" ? ["--auto-observe", JSON.stringify([{ controllerId: "cua.get_desktop_state", argv: [] }])] : [])],
       ...(config.dashboard ? { dashboard: ["npm", "--prefix", join(repo, "rsa-dashboard"), "run", "dev"] } : {}),
       ...(config.pet ? { pet: [join(repo, "rsa-companion/bin/rsa-companion"), "--workspace", workspace,
         "--profile", join(background, "pet-profile"), "--show-window"] } : {}),

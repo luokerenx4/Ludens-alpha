@@ -18,7 +18,7 @@ if git -C "$source_dir" apply --check "$driver_dir/azahar.patch" 2>/dev/null; th
 else
   git -C "$source_dir" apply --reverse --check "$driver_dir/azahar.patch"
 fi
-cp "$driver_dir/rsa_touch_bridge.cpp" "$driver_dir/rsa_touch_bridge.h" "$source_dir/src/core/frontend/"
+cp "$driver_dir/rsa_bridge.cpp" "$driver_dir/rsa_bridge.h" "$source_dir/src/core/frontend/"
 cmake -S "$source_dir" -B "$build_dir" -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_OSX_ARCHITECTURES=arm64 -DENABLE_LTO=OFF -DENABLE_TESTS=OFF \
   -DENABLE_ROOM_STANDALONE=OFF -DENABLE_DISCORD_RPC=OFF -DENABLE_QT_UPDATE_CHECKER=OFF

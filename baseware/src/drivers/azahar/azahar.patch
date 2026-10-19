@@ -1,18 +1,116 @@
+diff --git a/src/citra_qt/bootmanager.cpp b/src/citra_qt/bootmanager.cpp
+index 79997e4..ae69d6d 100644
+--- a/src/citra_qt/bootmanager.cpp
++++ b/src/citra_qt/bootmanager.cpp
+@@ -17,6 +17,7 @@
+ #include "common/settings.h"
+ #include "core/3ds.h"
+ #include "core/core.h"
++#include "core/frontend/rsa_bridge.h"
+ #include "core/frontend/framebuffer_layout.h"
+ #include "core/loader/loader.h"
+ #include "core/perf_stats.h"
+@@ -456,6 +457,15 @@ GRenderWindow::GRenderWindow(QWidget* parent_, EmuThread* emu_thread_, Core::Sys
+
+     GMainWindow* parent = GetMainWindow();
+     connect(this, &GRenderWindow::FirstFrameDisplayed, parent, &GMainWindow::OnLoadComplete);
++    if (!is_secondary_) {
++        if (auto* bridge = Frontend::RsaBridge::Current()) {
++            bridge->SetCapture([this](const std::string& path, std::function<void(std::string)> done) {
++                QMetaObject::invokeMethod(this, [this, path, done = std::move(done)]() mutable {
++                    CaptureRsaFrame(QString::fromStdString(path), std::move(done));
++                }, Qt::QueuedConnection);
++            });
++        }
++    }
+ }
+
+ GRenderWindow::~GRenderWindow() = default;
+@@ -735,6 +745,20 @@ void GRenderWindow::CaptureScreenshot(u32 res_scale, const QString& screenshot_p
+         layout);
+ }
+
++void GRenderWindow::CaptureRsaFrame(const QString& path, std::function<void(std::string)> done) {
++    if (!system.IsPoweredOn()) { done("NO_GAME"); return; }
++    if (!emu_thread || !emu_thread->IsRunning() || system.frame_limiter.IsFrameAdvancing()) {
++        done("PAUSED"); return;
++    }
++    auto& renderer = system.GPU().Renderer();
++    if (renderer.IsScreenshotPending()) { done("CAPTURE_BUSY"); return; }
++    const auto layout = GetFramebufferLayout();
++    auto image = std::make_shared<QImage>(QSize(layout.width, layout.height), QImage::Format_RGB32);
++    renderer.RequestScreenshot(image->bits(), [image, path, done = std::move(done)](bool invert_y) {
++        done(GetMirroredImage(*image, false, invert_y).save(path) ? "" : "CAPTURE_SAVE_FAILED");
++    }, layout);
++}
++
+ void GRenderWindow::OnMinimalClientAreaChangeRequest(std::pair<u32, u32> minimal_size) {
+     setMinimumSize(minimal_size.first, minimal_size.second);
+ }
+@@ -828,6 +852,7 @@ void GRenderWindow::OnEmulationStarting(EmuThread* emu_thread) {
+ }
+
+ void GRenderWindow::OnEmulationStopping() {
++    if (auto* bridge = Frontend::RsaBridge::Current()) bridge->FailCapture("NO_GAME");
+     emu_thread = nullptr;
+ }
+
+diff --git a/src/citra_qt/bootmanager.h b/src/citra_qt/bootmanager.h
+index 9bd922e..de137bd 100644
+--- a/src/citra_qt/bootmanager.h
++++ b/src/citra_qt/bootmanager.h
+@@ -6,6 +6,8 @@
+
+ #include <atomic>
+ #include <condition_variable>
++#include <functional>
++#include <string>
+ #include <memory>
+ #include <mutex>
+ #include <QThread>
+@@ -162,6 +164,7 @@ public:
+     void ReleaseRenderTarget();
+
+     void CaptureScreenshot(u32 res_scale, const QString& screenshot_path);
++    void CaptureRsaFrame(const QString& path, std::function<void(std::string)> done);
+
+     std::pair<u32, u32> ScaleTouch(const QPointF pos) const;
+
+diff --git a/src/citra_qt/citra_qt.cpp b/src/citra_qt/citra_qt.cpp
+index f75e16f..23f31e7 100644
+--- a/src/citra_qt/citra_qt.cpp
++++ b/src/citra_qt/citra_qt.cpp
+@@ -101,6 +101,7 @@
+ #include "common/zstd_compression.h"
+ #include "core/arm/exception_handler.h"
+ #include "core/core.h"
++#include "core/frontend/rsa_bridge.h"
+ #include "core/dumping/backend.h"
+ #include "core/file_sys/archive_extsavedata.h"
+ #include "core/file_sys/archive_source_sd_savedata.h"
+@@ -2644,6 +2645,7 @@ void GMainWindow::OnRestartGame() {
+
+ void GMainWindow::OnPauseGame() {
+     system.frame_limiter.SetFrameAdvancing(true);
++    if (auto* bridge = Frontend::RsaBridge::Current()) bridge->FailCapture("PAUSED");
+     qt_cameras->PauseCameras();
+
+     play_time_manager->Stop();
 diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
-index 37eee4f..5adc0a8 100644
+index 37eee4f..846f41a 100644
 --- a/src/core/CMakeLists.txt
 +++ b/src/core/CMakeLists.txt
 @@ -122,6 +122,8 @@ add_library(citra_core STATIC EXCLUDE_FROM_ALL
      frontend/camera/interface.cpp
      frontend/camera/interface.h
      frontend/emu_window.cpp
-+    frontend/rsa_touch_bridge.cpp
-+    frontend/rsa_touch_bridge.h
++    frontend/rsa_bridge.cpp
++    frontend/rsa_bridge.h
      frontend/emu_window.h
      frontend/framebuffer_layout.cpp
      frontend/framebuffer_layout.h
 diff --git a/src/core/frontend/emu_window.cpp b/src/core/frontend/emu_window.cpp
-index d09b804..526dd9c 100644
+index d09b804..8271544 100644
 --- a/src/core/frontend/emu_window.cpp
 +++ b/src/core/frontend/emu_window.cpp
 @@ -3,15 +3,18 @@
@@ -25,12 +123,12 @@ index d09b804..526dd9c 100644
  #include "core/3ds.h"
  #include "core/frontend/emu_window.h"
  #include "core/frontend/input.h"
-+#include "core/frontend/rsa_touch_bridge.h"
++#include "core/frontend/rsa_bridge.h"
 
  namespace Frontend {
  /// We need a global touch state that is shared across the different window instances
  static std::weak_ptr<EmuWindow::TouchState> global_touch_state;
-+static std::unique_ptr<RsaTouchBridge> rsa_touch_bridge;
++static std::unique_ptr<RsaBridge> rsa_bridge;
 
  GraphicsContext::~GraphicsContext() = default;
 
@@ -56,7 +154,7 @@ index d09b804..526dd9c 100644
 +                    result = std::make_tuple(state->touch_x, state->touch_y, state->touch_pressed);
 +                    generation = state->generation;
 +                }
-+                if (rsa_touch_bridge) rsa_touch_bridge->Sampled(generation);
++                if (rsa_bridge) rsa_bridge->Sampled(generation);
 +                return result;
              }
              return std::make_tuple(0.0f, 0.0f, false);
@@ -65,10 +163,10 @@ index d09b804..526dd9c 100644
      touch_state = std::make_shared<TouchState>();
      Input::RegisterFactory<Input::TouchDevice>("emu_window", touch_state);
      global_touch_state = touch_state;
-+    if (!rsa_touch_bridge) {
++    if (!rsa_bridge) {
 +        if (const char* port = std::getenv("RSA_BRIDGE_PORT")) {
 +            std::weak_ptr<TouchState> weak = touch_state;
-+            rsa_touch_bridge = std::make_unique<RsaTouchBridge>(
++            rsa_bridge = std::make_unique<RsaBridge>(
 +                std::stoul(port), [weak](bool owned, bool pressed, unsigned x, unsigned y,
 +                                         std::uint64_t generation) {
 +                    if (auto state = weak.lock()) {
@@ -115,3 +213,80 @@ index d09b804..526dd9c 100644
 
      if (!IsWithinTouchscreen(framebuffer_layout, framebuffer_x, framebuffer_y))
          std::tie(framebuffer_x, framebuffer_y) = ClipToTouchScreen(framebuffer_x, framebuffer_y);
+diff --git a/src/core/hle/service/hid/hid.cpp b/src/core/hle/service/hid/hid.cpp
+index 9eb6e6c..18cd249 100644
+--- a/src/core/hle/service/hid/hid.cpp
++++ b/src/core/hle/service/hid/hid.cpp
+@@ -12,6 +12,7 @@
+ #include "common/logging/log.h"
+ #include "core/3ds.h"
+ #include "core/core.h"
++#include "core/frontend/rsa_bridge.h"
+ #include "core/hle/ipc_helpers.h"
+ #include "core/hle/kernel/event.h"
+ #include "core/hle/kernel/handle_table.h"
+@@ -220,6 +221,26 @@ void Module::UpdatePadCallback(std::uintptr_t user_data, s64 cycles_late) {
+         // Get current circle pad position and update circle pad direction
+         float circle_pad_x_f, circle_pad_y_f;
+         std::tie(circle_pad_x_f, circle_pad_y_f) = circle_pad->GetStatus();
++        if (auto* bridge = Frontend::RsaBridge::Current()) {
++            if (const auto input = bridge->PollPad()) {
++                state.hex = 0;
++                state.a.Assign((input->buttons >> 0) & 1);
++                state.b.Assign((input->buttons >> 1) & 1);
++                state.x.Assign((input->buttons >> 2) & 1);
++                state.y.Assign((input->buttons >> 3) & 1);
++                state.l.Assign((input->buttons >> 4) & 1);
++                state.r.Assign((input->buttons >> 5) & 1);
++                state.start.Assign((input->buttons >> 6) & 1);
++                state.select.Assign((input->buttons >> 7) & 1);
++                state.left.Assign((input->buttons >> 8) & 1);
++                state.up.Assign((input->buttons >> 9) & 1);
++                state.right.Assign((input->buttons >> 10) & 1);
++                state.down.Assign((input->buttons >> 11) & 1);
++                circle_pad_x_f = input->lx / 32767.f;
++                circle_pad_y_f = input->ly / 32767.f;
++            }
++        }
++
+
+         // xperia64: 0x9A seems to be the calibrated limit of the circle pad
+         // Verified by using Input Redirector with very large-value digital inputs
+@@ -306,6 +327,8 @@ void Module::UpdatePadCallback(std::uintptr_t user_data, s64 cycles_late) {
+         mem->touch.index_reset_ticks = (s64)system.CoreTiming().GetTicks();
+     }
+
++    if (auto* bridge = Frontend::RsaBridge::Current()) bridge->PadSampled();
++
+     // Signal both handles when there's an update to Pad or touch
+     event_pad_or_touch_1->Signal();
+     event_pad_or_touch_2->Signal();
+diff --git a/src/core/hle/service/ir/ir_rst.cpp b/src/core/hle/service/ir/ir_rst.cpp
+index 1f37e86..46b527d 100644
+--- a/src/core/hle/service/ir/ir_rst.cpp
++++ b/src/core/hle/service/ir/ir_rst.cpp
+@@ -7,6 +7,7 @@
+ #include "common/archives.h"
+ #include "common/settings.h"
+ #include "core/core.h"
++#include "core/frontend/rsa_bridge.h"
+ #include "core/core_timing.h"
+ #include "core/hle/ipc_helpers.h"
+ #include "core/hle/kernel/event.h"
+@@ -95,6 +96,16 @@ void IR_RST::UpdateCallback(std::uintptr_t user_data, s64 cycles_late) {
+         // Get current c-stick position and update c-stick direction
+         float c_stick_x_f, c_stick_y_f;
+         std::tie(c_stick_x_f, c_stick_y_f) = c_stick->GetStatus();
++        if (auto* bridge = Frontend::RsaBridge::Current()) {
++            if (const auto input = bridge->ReadPad()) {
++                state.hex = 0;
++                state.zl.Assign((input->buttons >> 12) & 1);
++                state.zr.Assign((input->buttons >> 13) & 1);
++                c_stick_x_f = input->rx / 32767.f;
++                c_stick_y_f = input->ry / 32767.f;
++            }
++        }
++
+         constexpr int MAX_CSTICK_RADIUS = 0x9C; // Max value for a c-stick radius
+         c_stick_x = static_cast<s16>(c_stick_x_f * MAX_CSTICK_RADIUS);
+         c_stick_y = static_cast<s16>(c_stick_y_f * MAX_CSTICK_RADIUS);
