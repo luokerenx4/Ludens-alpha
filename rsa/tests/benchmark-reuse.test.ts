@@ -6,7 +6,7 @@ import { BasewareCore } from "@playness/baseware/core";
 import { listen as listenBaseware } from "@playness/baseware/server";
 import { connectBaseware } from "../src/harness/baseware.ts";
 import { WorkspaceController } from "../src/harness/controller.ts";
-import { PythonCapabilities } from "../src/harness/python-capabilities.ts";
+import { PythonCapabilities, pythonModulePaths } from "../src/harness/python-capabilities.ts";
 import { EventLog, type RecordEvent } from "../src/harness/events.ts";
 import { Runtime } from "../src/harness/runtime.ts";
 import { listen as listenRsa } from "../src/harness/transport.ts";
@@ -48,7 +48,7 @@ test("the environment rejects wrong values and holds the next batch until the cu
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
-test("evaluator proves controller discovery and productive reuse across batches, and rejects look-alikes", async () => {
+for (const route of ["controller", "import"] as const) test(`evaluator proves productive ${route} reuse across batches, and rejects look-alikes`, async () => {
   const workspace = await mkdtemp(join(tmpdir(), "rsa-bench-eval-"));
   const runDir = join(workspace, "logs", "fixture");
   const log = new EventLog(runDir, { id: "reuse-fixture", now: () => performance.now() });
@@ -69,39 +69,52 @@ test("evaluator proves controller discovery and productive reuse across batches,
   const devices = await connectBaseware({ socket: basewareSocket, runDir, seconds: 60, record });
   const runtime = new Runtime(devices, record, 60, "reuse-fixture");
   const env = { ...process.env, RSA_SOCKET: rsaSocket, BASEWARE_SOCKET: basewareSocket,
+    PYTHONPATH: pythonModulePaths().join(":"),
     PATH: [dirname(process.execPath), join(import.meta.dir, "../bin"), process.env.PATH ?? ""].join(":") };
   runtime.controller = new WorkspaceController({ workspace, devices, env, record });
   const closeRsa = await listenRsa(rsaSocket, runtime);
   const epoch = (await runtime.start()).epoch!;
   let round = 0;
-  const cli = async (...args: string[]) => {
+  const exec = async (command: string[]) => {
     const trace = { epoch, traceId: "0123456789abcdef0123456789abcdef", spanId: String(++round).padStart(16, "0"), modelCallId: `model-${round}` };
     log.record("model_start", {}, trace);
-    const child = Bun.spawn([join(import.meta.dir, "../bin/rsa"), "controller", ...args], { cwd: workspace,
+    log.record("exec", { command: command.map(arg => `'${arg.replaceAll("'", "'\\''")}'`).join(" ") }, trace);
+    const child = Bun.spawn(command, { cwd: workspace,
       env: { ...env, BASEWARE_EPOCH: epoch, BASEWARE_TRACE: JSON.stringify(trace) }, stdout: "pipe", stderr: "pipe" });
     const [stdout, stderr, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     record("exec_result", { stdout, stderr, exitCode }, trace);
     expect({ stderr, exitCode }).toEqual({ stderr: "", exitCode: 0 });
     return stdout;
   };
+  const cli = (...args: string[]) => exec([join(import.meta.dir, "../bin/rsa"), "controller", ...args]);
   try {
     const initial = JSON.parse(await cli("list"));
     expect(initial.capabilities.map((item: any) => item.id)).toEqual(["controller/bench", "sensor/screen"]);
     // Test-only agent fixture. The live case never supplies this code or solves orders.
     await mkdir(join(workspace, "scripts"));
-    await writeFile(join(workspace, "scripts", "bench.py"), `from rsa_tools import Client, capability
-@capability
+    const source = `from rsa_tools import Client, capability
+${route === "controller" ? "@capability\n" : ""}
 def configure(values: list[int]) -> dict:
     """Set all three dials and submit the assembled order."""
     client = Client()
     for slot, value in enumerate(values, 1):
         client.call("controller/bench", ["set", str(slot), str(value)])
     return client.call("controller/bench", ["submit"])
-`);
-    expect(JSON.parse(await cli("list")).capabilities.at(-1).id).toBe("python/scripts/bench.py:configure");
+`;
+    // The import route is an ordinary helper, with no registry decorator.
+    if (route === "import") log.record("tool_start", { toolName: "write", args: { path: "scripts/bench.py", content: source } },
+      { epoch, traceId: "write-trace", spanId: "write-span" });
+    await writeFile(join(workspace, "scripts", "bench.py"), source);
+    if (route === "import") log.record("tool_end", { toolName: "write", isError: false },
+      { epoch, traceId: "write-trace", spanId: "write-span" });
+    else expect(JSON.parse(await cli("list")).capabilities.at(-1).id).toBe("python/scripts/bench.py:configure");
     let random = 17;
     const digit = () => { random = (Math.imul(random, 1664525) + 1013904223) >>> 0; return random % 9 + 1; };
-    for (let order = 0; order < 6; order++) await cli("python/scripts/bench.py:configure", "--args", JSON.stringify({ values: [digit(), digit(), digit()] }));
+    for (let order = 0; order < 6; order++) {
+      const values = [digit(), digit(), digit()];
+      if (route === "controller") await cli("python/scripts/bench.py:configure", "--args", JSON.stringify({ values }));
+      else await exec(["python3", "-c", `from scripts.bench import configure as build\nprint(build(${JSON.stringify(values)}))`]);
+    }
     recordBenchmark("benchmark_reuse_finished", environment.summary(), { epoch });
     const events = (await readFile(join(runDir, "events.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line) as ReuseEvent);
     const outcome = evaluateReuse(events, epoch);
@@ -111,13 +124,38 @@ def configure(values: list[int]) -> dict:
     expect(outcome.metrics.find(metric => metric.id === "phase-1-orders")?.value).toBe(3);
     expect(outcome.metrics.find(metric => metric.id === "phase-2-orders")?.value).toBe(3);
     expect(outcome.checks.find(check => check.id === "capability-reused")?.evidenceSeq.length).toBeGreaterThan(12);
+    expect(outcome.metrics.find(metric => metric.id === `${route}-productive-calls`)?.value).toBe(6);
+    expect(outcome.metrics.find(metric => metric.id === "controller-discovered")?.value).toBe(route === "controller" ? 1 : 0);
+
+    if (route === "import") {
+      for (const code of [
+        "from scripts.bench import configure", // Import alone is not an invocation.
+        "from scripts.bench import configure\nif False: configure([1,2,3])", // Dead branch.
+        "from scripts.bench import configure\nconfigure([1,2,3])\nmanual_driver_call()", // Mixed operations are ambiguous.
+      ]) {
+        const ambiguous = structuredClone(events);
+        for (const event of ambiguous.filter(event => event.type === "exec")) event.data.command = `python3 - <<'PY'\n${code}\nPY`;
+        expect(passed(ambiguous, epoch, "capability-reused")).toBeNull();
+      }
+      const failedExec = structuredClone(events);
+      for (const event of failedExec.filter(event => event.type === "exec_result")) event.data.exitCode = 1;
+      expect(passed(failedExec, epoch, "capability-reused")).toBeNull();
+      const failedWrite = structuredClone(events);
+      failedWrite.find(event => event.type === "tool_end")!.data.isError = true;
+      expect(passed(failedWrite, epoch, "capability-created")).toBe(false);
+      expect(passed(failedWrite, epoch, "capability-reused")).toBeNull();
+      const emptyHelper = structuredClone(events);
+      emptyHelper.find(event => event.type === "tool_start")!.data.args.content = "def configure(values):\n    return None\n";
+      expect(passed(emptyHelper, epoch, "capability-reused")).toBeNull();
+    }
 
     // Invocation does its own AST lookup, but that is not an explicit discovery.
     const noDiscovery = events.filter(event => !(event.type === "capability_start" && event.data.action === "list"));
     expect(passed(noDiscovery, epoch, "capability-created")).toBe(true);
-    expect(passed(noDiscovery, epoch, "capability-discovered")).toBe(false);
-    expect(passed(noDiscovery, epoch, "capability-reused")).toBe(false);
+    expect(evaluateReuse(noDiscovery, epoch).metrics.find(metric => metric.id === "controller-discovered")?.value).toBe(0);
+    expect(passed(noDiscovery, epoch, "capability-reused")).toBe(true);
 
+    if (route === "controller") {
     // Independent post-run AST inventory can prove creation when the agent used
     // direct imports, but must never impersonate agent discovery or registry use.
     const audited = await new PythonCapabilities(workspace).discover();
@@ -127,8 +165,8 @@ def configure(values: list[int]) -> dict:
     const inventoryOnly = [...events.filter(event => !event.type.startsWith("python_capabilit")), inventory];
     expect(passed(inventoryOnly, epoch, "task-completed")).toBe(true);
     expect(passed(inventoryOnly, epoch, "capability-created")).toBe(true);
-    expect(passed(inventoryOnly, epoch, "capability-discovered")).toBe(false);
-    expect(passed(inventoryOnly, epoch, "capability-reused")).toBe(false);
+    expect(evaluateReuse(inventoryOnly, epoch).metrics.find(metric => metric.id === "controller-discovered")?.value).toBe(0);
+    expect(passed(inventoryOnly, epoch, "capability-reused")).toBeNull();
     expect(evaluateReuse(inventoryOnly, epoch).checks.find(check => check.id === "capability-created")?.evidenceSeq).toEqual([inventory.seq]);
     const untrustedInventory = structuredClone(inventoryOnly);
     untrustedInventory.at(-1)!.source = { component: "rsa" };
@@ -136,33 +174,34 @@ def configure(values: list[int]) -> dict:
     const wrongStage = structuredClone(inventoryOnly);
     wrongStage.at(-1)!.data.stage = "agent-turn";
     expect(passed(wrongStage, epoch, "capability-created")).toBe(false);
+    }
 
     // Manual orders plus unrelated successful Python calls are not productive reuse.
     const unlinked = structuredClone(events);
     for (const event of unlinked.filter(event => event.type === "execution")) event.trace.parentSpanId = "unrelated-manual";
     expect(passed(unlinked, epoch, "task-completed")).toBe(true);
-    expect(passed(unlinked, epoch, "capability-reused")).toBe(false);
+    expect(passed(unlinked, epoch, "capability-reused")).toBeNull();
 
     // A success-looking summary without real Baseware completions is not a pass.
     const noExecutions = events.filter(event => event.type !== "execution");
     expect(passed(noExecutions, epoch, "task-completed")).toBe(false);
-    expect(passed(noExecutions, epoch, "capability-reused")).toBe(false);
+    expect(passed(noExecutions, epoch, "capability-reused")).toBeNull();
 
     // One model round, different epochs, failed macros, and prefilled abilities fail learning checks.
     const sameRound = structuredClone(events);
     for (const event of sameRound) if (event.trace.modelCallId) event.trace.modelCallId = "one-round";
-    expect(passed(sameRound, epoch, "capability-reused")).toBe(false);
+    expect(passed(sameRound, epoch, "capability-reused")).toBeNull();
     const splitEpoch = structuredClone(events), transfer = splitEpoch.find(event => event.type === "benchmark_reuse_phase" && event.data.phase === 2)!.seq;
     for (const event of splitEpoch) if (event.seq >= transfer) event.trace.epoch = "other-epoch";
-    expect(passed(splitEpoch, epoch, "capability-reused")).toBe(false);
+    expect(passed(splitEpoch, epoch, "capability-reused")).toBeNull();
     const failed = structuredClone(events);
     for (const event of failed.filter(event => event.type === "python_capability_result")) event.data.outcome = "error";
-    expect(passed(failed, epoch, "capability-reused")).toBe(false);
+    if (route === "controller") expect(passed(failed, epoch, "capability-reused")).toBeNull();
     const prefilled = structuredClone(events);
     prefilled.find(event => event.type === "benchmark_reuse_workspace")!.data.pythonFiles = ["scripts/bench.py"];
     expect(passed(prefilled, epoch, "fresh-workspace")).toBe(false);
     expect(passed(prefilled, epoch, "capability-created")).toBe(false);
-    expect(passed(prefilled, epoch, "capability-reused")).toBe(false);
+    expect(passed(prefilled, epoch, "capability-reused")).toBeNull();
   } finally {
     await runtime.close(); devices.close(); await closeRsa(); await closeBaseware();
     await rm(workspace, { recursive: true, force: true });

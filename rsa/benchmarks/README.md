@@ -16,9 +16,15 @@ rsa bench run capability-reuse --live --seconds 180 --requests 30
 | `control-handoff` | 原始 driver / 嵌套 Python 长动作中断，输入释放，旧 epoch 拒绝 | 真实 Runtime、socket、Baseware 和 Python；模拟可中断设备，释放延迟不是模拟器性能 |
 | `ws-recovery` | 到期 → SSE 冷却 → WS 全历史恢复 → delta，已交付工具不重放 | 真实 OMP provider；模拟 WS/HTTP，并虚拟推进冷却时间，不测在线网络性能 |
 | `background-compaction` | 后台候选复用、尾部保留、晚到归属、取消后不提交 | 真实 OMP maintenance / V2；注入接近阈值的 token 计数和受控 SSE，不下调生产阈值 |
-| `capability-reuse` | 两批订单完成、新能力创建、主动发现、跨批次实际复用 | 真实模型与 PNG 传感器；短时同会话学习，不代表长期泛化 |
+| `capability-reuse` v2 | 两批订单完成、自主创建 Python 函数、跨批次实际复用 | 真实模型与 PNG 传感器；允许直接 import 或统一接口调用，不代表长期泛化 |
 
-模型 case 的装配台只有 `set` 与 `submit` 两种最小操作。Agent 自己观察目标、发现接口、决定是否写 Python。复用必须同时有成功的新能力调用、不同模型轮次、不同批次，以及其后代设备调用完成订单的证据。结束后的独立 AST 盘点可证明能力创建，但不能算 Agent 主动发现；直接 import helper 也不冒充统一能力接口调用。空函数、无关调用、脚本数量和 Agent 自述不算学会。手动做完任务但未沉淀能力，会出现任务通过、复用失败的结果。
+模型 case 的装配台只有 `set` 与 `submit` 两种最小操作。Agent 自己观察目标、发现接口、决定是否写 Python。复用要求同一个自主创建的函数在不同批次、不同模型轮次中成功使用，并有设备调用完成订单的证据。普通函数即可，不要求 `@capability`；直接 import 和通过 `rsa controller` / `Client` 调用都可通过。是否注册、主动查询目录、选择哪种接口只作诊断，不决定是否学会复用。
+
+统一接口调用使用原 capability / Baseware 调用链，不要求先查一次目录。直接 import 使用成功写入的源码、执行命令的 AST、成功 `exec_result` 与该 exec 下的设备订单共同判定；只出现 import、没有调用的分支、空函数或无关 helper 加手动操作不能计入。此离线判定覆盖可静态识别的 Python 写入和单一顶层函数调用（可包含 print 和结果索引），不会执行 Agent 的脚本。复杂脚本、动态调用或缺少调用证据时，复用结果保留待定，不等于没有学会。结束后的 AST 盘点只证明文件内容，不等于执行证据。脚本数量和 Agent 自述不算学会；任务完成与复用是否获得证据分别展示。
+
+这是合作式功能评测。直接 import 的静态识别没有追踪依赖导入的副作用，也没有重建 `write` 之后通过 `edit` 或 shell 改写的完整源码历史；相关日志超出覆盖范围时，需要人工核对，不能将判定当作任意 Python 程序的执行证明。
+
+v1 把“通过统一接口发现并调用”作为通过条件，过度限制了复用方式。首轮 Agent 已创建 `assembly.py:assemble_order`，跨两批直接 import 调用并完成 6/6 订单；v1 的 `failed` 是旧判定结果，不能解释成 Agent 没学会复用。v2 更正此口径；历史 v1 结果保留，重评须注明使用原日志与新判定版本，不冒充新一轮模型运行。
 
 ## 结果与看板
 
@@ -29,7 +35,7 @@ rsa bench run capability-reuse --live --seconds 180 --requests 30
 看板的 **Benchmark → 基准用例** 展示所有 indexed workspace 的基准结果，不受游戏 workspace 筛选影响。可以选择历史结果、同 case/version/mode 基线、查看检查证据、跳转原运行。模型、seed 或预算不同时会提示；粗略比较足够，不能据此声称因果改进。运行仍由 CLI 显式发起，看板只读。
 
 - `passed`：全部检查通过。
-- `failed`：至少一项检查失败，包含模型没完成任务/没复用能力的正常评测结果。
+- `failed`：至少一项检查失败，包含模型没完成任务等正常评测结果。
 - `inconclusive`：关键证据缺失或没有可判定检查。
 - `error`：用例基础设施异常或进程超时。
 - `skipped`：未启用 `--live`，没有测试模型 case。

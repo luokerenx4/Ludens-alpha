@@ -1,3 +1,5 @@
+import { spawnSync } from "node:child_process";
+import { posix } from "node:path";
 import type { EventTrace } from "../../harness/events.ts";
 import type { CaseOutcome } from "../types.ts";
 
@@ -13,6 +15,27 @@ const spanKey = (event: ReuseEvent) => event.trace.traceId && event.trace.spanId
   ? `${event.trace.traceId}:${event.trace.spanId}` : undefined;
 const publicId = (origin: { path?: string; function?: string } | undefined) =>
   origin?.path && origin.function ? `python/${origin.path}:${origin.function}` : undefined;
+interface PythonEvidence {
+  functions?: string[];
+  effectfulFunctions?: string[];
+  passiveModule?: boolean;
+  call?: { path: string; function: string };
+}
+
+function parsePython(events: ReuseEvent[]) {
+  const inputs = events.flatMap<{ seq: number; command?: string; source?: string }>(event => {
+    if (event.type === "exec" && typeof event.data.command === "string") return [{ seq: event.seq, command: event.data.command }];
+    const args = event.data.args;
+    if (event.type === "tool_start" && event.data.toolName === "write" && typeof args?.path === "string"
+      && args.path.endsWith(".py") && typeof args.content === "string") return [{ seq: event.seq, source: args.content }];
+    return [];
+  });
+  if (!inputs.length) return new Map<number, PythonEvidence>();
+  const parsed = spawnSync("python3", [new URL("./reuse-python.py", import.meta.url).pathname], { input: JSON.stringify(inputs), encoding: "utf8" });
+  if (parsed.status !== 0) throw new Error(`Python evidence parser failed: ${parsed.stderr || parsed.error}`);
+  return new Map<number, PythonEvidence>(
+    JSON.parse(parsed.stdout).map((item: any) => [item.seq, item]));
+}
 
 /** Judge the environment's facts and causality; agent prose is never a verdict. */
 export function evaluateReuse(all: ReuseEvent[], epoch: string): CaseOutcome {
@@ -20,6 +43,16 @@ export function evaluateReuse(all: ReuseEvent[], epoch: string): CaseOutcome {
   const benchmark = (type: string) => events.filter(event => event.type === type && event.source?.component === "benchmark");
   const baseline = benchmark("benchmark_reuse_workspace")[0];
   const before = new Set<string>(baseline?.data.pythonFiles ?? []);
+  const python = parsePython(events);
+  const writes = events.flatMap(event => {
+    const parsed = python.get(event.seq);
+    if (!parsed?.functions) return [];
+    const path = posix.normalize(event.data.args.path);
+    const end = events.find(end => end.type === "tool_end" && spanKey(end) === spanKey(event)
+      && end.seq > event.seq && end.data.isError === false);
+    return end && !path.startsWith("../") && !posix.isAbsolute(path) && !before.has(path)
+      ? [{ event, end, path, ...parsed }] : [];
+  });
   const phases = benchmark("benchmark_reuse_phase");
   const phaseAt = (seq: number) => phases.filter(event => event.seq <= seq).at(-1)?.data.phase as number | undefined;
   const parents = new Map<string, string>();
@@ -68,11 +101,24 @@ export function evaluateReuse(all: ReuseEvent[], epoch: string): CaseOutcome {
     const result = events.find(result => result.type === "python_capability_result" && spanKey(result) === key
       && result.data.outcome === "success" && result.data.codeSHA === event.data.codeSHA);
     if (!key || !id || !outer || !result || !successfulEnds.has(key) || !event.data.codeSHA) return [];
-    const discovery = explicitlyDiscovered.find(item => item.id === id && item.event.seq < event.seq);
-    if (!discovery) return [];
+    const created = newCapabilities.find(item => item.id === id);
+    if (!created) return [];
     const delivered = orders.filter(({ execution }) => isDescendant(execution, key));
-    return delivered.length ? [{ event, id, key, discovery, orders: delivered }] : [];
+    return delivered.length ? [{ event, id, key, route: "controller", evidence: [created.event.seq, event.seq, result.seq], orders: delivered }] : [];
   });
+  const directCalls = events.filter(event => event.type === "exec").flatMap(event => {
+    const call = python.get(event.seq)?.call, key = spanKey(event);
+    if (!call || !key) return [];
+    const write = writes.filter(write => write.path === call.path && write.end.seq < event.seq).at(-1);
+    const result = events.find(result => result.type === "exec_result" && spanKey(result) === key
+      && result.seq > event.seq && result.data.exitCode === 0);
+    if (!write?.passiveModule || !write.effectfulFunctions?.includes(call.function) || !result) return [];
+    const delivered = orders.filter(({ execution }) => execution.seq > event.seq && execution.seq < result.seq
+      && isDescendant(execution, key) && !calls.some(call => isDescendant(execution, call.key)));
+    return delivered.length ? [{ event, id: publicId(call)!, key, route: "import",
+      evidence: [write.event.seq, write.end.seq, event.seq, result.seq], orders: delivered }] : [];
+  });
+  calls.push(...directCalls);
   const reused = new Map<string, typeof calls>();
   for (const id of new Set(calls.map(call => call.id))) {
     const candidates = calls.filter(call => call.id === id);
@@ -85,12 +131,14 @@ export function evaluateReuse(all: ReuseEvent[], epoch: string): CaseOutcome {
   const transferCalls = reusedCalls.filter(call => phaseAt(call.event.seq) === 2);
   const finish = benchmark("benchmark_reuse_finished").at(-1);
   const taskComplete = completed.size === 6 && finish?.data.completed === 6;
-  const distinctNew = new Set(newCapabilities.map(item => item.id));
+  const distinctNew = new Set([...newCapabilities.map(item => item.id),
+    ...writes.flatMap(write => write.functions!.map(name => publicId({ path: write.path, function: name })!))]);
   const evidence = (values: number[]) => [...new Set(values)].sort((a, b) => a - b);
   // On a negative result these references delimit the inspected run; they are
   // inspection scope, not positive evidence that discovery or reuse happened.
   const discoveryScope = evidence([...(baseline ? [baseline.seq] : []), ...discoveries.map(event => event.seq), ...(finish ? [finish.seq] : [])]);
   const reuseScope = evidence([...discoveryScope, ...phases.map(event => event.seq),
+    ...events.filter(event => event.type === "exec").map(event => event.seq),
     ...requests.filter(event => event.data.action === "call" && event.data.id?.startsWith("python/")).map(event => event.seq)]);
   const models = events.filter(event => event.type === "model_start");
   const phaseOrders = (phase: number) => new Set(orders.filter(({ order }) => order.data.phase === phase).map(({ order }) => order.data.orderId)).size;
@@ -103,26 +151,24 @@ export function evaluateReuse(all: ReuseEvent[], epoch: string): CaseOutcome {
       { id: "task-completed", label: "独立环境确认两批订单完成", passed: taskComplete,
         expected: "6 个不同订单被环境接受，并有成功设备调用", actual: `${completed.size}/6 个订单完成`,
         evidenceSeq: evidence([...orders.flatMap(item => [item.order.seq, item.execution.seq]), ...(finish ? [finish.seq] : [])]) },
-      { id: "capability-created", label: "Agent 创建有效的装饰器能力", passed: distinctNew.size > 0,
-        expected: "空白基线之后出现可被 AST 发现的 Python 装饰器能力", actual: `${distinctNew.size} 个新能力`,
-        evidenceSeq: evidence(newCapabilities.map(item => item.event.seq)) },
-      { id: "capability-discovered", label: "通过统一接口主动发现新能力", passed: explicitlyDiscovered.length > 0,
-        expected: "Agent 调用 rsa controller / Client 的 list 或 help，成功发现新能力",
-        actual: explicitlyDiscovered.length ? `${new Set(explicitlyDiscovered.map(item => item.id)).size} 个能力有显式发现证据`
-          : "本轮目录查询至结束的检查范围内，未见主动发现新能力；引用为检查范围",
-        evidenceSeq: explicitlyDiscovered.length ? evidence(explicitlyDiscovered.map(item => item.event.seq)) : discoveryScope },
-      { id: "capability-reused", label: "经统一接口跨批复用能力", passed: reused.size > 0,
-        expected: "通过 rsa controller / Client 调用同一注册 Python 能力，在两批、不同模型轮次中成功执行，且调用链完成订单",
-        actual: reused.size ? `${reused.size} 个注册能力经统一接口跨批复用，第二批 ${transferCalls.length} 次有效调用`
-          : "本轮统一接口调用记录中未见符合条件的跨批复用；引用为检查范围，不判断直接 import 的复用",
-        evidenceSeq: reused.size ? evidence(reusedCalls.flatMap(call => [call.discovery.event.seq, call.event.seq,
+      { id: "capability-created", label: "Agent 创建 Python 函数", passed: distinctNew.size > 0,
+        expected: "空白基线之后创建可解析的 Python 函数，不要求装饰器", actual: `${distinctNew.size} 个新函数`,
+        evidenceSeq: evidence([...newCapabilities.map(item => item.event.seq), ...writes.flatMap(write => [write.event.seq, write.end.seq])]) },
+      { id: "capability-reused", label: "跨批有效复用自写函数", passed: reused.size > 0 ? true : null,
+        expected: "直接 import 或通过 controller 调用同一自写函数，在两批、不同模型轮次中成功执行并完成订单",
+        actual: reused.size ? `${reused.size} 个函数跨批复用，第二批 ${transferCalls.length} 次有效调用`
+          : "未找到足以证明跨批复用的调用证据；复杂脚本未做执行追踪，结果待定",
+        evidenceSeq: reused.size ? evidence(reusedCalls.flatMap(call => [...call.evidence,
           ...call.orders.flatMap(item => [item.order.seq, item.execution.seq])])) : reuseScope },
     ],
     metrics: [
       { id: "orders-completed", label: "完成订单", value: completed.size, unit: "orders", direction: "higher" },
-      { id: "new-capabilities", label: "新能力（诊断）", value: distinctNew.size, unit: "capabilities", direction: "none" },
-      { id: "productive-capability-calls", label: "跨批注册能力经统一接口有效调用", value: reusedCalls.length, unit: "calls", direction: "none" },
-      { id: "productive-reuse-calls", label: "第二批经统一接口有效复用", value: transferCalls.length, unit: "calls", direction: "higher" },
+      { id: "new-capabilities", label: "新函数（诊断）", value: distinctNew.size, unit: "functions", direction: "none" },
+      { id: "productive-capability-calls", label: "跨批函数有效调用", value: reusedCalls.length, unit: "calls", direction: "none" },
+      { id: "productive-reuse-calls", label: "第二批有效复用", value: transferCalls.length, unit: "calls", direction: "higher" },
+      { id: "controller-discovered", label: "Controller 主动发现能力（诊断）", value: new Set(explicitlyDiscovered.map(item => item.id)).size, unit: "capabilities", direction: "none" },
+      { id: "controller-productive-calls", label: "注册函数经 Controller 有效调用（诊断）", value: calls.filter(call => call.route === "controller").length, unit: "calls", direction: "none" },
+      { id: "import-productive-calls", label: "直接 import 有效调用（诊断）", value: directCalls.length, unit: "calls", direction: "none" },
       ...[1, 2].flatMap(phase => [
         { id: `phase-${phase}-requests`, label: `批次 ${phase} 模型请求`, value: phaseRequests(phase), unit: "requests", direction: "none" as const },
         { id: `phase-${phase}-orders`, label: `批次 ${phase} 完成订单`, value: phaseOrders(phase), unit: "orders", direction: "higher" as const },
@@ -134,6 +180,7 @@ export function evaluateReuse(all: ReuseEvent[], epoch: string): CaseOutcome {
       "同一新会话内的短时探索与迁移；没有证明跨会话长期学习或泛化。",
       "脚本数量不是成绩；空函数、失败调用和未推动订单的调用不算能力复用。",
       "结束后的评测侧 AST 盘点仅证明能力已创建，不代表 Agent 主动发现或通过统一接口复用。",
+      "直接 import 根据成功写入的源码、简单 Python exec 的 AST、成功退出及同一调用链的订单判定；不执行工作区代码。复杂脚本、动态导入等未覆盖时保留待定，不等于没有学会。",
       "两批难度相近但不是严格对照实验，请求/订单变化仅作诊断。",
       "这是合作式 Agent 的功能评测，workspace 没有对恶意篡改日志做安全隔离。",
     ],

@@ -2,5 +2,5 @@
   {"id":"control-handoff","version":1,"title":"接管中断","mode":"offline","description":"长动作执行中交还控制，检查输入释放、嵌套 Python 退出和旧 epoch 拒绝。","scope":"真实 RSA / Baseware 调用链，可中断的模拟驱动；不操作游戏。"},
   {"id":"ws-recovery","version":1,"title":"WS 到期恢复","mode":"offline","description":"注入连接到期，验证 SSE 冷却、WS 全量恢复、增量续接与工具不重放。","scope":"真实 OMP provider，模拟 WS / HTTP；冷却时间虚拟推进，耗时不代表服务端性能。"},
   {"id":"background-compaction","version":1,"title":"后台压缩","mode":"offline","description":"延迟摘要并追加历史，检查候选复用、尾部保留、晚到归属和取消后不提交。","scope":"真实 OMP maintenance 与原生 V2 压缩，模拟响应；保持 256k 阈值。"},
-  {"id":"capability-reuse","version":1,"title":"重复操作能力复用","mode":"live","description":"从空白工作区完成两批装配订单，检查自主创建、发现和跨批复用 Python 能力的证据。","scope":"真实模型与隔离的图像环境；任务完成和能力复用分别判定，失败如实保留。"}
+  {"id":"capability-reuse","version":2,"title":"重复操作能力复用","mode":"live","description":"从空白工作区完成两批装配订单，检查自主创建并跨批复用 Python 函数的证据；支持直接 import 或统一接口调用。","scope":"真实模型与隔离的图像环境；任务完成和能力复用分别判定，接口选择只作诊断。"}
 ]

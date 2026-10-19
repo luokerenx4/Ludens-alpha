@@ -76,4 +76,6 @@ Dashboard 的 activity 投影保留来源和调用关联，并返回投影耗时
 
 离线 WS/压缩 case 会产生真实实现的 trace epoch，但没有 Runtime 接管，因此不伪造 `control`。看板对没有接管周期的基准读取完整 run；事件的原 trace 仍可核对。故障注入中的预期错误不能直接当成真实运行故障率。
 
-`benchmark_reuse_inventory` 是结束后的只读 AST 盘点，只证明 Agent 创建了有效能力；不能算 Agent 主动发现或调用。后两项仍须使用 Agent 的 discovery / capability / Baseware 原调用链。直接 import helper 是脚本使用证据，不能冒充统一能力接口复用。
+`benchmark_reuse_inventory` 是结束后的只读 AST 盘点，只证明文件中存在有效能力；不能算 Agent 主动发现或调用。能力复用 v2 同时接受普通 Python 函数的直接 import 和统一接口调用，不要求装饰器或事先查询目录。统一接口使用 capability / Baseware 原调用链；直接 import 则联合成功写入的源码 payload、执行命令 AST、成功 `exec_result` 和同 exec 下完成订单的设备事件，跨批次、不同模型轮次判定。只 import 未调用、无关 helper 与手动动作混用不能作为有效复用证据；静态分析无法识别的调用保留待定，不等于没有学会。接口选择与目录查询单独作为诊断指标，不能把“没走 controller”记成学习失败。v1 的历史判定保留，原日志重评要标明新 case version 与重评原因。
+
+直接 import 判定是有限的静态证据分析，不是 Python 执行追踪：未分析依赖导入副作用，也未重建成功 `write` 后经 `edit` 或 shell 改写的完整源码历史。这些情况需要核对原日志，不能仅凭结果摘要断言归因。
