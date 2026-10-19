@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { send } from "../src/harness/transport.ts";
 import { BasewareClient } from "@playness/baseware/client";
 import { defaultSocket } from "@playness/baseware/address";
-import type { ExecutionResult, Observation } from "@playness/baseware/contracts";
+import type { ExecutionResult } from "@playness/baseware/contracts";
 import { rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { resolveWorkspaceState } from "../src/harness/workspace-state.ts";
@@ -33,7 +33,7 @@ test.skipIf(process.env.RSA_MGBA !== "1")("real device captures PNG, completes s
     expect(JSON.parse(result.stdout).frames).toBe(6);
     const state = JSON.parse((await command(["state"])).stdout);
     expect(Object.values(state.state).every((v) => v === 0)).toBe(true);
-    const capture = await baseware.request({ kind: "sensor", id: "screen", argv: ["capture"] }) as Observation[];
+    const capture = (await baseware.request({ kind: "controller", id: "screen", argv: ["capture"] }) as ExecutionResult).observations!;
     const png = Buffer.from(await Bun.file(capture[0].path).arrayBuffer());
     expect(png.readUInt32BE(16)).toBe(240);
     expect(png.readUInt32BE(20)).toBe(160);

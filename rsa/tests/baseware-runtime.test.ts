@@ -9,6 +9,7 @@ import type { Capabilities, ExecutionResult } from "@playness/baseware/contracts
 import type { EventMetadata } from "@playness/baseware/protocol";
 import { connectBaseware } from "../src/harness/baseware.ts";
 import { Runtime } from "../src/harness/runtime.ts";
+import { captureResult } from "./runtime-fixture.ts";
 
 async function until(check: () => boolean) {
   const deadline = performance.now() + 2000;
@@ -38,7 +39,7 @@ async function fixture(seconds = 60, acquisition?: Promise<void>, releaseFailure
   const events: ({ type: string; data: any; trace: any } & EventMetadata)[] = [];
   const deviceEvents: ({ type: string; data: any; trace: any } & EventMetadata)[] = [];
   const capabilities: Capabilities = {
-    controllers: [{ id: "motor", help: () => "wait",
+    controllers: [{ id: "motor", requiresControl: true, help: () => "wait",
       async acquire(epoch) { acquiring.resolve(); await acquisition; owner = epoch; },
       async release() { if (releaseFailure) throw new Error("release failed"); owner = undefined; },
       async execute(_argv, { signal }): Promise<ExecutionResult> {
@@ -47,13 +48,15 @@ async function fixture(seconds = 60, acquisition?: Promise<void>, releaseFailure
         return { id: "action", status: "interrupted", exitCode: 130, stdout: "", stderr: "",
           timing: { clock: "fixture", requestedAtMs: 1, receivedAtMs: 2 } };
       },
-    }],
-    sensors: [{ id: "screen", mediaTypes: ["image/png"], help: () => "capture",
-      async read() { return sources.map((path, index) => ({ id: `frame-${index}`, sensorId: "screen", path, mediaType: "image/png",
-        timing: { clock: "fixture", requestedAtMs: 3, receivedAtMs: 4 } })); },
+    }, { id: "screen", requiresControl: false, mediaTypes: ["image/png"], help: () => "capture",
+      async execute() { return captureResult(sources.map((path, index) => ({ id: `frame-${index}`, controllerId: "screen", path, mediaType: "image/png",
+        timing: { clock: "fixture", requestedAtMs: 3, receivedAtMs: 4 } }))); },
     }],
   };
-  capabilities.controllers = Array.from({ length: controllerCount }, (_, index) => ({ ...capabilities.controllers[0]!, id: index ? `motor-${index}` : "motor" }));
+  capabilities.controllers = [
+    ...Array.from({ length: controllerCount }, (_, index) => ({ ...capabilities.controllers[0]!, id: index ? `motor-${index}` : "motor" })),
+    capabilities.controllers[1]!,
+  ];
   const core = new BasewareCore({ capabilities, drivers: [{ id: "fake", version: "1" }],
     record: (type, data, trace, metadata) => deviceEvents.push({ type, data, trace, ...metadata }) });
   const closeServer = await listen(socket, core);
@@ -147,11 +150,12 @@ test("owner connection loss revokes a separate caller and disconnects RSA", asyn
 test("remote observations and event paths keep distinct durable files inside the RSA run", async () => {
   const f = await fixture();
   try {
-    const observations = await f.runtime.observe({ sensorId: "screen", argv: ["capture"] }, new AbortController().signal,
+    const observations = await f.runtime.observe({ controllerId: "screen", argv: ["capture"] }, new AbortController().signal,
       { toolCallId: "capture-call" }, "explicit");
     expect(new Set(observations.map(observation => observation.path)).size).toBe(2);
     const recorded = f.events.filter(event => event.type === "observation");
     expect(recorded).toHaveLength(2);
+    expect(f.events.find(event => event.type === "execution")!.data.observations).toEqual(observations);
     for (const [index, observation] of observations.entries()) {
       expect(observation.path.startsWith(join(f.runDir, "observations") + "/")).toBe(true);
       expect(recorded[index]).toMatchObject({ data: { id: observation.id, path: observation.path }, trace: { toolCallId: "capture-call" } });
@@ -189,7 +193,7 @@ test.each([0, 2])("RSA acquires one service lease for a catalog with %i controll
   const f = await fixture(60, undefined, false, count);
   const acquire = spyOn(f.core, "acquire"), release = spyOn(f.core, "release");
   try {
-    expect(f.runtime.list().controllers).toHaveLength(count);
+    expect(f.runtime.list().controllers.filter(controller => controller.requiresControl)).toHaveLength(count);
     const state = await f.runtime.start();
     expect(f.core.status()).toMatchObject({ mode: "auto", epoch: state.epoch });
     expect(acquire).toHaveBeenCalledTimes(1);

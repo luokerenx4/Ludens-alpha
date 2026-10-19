@@ -75,7 +75,7 @@ export async function run(ctx: BenchmarkContext): Promise<CaseOutcome> {
     const { createOmpAgent } = await import("../../harness/omp/session.ts");
     runtime.agent = await createOmpAgent({ runtime, workspace: ctx.workspace, runDir: ctx.runDir, state,
       basewareSocket, rsaSocket, binDir, model: ctx.model, maxRequests: ctx.maxRequests,
-      autoObserve: [{ sensorId: "screen", argv: ["capture"] }], compactionThreshold: 256000, log: ctx.log });
+      autoObserve: [{ controllerId: "screen", argv: ["capture"] }], compactionThreshold: 256000, log: ctx.log });
     ctx.signal?.throwIfAborted();
     epoch = (await runtime.start("Complete both batches of assembly orders shown on the supplied display. A new batch arrives after the previous operation returns. Use the supplied capabilities and your workspace.")).epoch!;
     ctx.signal?.throwIfAborted();

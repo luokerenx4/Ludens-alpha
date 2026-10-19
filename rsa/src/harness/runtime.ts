@@ -1,4 +1,4 @@
-import type { Observation, ObservationRequest, ExecutionResult } from "@playness/baseware/contracts";
+import type { Observation, ControllerRequest, ExecutionResult } from "@playness/baseware/contracts";
 import type { Catalog } from "@playness/baseware/protocol";
 import type { EventTrace, RecordEvent } from "./events.ts";
 import type { WorkspaceController } from "./controller.ts";
@@ -16,8 +16,7 @@ export interface DeviceSession {
   readonly catalog: Catalog;
   acquire(epoch: string): Promise<void>;
   release(epoch: string): Promise<void>;
-  observe(request: ObservationRequest, signal: AbortSignal, trace: EventTrace, origin: ObservationOrigin): Promise<Observation[]>;
-  execute(id: string, argv: string[], epoch: string, signal: AbortSignal, trace: EventTrace): Promise<ExecutionResult>;
+  execute(id: string, argv: string[], epoch: string | undefined, signal: AbortSignal, trace: EventTrace, origin?: ObservationOrigin): Promise<ExecutionResult>;
 }
 
 export class Runtime {
@@ -48,9 +47,11 @@ export class Runtime {
   list() { return this.devices.catalog; }
 
   async callController(id: string, args: unknown, epoch: string | undefined, signal: AbortSignal, trace: EventTrace = {}) {
-    if (this.mode !== "auto" || !epoch || epoch !== this.epoch) throw new Error("STALE_EPOCH: use the current control epoch");
     if (!this.controller) throw new Error("Workspace controller is unavailable");
-    const combined = AbortSignal.any([signal, this.control!.signal]);
+    if ((epoch !== undefined || this.controller.requiresControl(id)) && (this.mode !== "auto" || !epoch || epoch !== this.epoch)) {
+      throw new Error("STALE_EPOCH: use the current control epoch");
+    }
+    const combined = epoch ? AbortSignal.any([signal, this.control!.signal]) : signal;
     combined.throwIfAborted();
     const call = this.controller.call(id, args, { epoch, signal: combined, trace: { ...trace, epoch } });
     this.calls.add(call);
@@ -157,8 +158,15 @@ export class Runtime {
     this.record("disconnected", error.message);
   }
 
-  async observe(request: ObservationRequest, signal: AbortSignal, parent: EventTrace = {}, origin: ObservationOrigin = "cli"): Promise<Observation[]> {
-    return await this.devices.observe(request, signal, parent, origin);
+  async observe(request: ControllerRequest, signal: AbortSignal, parent: EventTrace = {}, origin: ObservationOrigin = "cli"): Promise<Observation[]> {
+    // The read-only model tool and automatic sampling use the same controller
+    // protocol, but must not turn an observation request into an input action.
+    const controller = this.devices.catalog.controllers.find(item => item.id === request.controllerId);
+    if (controller?.requiresControl) throw new Error("Observe requires a controller that does not require control");
+    const result = await this.devices.execute(request.controllerId, request.argv,
+      this.mode === "auto" ? this.epoch : undefined, signal, parent, origin);
+    if (result.status !== "completed" || result.exitCode !== 0) throw new Error(`Observation failed: ${result.stderr || result.status}`);
+    return result.observations ?? [];
   }
 
   async close() {

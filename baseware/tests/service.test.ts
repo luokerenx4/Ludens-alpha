@@ -24,20 +24,21 @@ async function fixture(execute?: Capabilities["controllers"][number]["execute"])
   let actions = 0, cancelled = 0, sample = 0;
   const events: DeviceEvent[] = [];
   const capabilities: Capabilities = {
-    sensors: [{ id: "thermal", mediaTypes: ["text/plain"], help: () => "sample",
-      async read(argv, signal) {
-        if (argv[0] === "wait") await new Promise<void>((resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
-        return [{ id: `sample-${++sample}`, sensorId: "thermal", path: "/tmp/fake-observation.txt", mediaType: "text/plain",
-          timing: { clock: "device", requestedAtMs: sample * 10, receivedAtMs: sample * 10 + 1 }, sourceSequence: sample }];
-      } }],
-    controllers: [{ id: "motor", help: () => "step | wait", async acquire(epoch) { owner = epoch; }, async release() { owner = undefined; },
+    controllers: [{ id: "motor", requiresControl: true, help: () => "step | wait", async acquire(epoch) { owner = epoch; }, async release() { owner = undefined; },
       execute: execute ?? (async (argv, { epoch, signal }): Promise<ExecutionResult> => {
         if (owner !== epoch) throw new Error("wrong owner");
         actions++;
         if (argv[0] === "wait") await new Promise<void>(done => signal.addEventListener("abort", () => { cancelled++; done(); }, { once: true }));
         return { id: crypto.randomUUID(), status: signal.aborted ? "interrupted" : "completed", exitCode: signal.aborted ? 130 : 0,
           stdout: String(actions), stderr: "", timing: { clock: "device", requestedAtMs: 0, receivedAtMs: 1 } };
-      }) }],
+      }) }, { id: "thermal", requiresControl: false, mediaTypes: ["text/plain"], help: () => "sample",
+      async execute(argv, { signal }) {
+        if (argv[0] === "wait") await new Promise<void>((resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+        const id = `sample-${++sample}`;
+        const timing = { clock: "device", requestedAtMs: sample * 10, receivedAtMs: sample * 10 + 1 };
+        return { id: `capture-${sample}`, status: "completed", exitCode: 0, stdout: "", stderr: "", timing,
+          observations: [{ id, controllerId: "thermal", path: "/tmp/fake-observation.txt", mediaType: "text/plain", timing, sourceSequence: sample }] };
+      } }],
   };
   const core = new BasewareCore({ capabilities, drivers: [{ id: "fake", version: "1" }],
     record: (type, data, trace = {}, metadata) => events.push({ type, data, trace, source: metadata!.source!, origin: metadata!.origin! }) });
@@ -52,7 +53,7 @@ async function fixture(execute?: Capabilities["controllers"][number]["execute"])
 
 test("client API and CLI use the same catalog, epoch checks and device journal", async () => {
   const f = await fixture();
-  expect(await f.client.request({ kind: "list" })).toMatchObject({ drivers: [{ id: "fake", version: "1" }], sensors: [{ id: "thermal", help: "sample" }] });
+  expect(await f.client.request({ kind: "list" })).toMatchObject({ drivers: [{ id: "fake", version: "1" }], controllers: [{ id: "motor", requiresControl: true }, { id: "thermal", requiresControl: false, help: "sample" }] });
   await f.client.request({ kind: "acquire", epoch: f.epoch, seconds: 30 });
   const cli = Bun.spawn([process.execPath, "src/main.ts", "controller", "motor", "step"], {
     cwd: join(import.meta.dir, ".."), env: { ...process.env, BASEWARE_SOCKET: f.socket, BASEWARE_EPOCH: f.epoch, BASEWARE_TRACE: JSON.stringify({ toolCallId: "cli-call" }) },
@@ -63,10 +64,31 @@ test("client API and CLI use the same catalog, epoch checks and device journal",
   expect(JSON.parse(text)).toMatchObject({ status: "completed", stdout: "1" });
   expect(f.core.status().mode).toBe("auto");
   expect(f.events.find(e => e.type === "execution")?.trace.toolCallId).toBe("cli-call");
-  await f.client.request({ kind: "sensor", id: "thermal", argv: ["sample"], trace: { toolCallId: "observe-call" } });
+  await f.client.request({ kind: "controller", id: "thermal", argv: ["sample"], trace: { toolCallId: "observe-call" } });
   expect(f.events.find(e => e.type === "observation")?.data).toMatchObject({ afterExecution: { toolCallId: "cli-call" } });
   await f.client.request({ kind: "release", epoch: f.epoch });
   await expect(f.client.request({ kind: "controller", id: "motor", argv: ["step"], epoch: f.epoch })).rejects.toThrow("STALE_EPOCH");
+});
+
+test("sensing uses the same controller call without a lease and preserves the last action", async () => {
+  const f = await fixture();
+  const sample = () => f.client.request({ kind: "controller", id: "thermal", argv: ["sample"] }) as Promise<ExecutionResult>;
+  const first = await sample();
+  expect(first).toMatchObject({ status: "completed", observations: [{ controllerId: "thermal", sourceSequence: 1 }] });
+  expect(f.core.status().mode).toBe("manual");
+  await f.client.request({ kind: "acquire", epoch: f.epoch, seconds: 30 });
+  await f.client.request({ kind: "controller", id: "motor", argv: ["step"], epoch: f.epoch, trace: { toolCallId: "action" } });
+  await sample();
+  await sample();
+  const observations = f.events.filter(e => e.type === "observation");
+  expect(observations.slice(1).map(e => (e.data as any).afterExecution.toolCallId)).toEqual(["action", "action"]);
+  expect(observations[2]!.data).toMatchObject({ previousObservationId: "sample-2", sourceSequenceDelta: 1 });
+  const events = f.events.filter(e => e.trace.spanId === observations[2]!.trace.spanId);
+  expect(events.map(e => e.type)).toEqual(["command", "observation_start", "execution", "observation", "observation_end"]);
+  expect(events.find(e => e.type === "execution")!.data).toMatchObject({ controllerId: "thermal", requiresControl: false });
+  await f.client.request({ kind: "revoke" });
+  const result = await sample();
+  expect(result.observations![0]!.sourceSequence).toBe(4);
 });
 
 test("AbortSignal cancels one long call while keeping its owner's lease", async () => {
@@ -133,7 +155,7 @@ test("owner disconnect during acquisition releases a late acquisition", async ()
   const gate = Promise.withResolvers<void>();
   const acquire = f.capabilities.controllers[0]!.acquire;
   let entered = false;
-  f.capabilities.controllers[0]!.acquire = async epoch => { entered = true; await gate.promise; await acquire(epoch); };
+  f.capabilities.controllers[0]!.acquire = async epoch => { entered = true; await gate.promise; await acquire!(epoch); };
   const pending = f.client.request({ kind: "acquire", epoch: f.epoch, seconds: 30 });
   await until(() => entered);
   f.client.close();
@@ -144,17 +166,17 @@ test("owner disconnect during acquisition releases a late acquisition", async ()
 });
 
 test("duplicate capability IDs fail registration", () => {
-  expect(() => new BasewareCore({ drivers: [], capabilities: { controllers: [], sensors: [
-    { id: "same", mediaTypes: [], help: () => "", read: async () => [] },
-    { id: "same", mediaTypes: [], help: () => "", read: async () => [] },
-  ] } })).toThrow("Duplicate");
+  const controller = { id: "same", requiresControl: false, help: () => "", execute: async (): Promise<ExecutionResult> => {
+    throw new Error("unused");
+  } };
+  expect(() => new BasewareCore({ drivers: [], capabilities: { controllers: [controller, controller] } })).toThrow("Duplicate");
 });
 
 test("service journal and subscribers share each fact's original identity and clock", async () => {
   const directory = await mkdtemp(join(tmpdir(), "baseware-journal-"));
   cleanup.push(() => rm(directory, { recursive: true, force: true }));
   const log = new EventLog(directory);
-  const core = new BasewareCore({ capabilities: { sensors: [], controllers: [] }, drivers: [], record: log.record });
+  const core = new BasewareCore({ capabilities: { controllers: [] }, drivers: [], record: log.record });
   const received: DeviceEvent[] = [];
   await core.handle({ kind: "subscribe" }, { id: "subscriber", onEvent: event => received.push(event) });
   core.record("service_start", {});
@@ -177,13 +199,13 @@ test("device operations have distinct child spans and terminal events for succes
   const parent = { traceId: "a".repeat(32), spanId: "b".repeat(16), toolCallId: "parent-tool" };
   await f.client.request({ kind: "acquire", epoch: f.epoch, seconds: 30 });
   await f.client.request({ kind: "controller", id: "motor", argv: ["step"], epoch: f.epoch, trace: parent });
-  await f.client.request({ kind: "sensor", id: "thermal", trace: parent });
+  await f.client.request({ kind: "controller", id: "thermal", trace: parent });
   await expect(f.client.request({ kind: "controller", id: "motor", epoch: "stale", trace: parent })).rejects.toThrow("STALE_EPOCH");
-  await expect(f.client.request({ kind: "sensor", id: "absent", trace: parent })).rejects.toThrow("Unknown sensor");
+  await expect(f.client.request({ kind: "controller", id: "absent", trace: parent })).rejects.toThrow("Unknown controller");
   const abort = new AbortController();
   abort.abort();
-  await expect(f.core.observe({ sensorId: "thermal", argv: [] }, abort.signal, parent)).rejects.toThrow();
-  const starts = f.events.filter(event => event.type === "command" || event.type === "observation_start");
+  await expect(f.core.execute("thermal", [], undefined, abort.signal, parent)).rejects.toThrow();
+  const starts = f.events.filter(event => event.type === "command");
   expect(starts).toHaveLength(5);
   expect(new Set(starts.map(event => event.trace.spanId)).size).toBe(5);
   const outcomes = ["success", "success", "error", "error", "cancelled"];
@@ -191,12 +213,12 @@ test("device operations have distinct child spans and terminal events for succes
     expect(event.trace).toMatchObject({ traceId: parent.traceId, parentSpanId: parent.spanId, toolCallId: parent.toolCallId });
     expect(event.trace.spanId).toMatch(/^[0-9a-f]{16}$/);
     const terminals = f.events.filter(candidate => candidate.trace.spanId === event.trace.spanId
-      && ["execution", "execution_error", "observation_end", "observation_error"].includes(candidate.type));
+      && ["execution", "execution_error"].includes(candidate.type));
     expect(terminals).toHaveLength(1);
     expect(terminals[0]!.trace).toEqual(event.trace);
     expect(terminals[0]!.data).toMatchObject({ outcome: outcomes[index] });
   }
-  await expect(f.client.request({ kind: "sensor" })).rejects.toThrow("Missing sensor ID");
+  await expect(f.client.request({ kind: "controller" })).rejects.toThrow("Missing controller ID");
   const rejected = f.events.at(-1)!;
   expect(rejected.type).toBe("request_error");
   expect(rejected.trace.traceId).toMatch(/^[0-9a-f]{32}$/);

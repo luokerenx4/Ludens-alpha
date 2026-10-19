@@ -275,11 +275,13 @@ def analyze(run, epoch=None):
                 **{key: event.get("trace", {}).get(key) for key in
                    ("epoch", "modelCallId", "requestId", "toolCallId", "operationId")},
                 "commandSeq": command_event["seq"] if command_event else None,
-                "controller": command.get("id"), "argv": command.get("argv"),
+                "controller": data.get("controllerId", command.get("controllerId", command.get("id"))), "argv": command.get("argv"),
                 "error": data.get("error"), "aborted": data.get("aborted", False)})
             continue
         timing = data["timing"]
-        executions.append({"seq": event["seq"], "id": data["id"], "controller": command.get("id"),
+        executions.append({"seq": event["seq"], "id": data["id"],
+            "controller": data.get("controllerId", command.get("controllerId", command.get("id"))),
+            "requiresControl": data.get("requiresControl", command.get("requiresControl", True)),
             "argv": command.get("argv"), "status": data["status"],
             "durationMs": timing["receivedAtMs"] - timing["requestedAtMs"]})
     observation_starts = {trace_key(event, "operationId"): event for event in events
@@ -296,7 +298,7 @@ def analyze(run, epoch=None):
         after = data.get("afterExecution", {})
         capture_ms = timing["receivedAtMs"] - timing["requestedAtMs"]
         capture_by_origin[data.get("origin") or "unknown"].append(capture_ms)
-        observations.append({"seq": event["seq"], "id": data["id"], "sensorId": data["sensorId"],
+        observations.append({"seq": event["seq"], "id": data["id"], "controllerId": data.get("controllerId", data.get("sensorId")),
             "origin": data.get("origin"), "path": data["path"], "argv": request.get("argv"),
             "captureMs": capture_ms,
             "sourceSequence": data.get("sourceSequence"), "sourceSequenceDelta": data.get("sourceSequenceDelta"),
@@ -396,7 +398,7 @@ def analyze(run, epoch=None):
                    if (attempt["error"] and not attempt["aborted"]) or (attempt["status"] or 0) >= 400]
     active_end_ms = stopped["atMs"] if stopped else inside[-1]["atMs"] if inside else None
     elapsed_ms = active_end_ms - enabled["atMs"] if enabled and active_end_ms is not None else None
-    successful_actions = sum(execution["status"] == "completed" for execution in executions)
+    successful_actions = sum(execution["status"] == "completed" and execution["requiresControl"] for execution in executions)
     capabilities = operation_spans(inside, events, "capability_start", "capability_end")
     python_calls = operation_spans(inside, events, "python_capability", "python_capability_result")
     discovery = operation_spans(inside, events, "python_capabilities_start", "python_capabilities")
@@ -518,7 +520,7 @@ def analyze(run, epoch=None):
             "WS wireBytes come from model_ws_dispatch after the size check, immediately before send; HTTP wireBytes are prepared request bodies. Neither proves bytes fully uploaded. builtBodyBytes describes construction only. Payload and stream artifacts are never opened; old WS logs are not inferred.",
             "firstInboundMs and dispatchToFirstInboundMs describe the first inbound stream event, not the first token. Only the event's matching attempt gets that timing; later fallback attempts may have no first-event record. WS has no HTTP fetch/header timing, so those fields remain null.",
             "Cache denominator is usage.input + cacheRead + cacheWrite. Warm excludes request index 1, not later post-compaction cache resets.",
-            "controllerActions counts successful controller executions; inspect argv for state queries/releases or multi-step sequences. independentObserveRequests counts completed requests whose sole executed tool is observe.",
+            "controllerActions counts completed controller executions that require control; sampling calls with requiresControl=false are excluded. Older execution events without this field retain their original action meaning. Inspect argv for state queries/releases or multi-step sequences. independentObserveRequests counts completed requests whose sole executed tool is observe.",
             "controllerExecutionErrors counts explicit execution_error events belonging to the selected epoch, including late events and those marked aborted. Details retain the original error and match command by epoch/operationId. This is independent of toolErrors: a shell batch can finish successfully after an inner controller command fails. Stderr is not parsed to infer errors.",
             "toolExecution measures tool_start to tool_end, including any capture/result preparation; execCommandMs measures only exec to exec_result. Commands are nested within tools: do not add these durations together. Pending spans have no duration, and command text is not parsed to infer waiting or action time.",
             "Skill read/write/edit counts use successful tool completion and named SKILL.md paths. They do not prove the quality of learned content or that an edit changed its hash.",

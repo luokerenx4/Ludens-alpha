@@ -52,13 +52,16 @@ export function aggregate(events: Event[], now = Date.now()) {
   const compactionHttpAttempts = new Map<string, number>();
   let autoStarted: number | undefined;
   let elapsedMs = 0;
+  const executionErrors = new Set(events
+    .filter(event => event.type === "execution_error" && event.trace.traceId && event.trace.spanId)
+    .map(event => JSON.stringify([event.trace.epoch, event.trace.traceId, event.trace.spanId])));
   for (const event of events) {
     const d = event.data;
     const t = event.trace;
     const toolKey = JSON.stringify([t.epoch, t.modelCallId, t.toolCallId]);
     const observationKey = JSON.stringify([t.epoch, t.operationId]);
     if (event.type === "observation_start" && t.operationId)
-      observationRequests.set(observationKey, { sensorId: d.sensorId, argv: d.argv });
+      observationRequests.set(observationKey, { controllerId: d.controllerId ?? d.sensorId, argv: d.argv });
     if (event.type === "auto_compaction_start") {
       compaction = {
         startedAt: event.at,
@@ -232,6 +235,7 @@ export function aggregate(events: Event[], now = Date.now()) {
     if (
       event.type === "execution" &&
       call &&
+      d.requiresControl !== false &&
       d.status === "completed" &&
       d.exitCode === 0
     )
@@ -240,7 +244,7 @@ export function aggregate(events: Event[], now = Date.now()) {
       const o: Observation = {
         id: d.id,
         at: event.at,
-        sensor: d.sensorId,
+        controller: d.controllerId ?? d.sensorId,
         mediaType: d.mediaType,
         origin: d.origin ?? "unknown",
         sourceSequence: d.sourceSequence,
@@ -261,7 +265,9 @@ export function aggregate(events: Event[], now = Date.now()) {
       if (o) o.encodeMs = d.durationMs;
     }
     if (
-      event.type.includes("error") ||
+      (event.type.includes("error") && !(event.type === "observation_error" && executionErrors.has(
+        JSON.stringify([t.epoch, t.traceId, t.spanId]),
+      ))) ||
       event.type.startsWith("auto_compaction") ||
       event.type.startsWith("compaction_http_") ||
       event.type === "disconnected"

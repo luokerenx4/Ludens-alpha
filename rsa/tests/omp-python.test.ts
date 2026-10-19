@@ -15,7 +15,7 @@ test("workspace Python capabilities do not grow OMP's tool list across writes, r
   const workspace = join(directory, "workspace");
   await mkdir(join(workspace, "skills"), {recursive: true});
   const events: {type: string; data: any}[] = [];
-  const runtime = createTestRuntime({controllers: [], sensors: []}, (type, data) => events.push({type, data}));
+  const runtime = createTestRuntime({controllers: []}, (type, data) => events.push({type, data}));
   const control = new AbortController();
   let cycle: Cycle = {epoch: "python-epoch", signal: control.signal};
   let session: AgentSession | undefined;

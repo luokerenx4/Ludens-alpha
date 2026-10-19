@@ -5,7 +5,7 @@ export interface Clock {
 
 export interface Observation {
   id: string;
-  sensorId: string;
+  controllerId: string;
   mediaType: string;
   path: string;
   timing: { clock: string; requestedAtMs: number; receivedAtMs: number };
@@ -19,29 +19,24 @@ export interface ExecutionResult {
   stdout: string;
   stderr: string;
   timing: { clock: string; requestedAtMs: number; receivedAtMs: number };
-}
-
-export interface Sensor {
-  id: string;
-  mediaTypes: readonly string[];
-  help(): string;
-  read(argv: readonly string[], signal: AbortSignal): Promise<Observation[]>;
+  observations?: Observation[];
 }
 
 export interface Controller {
   id: string;
+  requiresControl: boolean;
+  mediaTypes?: readonly string[];
   help(): string;
-  acquire(epoch: string): Promise<void>;
-  execute(argv: readonly string[], context: { epoch: string; signal: AbortSignal }): Promise<ExecutionResult>;
-  release(epoch: string): Promise<void>;
+  acquire?(epoch: string): Promise<void>;
+  execute(argv: readonly string[], context: { epoch?: string; signal: AbortSignal }): Promise<ExecutionResult>;
+  release?(epoch: string): Promise<void>;
 }
 
 export interface Capabilities {
-  sensors: Sensor[];
   controllers: Controller[];
 }
 
-export interface ObservationRequest {
-  sensorId: string;
+export interface ControllerRequest {
+  controllerId: string;
   argv: string[];
 }

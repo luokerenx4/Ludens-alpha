@@ -133,6 +133,9 @@ export function projectTelemetry(
       related.set(identity, { ...related.get(identity), ...event.trace });
     }
   const spans: TraceSpan[] = [];
+  const deviceCommands = new Set(
+    allEvents.filter((event) => event.type === "command" && identified(event)).map(key),
+  );
   for (const definition of operations) {
     const finishes = new Map<string, Event>();
     for (const event of allEvents)
@@ -151,6 +154,9 @@ export function projectTelemetry(
         (definition.startStage && start.data.stage !== definition.startStage)
       )
         continue;
+      // New controller calls also emit observation details on the same span.
+      // Only historical captures without a command need a separate projection.
+      if (start.type === "observation_start" && deviceCommands.has(key(start))) continue;
       const finish = finishes.get(key(start));
       const trace = { ...related.get(key(start)), ...start.trace };
       const result = finish?.data;
@@ -214,6 +220,7 @@ export function projectTelemetry(
             start.data.name ??
             start.data.id ??
             start.data.capabilityId ??
+            start.data.controllerId ??
             start.data.sensorId ??
             (definition.kind === "discovery"
               ? "Python discovery"

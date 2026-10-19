@@ -7,6 +7,7 @@ import { PythonCapabilities } from "../src/harness/python-capabilities.ts";
 import { BasewareCore } from "@playness/baseware/core";
 import { BasewareClient } from "@playness/baseware/client";
 import { listen } from "@playness/baseware/server";
+import { captureResult } from "./runtime-fixture.ts";
 
 async function workspace() { return realpath(await mkdtemp(join(tmpdir(), "rsa-python-"))); }
 
@@ -131,14 +132,14 @@ from baseware import Client
 def inspect(button: str):
     """Read service metadata and execute one controller command."""
     client = Client()
-    return [client.status(), client.list(), client.help("pad"), client.sensor("camera", ["capture"]), client.controller(button, ["press", "A"]), client.release(), client.revoke()]
+    return [client.status(), client.list(), client.help("pad"), client.controller("camera", ["capture"]), client.controller(button, ["press", "A"]), client.release(), client.revoke()]
 `);
     const registry = new PythonCapabilities(directory);
     const {capabilities: [capability]} = await registry.discover();
     const env = {BASEWARE_SOCKET: socketPath, BASEWARE_EPOCH: "current-epoch", BASEWARE_TRACE: JSON.stringify({toolCallId: "call-1"})};
     const result = await registry.invoke(capability!.id, {button: "pad"}, {env});
     expect(result.isError).toBe(false);
-    expect(requests.map(request => request.kind)).toEqual(["status", "list", "help", "sensor", "controller", "release", "revoke"]);
+    expect(requests.map(request => request.kind)).toEqual(["status", "list", "help", "controller", "controller", "release", "revoke"]);
     expect(connections).toBe(7);
     for (const request of requests) expect(request).toMatchObject({epoch: "current-epoch", trace: {toolCallId: "call-1"}});
     expect(requests[4]).toMatchObject({id: "pad", argv: ["press", "A"]});
@@ -221,20 +222,19 @@ test("Python calls the real Baseware service using the persistent owner's lease 
   const events: {type: string; data: any; trace: any}[] = [];
   const actions: string[][] = [];
   let acquired = 0;
-  const observation = {id: "sample-声", sensorId: "camera", mediaType: "application/json", path: join(directory, "sample.json"),
+  const observation = {id: "sample-声", controllerId: "camera", mediaType: "application/json", path: join(directory, "sample.json"),
     timing: {clock: "test-device", requestedAtMs: 20, receivedAtMs: 21}, sourceSequence: 3};
   const core = new BasewareCore({drivers: [{id: "offline", version: "1"}],
     record: (type, data, trace) => events.push({type, data, trace}), capabilities: {
-      controllers: [{id: "motor", help: () => "step", async acquire() { acquired++; }, async release() {},
+      controllers: [{id: "motor", requiresControl: true, help: () => "step", async acquire() { acquired++; }, async release() {},
         async execute(argv, {epoch, signal}) {
           signal.throwIfAborted();
           expect(epoch).toBe("owner-epoch");
           actions.push([...argv]);
           return {id: "execution-1", status: "completed", exitCode: 0, stdout: "完了", stderr: "",
             timing: {clock: "test-device", requestedAtMs: 10, receivedAtMs: 11}};
-        }}],
-      sensors: [{id: "camera", mediaTypes: ["application/json"], help: () => "capture",
-        async read(argv) { expect(argv).toEqual(["capture"]); return [observation]; }}],
+        }}, {id: "camera", requiresControl: false, mediaTypes: ["application/json"], help: () => "capture",
+        async execute(argv) { expect(argv).toEqual(["capture"]); return captureResult([observation]); }}],
     }});
   const close = await listen(socketPath, core);
   const owner = await BasewareClient.connect(socketPath);
@@ -248,7 +248,7 @@ def step(label: str):
     """Execute an action and read the resulting JSON observation."""
     client = Client()
     execution = client.controller("motor", [label])
-    observations = client.sensor("camera", ["capture"])
+    observations = client.controller("camera", ["capture"])["observations"]
     with open(observations[0]["path"], encoding="utf-8") as source:
         data = json.load(source)
     return {"execution": execution, "observations": observations, "data": data,
@@ -268,7 +268,7 @@ def step(label: str):
     expect(acquired).toBe(1);
     expect(core.status()).toMatchObject({mode: "auto", epoch: "owner-epoch"});
     expect(events.filter(event => event.type === "execution" || event.type === "observation").map(event => event.trace))
-      .toEqual([expect.objectContaining({epoch: "owner-epoch", toolCallId: "python-real-call"}), expect.objectContaining({epoch: "owner-epoch", toolCallId: "python-real-call"})]);
+      .toEqual([...Array.from({length: 3}, () => expect.objectContaining({epoch: "owner-epoch", toolCallId: "python-real-call"}))]);
     expect(events.find(event => event.type === "observation")?.data.afterExecution).toMatchObject({id: "execution-1", captureRequestedAfterMs: 9});
     const stale = await registry.invoke(capability!.id, {label: "invalid"}, {env: {...env, BASEWARE_EPOCH: "stale-epoch"}});
     expect(stale).toMatchObject({isError: true, details: {error: {type: "BasewareError"}}});

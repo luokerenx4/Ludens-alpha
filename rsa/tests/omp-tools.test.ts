@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { customToolToDefinition, type ExtensionAPI, type ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { resizeImage } from "@oh-my-pi/pi-coding-agent/utils/image-resize";
 import { createRsaExtension, type Cycle } from "../src/harness/omp/extension.ts";
-import { createTestRuntime } from "./runtime-fixture.ts";
+import { captureResult, createTestRuntime } from "./runtime-fixture.ts";
 import { Workspace } from "../src/harness/workspace.ts";
 
 test("request budgets reset on a new takeover while repeated prompts share the same epoch budget", async () => {
@@ -13,7 +13,7 @@ test("request budgets reset on a new takeover while repeated prompts share the s
   const workspace = join(directory, "workspace");
   await mkdir(join(workspace, "skills"), { recursive: true });
   const requests: {epoch?: string; request: number}[] = [];
-  const runtime = createTestRuntime({controllers: [], sensors: []}, (type, data, trace) => {
+  const runtime = createTestRuntime({controllers: []}, (type, data, trace) => {
     if (type === "context") requests.push({epoch: trace?.epoch, request: (data as {request: number}).request});
   });
   let cycle: Cycle;
@@ -56,13 +56,13 @@ test("OMP's SDK adapter delivers the abort signal correctly and returns real ima
   const file = join(directory, "sample.png");
   const png = "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg==";
   await Bun.write(file, Buffer.from(png, "base64"));
-  const runtime = createTestRuntime({ controllers: [], sensors: [{
-    id: "camera-q", mediaTypes: ["image/png"], help: () => "sample",
-    async read(argv, signal) {
+  const runtime = createTestRuntime({ controllers: [{
+    id: "camera-q", requiresControl: false, mediaTypes: ["image/png"], help: () => "sample",
+    async execute(argv, { signal }) {
       signal.throwIfAborted();
       if (argv.join() !== "sample") throw new Error("bad sensor command");
-      return [{ id: "sample", sensorId: "camera-q", mediaType: "image/png", path: file,
-        timing: { clock: "test", requestedAtMs: 0, receivedAtMs: 1 } }];
+      return captureResult([{ id: "sample", controllerId: "camera-q", mediaType: "image/png", path: file,
+        timing: { clock: "test", requestedAtMs: 0, receivedAtMs: 1 } }]);
     },
   }] }, () => {});
   const control = new AbortController();
@@ -75,7 +75,7 @@ test("OMP's SDK adapter delivers the abort signal correctly and returns real ima
   const exec = customToolToDefinition(extension.tools[1]);
   const ctx = {} as ExtensionContext;
   try {
-    const result = await observe.execute("capture", { sensorId: "camera-q", argv: ["sample"] }, control.signal, () => {}, ctx);
+    const result = await observe.execute("capture", { controllerId: "camera-q", argv: ["sample"] }, control.signal, () => {}, ctx);
     const resized = await resizeImage({ bytes: Buffer.from(png, "base64"), mimeType: "image/png" });
     expect(result.content.find((p) => p.type === "image")).toMatchObject({ type: "image", data: resized.data, mimeType: resized.mimeType });
     expect(resized.width).toBe(200);
@@ -94,22 +94,22 @@ test("tool batches reuse the latest explicit sample per sensor and invalidate al
   await mkdir(join(workspace, "skills"), {recursive: true});
   const image = join(directory, "sample.png");
   await Bun.write(image, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg==", "base64"));
-  const reads: {sensorId: string; argv: readonly string[]}[] = [];
+  const reads: {controllerId: string; argv: readonly string[]}[] = [];
   const contexts: {observations: string[]; reusedObservations: string[]; freshObservations: string[]}[] = [];
   let sequence = 0;
-  const runtime = createTestRuntime({controllers: [], sensors: ["camera", "second-camera"].map(sensorId => ({
-    id: sensorId, mediaTypes: ["image/png"], help: () => "sample",
-    async read(argv: readonly string[]) {
-      reads.push({sensorId, argv});
+  const runtime = createTestRuntime({controllers: ["camera", "second-camera"].map(controllerId => ({
+    id: controllerId, requiresControl: false, mediaTypes: ["image/png"], help: () => "sample",
+    async execute(argv: readonly string[]) {
+      reads.push({controllerId, argv});
       if (argv[0] === "fail") throw new Error("offline sensor failure");
-      return [{id: `${sensorId}-${++sequence}`, sensorId, mediaType: "image/png", path: image,
-        timing: {clock: "test", requestedAtMs: sequence, receivedAtMs: sequence}}];
+      return captureResult([{id: `${controllerId}-${++sequence}`, controllerId, mediaType: "image/png", path: image,
+        timing: {clock: "test", requestedAtMs: sequence, receivedAtMs: sequence}}]);
     },
   }))}, (type, data) => { if (type === "observation_context") contexts.push(data as typeof contexts[number]); });
   const control = new AbortController();
   const extension = createRsaExtension({runtime, workspace: new Workspace(workspace, join(directory, "skill-versions")),
     basewareSocket: "/tmp/unused.sock", binDir: "/tmp", maxRequests: 3,
-    autoObserve: ["camera", "second-camera"].map(sensorId => ({sensorId, argv: ["default"]})),
+    autoObserve: ["camera", "second-camera"].map(controllerId => ({controllerId, argv: ["default"]})),
     cycle: () => ({epoch: "test", signal: control.signal}),
   });
   const handlers: Record<string, (event: any) => any> = {};
@@ -125,13 +125,13 @@ test("tool batches reuse the latest explicit sample per sensor and invalidate al
     handlers.tool_result({toolCallId, toolName, input: {}, ...value});
   try {
     await begin(["wide", "detail"]);
-    const wide = await observe.execute("wide", {sensorId: "camera", argv: ["wide"]}, control.signal, () => {}, ctx);
+    const wide = await observe.execute("wide", {controllerId: "camera", argv: ["wide"]}, control.signal, () => {}, ctx);
     expect(await result("wide", "observe", wide)).toBeUndefined();
-    const detail = await observe.execute("detail", {sensorId: "camera", argv: ["detail"]}, control.signal, () => {}, ctx);
+    const detail = await observe.execute("detail", {controllerId: "camera", argv: ["detail"]}, control.signal, () => {}, ctx);
     const enriched = await result("detail", "observe", detail);
     expect(reads).toEqual([
-      {sensorId: "camera", argv: ["wide"]}, {sensorId: "camera", argv: ["detail"]},
-      {sensorId: "second-camera", argv: ["default"]},
+      {controllerId: "camera", argv: ["wide"]}, {controllerId: "camera", argv: ["detail"]},
+      {controllerId: "second-camera", argv: ["default"]},
     ]);
     expect(contexts[0]).toMatchObject({observations: ["camera-2", "second-camera-3"],
       reusedObservations: ["camera-2"], freshObservations: ["second-camera-3"]});
@@ -140,28 +140,28 @@ test("tool batches reuse the latest explicit sample per sensor and invalidate al
     expect(enriched.content.filter((part: {type: string}) => part.type === "image")).toHaveLength(2);
 
     await begin(["before-a", "before-b", "failed-exec"]);
-    for (const [id, sensorId] of [["before-a", "camera"], ["before-b", "second-camera"]]) {
-      const sample = await observe.execute(id, {sensorId, argv: ["detail"]}, control.signal, () => {}, ctx);
+    for (const [id, controllerId] of [["before-a", "camera"], ["before-b", "second-camera"]]) {
+      const sample = await observe.execute(id, {controllerId, argv: ["detail"]}, control.signal, () => {}, ctx);
       await result(id, "observe", sample);
     }
     const failed = await exec.execute("failed-exec", {command: "exit 7"}, control.signal, () => {}, ctx);
     expect(failed.isError).toBe(true);
     await result("failed-exec", "exec", failed);
     expect(reads.slice(3)).toEqual([
-      {sensorId: "camera", argv: ["detail"]}, {sensorId: "second-camera", argv: ["detail"]},
-      {sensorId: "camera", argv: ["default"]}, {sensorId: "second-camera", argv: ["default"]},
+      {controllerId: "camera", argv: ["detail"]}, {controllerId: "second-camera", argv: ["detail"]},
+      {controllerId: "camera", argv: ["default"]}, {controllerId: "second-camera", argv: ["default"]},
     ]);
     expect(contexts[1]).toMatchObject({observations: ["camera-6", "second-camera-7"],
       reusedObservations: [], freshObservations: ["camera-6", "second-camera-7"]});
 
     await begin(["failed-observe"]);
-    await expect(observe.execute("failed-observe", {sensorId: "camera", argv: ["fail"]},
+    await expect(observe.execute("failed-observe", {controllerId: "camera", argv: ["fail"]},
       control.signal, () => {}, ctx)).rejects.toThrow("offline sensor failure");
     // OMP converts a thrown tool error to this result before calling the hook.
     await result("failed-observe", "observe", {content: [{type: "text", text: "offline sensor failure"}], details: {}, isError: true});
     expect(reads.slice(7)).toEqual([
-      {sensorId: "camera", argv: ["fail"]},
-      {sensorId: "camera", argv: ["default"]}, {sensorId: "second-camera", argv: ["default"]},
+      {controllerId: "camera", argv: ["fail"]},
+      {controllerId: "camera", argv: ["default"]}, {controllerId: "second-camera", argv: ["default"]},
     ]);
     expect(contexts[2]).toMatchObject({observations: ["camera-8", "second-camera-9"],
       reusedObservations: [], freshObservations: ["camera-8", "second-camera-9"]});

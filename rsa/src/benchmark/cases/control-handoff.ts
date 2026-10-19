@@ -31,7 +31,7 @@ def hold():
 `);
   let held = false, actions = 0, abortedAt = 0, releasedAt = 0, driverInterrupted = false;
   const core = new BasewareCore({ drivers: [{ id: "benchmark-input", version: "1" }], capabilities: {
-    sensors: [], controllers: [{ id: "pad", help: () => "hold <milliseconds>",
+    controllers: [{ id: "pad", requiresControl: true, help: () => "hold <milliseconds>",
       async acquire() {},
       async release() { held = false; releasedAt = performance.now(); },
       async execute(argv, { signal }) {

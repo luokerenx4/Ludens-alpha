@@ -29,6 +29,7 @@ test("run summary retains controller, cache, compaction and skill evidence", () 
     event("model_http_end", { fetchToHeadersMs: 4000 }),
     event("model_end", { durationMs: 5000, stopReason: "toolUse", usage: { input: 100, cacheRead: 0 } }),
     event("execution", { status: "completed", exitCode: 0 }),
+    event("execution", { controllerId: "screen", requiresControl: false, status: "completed", exitCode: 0 }),
     event("observation", { id: "frame", sensorId: "screen", mediaType: "image/png" }),
     event("tool_start", { toolName: "read", args: { path: "skills/navigation/SKILL.md" } }, { toolCallId: "read" }),
     event("read", { hash: "fixture-hash" }, { toolCallId: "read" }),
@@ -116,6 +117,20 @@ test("startup compaction is visible without fabricating a main-loop request", ()
   );
   assert.equal(finished.activeCompaction, null);
   assert.equal(finished.summary.compactions, 1);
+});
+
+test("sampling failure details do not count twice beside the controller failure", () => {
+  const events = ["command", "observation_start", "execution_error", "observation_error"].map((type, index): Event => ({
+    seq: index + 1, type, at: new Date(index).toISOString(), atMs: index,
+    trace: { epoch: "cycle", traceId: "trace", spanId: "capture" },
+    data: { controllerId: "screen", requiresControl: false, error: "capture failed", outcome: "error" },
+  }));
+  const result = aggregate(events);
+  assert.equal(result.summary.errors, 1);
+  assert.equal(result.notices[0].type, "execution_error");
+  const legacy = aggregate([events[3]]);
+  assert.equal(legacy.summary.errors, 1);
+  assert.equal(legacy.notices[0].type, "observation_error");
 });
 
 test("HTTP retries do not inflate local request preparation time", () => {
@@ -584,18 +599,20 @@ test("overlapping observations retain raw requests by operation ID rather than c
     seq: ++seq, type, at: new Date(seq).toISOString(), atMs: seq,
     trace: { epoch, operationId }, data,
   });
-  const first = { sensorId: "screen", argv: ["capture", "--delay-ms", "1500"] };
-  const second = { sensorId: "audio", argv: ["sample", "2000"] };
+  const first = { controllerId: "screen", argv: ["capture", "--delay-ms", "1500"] };
+  const second = { controllerId: "audio", argv: ["sample", "2000"] };
   const result = aggregate([
     event("observation_start", "first", first),
-    event("observation_start", "second", second),
+    event("observation_start", "second", { sensorId: second.controllerId, argv: second.argv }),
     event("observation_start", "first", { sensorId: "old", argv: [] }, "old-cycle"),
     event("observation", "second", { id: "b", sensorId: "audio", mediaType: "audio/wav" }),
-    event("observation", "first", { id: "a", sensorId: "screen", mediaType: "image/png", timing: { requestedAtMs: 100, receivedAtMs: 1800 } }),
+    event("observation", "first", { id: "a", controllerId: "screen", mediaType: "image/png", timing: { requestedAtMs: 100, receivedAtMs: 1800 } }),
     event("observation", "unmatched", { id: "c", sensorId: "screen", mediaType: "image/png" }),
   ]);
   assert.deepEqual(result.observations[0].request, second);
   assert.deepEqual(result.observations[1].request, first);
+  assert.equal(result.observations[0].controller, "audio");
+  assert.equal(result.observations[1].controller, "screen");
   assert.equal(result.observations[1].captureMs, 1700); // Preserve elapsed time, do not interpret argv.
   assert.equal(result.observations[2].request, undefined);
 });

@@ -89,7 +89,7 @@ for (const route of ["controller", "import"] as const) test(`evaluator proves pr
   const cli = (...args: string[]) => exec([join(import.meta.dir, "../bin/rsa"), "controller", ...args]);
   try {
     const initial = JSON.parse(await cli("list"));
-    expect(initial.capabilities.map((item: any) => item.id)).toEqual(["controller/bench", "sensor/screen"]);
+    expect(initial.capabilities.map((item: any) => item.id)).toEqual(["controller/bench", "controller/screen"]);
     // Test-only agent fixture. The live case never supplies this code or solves orders.
     await mkdir(join(workspace, "scripts"));
     const source = `from rsa_tools import Client, capability

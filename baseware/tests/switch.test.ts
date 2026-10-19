@@ -66,11 +66,11 @@ async function withSwitchBridge(run: (provider: Awaited<ReturnType<typeof create
 
 test("Switch capture defaults to zero delay and includes a requested delay in its sampling interval", async () => {
   await withSwitchBridge(async (provider, captures) => {
-    const screen = provider.capabilities.sensors[0];
+    const screen = provider.capabilities.controllers.find(c => c.id === "screen")!;
     const signal = new AbortController().signal;
-    const first = (await screen.read(["capture"], signal))[0];
-    const second = (await screen.read(["capture", "--delay-ms", "0"], signal))[0];
-    const delayed = (await screen.read(["capture", "--delay-ms", "40"], signal))[0];
+    const first = (await screen.execute(["capture"], { signal })).observations![0];
+    const second = (await screen.execute(["capture", "--delay-ms", "0"], { signal })).observations![0];
+    const delayed = (await screen.execute(["capture", "--delay-ms", "40"], { signal })).observations![0];
     expect(captures).toHaveLength(3);
     expect(captures.map(capture => capture.path)).toEqual([first.path, second.path, delayed.path]);
     expect(first.sourceSequence).toBe(1);
@@ -83,13 +83,13 @@ test("Switch capture defaults to zero delay and includes a requested delay in it
 
 test("Switch capture rejects invalid delay arguments before contacting the bridge", async () => {
   await withSwitchBridge(async (provider, captures) => {
-    const screen = provider.capabilities.sensors[0];
+    const screen = provider.capabilities.controllers.find(c => c.id === "screen")!;
     const signal = new AbortController().signal;
     for (const value of ["-1", "1.5", "NaN", "Infinity", "2147483648", "", " "]) {
-      await expect(screen.read(["capture", `--delay-ms=${value}`], signal)).rejects.toThrow("delay-ms");
+      await expect(screen.execute(["capture", `--delay-ms=${value}`], { signal })).rejects.toThrow("delay-ms");
     }
     for (const argv of [["capture", "--delay-ms"], ["capture", "--unknown", "1"], ["capture", "extra"], ["wrong"]]) {
-      await expect(screen.read(argv, signal)).rejects.toThrow();
+      await expect(screen.execute(argv, { signal })).rejects.toThrow();
     }
     expect(captures).toHaveLength(0);
   });
@@ -97,9 +97,9 @@ test("Switch capture rejects invalid delay arguments before contacting the bridg
 
 test("Switch capture cancellation during the delay never sends CAPTURE", async () => {
   await withSwitchBridge(async (provider, captures) => {
-    const screen = provider.capabilities.sensors[0];
+    const screen = provider.capabilities.controllers.find(c => c.id === "screen")!;
     const abort = new AbortController();
-    const pending = screen.read(["capture", "--delay-ms", "80"], abort.signal).catch(error => error);
+    const pending = screen.execute(["capture", "--delay-ms", "80"], { signal: abort.signal }).catch(error => error);
     await Bun.sleep(10);
     expect(captures).toHaveLength(0);
     abort.abort();
@@ -108,7 +108,7 @@ test("Switch capture cancellation during the delay never sends CAPTURE", async (
     expect(error.name).toBe("AbortError");
     await Bun.sleep(90);
     expect(captures).toHaveLength(0);
-    await expect(screen.read(["capture"], abort.signal)).rejects.toThrow();
+    await expect(screen.execute(["capture"], { signal: abort.signal })).rejects.toThrow();
     expect(captures).toHaveLength(0);
   });
 });

@@ -10,6 +10,7 @@ import { WorkspaceController } from "../src/harness/controller.ts";
 import { Runtime } from "../src/harness/runtime.ts";
 import { listen as listenRsa, send, type Request } from "../src/harness/transport.ts";
 import type { RecordEvent } from "../src/harness/events.ts";
+import { captureResult } from "./runtime-fixture.ts";
 
 async function until(check: () => boolean | Promise<boolean>) {
   const deadline = performance.now() + 3000;
@@ -28,10 +29,10 @@ async function fixture() {
   await writeFile(source, '{"visible":true}');
   const events: { type: string; data: any; trace: any }[] = [];
   const record: RecordEvent = (type, data, trace) => events.push({ type, data, trace });
-  const actions: { argv: string[]; epoch: string }[] = [];
+  const actions: { argv: string[]; epoch?: string }[] = [];
   let held = false, cancelled = 0, released = 0;
   const core = new BasewareCore({ drivers: [{ id: "offline", version: "1" }], capabilities: {
-    controllers: [{ id: "pad", help: () => "echo <text> | wait | fail",
+    controllers: [{ id: "pad", requiresControl: true, help: () => "echo <text> | wait | fail",
       async acquire() { held = true; }, async release() { held = false; released++; },
       async execute(argv, {epoch, signal}) {
         signal.throwIfAborted();
@@ -43,10 +44,9 @@ async function fixture() {
           exitCode: signal.aborted ? 130 : argv[0] === "fail" ? 17 : 0, stdout: JSON.stringify(argv), stderr: "",
           timing: {clock: "offline", requestedAtMs: 1, receivedAtMs: 2}};
       },
-    }],
-    sensors: [{ id: "screen", mediaTypes: ["application/json"], help: () => "capture",
-      async read() { return [{id: "frame", sensorId: "screen", mediaType: "application/json", path: source,
-        timing: {clock: "offline", requestedAtMs: 3, receivedAtMs: 4}}]; },
+    }, { id: "screen", requiresControl: false, mediaTypes: ["application/json"], help: () => "capture",
+      async execute() { return captureResult([{id: "frame", controllerId: "screen", mediaType: "application/json", path: source,
+        timing: {clock: "offline", requestedAtMs: 3, receivedAtMs: 4}}]); },
     }],
   }});
   const closeBaseware = await listenBaseware(basewareSocket, core);
@@ -102,11 +102,23 @@ def combined(label: str) -> dict:
     const listed = await f.cli(["list"]);
     expect(listed.exitCode).toBe(0);
     expect(JSON.parse(listed.stdout).capabilities.map((item: any) => item.id)).toEqual([
-      "controller/pad", "sensor/screen", "python/scripts/actions.py:echo", "python/scripts/actions.py:combined",
+      "controller/pad", "controller/screen", "python/scripts/actions.py:echo", "python/scripts/actions.py:combined",
     ]);
     const help = await f.cli(["python/scripts/actions.py:echo", "--help"]);
     expect(help.exitCode).toBe(0);
     expect(JSON.parse(help.stdout).parameters.properties.value.default).toBe("hello");
+    expect(await Bun.file(join(f.workspace, "imported")).exists()).toBe(false);
+
+    const manualCapture = await f.cli(["controller/screen", "capture"]);
+    expect(manualCapture.exitCode).toBe(0);
+    expect(JSON.parse(manualCapture.stdout)).toMatchObject({ status: "completed", observations: [{ controllerId: "screen" }] });
+    expect(f.events.find(event => event.type === "execution")?.trace.epoch).toBeUndefined();
+    for (const argv of [["controller/pad", "echo", "manual"], ["python/scripts/actions.py:echo"]]) {
+      const denied = await f.cli(argv);
+      expect(denied.exitCode).toBe(1);
+      expect(denied.stderr).toContain("STALE_EPOCH");
+    }
+    expect(f.actions).toHaveLength(0);
     expect(await Bun.file(join(f.workspace, "imported")).exists()).toBe(false);
 
     const epoch = (await f.runtime.start()).epoch!;
@@ -134,7 +146,7 @@ print(json.dumps(Client().call("python/scripts/actions.py:combined", {"label": "
       && event.trace.parentSpanId === nested[0]!.trace.spanId)!;
     expect(nestedDriver).toBeDefined();
     expect(f.events.find(event => event.type === "execution" && event.trace.parentSpanId === nestedDriver.trace.spanId)).toBeDefined();
-    for (const event of [...nested, ...f.events.filter(event => event.type === "execution")]) {
+    for (const event of [...nested, ...f.events.filter(event => event.type === "execution" && event.data.requiresControl)]) {
       expect(event.trace).toMatchObject({epoch, toolCallId: "integration-call", traceId: f.parentTrace.traceId});
     }
     const concurrent = await Promise.all([f.cli(["python/scripts/actions.py:echo"], epoch), f.cli(["python/scripts/actions.py:echo"], epoch)]);
@@ -143,27 +155,27 @@ print(json.dumps(Client().call("python/scripts/actions.py:combined", {"label": "
     expect(new Set(siblings.map(event => event.trace.spanId)).size).toBe(2);
     for (const event of siblings) expect(event.trace).toMatchObject({traceId: f.parentTrace.traceId, parentSpanId: f.parentTrace.spanId});
 
-    const captured = await f.cli(["sensor/screen", "capture"], epoch);
+    const captured = await f.cli(["controller/screen", "capture"], epoch);
     expect(captured.exitCode).toBe(0);
-    const [observation] = JSON.parse(captured.stdout);
+    const [observation] = JSON.parse(captured.stdout).observations;
     expect(observation.path.startsWith(join(f.runDir, "observations") + "/")).toBe(true);
     await rm(f.source);
     expect(await readFile(observation.path, "utf8")).toBe('{"visible":true}');
-    expect(f.events.find(event => event.type === "observation")).toMatchObject({data: {path: observation.path}, trace: {epoch, toolCallId: "integration-call"}});
+    expect(f.events.findLast(event => event.type === "observation")).toMatchObject({data: {path: observation.path}, trace: {epoch, toolCallId: "integration-call"}});
 
     await writeFile(path, source.replace('"v1:"', '"v2:"'));
     const changed = await f.cli(["python/scripts/actions.py:echo"], epoch);
     expect(changed.exitCode).toBe(0);
     expect(changed.stdout.trim()).toBe("v2:hello");
     await rm(path);
-    expect(JSON.parse((await f.cli(["list"])).stdout).capabilities.map((item: any) => item.id)).toEqual(["controller/pad", "sensor/screen"]);
+    expect(JSON.parse((await f.cli(["list"])).stdout).capabilities.map((item: any) => item.id)).toEqual(["controller/pad", "controller/screen"]);
     const removed = await f.cli(["python/scripts/actions.py:echo"], epoch);
     expect(removed.exitCode).toBe(1);
     expect(removed.stderr).toContain("Unknown capability");
     expect((await f.cli(["controller/pad", "fail"], epoch)).exitCode).toBe(17);
     await expect(send(f.rsaSocket, {kind: "controller", argv: [], action: "call", id: "controller/pad", arguments: {}, epoch})).rejects.toThrow("array of strings");
     const completed = f.events.filter(event => event.type === "capability_end");
-    expect(completed.filter(event => event.data.outcome === "error")).toHaveLength(3);
+    expect(completed.filter(event => event.data.outcome === "error")).toHaveLength(5);
     expect(completed.find(event => event.data.exitCode === 17)?.data).toMatchObject({outcome: "error", status: "failed"});
     for (const started of f.events.filter(event => event.type === "capability_start")) {
       expect(completed.filter(event => event.trace.spanId === started.trace.spanId)).toHaveLength(1);

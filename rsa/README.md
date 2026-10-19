@@ -1,6 +1,6 @@
 # RSA 实验
 
-给模型原始传感器、控制器 CLI 和一个空工作区，让它自行探索并积累技能。`rsa controller` 统一发现和调用设备能力与工作区 Python 函数；设备由独立 Baseware 服务的 mGBA / Ryubing driver 提供。RSA 使用同一份 OMP 18.9.1 循环。模型凭据复用本机 OMP 登录，默认 `openai-codex/gpt-6.1-sol`。
+给模型统一的设备能力 CLI 和一个空工作区，让它自行探索并积累技能。`rsa controller` 统一发现和调用设备能力与工作区 Python 函数；设备由独立 Baseware 服务的 mGBA / Ryubing driver 提供。RSA 使用同一份 OMP 18.9.1 循环。模型凭据复用本机 OMP 登录，默认 `openai-codex/gpt-6.1-sol`。
 
 ## 启动
 
@@ -171,7 +171,7 @@ macOS arm64 桥接基于 Ryubing 的 `Canary-1.3.351` 标签，固定到提交 `
 
 准备设备后，进入任务工作区使用 `rsa init --driver ryubing` / `rsa up`，或分别启动 `baseware serve --driver ryubing` 与 `rsa run`。项目从空经验开始，不加载其他游戏技能；模型循环与 GBA 使用同一实现。
 
-`screen capture` 请求模拟器呈现画面的原始 PNG；系统输入框弹出时，改采集该弹窗的真实界面，不采集桌面。可用 `capture --delay-ms 500` 在发送采集请求前等待固定时间；默认 0，等待可取消。这不检测动画完成，返回帧序号也不能保证画面已经呈现该次按键的结果。自动观测通过装配层配置，例如 `--auto-observe '[{"sensorId":"screen","argv":["capture","--delay-ms","500"]}]'`，Harness 只转发标准传感器请求。
+`screen capture` 请求模拟器呈现画面的原始 PNG；系统输入框弹出时，改采集该弹窗的真实界面，不采集桌面。可用 `capture --delay-ms 500` 在发送采集请求前等待固定时间；默认 0，等待可取消。这不检测动画完成，返回帧序号也不能保证画面已经呈现该次按键的结果。自动观测通过装配层配置，例如 `--auto-observe '[{"controllerId":"screen","argv":["capture","--delay-ms","500"]}]'`，Harness 通过同一 Controller 调用采样，不维护另一套传感器接口。
 
 `pad` 提供 16 个数字按键和四个摇杆轴，原子动作参数见 `rsa controller controller/pad --help`。动作按墙钟时间执行，时长由调用方选择，每段为至少 16 ms 的安全整数，合计也须为安全整数，输入轮询处切换完整状态。命令等待动作完成，期间仍可用 `pad release` 中断。AI 模式覆盖一号手柄及其体感输入；其他玩家、触屏、模拟器快捷键不在此控制器范围内。完成/取消归零，关闭接管或 TCP 断连恢复一号原生手柄输入。桥接只监听本机回环地址，作为可信本机进程间接口，不是多用户安全隔离。
 
@@ -187,22 +187,22 @@ RSA_SWITCH_TEST=1 bun test tests/switch.live.test.ts
 
 ## 统一能力 CLI
 
-`rsa controller` 是 Agent 的主要能力入口，原始 Baseware 目录自动填入同一目录。CLI 和 Python API 使用同一执行器；能力不会自动追加到 OMP 的 tools。Baseware 原有 CLI / API / MCP 仍可单独使用，RSA 当前不接入 MCP，也不新增 RSA MCP 适配器。
+`rsa controller` 是 Agent 的主要能力入口，原始 Baseware 目录自动填入同一目录。采样与输入都是 Controller：采样能力主要返回信息或媒体，`requiresControl` 单独声明是否需要操作权，不根据返回图片来判断。CLI 和 Python API 使用同一执行器；能力不会自动追加到 OMP 的 tools。Baseware 原有 CLI / API / MCP 仍可单独使用，RSA 当前不接入 MCP，也不新增 RSA MCP 适配器。
 
 先运行 Baseware，再用 `rsa run --device-only` 启动不带模型的宿主；两者使用同一工作区默认地址。目录和 help 不需要接管：
 
 ```sh
 rsa controller list
-rsa controller sensor/screen --help
+rsa controller controller/screen --help
 rsa controller controller/pad --help
 rsa auto on
 ```
 
-执行能力需要当前接管周期。把 `auto on` 输出中的 UUID 原样放入当前 shell；模型的 shell 会自动得到这些环境变量：
+标记为 `requiresControl: false` 的采样能力可在手动模式直接调用；输入能力及工作区 Python 函数需要当前接管周期。把 `auto on` 输出中的 UUID 原样放入当前 shell；模型的 shell 会自动得到这些环境变量：
 
 ```sh
 export BASEWARE_EPOCH='<刚才返回的 epoch>'
-rsa controller sensor/screen capture
+rsa controller controller/screen capture
 rsa controller controller/pad apply --state '{"RIGHT":1,"A":1}' --for-ms 120
 rsa controller controller/pad state
 rsa controller controller/pad release
@@ -210,9 +210,9 @@ unset BASEWARE_EPOCH
 rsa auto off
 ```
 
-公共 ID 使用 `controller/<driver 能力 ID>`、`sensor/<driver 能力 ID>` 和 `python/<相对路径.py>:<函数名>`。设备参数原样透传；Python 函数接受 `--args '<JSON object>'`。`list` 只给简短描述与发现诊断，选中能力后再用 `--help` 获取完整参数。不同 driver 的实际能力、通道和单位以它自己的 help 为准；Harness 不内置按键语义。
+公共 ID 使用 `controller/<driver 能力 ID>` 和 `python/<相对路径.py>:<函数名>`。设备参数原样透传；Python 函数接受 `--args '<JSON object>'`。`list` 给出简短描述、设备是否需要控制权及发现诊断，选中能力后再用 `--help` 获取完整参数。不同 driver 的实际能力、通道和单位以它自己的 help 为准；Harness 不内置按键语义。
 
-CLI 传感器调用返回不可变媒体路径及采样区间，并把观测保存到 RSA run。OMP 的 `observe` 工具可将观测转换为模型图片块；通常直接使用循环在动作后提供的画面即可。动作时长由调用方决定，人工接管仍能打断。
+采样和输入共用 Controller 调用与执行结果；结果中的 `observations` 保存不可变媒体路径及采样区间，观测文件同时保存到 RSA run。普通文本或 JSON 输出保留在 `stdout`。OMP 的 `observe` 工具只接受不需要控制权的 Controller，并将其观测转换为模型图片块；通常直接使用循环在动作后提供的画面即可。动作时长由调用方决定，人工接管仍能打断。
 
 ## 工作区 Python 能力
 
@@ -222,9 +222,9 @@ CLI 传感器调用返回不可变媒体路径及采样区间，并把观测保�
 from rsa_tools import Client, capability
 
 @capability
-def sample(sensor_id: str, argv: list[str]) -> list:
-    """Read a sensor using its documented arguments."""
-    return Client().call(f"sensor/{sensor_id}", argv)
+def sample(controller_id: str, argv: list[str]) -> dict:
+    """Sample a device using its documented arguments."""
+    return Client().call(f"controller/{controller_id}", argv)
 ```
 
 调用方式：
@@ -232,7 +232,7 @@ def sample(sensor_id: str, argv: list[str]) -> list:
 ```sh
 rsa controller list
 rsa controller python/scripts/sampling.py:sample --help
-rsa controller python/scripts/sampling.py:sample --args '{"sensor_id":"screen","argv":["capture"]}'
+rsa controller python/scripts/sampling.py:sample --args '{"controller_id":"screen","argv":["capture"]}'
 ```
 
 Python 可用同一入口组合原始能力和其他工作区能力：
@@ -243,8 +243,8 @@ from rsa_tools import Client
 client = Client()
 catalog = client.list()
 help_text = client.help("python/scripts/sampling.py:sample")
-observations = client.call("python/scripts/sampling.py:sample", {
-    "sensor_id": "screen", "argv": ["capture"],
+result = client.call("python/scripts/sampling.py:sample", {
+    "controller_id": "screen", "argv": ["capture"],
 })
 ```
 

@@ -24,20 +24,20 @@ export class ReuseEnvironment {
       if (!this.orders.some(order => order.join() === target.join())) this.orders.push(target);
     }
     this.capabilities = {
-      controllers: [{ id: "bench", help: () => "Set a dial or submit its current settings.\nset <slot:1..3> <digit:0..9>\nsubmit",
+      controllers: [{ id: "bench", requiresControl: true, help: () => "Set a dial or submit its current settings.\nset <slot:1..3> <digit:0..9>\nsubmit",
         acquire: async () => {}, release: async () => {},
         execute: (argv, context) => this.execute(argv, context),
-      }],
-      sensors: [{ id: "screen", mediaTypes: ["image/png"], help: () => "capture — read the assembly bench display",
-        read: async (argv, signal) => {
+      }, { id: "screen", requiresControl: false, mediaTypes: ["image/png"], help: () => "capture — read the assembly bench display",
+        execute: async (argv, { signal }) => {
           signal.throwIfAborted();
           if (argv.length !== 1 || argv[0] !== "capture") throw new Error("Usage: capture");
           const started = performance.now(), id = `bench-${++this.captures}`;
           const path = join(this.directory, `${id}.png`);
           await mkdir(this.directory, { recursive: true });
           await writeFile(path, renderBoard(this.view()));
-          return [{ id, sensorId: "screen", mediaType: "image/png", path, sourceSequence: this.captures,
-            timing: { clock: "benchmark-bench", requestedAtMs: started, receivedAtMs: performance.now() } }];
+          const timing = { clock: "benchmark-bench", requestedAtMs: started, receivedAtMs: performance.now() };
+          return { id, status: "completed", exitCode: 0, stdout: "", stderr: "", timing,
+            observations: [{ id, controllerId: "screen", mediaType: "image/png", path, sourceSequence: this.captures, timing }] };
         },
       }],
     };
@@ -64,7 +64,7 @@ export class ReuseEnvironment {
       target: waiting || this.done ? undefined : this.orders[this.index], waiting, done: this.done, notice: this.notice };
   }
 
-  private async execute(argv: readonly string[], { epoch, signal }: { epoch: string; signal: AbortSignal }): Promise<ExecutionResult> {
+  private async execute(argv: readonly string[], { epoch, signal }: { epoch?: string; signal: AbortSignal }): Promise<ExecutionResult> {
     signal.throwIfAborted();
     const id = crypto.randomUUID(), started = performance.now();
     let ok = true, reply: Record<string, unknown>;

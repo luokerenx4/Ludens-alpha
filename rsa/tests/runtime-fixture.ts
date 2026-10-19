@@ -1,5 +1,5 @@
 import { BasewareCore } from "@playness/baseware/core";
-import type { Capabilities } from "@playness/baseware/contracts";
+import type { Capabilities, ExecutionResult, Observation } from "@playness/baseware/contracts";
 import type { EventTrace, RecordEvent } from "../src/harness/events.ts";
 import { Runtime, type DeviceSession } from "../src/harness/runtime.ts";
 
@@ -12,10 +12,14 @@ export function createTestDeviceSession(capabilities: Capabilities, record: Reco
     catalog: core.list(),
     async acquire(epoch) { await core.acquire(epoch, maxSeconds, client); },
     async release(epoch) { await core.release(epoch); },
-    observe: (request, signal, trace, origin) => core.observe(request, signal, { ...trace }, origin),
-    execute: (id, argv, epoch, signal, trace) => core.execute(id, argv, epoch, signal, { ...trace }),
+    execute: (id, argv, epoch, signal, trace, origin) => core.execute(id, argv, epoch, signal, { ...trace }, undefined, origin),
   };
   return { core, devices };
+}
+
+export function captureResult(observations: Observation[]): ExecutionResult {
+  return { id: crypto.randomUUID(), status: "completed", exitCode: 0, stdout: "", stderr: "", observations,
+    timing: observations[0]?.timing ?? { clock: "test", requestedAtMs: 0, receivedAtMs: 1 } };
 }
 
 export function createTestRuntime(capabilities: Capabilities, record: RecordEvent = () => {}, maxSeconds = 300, runId?: string) {

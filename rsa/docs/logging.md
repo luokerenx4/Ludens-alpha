@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | `shiori` | Agent Loop、模型请求、工具调度、会话/压缩 | `implementation=omp`，`implementationVersion=18.9.1` |
 | `rsa` | 环境循环、控制周期、统一能力入口、工作区 Python | RSA 宿主 |
-| `baseware` | 设备操作权、Controller、Sensor | 独立 Baseware 服务；driver 信息见 manifest |
+| `baseware` | 设备操作权、统一 Controller 与采样结果 | 独立 Baseware 服务；driver 信息见 manifest |
 | `dashboard` | 日志投影、读取高水位 | Dashboard activity API |
 | `pet` | 读取日志、气泡队列、提交展示 | Alice Pet |
 | `benchmark` | 固定场景、故障注入、环境任务事实与独立评测 | `rsa bench` |
@@ -40,7 +40,7 @@ Shiori invoke_agent
     └── capability          rsa controller / rsa_tools.Client
         ├── discovery       静态发现 Python 函数
         ├── capability      宏内部调用另一个能力
-        │   └── device      Baseware execute / observe
+        │   └── device      Baseware execute
         └── device
 ```
 
@@ -48,7 +48,7 @@ Shiori invoke_agent
 
 `python_capability/result` 是能力 span 的细节，保存函数位置、源码 hash、参数与结果。进程启动异常和取消均记录终态后沿原路径抛出；普通 Python helper 内部语句不逐行打点。`python_capabilities_start/python_capabilities` 对应独立 discovery 子 span。直接调用 Python runner 也生成独立 span。
 
-Baseware 为每次设备操作生成子 span，`command/execution/execution_error` 和 `observation_start/end/error` 配对。trace 是观测信息，不授予操作权；epoch 校验和取消行为保持独立。
+Baseware 为每次 Controller 调用生成子 span，`command/execution/execution_error` 为统一执行生命周期，记录 `controllerId` 与已知的 `requiresControl`。媒体调用的 `observation_start/end/error` 和每条 `observation` 共用这个 span，保留采样区间、帧号与媒体路径；它们是同一次操作的采样详情，不另算一次设备调用。采样结果使用 `controllerId`；历史日志读取时仍识别旧 `sensorId`。trace 是观测信息，不授予操作权；epoch 校验和取消行为保持独立。
 
 OMP 的 `shiori_span_start/end` 使用原生 OTel ID；局部 BasicTracerProvider 负责生成真实 ID 和取得最终状态，不注册全局 provider。`captureMessageContent=none` 避免再复制一份正文；原始请求仍保留在现有 payload 中。`shiori_run_end` 原样保存原生 summary/coverage，范围是一次 `agentLoop`，一次 RSA 接管可含多个 loop。OMP 工具覆盖只认识 read/write/edit/exec/observe；宏覆盖须看能力日志。
 
@@ -62,7 +62,7 @@ Dashboard 的 activity 投影保留来源和调用关联，并返回投影耗时
 
 `python3 scripts/analyze-run.py <run> --epoch <epoch>` 离线生成分析：
 
-- 原有模型/工具/设备/观测/压缩指标；时延统计增加 nearest-rank p95。
+- 原有模型/工具/设备/观测/压缩指标；时延统计增加 nearest-rank p95。动作频率只计需要控制权的成功执行，`requiresControl: false` 的采样调用保留在执行明细中，不算输入动作；旧日志未声明时沿用原动作口径。
 - 按 source 统计事件；能力、Python 调用与 discovery 按显式 span 配对，保留 late cleanup 和 pending。
 - Shiori spans 与原生 loop summary 单列；旧日志缺 span 时不从名字/顺序猜测宏调用。
 

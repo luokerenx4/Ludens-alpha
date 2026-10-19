@@ -2,14 +2,14 @@ import { expect, spyOn, test } from "bun:test";
 import { rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { Capabilities, Controller } from "@playness/baseware/contracts";
-import { createTestRuntime, createTestDeviceSession } from "./runtime-fixture.ts";
+import { captureResult, createTestRuntime, createTestDeviceSession } from "./runtime-fixture.ts";
 import { Runtime } from "../src/harness/runtime.ts";
 import { dispatch, listen, send } from "../src/harness/transport.ts";
 
 function fixture() {
   let angle = 0, owner: string | undefined;
   const controller: Controller = {
-    id: "joint-7", help: () => "rotate <degrees>",
+    id: "joint-7", requiresControl: true, help: () => "rotate <degrees>",
     async acquire(epoch) { owner = epoch; },
     async release(epoch) { if (owner === epoch) owner = undefined; },
     async execute(argv, context) {
@@ -21,11 +21,11 @@ function fixture() {
     },
   };
   const capabilities: Capabilities = {
-    controllers: [controller], sensors: [{ id: "thermal-9", mediaTypes: ["text/plain"], help: () => "sample",
-      async read(argv) {
+    controllers: [controller, { id: "thermal-9", requiresControl: false, mediaTypes: ["text/plain"], help: () => "sample",
+      async execute(argv) {
         if (argv.join() !== "sample") throw new Error("bad sensor arguments");
-        return [{ id: "temperature", sensorId: "thermal-9", mediaType: "text/plain", path: "/tmp/temperature.txt",
-          timing: { clock: "test", requestedAtMs: 0, receivedAtMs: 1 } }];
+        return captureResult([{ id: "temperature", controllerId: "thermal-9", mediaType: "text/plain", path: "/tmp/temperature.txt",
+          timing: { clock: "test", requestedAtMs: 0, receivedAtMs: 1 } }]);
       },
     }],
   };
@@ -78,10 +78,12 @@ test("Runtime discovers non-game catalog entries and reads through its device se
   const { runtime, devices, owner } = fixture();
   const acquire = spyOn(devices, "acquire"), release = spyOn(devices, "release");
   try {
-    expect(runtime.list()).toMatchObject({ sensors: [{ id: "thermal-9", mediaTypes: ["text/plain"], help: "sample" }],
-      controllers: [{ id: "joint-7", help: "rotate <degrees>" }] });
-    const observations = await runtime.observe({ sensorId: "thermal-9", argv: ["sample"] }, new AbortController().signal);
-    expect(observations).toMatchObject([{ sensorId: "thermal-9", mediaType: "text/plain" }]);
+    expect(runtime.list()).toMatchObject({ controllers: [
+      { id: "joint-7", requiresControl: true, help: "rotate <degrees>" },
+      { id: "thermal-9", requiresControl: false, mediaTypes: ["text/plain"], help: "sample" },
+    ] });
+    const observations = await runtime.observe({ controllerId: "thermal-9", argv: ["sample"] }, new AbortController().signal);
+    expect(observations).toMatchObject([{ controllerId: "thermal-9", mediaType: "text/plain" }]);
     expect(acquire).not.toHaveBeenCalled();
     const { epoch } = await runtime.start();
     expect(owner()).toBe(epoch!);
@@ -96,17 +98,20 @@ test("Runtime discovers non-game catalog entries and reads through its device se
 test("catalog help is inert and device execution receives literal argument values", async () => {
   const { runtime, core, controller, capabilities, owner } = fixture();
   const execute = spyOn(controller, "execute");
-  const read = spyOn(capabilities.sensors[0]!, "read");
+  const capture = spyOn(capabilities.controllers[1]!, "execute");
   try {
     expect(runtime.list().controllers[0]!.help).toBe("rotate <degrees>");
-    expect(runtime.list().sensors[0]!.help).toBe("sample");
+    expect(runtime.list().controllers[1]!.help).toBe("sample");
     expect(owner()).toBeUndefined();
     expect(execute).not.toHaveBeenCalled();
-    expect(read).not.toHaveBeenCalled();
+    expect(capture).not.toHaveBeenCalled();
+    await expect(runtime.observe({ controllerId: "joint-7", argv: ["rotate", "15"] }, new AbortController().signal))
+      .rejects.toThrow("does not require control");
+    expect(execute).not.toHaveBeenCalled();
     const { epoch } = await runtime.start();
     await expect(core.execute("joint-7", ["type", "--text", "--help"], epoch!, new AbortController().signal)).rejects.toThrow("unknown operation");
     expect(execute.mock.calls[0]![0]).toEqual(["type", "--text", "--help"]);
-  } finally { await runtime.close(); execute.mockRestore(); read.mockRestore(); }
+  } finally { await runtime.close(); execute.mockRestore(); capture.mockRestore(); }
 });
 
 test("RSA IPC requires a workspace controller and an agent environment cannot enable control through the CLI", async () => {
@@ -168,7 +173,7 @@ test("consolidation keeps devices manual, rejects overlap, and drains cancellati
   const { runtime, controller, capabilities, owner } = fixture();
   let deviceCalls = 0;
   controller.acquire = controller.release = async () => { deviceCalls++; };
-  capabilities.sensors[0].read = async () => { deviceCalls++; return []; };
+  capabilities.controllers[1]!.execute = async () => { deviceCalls++; return captureResult([]); };
   const prompt = Promise.withResolvers<void>(), cleanup = Promise.withResolvers<void>();
   let signal: AbortSignal | undefined;
   runtime.agent = {
@@ -201,7 +206,7 @@ test("consolidation reports completion, failure, and time budget cancellation se
   for (const expected of ["completed", "failed", "aborted"]) {
     const events: { type: string; data: any }[] = [];
     const done = Promise.withResolvers<void>();
-    const runtime = createTestRuntime({ sensors: [], controllers: [] }, (type, data) => {
+    const runtime = createTestRuntime({ controllers: [] }, (type, data) => {
       events.push({ type, data });
       if (type === "consolidation_end") done.resolve();
     });
@@ -226,7 +231,7 @@ test("off during acquisition revokes ownership as soon as the provider grants it
   const { runtime, controller, owner } = fixture();
   const barrier = Promise.withResolvers<void>();
   const acquire = controller.acquire;
-  controller.acquire = async (epoch) => { await barrier.promise; await acquire(epoch); };
+  controller.acquire = async (epoch) => { await barrier.promise; await acquire!(epoch); };
   const start = runtime.start();
   const stop = runtime.stop();
   barrier.resolve();

@@ -1,6 +1,6 @@
 # Ryubing driver
 
-`provider.ts` implements `Sensor` / `Controller`. `RsaBridge.cs` is compiled inside the emulator; `ryubing.patch` adds its integration points: input override, presented-frame capture, native text-entry dialog, and disposal. Baseware's service entrypoint chooses this driver; RSA consumes its catalog and operations through the Baseware client.
+`provider.ts` implements `Controller` for screen capture, pad input and text entry. `RsaBridge.cs` is compiled inside the emulator; `ryubing.patch` adds its integration points: input override, presented-frame capture, native text-entry dialog, and disposal. Baseware's service entrypoint chooses this driver; RSA consumes its catalog and operations through the Baseware client.
 
 ## Rebuild
 

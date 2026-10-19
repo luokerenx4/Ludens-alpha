@@ -1,7 +1,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import type { Capabilities, Clock, Controller, ExecutionResult, Sensor } from "../../contracts.ts";
+import type { Capabilities, Clock, Controller, ExecutionResult } from "../../contracts.ts";
 import { Bridge } from "../bridge.ts";
 
 const KEYS = ["A", "B", "SELECT", "START", "RIGHT", "LEFT", "UP", "DOWN", "R", "L"];
@@ -54,12 +54,12 @@ export async function createGbaProvider(options: { port: number; artifactsDir: s
   const fps = Number(frequency) / Number(cycles);
   let owner: string | undefined;
 
-  const screen: Sensor = {
-    id: "screen",
+  const screen: Controller = {
+    id: "screen", requiresControl: false,
     mediaTypes: ["image/png"],
     help: () => "capture\nCapture a new 240×160 PNG image. Returns immutable path, sample interval and source sequence.",
-    async read(argv, signal) {
-      if (argv.length !== 1 || argv[0] !== "capture") throw new Error("Usage: sensor screen capture");
+    async execute(argv, { signal }) {
+      if (argv.length !== 1 || argv[0] !== "capture") throw new Error("Usage: controller screen capture");
       signal.throwIfAborted();
       const id = crypto.randomUUID();
       const path = join(options.artifactsDir, `${id}.png`);
@@ -68,13 +68,14 @@ export async function createGbaProvider(options: { port: number; artifactsDir: s
       const data = await readFile(path);
       if (!data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) throw new Error("Capture did not produce a PNG");
       signal.throwIfAborted();
-      return [{ id, sensorId: "screen", mediaType: "image/png", path,
-        timing: { clock: clock.id, requestedAtMs, receivedAtMs: clock.now() }, sourceSequence: Number(frame) }];
+      const timing = { clock: clock.id, requestedAtMs, receivedAtMs: clock.now() };
+      return { id: crypto.randomUUID(), status: "completed", exitCode: 0, stdout: "", stderr: "", timing, observations: [{ id, controllerId: "screen", mediaType: "image/png", path,
+        timing, sourceSequence: Number(frame) }] };
     },
   };
 
   const pad: Controller = {
-    id: "pad",
+    id: "pad", requiresControl: true,
     help: () => PAD_HELP,
     async acquire(epoch) { await bridge.request("OWN", [epoch]); owner = epoch; },
     async release(epoch) {
@@ -84,7 +85,7 @@ export async function createGbaProvider(options: { port: number; artifactsDir: s
     },
     async execute(argv, { epoch, signal }): Promise<ExecutionResult> {
       signal.throwIfAborted();
-      if (owner !== epoch) throw new Error("STALE_EPOCH");
+      if (!epoch || owner !== epoch) throw new Error("STALE_EPOCH");
       const { values, positionals } = parseArgs({ args: [...argv], allowPositionals: true,
         options: { state: { type: "string" }, "for-ms": { type: "string" }, file: { type: "string" } } });
       const [command] = positionals;
@@ -119,7 +120,7 @@ export async function createGbaProvider(options: { port: number; artifactsDir: s
     },
   };
   return {
-    capabilities: { sensors: [screen], controllers: [pad] } satisfies Capabilities,
+    capabilities: { controllers: [pad, screen] } satisfies Capabilities,
     onDisconnect(handler: (error: Error) => void) { bridge.onDisconnect = handler; },
     close() { bridge.close(); },
   };

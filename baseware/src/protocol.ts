@@ -7,11 +7,10 @@ export type RecordEvent = (type: string, data: unknown, trace?: Trace, metadata?
 /** Serializable service discovery; driver implementation objects never cross this boundary. */
 export interface Catalog {
   drivers: { id: string; version: string }[];
-  sensors: { id: string; mediaTypes: readonly string[]; help: string }[];
-  controllers: { id: string; help: string }[];
+  controllers: { id: string; requiresControl: boolean; mediaTypes?: readonly string[]; help: string }[];
 }
 export interface Request {
-  kind: "status" | "list" | "help" | "acquire" | "release" | "revoke" | "sensor" | "controller" | "cancel" | "subscribe";
+  kind: "status" | "list" | "help" | "acquire" | "release" | "revoke" | "controller" | "cancel" | "subscribe";
   id?: string;
   argv?: string[];
   epoch?: string;

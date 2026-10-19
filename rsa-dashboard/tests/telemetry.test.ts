@@ -416,6 +416,28 @@ test("device durations use matching original clocks and preserve errors or cance
   });
 });
 
+test("sampling details share their controller span without duplicating device operations", () => {
+  const e = fixture();
+  const result = projectTelemetry([
+    e("command", "capture", { controllerId: "screen", requiresControl: false }),
+    e("observation_start", "capture", { controllerId: "screen", argv: ["capture"] }),
+    e("execution", "capture", { controllerId: "screen", requiresControl: false, outcome: "success", durationMs: 12 }),
+    e("observation", "capture", { id: "frame", controllerId: "screen" }),
+    e("observation_end", "capture", { outcome: "success" }),
+    e("observation_start", "legacy", { sensorId: "old-screen" }),
+    e("observation_end", "legacy", { outcome: "success" }),
+    e("command", "failed", { controllerId: "screen", requiresControl: false }),
+    e("observation_start", "failed", { controllerId: "screen" }),
+    e("execution_error", "failed", { outcome: "error" }),
+    e("observation_error", "failed", { outcome: "error" }),
+  ]);
+  const devices = result.spans.filter((span) => span.kind === "device");
+  assert.equal(devices.length, 3);
+  assert.deepEqual(devices.map((span) => [span.name, span.operation]), [["screen", "execute"], ["old-screen", "observe"], ["screen", "execute"]]);
+  assert.equal(devices[0].durationMs, 12);
+  assert.equal(result.devices.outcomes.error, 1);
+});
+
 test("native totals stay separate from model metrics; old logs remain unlabelled with no invented spans", () => {
   const e = fixture();
   const legacy = {

@@ -1,6 +1,6 @@
 # Playness · Recursive Self-Adaptation
 
-给 AI 传感器、控制器 CLI 和一个普通工作区，让它自行探索环境，并把经验沉淀为技能。Baseware 提供环境 driver；RSA 将原始设备与工作区 Python 能力统一放进 `rsa controller`，通过 CLI 按需发现和调用，Python API 用于组合。
+给 AI 统一的设备能力 CLI 和一个普通工作区，让它自行探索环境，并把经验沉淀为技能。Baseware 提供环境 driver；RSA 将原始设备与工作区 Python 能力统一放进 `rsa controller`，通过 CLI 按需发现和调用，Python API 用于组合。
 
 这个仓库包含四个独立安装、构建的组件：
 
@@ -65,9 +65,9 @@ mGBA 使用 `rsa init --driver mgba`，先按 [RSA 文档](rsa/README.md)手动�
 from rsa_tools import Client, capability
 
 @capability
-def sample(sensor_id: str, argv: list[str]) -> list:
-    """Read a sensor using its documented arguments."""
-    return Client().call(f"sensor/{sensor_id}", argv)
+def sample(controller_id: str, argv: list[str]) -> dict:
+    """Sample a device using its documented arguments."""
+    return Client().call(f"controller/{controller_id}", argv)
 ```
 
 这里的函数只是接口示例，不会预装进任务工作区。实际方法、脚本和技能由运行中的 agent 自己编写。见 [Baseware 接口](baseware/README.md) 与 [RSA 发现规则](rsa/README.md#工作区-python-能力)。

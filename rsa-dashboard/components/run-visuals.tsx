@@ -241,7 +241,7 @@ export function ObservationPanel({
               alt={
                 (isInput ? "模型输入" : "保存观测") +
                 " · " +
-                observation.sensor +
+                observation.controller +
                 " · " +
                 clockTime(observation.at)
               }
@@ -297,7 +297,7 @@ export function ObservationPanel({
       {observation && (
         <details className="observation-metadata">
           <summary>
-            观测详情 <span>{observation.sensor}</span>
+            观测详情 <span>{observation.controller}</span>
           </summary>
           <dl className="fact-grid">
             <div>

@@ -45,7 +45,7 @@ export interface Project {
 export interface Observation {
   id: string;
   at: string;
-  sensor: string;
+  controller: string;
   origin: string;
   mediaType: string;
   sourceSequence?: number;
@@ -54,7 +54,7 @@ export interface Observation {
   captureMs?: number;
   encodeMs?: number;
   modelCallId?: string;
-  request?: { sensorId: string; argv: string[] };
+  request?: { controllerId: string; argv: string[] };
 }
 export interface Tool {
   id: string;

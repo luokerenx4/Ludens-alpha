@@ -15,16 +15,16 @@ test.skipIf(process.env.RSA_SWITCH_TEST !== "1")("Ryubing captures frames, inter
   const signal = new AbortController().signal;
   try {
     let pad = provider.capabilities.controllers[0];
-    const screen = provider.capabilities.sensors[0];
-    const first = (await screen.read(["capture"], signal))[0];
-    const second = (await screen.read(["capture"], signal))[0];
+    const screen = provider.capabilities.controllers.find(controller => controller.id === "screen")!;
+    const first = (await screen.execute(["capture"], { signal })).observations![0]!;
+    const second = (await screen.execute(["capture"], { signal })).observations![0]!;
     const png = Buffer.from(await Bun.file(second.path).arrayBuffer());
     expect(png.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
     expect(png.readUInt32BE(16)).toBeGreaterThanOrEqual(640);
     expect(second.path).not.toBe(first.path);
     expect(second.sourceSequence!).toBeGreaterThan(first.sourceSequence!);
     const epoch = crypto.randomUUID();
-    await pad.acquire(epoch);
+    await pad.acquire!(epoch);
     const abort = new AbortController();
     const action = pad.execute(["apply", "--state", '{"RIGHT":1,"LX":0.5}', "--for-ms", "30000"], { epoch, signal: abort.signal });
     await Bun.sleep(80);
@@ -70,10 +70,10 @@ test.skipIf(process.env.RSA_SWITCH_TEST !== "1")("Ryubing captures frames, inter
     provider = await connect();
     pad = provider.capabilities.controllers[0];
     const nextEpoch = crypto.randomUUID();
-    await pad.acquire(nextEpoch); // Confirms the actual emulator cleared its previous owner on disconnect.
+    await pad.acquire!(nextEpoch); // Confirms the actual emulator cleared its previous owner on disconnect.
     const afterReconnect = JSON.parse((await pad.execute(["state"], { epoch: nextEpoch, signal })).stdout);
     expect(Object.values(afterReconnect.state).every(value => value === 0)).toBe(true);
-    await pad.release(nextEpoch);
+    await pad.release!(nextEpoch);
     const { core, devices } = createTestDeviceSession(provider.capabilities);
     const runtime = new Runtime(devices, () => {});
     const execute = (argv: string[], epoch: string) => core.execute("pad", argv, epoch, signal);
@@ -116,12 +116,12 @@ test.skipIf(process.env.RSA_SWITCH_KEYBOARD_TEST !== "1")("foreground keyboard c
   const signal = new AbortController().signal;
   const epoch = crypto.randomUUID();
   const [pad, keyboard] = provider.capabilities.controllers;
-  const screen = provider.capabilities.sensors[0];
+  const screen = provider.capabilities.controllers.find(controller => controller.id === "screen")!;
   const key = (...argv: string[]) => keyboard.execute(argv, { epoch, signal });
   try {
-    await pad.acquire(epoch);
-    await keyboard.acquire(epoch); // Both capabilities share the same device ownership.
-    const before = (await screen.read(["capture"], signal))[0];
+    await pad.acquire!(epoch);
+    await keyboard.acquire!(epoch); // Both capabilities share the same device ownership.
+    const before = (await screen.execute(["capture"], { signal })).observations![0]!;
     expect(before.sourceSequence).toBeUndefined();
     const png = Buffer.from(await Bun.file(before.path).arrayBuffer());
     expect(png.readUInt32BE(16)).toBeGreaterThan(100);
@@ -131,14 +131,14 @@ test.skipIf(process.env.RSA_SWITCH_KEYBOARD_TEST !== "1")("foreground keyboard c
     await key("press", "--key", "CTRL+A");
     await key("type", "--text", "RSA");
     await key("press", "--key", "BACKSPACE");
-    const after = (await screen.read(["capture"], signal))[0];
+    const after = (await screen.execute(["capture"], { signal })).observations![0]!;
     expect(after.sourceSequence).toBeUndefined();
     expect(await Bun.file(after.path).arrayBuffer()).not.toEqual(await Bun.file(before.path).arrayBuffer());
     await key("press", "--key", "ESCAPE");
     await Bun.sleep(300);
     await expect(key("type", "--text", "x")).rejects.toThrow("NO_TEXT_INPUT");
-    await keyboard.release(epoch);
-    await pad.release(epoch);
+    await keyboard.release!(epoch);
+    await pad.release!(epoch);
     await expect(key("press", "--key", "ENTER")).rejects.toThrow("STALE_EPOCH");
-  } finally { await pad.release(epoch); provider.close(); await rm(directory, { recursive: true }); }
+  } finally { await pad.release!(epoch); provider.close(); await rm(directory, { recursive: true }); }
 }, 20000);

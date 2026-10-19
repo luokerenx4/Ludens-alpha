@@ -14,12 +14,12 @@ Use rsa controller for device and workspace capabilities.`;
 export const CONTROLLER_HELP = `rsa controller list
 rsa controller <id> --help
 rsa controller controller/<id> <driver arguments...>
-rsa controller sensor/<id> <driver arguments...>
 rsa controller python/<path.py>:<function> [--args '<JSON object>']
 
-Device interfaces and decorated Python functions share this workspace catalog.
+Device controllers (including sensors) and decorated Python functions share this workspace catalog.
 List and help discover capabilities without executing workspace code.
-Calls use BASEWARE_EPOCH from an existing takeover; they never acquire control.
+Calls requiring control use BASEWARE_EPOCH from an existing takeover; they never acquire control.
+Sensor controllers return observations alongside the execution result and can run without takeover.
 Python: from rsa_tools import Client; Client().list(), .help(id), .call(id, arguments).
 Driver arguments are string arrays in the API; Python arguments are objects.`;
 

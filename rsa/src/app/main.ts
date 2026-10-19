@@ -10,7 +10,7 @@ import { WorkspaceController } from "../harness/controller.ts";
 import { defaultSocket } from "@playness/baseware/address";
 import { EventLog, EVENT_SCHEMA_VERSION } from "../harness/events.ts";
 import { runProvenance } from "../harness/provenance.ts";
-import type { ObservationRequest } from "@playness/baseware/contracts";
+import type { ControllerRequest } from "@playness/baseware/contracts";
 import { readCurrentSession, resolveWorkspaceState } from "../harness/workspace-state.ts";
 import { validateSessionWorkspace } from "../harness/omp/workspace-session.ts";
 import workspaceGuide from "../../templates/AGENTS.md" with { type: "text" };
@@ -24,7 +24,7 @@ Each workspace keeps its own session; --new-session starts fresh without deletin
 The current directory is the default workspace. Run logs go to <workspace>/logs/<run-id>/.
 --resume selects an existing session from the same workspace, then remembers it for future starts.
 --compaction-threshold configures OMP's native compaction trigger; default is 256000 tokens.
---auto-observe supplies an array of {sensorId, argv} requests; default is screen capture.
+--auto-observe supplies an array of {controllerId, argv} requests; default is screen capture.
 Hardware is provided by an independent Baseware service. Its default socket is derived from the workspace.`;
 
 async function main() {
@@ -63,10 +63,10 @@ async function main() {
   if (!Number.isInteger(maxRequests) || maxRequests <= 0) throw new Error("--requests must be a positive integer");
   const compactionThreshold = Number(values["compaction-threshold"]);
   if (!Number.isInteger(compactionThreshold) || compactionThreshold <= 0) throw new Error("--compaction-threshold must be a positive integer");
-  const autoObserve: ObservationRequest[] = values["auto-observe"] === undefined
-    ? [{ sensorId: "screen", argv: ["capture"] }] : JSON.parse(values["auto-observe"]);
-  if (!Array.isArray(autoObserve) || autoObserve.some(request => !request || typeof request.sensorId !== "string"
-    || !Array.isArray(request.argv) || request.argv.some(arg => typeof arg !== "string"))) throw new Error("--auto-observe expects [{sensorId, argv: string[]}]");
+  const autoObserve: ControllerRequest[] = values["auto-observe"] === undefined
+    ? [{ controllerId: "screen", argv: ["capture"] }] : JSON.parse(values["auto-observe"]);
+  if (!Array.isArray(autoObserve) || autoObserve.some(request => !request || typeof request.controllerId !== "string"
+    || !Array.isArray(request.argv) || request.argv.some(arg => typeof arg !== "string"))) throw new Error("--auto-observe expects [{controllerId, argv: string[]}]");
   if (values.resume && values["new-session"]) throw new Error("Use either --resume or --new-session");
   if (values["device-only"] && (values.resume || values["new-session"])) throw new Error("Session options require an agent");
   const state = await resolveWorkspaceState(values.workspace!, artifactRoot);

@@ -14,8 +14,8 @@ import type { Envelope } from "../src/protocol.ts";
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII=", "base64");
 const catalog = {
   drivers: [{ id: "fake-device", version: "1" }],
-  sensors: [{ id: "screen", mediaTypes: ["image/png"], help: "capture --label <literal label>" }],
-  controllers: [{ id: "pad", help: "tap <button> [--frames <count>]" }],
+  controllers: [{ id: "pad", requiresControl: true, help: "tap <button> [--frames <count>]" },
+    { id: "screen", requiresControl: false, mediaTypes: ["image/png"], help: "capture --label <literal label>" }],
 };
 
 async function fixture() {
@@ -49,8 +49,8 @@ async function fixture() {
         const value = request.kind === "list" ? catalog
           : request.kind === "status" ? { mode: "manual" }
           : request.kind === "help" ? catalog.controllers[0]!.help
-          : request.kind === "sensor" ? [{ id: "frame-1", sensorId: "screen", mediaType: "image/png", path: screenshot,
-            timing: { clock: "fixture", requestedAtMs: 1, receivedAtMs: 2 } }]
+          : request.id === "screen" ? { id: "capture-1", status: "completed", exitCode: 0, stdout: "", stderr: "", observations: [{ id: "frame-1", controllerId: "screen", mediaType: "image/png", path: screenshot,
+            timing: { clock: "fixture", requestedAtMs: 1, receivedAtMs: 2 } }] }
           : { id: "action-1", status: request.argv?.[0] === "fail" ? "failed" : "completed",
             exitCode: request.argv?.[0] === "fail" ? 1 : 0, stdout: "service result", stderr: "" };
         peer.write(JSON.stringify({ id, ok: true, value }) + "\n");
@@ -84,12 +84,12 @@ test("MCP discovers service capabilities, validates argument arrays, and routes 
   try {
     const { tools } = await mcp.client.listTools();
     expect(tools.map(tool => tool.name)).toEqual([
-      "baseware_list", "baseware_status", "baseware_help", "baseware_sensor_screen", "baseware_controller_pad",
+      "baseware_list", "baseware_status", "baseware_help", "baseware_controller_pad", "baseware_controller_screen",
     ]);
     expect(tools.find(tool => tool.name === "baseware_controller_pad")?.description).toBe(catalog.controllers[0]!.help);
     const discovered = await mcp.client.callTool({ name: "baseware_list", arguments: {} });
     expect(discovered.content).toEqual([{ type: "text", text: JSON.stringify(catalog) }]);
-    const help = await mcp.client.callTool({ name: "baseware_help", arguments: { id: "pad", kind: "controller" } });
+    const help = await mcp.client.callTool({ name: "baseware_help", arguments: { id: "pad" } });
     expect(help.content).toEqual([{ type: "text", text: catalog.controllers[0]!.help }]);
     const tokens = ["tap", "A B", "--frames", "0", "; echo untouched"];
     await mcp.client.callTool({ name: "baseware_controller_pad", arguments: { argv: tokens } });
@@ -109,7 +109,7 @@ test("MCP returns service images and reports service and execution errors", asyn
   const f = await fixture();
   const mcp = await connected(f);
   try {
-    const result = await mcp.client.callTool({ name: "baseware_sensor_screen", arguments: { argv: ["capture"] } });
+    const result = await mcp.client.callTool({ name: "baseware_controller_screen", arguments: { argv: ["capture"] } });
     expect(result.content).toContainEqual({ type: "image", mimeType: "image/png", data: png.toString("base64") });
     const stale = await mcp.client.callTool({ name: "baseware_controller_pad", arguments: { argv: ["tap", "A"], epoch: "stale" } });
     expect(stale).toMatchObject({ isError: true, content: [{ type: "text", text: "STALE_EPOCH" }] });
@@ -142,7 +142,7 @@ test("stdio entrypoint speaks SDK MCP and inherits epoch and trace without acqui
   const client = new Client({ name: "stdio-test", version: "1" });
   try {
     await client.connect(transport);
-    expect((await client.listTools()).tools.some(tool => tool.name === "baseware_sensor_screen")).toBe(true);
+    expect((await client.listTools()).tools.some(tool => tool.name === "baseware_controller_screen")).toBe(true);
     await client.callTool({ name: "baseware_controller_pad", arguments: { argv: ["tap", "A"] } });
     expect(f.requests.at(-1)?.request.epoch).toBe("stdio-epoch");
     expect(f.requests.at(-1)?.request.trace?.runId).toBe("parent-run");

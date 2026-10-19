@@ -4,7 +4,7 @@ import { delimiter, resolve } from "node:path";
 import type { ExtensionFactory, CustomTool, ReadToolResultEvent } from "@oh-my-pi/pi-coding-agent";
 import { resizeImage } from "@oh-my-pi/pi-coding-agent/utils/image-resize";
 import * as z from "@oh-my-pi/omptype/zod";
-import type { Observation, ObservationRequest } from "@playness/baseware/contracts";
+import type { Observation, ControllerRequest } from "@playness/baseware/contracts";
 import type { Runtime } from "../runtime.ts";
 import { Workspace } from "../workspace.ts";
 import type { EventTrace, RecordEvent } from "../events.ts";
@@ -34,7 +34,7 @@ export function createRsaExtension(options: {
   basewareSocket: string;
   rsaSocket?: string;
   binDir: string;
-  autoObserve: ObservationRequest[];
+  autoObserve: ControllerRequest[];
   cycle(): Cycle;
   maxRequests: number;
   trace?(toolCallId?: string): EventTrace;
@@ -47,7 +47,7 @@ export function createRsaExtension(options: {
   let latestContext: { observations: string[]; skills: Awaited<ReturnType<Workspace["snapshot"]>> };
   const trace = (toolCallId?: string): EventTrace => ({ epoch: options.cycle().epoch, ...options.trace?.(toolCallId), ...(toolCallId ? { toolCallId } : {}) });
   const observeParameters = z.object({
-    sensorId: z.string().describe("Sensor ID without the sensor/ prefix used in the controller catalog."),
+    controllerId: z.string().describe("Controller ID without the controller/ prefix used in the catalog."),
     argv: z.array(z.string()),
   });
   const execParameters = z.object({ command: z.string() });
@@ -67,13 +67,13 @@ export function createRsaExtension(options: {
 
   const observe: CustomTool<typeof observeParameters> = {
     name: "observe", label: "Observe", loadMode: "essential", approval: "read",
-    description: "Read an injected sensor for an additional observation when the media supplied automatically by the loop is insufficient. Use rsa controller list and rsa controller <id> --help to discover sensor arguments.",
+    description: "Call an injected controller for an additional observation when the media supplied automatically by the loop is insufficient. Use rsa controller list and rsa controller <id> --help to discover controller arguments.",
     parameters: observeParameters,
     async execute(id, params, _onUpdate, _ctx, signal) {
       const cycle = options.cycle();
       const observations = await runtime.observe(params, signal ? AbortSignal.any([signal, cycle.signal]) : cycle.signal, trace(id), "explicit");
       const images = await media(observations, runtime.record, trace(id));
-      observed.set(params.sensorId, observations);
+      observed.set(params.controllerId, observations);
       return { content: [{ type: "text", text: JSON.stringify(observations) }, ...images], details: observations };
     },
   };
@@ -122,10 +122,10 @@ export function createRsaExtension(options: {
     cycle.signal.throwIfAborted();
     try {
       const consolidating = cycle.purpose === "consolidate";
-      // An explicit sample's chosen arguments take precedence over this sensor's defaults.
-      const fresh = consolidating ? [] : (await Promise.all(options.autoObserve.filter(request => !observed.has(request.sensorId))
+      // An explicit sample's chosen arguments take precedence over this controller's defaults.
+      const fresh = consolidating ? [] : (await Promise.all(options.autoObserve.filter(request => !observed.has(request.controllerId))
         .map(request => runtime.observe(request, cycle.signal, parent, origin)))).flat();
-      const reused = consolidating ? [] : options.autoObserve.flatMap(request => observed.get(request.sensorId) ?? []);
+      const reused = consolidating ? [] : options.autoObserve.flatMap(request => observed.get(request.controllerId) ?? []);
       const observations = [...reused, ...fresh];
       const skills = await workspace.snapshot();
       // Explicit observe results already contain their images in history.

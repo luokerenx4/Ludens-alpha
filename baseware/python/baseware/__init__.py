@@ -61,9 +61,6 @@ class Client:
     def help(self, capability_id):
         return self.request("help", id=capability_id)
 
-    def sensor(self, capability_id, argv=()):
-        return self.request("sensor", id=capability_id, argv=list(argv))
-
     def controller(self, capability_id, argv=()):
         return self.request("controller", id=capability_id, argv=list(argv))
 

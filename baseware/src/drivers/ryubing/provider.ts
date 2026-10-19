@@ -2,7 +2,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { parseArgs } from "node:util";
-import type { Capabilities, Clock, Controller, ExecutionResult, Sensor } from "../../contracts.ts";
+import type { Capabilities, Clock, Controller, ExecutionResult } from "../../contracts.ts";
 import { Bridge } from "../bridge.ts";
 
 // Order matches the physical bits in Ryubing's ControllerKeys, not game actions.
@@ -65,13 +65,13 @@ export async function createSwitchProvider(options: { port: number; artifactsDir
     owner = undefined;
     await bridge.request("DISOWN", [epoch]);
   }
-  const screen: Sensor = {
-    id: "screen", mediaTypes: ["image/png"],
+  const screen: Controller = {
+    id: "screen", requiresControl: false, mediaTypes: ["image/png"],
     help: () => "capture [--delay-ms <milliseconds>]\nWait a fixed delay before requesting the next presented game frame, or the visible system text-entry dialog when it is open, as a PNG. delay-ms defaults to 0 and accepts integer milliseconds from 0 to 2147483647. This delay does not detect whether the scene has settled. Returns an immutable path and sample interval including the delay. sourceSequence is a game presentation sequence, and is omitted for a dialog. No desktop content.",
-    async read(argv, signal) {
+    async execute(argv, { signal }) {
       const { values, positionals } = parseArgs({ args: [...argv], allowPositionals: true,
         options: { "delay-ms": { type: "string" } } });
-      if (positionals.length !== 1 || positionals[0] !== "capture") throw new Error("Usage: sensor screen capture [--delay-ms <milliseconds>]");
+      if (positionals.length !== 1 || positionals[0] !== "capture") throw new Error("Usage: controller screen capture [--delay-ms <milliseconds>]");
       const delayMs = Number(values["delay-ms"] ?? "0");
       if (values["delay-ms"]?.trim() === "" || !Number.isInteger(delayMs) || delayMs < 0 || delayMs > 2_147_483_647) {
         throw new Error("delay-ms must be an integer from 0 to 2147483647");
@@ -84,16 +84,17 @@ export async function createSwitchProvider(options: { port: number; artifactsDir
       signal.throwIfAborted();
       const [frame, surface] = await bridge.request("CAPTURE", [path]);
       signal.throwIfAborted();
-      return [{ id, sensorId: "screen", mediaType: "image/png", path,
-        timing: { clock: clock.id, requestedAtMs, receivedAtMs: clock.now() }, ...(surface === "keyboard" ? {} : { sourceSequence: Number(frame) }) }];
+      const timing = { clock: clock.id, requestedAtMs, receivedAtMs: clock.now() };
+      return { id: crypto.randomUUID(), status: "completed", exitCode: 0, stdout: "", stderr: "", timing, observations: [{ id, controllerId: "screen", mediaType: "image/png", path,
+        timing, ...(surface === "keyboard" ? {} : { sourceSequence: Number(frame) }) }] };
     },
   };
   const pad: Controller = {
-    id: "pad", help: () => PAD_HELP,
+    id: "pad", requiresControl: true, help: () => PAD_HELP,
     acquire, release,
     async execute(argv, { epoch, signal }): Promise<ExecutionResult> {
       signal.throwIfAborted();
-      if (owner !== epoch) throw new Error("STALE_EPOCH");
+      if (!epoch || owner !== epoch) throw new Error("STALE_EPOCH");
       const { values, positionals } = parseArgs({ args: [...argv], allowPositionals: true,
         options: { state: { type: "string" }, "for-ms": { type: "string" }, file: { type: "string" } } });
       if (positionals.length !== 1) throw new Error("Expected one controller command; see --help");
@@ -132,7 +133,7 @@ export async function createSwitchProvider(options: { port: number; artifactsDir
     },
   };
   const keyboard: Controller = {
-    id: "keyboard", acquire, release,
+    id: "keyboard", requiresControl: true, acquire, release,
     help: () => `Text-entry keyboard, available while a system text-entry dialog is visible.
 type --text <text>
 press --key ENTER|ESCAPE|BACKSPACE|CTRL+A
@@ -142,7 +143,7 @@ ESCAPE presses the close button. Commands fail NO_TEXT_INPUT when no text surfac
 Observe screen capture to see the current dialog and its text. These commands do not control desktop applications.`,
     async execute(argv, { epoch, signal }) {
       signal.throwIfAborted();
-      if (owner !== epoch) throw new Error("STALE_EPOCH");
+      if (!epoch || owner !== epoch) throw new Error("STALE_EPOCH");
       const { values, positionals } = parseArgs({ args: [...argv], allowPositionals: true,
         options: { text: { type: "string" }, key: { type: "string" } } });
       const [command] = positionals;
@@ -158,7 +159,7 @@ Observe screen capture to see the current dialog and its text. These commands do
     },
   };
   return {
-    capabilities: { sensors: [screen], controllers: [pad, keyboard] } satisfies Capabilities,
+    capabilities: { controllers: [pad, keyboard, screen] } satisfies Capabilities,
     onDisconnect(handler: (error: Error) => void) { bridge.onDisconnect = handler; },
     close() { bridge.close(); },
   };

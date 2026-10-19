@@ -9,7 +9,7 @@ import { buildTransformedCodexRequestBody } from "@oh-my-pi/pi-ai/providers/open
 import { buildResponsesDeltaInput } from "@oh-my-pi/pi-ai/providers/openai-shared";
 import { createRsaExtension } from "../src/harness/omp/extension.ts";
 import { createOmpSession } from "../src/harness/omp/session.ts";
-import { createTestRuntime } from "./runtime-fixture.ts";
+import { captureResult, createTestRuntime } from "./runtime-fixture.ts";
 import { Workspace } from "../src/harness/workspace.ts";
 
 test.each([1, 26])("OMP persists batches of %i images and reuses the Codex prefix across tools and prompts", async (batchSize) => {
@@ -21,18 +21,18 @@ test.each([1, 26])("OMP persists batches of %i images and reuses the Codex prefi
   let captures = 0;
   const states: string[] = [];
   const events: { type: string; data: any }[] = [];
-  const runtime = createTestRuntime({ controllers: [], sensors: [{
-    id: "camera", mediaTypes: ["image/png"], help: () => "capture",
-    async read() {
+  const runtime = createTestRuntime({ controllers: [{
+    id: "camera", requiresControl: false, mediaTypes: ["image/png"], help: () => "capture",
+    async execute() {
       const position = Bun.file(join(workspace, "position"));
       states.push(await position.exists() ? await position.text() : "initial");
-      return Array.from({ length: batchSize }, () => ({ id: `sample-${++captures}`, sensorId: "camera", mediaType: "image/png", path: image,
-        timing: { clock: "test", requestedAtMs: captures, receivedAtMs: captures } }));
+      return captureResult(Array.from({ length: batchSize }, () => ({ id: `sample-${++captures}`, controllerId: "camera", mediaType: "image/png", path: image,
+        timing: { clock: "test", requestedAtMs: captures, receivedAtMs: captures } })));
     },
   }] }, (type, data) => { events.push({ type, data }); });
   const control = new AbortController();
   const extension = createRsaExtension({ runtime, workspace: new Workspace(workspace, join(directory, "skill-versions")),
-    basewareSocket: "/tmp/unused.sock", binDir: "/tmp", autoObserve: [{ sensorId: "camera", argv: [] }],
+    basewareSocket: "/tmp/unused.sock", binDir: "/tmp", autoObserve: [{ controllerId: "camera", argv: [] }],
     maxRequests: 9, cycle: () => ({ epoch: "test", signal: control.signal }),
   });
   const settings = Settings.isolated({ "memory.backend": "off", "autolearn.enabled": false,
@@ -66,7 +66,7 @@ test.each([1, 26])("OMP persists batches of %i images and reuses the Codex prefi
     const index = ++requests;
     const done = index >= 7;
     const exec = (suffix: string, command: string) => ({ type: "toolCall" as const, id: `call_${index}_${suffix}`, name: "exec", arguments: { command } });
-    const observe = (argv: string[] = []) => ({ type: "toolCall" as const, id: `call_${index}_observe`, name: "observe", arguments: { sensorId: "camera", argv } });
+    const observe = (argv: string[] = []) => ({ type: "toolCall" as const, id: `call_${index}_observe`, name: "observe", arguments: { controllerId: "camera", argv } });
     const invalid = (suffix: string) => ({ type: "toolCall" as const, id: `call_${index}_${suffix}`, name: "exec", arguments: {} });
     const batches = [
       [invalid("bad_before"), exec("a", "printf first > position"), exec("b", "printf second > position"), invalid("bad_after")],

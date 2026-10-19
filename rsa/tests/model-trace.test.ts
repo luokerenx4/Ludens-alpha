@@ -20,6 +20,7 @@ import { Runtime } from "../src/harness/runtime.ts";
 import { Workspace } from "../src/harness/workspace.ts";
 import { createRsaExtension } from "../src/harness/omp/extension.ts";
 import { createOmpSession } from "../src/harness/omp/session.ts";
+import { captureResult } from "./runtime-fixture.ts";
 
 const speculation = channel("omp.compaction.speculation");
 const png = "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg==";
@@ -325,13 +326,13 @@ test("real OMP HTTP bodies retain DeepSeek image prefixes beyond five images and
   await Bun.write(image, Buffer.from(png, "base64"));
   const log = new EventLog(directory, {id: "wire-test", now: () => performance.now()});
   let samples = 0;
-  const core = new BasewareCore({ drivers: [{id: "trace-fixture", version: "1"}], capabilities: {controllers: [{id: "joint-7", help: () => "move <n>", acquire: async () => {}, release: async () => {},
+  const core = new BasewareCore({ drivers: [{id: "trace-fixture", version: "1"}], capabilities: {controllers: [{id: "joint-7", requiresControl: true, help: () => "move <n>", acquire: async () => {}, release: async () => {},
     async execute(argv) { return {id: crypto.randomUUID(), status: "completed", exitCode: 0, stdout: argv.join(" "), stderr: "",
       timing: {clock: "wire-test", requestedAtMs: performance.now(), receivedAtMs: performance.now()}}; },
-  }], sensors: [{id: "camera-q", help: () => "sample", mediaTypes: ["image/png"], async read() {
-    return [{id: `observation-${++samples}`, sensorId: "camera-q", mediaType: "image/png", path: image,
+  }, {id: "camera-q", requiresControl: false, help: () => "sample", mediaTypes: ["image/png"], async execute() {
+    return captureResult([{id: `observation-${++samples}`, controllerId: "camera-q", mediaType: "image/png", path: image,
       sourceSequence: samples * 100,
-      timing: {clock: "wire-test", requestedAtMs: performance.now(), receivedAtMs: performance.now()}}];
+      timing: {clock: "wire-test", requestedAtMs: performance.now(), receivedAtMs: performance.now()}}]);
   }}]} });
   const basewareSocket = `/tmp/baseware-wire-${crypto.randomUUID()}.sock`;
   const closeSocket = await listenBaseware(basewareSocket, core);
@@ -342,7 +343,7 @@ test("real OMP HTTP bodies retain DeepSeek image prefixes beyond five images and
   const {epoch} = await runtime.start();
   const trace = new ModelTrace(log, () => ({epoch: epoch!, ...extension.context()}));
   const extension = createRsaExtension({runtime, workspace: new Workspace(workspace, join(directory, "skill-versions")), basewareSocket,
-    binDir: resolve(import.meta.dir, "../bin"), autoObserve: [{sensorId: "camera-q", argv: ["sample"]}],
+    binDir: resolve(import.meta.dir, "../bin"), autoObserve: [{controllerId: "camera-q", argv: ["sample"]}],
     cycle: () => ({epoch: epoch!, signal: new AbortController().signal}), maxRequests: 7, trace: trace.current});
   const received: string[] = [];
   const server = Bun.serve({hostname: "127.0.0.1", port: 0, async fetch(request) {
@@ -470,8 +471,9 @@ test("real OMP HTTP bodies retain DeepSeek image prefixes beyond five images and
       requestedPath: "skills/notes.md:2-3", path: notes, isError: false,
       hash: new Bun.SHA256().update(await Bun.file(notes).arrayBuffer()).digest("hex"),
     });
-    const commands = events.filter(e => e.type === "command");
+    const commands = events.filter(e => e.type === "command" && e.data.requiresControl);
     expect(commands.map(e => e.trace.operationId)).toHaveLength(2);
+    expect(events.filter(e => e.type === "command" && e.data.requiresControl === false)).toHaveLength(7);
     for (const command of commands) {
       const nativeTool = nativeTools.find(e => e.trace.toolCallId === command.trace.toolCallId);
       expect(command.trace.traceId).toBe(nativeTool.trace.traceId);

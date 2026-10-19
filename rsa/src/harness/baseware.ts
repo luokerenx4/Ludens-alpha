@@ -19,7 +19,7 @@ export async function connectBaseware(options: { socket: string; seconds: number
   let onDisconnect: ((error: Error) => void) | undefined;
   let onHandback: ((reason: string) => void) | undefined;
   const localPath = (observation: Observation) => {
-    const identity = createHash("sha256").update(JSON.stringify([observation.sensorId, observation.id, observation.path])).digest("hex");
+    const identity = createHash("sha256").update(JSON.stringify([observation.controllerId, observation.id, observation.path])).digest("hex");
     return join(observationsDir, `${identity}${extname(observation.path)}`);
   };
   const disconnect = (error: Error) => { if (disconnected) return; disconnected = error; onDisconnect?.(error); };
@@ -32,6 +32,12 @@ export async function connectBaseware(options: { socket: string; seconds: number
         // COPYFILE_FICLONE uses a copy-on-write clone where the filesystem supports it.
         copyFileSync(observation.path, path, constants.COPYFILE_FICLONE);
         event = { ...event, data: { ...observation, path } };
+      } else if (event.type === "execution") {
+        const result = event.data as ExecutionResult;
+        // The following observation events archive these same immutable files.
+        if (result.observations) event = { ...event, data: { ...result,
+          observations: result.observations.map(observation => ({ ...observation, path: localPath(observation) })),
+        } };
       }
       options.record(event.type, event.data, event.trace as EventTrace, { source: event.source, origin: event.origin });
       if (event.type === "baseware_control") {
@@ -70,12 +76,11 @@ export async function connectBaseware(options: { socket: string; seconds: number
     }
     const session: DeviceSession = {
       catalog, acquire, release,
-      async execute(id, argv, epoch, signal, trace) {
-        return await client.request({ kind: "controller", id, argv, epoch, trace: { ...trace } }, signal) as ExecutionResult;
-      },
-      async observe(request, signal, trace, origin) {
-        const observations = await client.request({ kind: "sensor", id: request.sensorId, argv: request.argv, epoch: owner, trace: { ...trace }, origin }, signal) as Observation[];
-        return observations.map(observation => ({ ...observation, path: localPath(observation) }));
+      async execute(id, argv, epoch, signal, trace, origin) {
+        const result = await client.request({ kind: "controller", id, argv, epoch, trace: { ...trace }, origin }, signal) as ExecutionResult;
+        return { ...result, ...(result.observations ? {
+          observations: result.observations.map(observation => ({ ...observation, path: localPath(observation) })),
+        } : {}) };
       },
     };
     return { ...session,

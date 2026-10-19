@@ -1,6 +1,7 @@
 Explore through the supplied capabilities. Discover them with `rsa controller list`
-and `rsa controller <id> --help`; invoke them through `exec`. Choose goals, try
-actions, and learn from their effects. Compose capabilities in Python with
+and `rsa controller <id> --help`; invoke them through `exec`. Sampling and input
+share this catalog. Choose goals, try actions, and learn from their effects.
+Compose capabilities in Python with
 `from rsa_tools import Client`. When useful, turn tested, repeated operations into
 workspace functions and reuse them. Mark typed functions with `@capability` from
 `rsa_tools`; their docstrings and signatures make them discoverable through the

@@ -7,7 +7,7 @@ import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream"
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { createRsaExtension, type Cycle } from "../src/harness/omp/extension.ts";
 import { consolidateOmpSession, createOmpSession } from "../src/harness/omp/session.ts";
-import { createTestRuntime } from "./runtime-fixture.ts";
+import { captureResult, createTestRuntime } from "./runtime-fixture.ts";
 import { Workspace } from "../src/harness/workspace.ts";
 
 test("consolidation uses the same session with file tools, records memory reads, and skips sensors", async () => {
@@ -20,17 +20,17 @@ test("consolidation uses the same session with file tools, records memory reads,
   await Bun.write(image, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg==", "base64"));
   let captures = 0;
   const events: { type: string; data: any; epoch?: string }[] = [];
-  const runtime = createTestRuntime({ controllers: [], sensors: [{
-    id: "camera", mediaTypes: ["image/png"], help: () => "capture",
-    async read() {
-      return [{ id: `sample-${++captures}`, sensorId: "camera", mediaType: "image/png", path: image,
-        timing: { clock: "test", requestedAtMs: captures, receivedAtMs: captures } }];
+  const runtime = createTestRuntime({ controllers: [{
+    id: "camera", requiresControl: false, mediaTypes: ["image/png"], help: () => "capture",
+    async execute() {
+      return captureResult([{ id: `sample-${++captures}`, controllerId: "camera", mediaType: "image/png", path: image,
+        timing: { clock: "test", requestedAtMs: captures, receivedAtMs: captures } }]);
     },
   }] }, (type, data, trace) => events.push({ type, data, epoch: trace?.epoch }));
   const control = new AbortController();
   let cycle: Cycle = { epoch: "play-before", signal: control.signal };
   const extension = createRsaExtension({ runtime, workspace: new Workspace(workspace, join(directory, "skill-versions")),
-    basewareSocket: "/tmp/unused.sock", binDir: "/tmp", autoObserve: [{ sensorId: "camera", argv: [] }],
+    basewareSocket: "/tmp/unused.sock", binDir: "/tmp", autoObserve: [{ controllerId: "camera", argv: [] }],
     maxRequests: 5, cycle: () => cycle,
   });
   const settings = Settings.isolated({ "memory.backend": "off", "autolearn.enabled": false,

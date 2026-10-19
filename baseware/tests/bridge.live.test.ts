@@ -11,7 +11,7 @@ test.skipIf(process.env.RSA_BRIDGE_TEST !== "1")("bridge survives repeated disco
       const provider = await createGbaProvider({ port: 47653, artifactsDir: directory, clock: { id: "test", now: () => performance.now() } });
       const controller = provider.capabilities.controllers[0];
       const epoch = crypto.randomUUID();
-      await controller.acquire(epoch);
+      await controller.acquire!(epoch);
       if (i === 0) {
         const action = controller.execute(["apply", "--state", '{"LEFT":1}', "--for-ms", "30000"], { epoch, signal: new AbortController().signal });
         const outcome = action.then((value) => value, (error: Error) => error);
@@ -23,9 +23,9 @@ test.skipIf(process.env.RSA_BRIDGE_TEST !== "1")("bridge survives repeated disco
       } else {
         const result = await controller.execute(["state"], { epoch, signal: new AbortController().signal });
         expect(Object.values(JSON.parse(result.stdout).state).every((v) => v === 0)).toBe(true);
-        const observation = await provider.capabilities.sensors[0].read(["capture"], new AbortController().signal);
+        const observation = (await provider.capabilities.controllers.find(c => c.id === "screen")!.execute(["capture"], { signal: new AbortController().signal })).observations!;
         expect((await Bun.file(observation[0].path).arrayBuffer()).byteLength).toBeGreaterThan(100);
-        await controller.release(epoch);
+        await controller.release!(epoch);
         provider.close();
       }
       await Bun.sleep(80); // Let mGBA's frame callback observe peer closure.

@@ -363,6 +363,29 @@ test("analysis retains controller errors when the shell batch succeeds and isola
   }]);
 });
 
+test("unified sampling controllers preserve observations without adding input actions", async () => {
+  const event = fixture();
+  const trace = { operationId: "capture" };
+  const timing = { requestedAtMs: 1, receivedAtMs: 11 };
+  const report = await analyze([
+    event("control", "one", { mode: "auto", epoch: "one" }),
+    event("command", "one", { controllerId: "screen", requiresControl: false, argv: ["capture"] }, trace),
+    event("observation_start", "one", { controllerId: "screen", argv: ["capture"] }, trace),
+    event("execution", "one", { id: "capture-result", controllerId: "screen", requiresControl: false,
+      status: "completed", exitCode: 0, timing }, trace),
+    event("observation", "one", { id: "frame", controllerId: "screen", path: "frame.png", timing }, trace),
+    event("observation", "one", { id: "old-frame", sensorId: "old-screen", path: "old-frame.png", timing }),
+    event("command", "one", { controllerId: "pad", requiresControl: true, argv: ["release"] }, { operationId: "pad" }),
+    event("execution", "one", { id: "pad-result", controllerId: "pad", requiresControl: true,
+      status: "completed", exitCode: 0, timing }, { operationId: "pad" }),
+    event("control", "one", { mode: "manual" }),
+  ]);
+  expect(report.summary.controllerActions).toBe(1);
+  expect(report.summary.controllerExecutionStatuses).toEqual({ completed: 2 });
+  expect(report.executions.map((item: any) => [item.controller, item.requiresControl])).toEqual([["screen", false], ["pad", true]]);
+  expect(report.observations.map((item: any) => [item.controllerId, item.argv])).toEqual([["screen", ["capture"]], ["old-screen", null]]);
+});
+
 test("analysis attributes late compaction lifecycle to its epoch without extending active time or guessing missing identities", async () => {
   const event = fixture();
   const first = { operationId: "candidate-a", traceId: "trace-a", spanId: "span-a" };

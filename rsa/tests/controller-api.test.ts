@@ -37,7 +37,7 @@ client = Client()
 values = [client.list(), client.help("controller/pad"),
           client.call("controller/pad", ["apply", "A", "100"]),
           client.call("python/scripts/move.py:step", {"label": "前进", "steps": 2}),
-          client.call("sensor/screen")]
+          client.call("controller/screen")]
 errors = []
 for capability_id in ["rejected", "disconnect"]:
     try:
@@ -45,7 +45,7 @@ for capability_id in ["rejected", "disconnect"]:
     except (RSAError, ConnectionError) as error:
         errors.append({"type": type(error).__name__, "message": str(error)})
 explicit = Client(${JSON.stringify(socketPath)}, epoch="explicit-epoch", trace={"source": "explicit"}, timeout=1)
-values.append(explicit.help("sensor/screen"))
+values.append(explicit.help("controller/screen"))
 print(json.dumps({"values": values, "errors": errors, "marked": probe.__rsa_capability__}))
 `], { env: { ...process.env, PYTHONPATH: join(import.meta.dir, "../python"), RSA_SOCKET: socketPath,
       BASEWARE_EPOCH: "active-epoch", BASEWARE_TRACE: JSON.stringify({toolCallId: "parent-call"}) }, stdout: "pipe", stderr: "pipe" });
@@ -70,7 +70,7 @@ print(json.dumps({"values": values, "errors": errors, "marked": probe.__rsa_capa
       expect(request).toMatchObject({kind: "controller", argv: [], epoch: "active-epoch", trace: {toolCallId: "parent-call"}});
     }
     expect(requests[4]).not.toHaveProperty("arguments");
-    expect(requests[7]).toMatchObject({action: "help", id: "sensor/screen", epoch: "explicit-epoch", trace: {source: "explicit"}});
+    expect(requests[7]).toMatchObject({action: "help", id: "controller/screen", epoch: "explicit-epoch", trace: {source: "explicit"}});
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));
   }
