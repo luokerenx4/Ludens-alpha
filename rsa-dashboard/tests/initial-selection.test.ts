@@ -4,8 +4,8 @@ import { initialSelection } from "../lib/initial-selection";
 import type { Project } from "../lib/types";
 
 const projects: Project[] = [
-  { id: "first", runs: [{ id: "new", model: null, seconds: 600, provider: "test" }] },
-  { id: "workspace-a", runs: ["latest", "older"].map((id) => ({ id, model: null, seconds: 600, provider: "test" })) },
+  { id: "first", runs: [{ id: "new", model: null, seconds: 600, drivers: [{ id: "test", version: "1" }] }] },
+  { id: "workspace-a", runs: ["latest", "older"].map((id) => ({ id, model: null, seconds: 600, drivers: [{ id: "test", version: "1" }] })) },
 ];
 
 test("pet links select the catalog project and historical run, retaining the cycle for run validation", () => {

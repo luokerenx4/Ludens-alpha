@@ -32,7 +32,7 @@ test.each([1, 26])("OMP persists batches of %i images and reuses the Codex prefi
   }] }, (type, data) => { events.push({ type, data }); });
   const control = new AbortController();
   const extension = createRsaExtension({ runtime, workspace: new Workspace(workspace, join(directory, "skill-versions")),
-    socket: "/tmp/unused.sock", binDir: "/tmp", autoObserve: [{ sensorId: "camera", argv: [] }],
+    basewareSocket: "/tmp/unused.sock", binDir: "/tmp", autoObserve: [{ sensorId: "camera", argv: [] }],
     maxRequests: 9, cycle: () => ({ epoch: "test", signal: control.signal }),
   });
   const settings = Settings.isolated({ "memory.backend": "off", "autolearn.enabled": false,

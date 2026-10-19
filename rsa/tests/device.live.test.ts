@@ -1,19 +1,25 @@
 import { expect, test } from "bun:test";
 import { send } from "../src/harness/transport.ts";
+import { BasewareClient } from "@playness/baseware/client";
+import { defaultSocket } from "@playness/baseware/address";
 import type { ExecutionResult, Observation } from "@playness/baseware/contracts";
 import { rm } from "node:fs/promises";
+import { resolve } from "node:path";
+import { resolveWorkspaceState } from "../src/harness/workspace-state.ts";
 
-const socket = process.env.RSA_SOCKET ?? `/tmp/playness-rsa-${process.getuid!()}.sock`;
-async function control(value: "on" | "off") {
+async function control(socket: string, value: "on" | "off") {
   const status = await send(socket, { kind: "status", argv: [] }) as { runId: string; epoch: string | null };
   return send(socket, { kind: "auto", argv: [value], runId: status.runId, expectedEpoch: status.epoch });
 }
 test.skipIf(process.env.RSA_MGBA !== "1")("real device captures PNG, completes sequences, interrupts and rejects the old owner", async () => {
-  await control("off");
-  const { epoch } = await control("on") as { epoch: string };
-  const command = (argv: string[]) => send(socket, { kind: "controller", id: "pad", argv, epoch }) as Promise<ExecutionResult>;
+  const workspace = process.env.RSA_WORKSPACE ?? process.cwd();
+  const socket = process.env.RSA_SOCKET ?? (await resolveWorkspaceState(workspace, resolve(import.meta.dir, "../../../artifacts/rsa"))).socket;
+  const baseware = await BasewareClient.connect(process.env.BASEWARE_SOCKET ?? await defaultSocket(workspace));
   const sequenceFile = `/tmp/rsa-sequence-${crypto.randomUUID()}.json`;
   try {
+    await control(socket, "off");
+    const { epoch } = await control(socket, "on") as { epoch: string };
+    const command = (argv: string[]) => baseware.request({ kind: "controller", id: "pad", argv, epoch }) as Promise<ExecutionResult>;
     await Bun.write(sequenceFile, JSON.stringify([
       { state: { RIGHT: 1 }, durationMs: 50 },
       { state: { RIGHT: 1, A: 1 }, durationMs: 50 },
@@ -27,7 +33,7 @@ test.skipIf(process.env.RSA_MGBA !== "1")("real device captures PNG, completes s
     expect(JSON.parse(result.stdout).frames).toBe(6);
     const state = JSON.parse((await command(["state"])).stdout);
     expect(Object.values(state.state).every((v) => v === 0)).toBe(true);
-    const capture = await send(socket, { kind: "sensor", id: "screen", argv: ["capture"] }) as Observation[];
+    const capture = await baseware.request({ kind: "sensor", id: "screen", argv: ["capture"] }) as Observation[];
     const png = Buffer.from(await Bun.file(capture[0].path).arrayBuffer());
     expect(png.readUInt32BE(16)).toBe(240);
     expect(png.readUInt32BE(20)).toBe(160);
@@ -37,10 +43,13 @@ test.skipIf(process.env.RSA_MGBA !== "1")("real device captures PNG, completes s
     await Bun.sleep(100);
     await expect(command(["apply", "--state", '{"A":1}', "--for-ms", "100"])).rejects.toThrow("BUSY");
     const start = performance.now();
-    await control("off");
+    await control(socket, "off");
     expect((await action).status).toBe("interrupted");
     expect(performance.now() - start).toBeLessThan(500);
-    await control("on");
+    await control(socket, "on");
     await expect(command(["apply", "--state", '{"A":1}', "--for-ms", "100"])).rejects.toThrow("STALE_EPOCH");
-  } finally { await control("off"); await rm(sequenceFile, { force: true }); }
+  } finally {
+    try { await control(socket, "off"); }
+    finally { baseware.close(); await rm(sequenceFile, { force: true }); }
+  }
 }, 10000);

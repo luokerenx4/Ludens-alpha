@@ -1,6 +1,9 @@
 import { expect, spyOn, test } from "bun:test";
+import { rm } from "node:fs/promises";
+import { resolve } from "node:path";
 import type { Capabilities, Controller } from "@playness/baseware/contracts";
-import { createTestRuntime } from "./runtime-fixture.ts";
+import { createTestRuntime, createTestDeviceSession } from "./runtime-fixture.ts";
+import { Runtime } from "../src/harness/runtime.ts";
 import { dispatch, listen, send } from "../src/harness/transport.ts";
 
 function fixture() {
@@ -26,7 +29,8 @@ function fixture() {
       },
     }],
   };
-  return { controller, runtime: createTestRuntime(capabilities, () => {}), angle: () => angle, owner: () => owner };
+  const { core, devices } = createTestDeviceSession(capabilities);
+  return { controller, capabilities, core, devices, runtime: new Runtime(devices, () => {}), angle: () => angle, owner: () => owner };
 }
 
 test("takeover time remaining ignores host age and resets on each epoch", async () => {
@@ -70,37 +74,59 @@ test("a human takeover message reaches only its own cycle and malformed argument
   } finally { await runtime.close(); }
 });
 
-test("the same IPC host accepts non-game capability IDs and commands, then rejects a revoked owner", async () => {
-  const { runtime, owner } = fixture();
-  const path = `/tmp/rsa-test-${crypto.randomUUID()}.sock`;
-  const close = await listen(path, runtime);
+test("Runtime discovers non-game catalog entries and reads through its device session", async () => {
+  const { runtime, devices, owner } = fixture();
+  const acquire = spyOn(devices, "acquire"), release = spyOn(devices, "release");
   try {
-    expect(await send(path, { kind: "controller", id: "joint-7", argv: ["--help"] })).toBe("rotate <degrees>");
-    const observations = await send(path, { kind: "sensor", id: "thermal-9", argv: ["sample"] });
+    expect(runtime.list()).toMatchObject({ sensors: [{ id: "thermal-9", mediaTypes: ["text/plain"], help: "sample" }],
+      controllers: [{ id: "joint-7", help: "rotate <degrees>" }] });
+    const observations = await runtime.observe({ sensorId: "thermal-9", argv: ["sample"] }, new AbortController().signal);
     expect(observations).toMatchObject([{ sensorId: "thermal-9", mediaType: "text/plain" }]);
+    expect(acquire).not.toHaveBeenCalled();
     const { epoch } = await runtime.start();
-    expect(await send(path, { kind: "controller", id: "joint-7", argv: ["rotate", "15"], epoch: epoch! })).toMatchObject({ stdout: "15" });
+    expect(owner()).toBe(epoch!);
+    expect(acquire).toHaveBeenCalledTimes(1);
     await runtime.stop();
     expect(owner()).toBeUndefined();
-    await runtime.start();
-    await expect(send(path, { kind: "controller", id: "joint-7", argv: ["rotate", "3"], epoch: epoch! })).rejects.toThrow("STALE_EPOCH");
-  } finally { await runtime.close(); await close(); }
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledWith(epoch);
+  } finally { await runtime.close(); acquire.mockRestore(); release.mockRestore(); }
 });
 
-test("subcommand help does not acquire controls or sample sensors and preserves literal option values", async () => {
-  const { runtime, controller, owner } = fixture();
+test("catalog help is inert and device execution receives literal argument values", async () => {
+  const { runtime, core, controller, capabilities, owner } = fixture();
   const execute = spyOn(controller, "execute");
-  const read = spyOn(runtime.capabilities.sensors[0]!, "read");
+  const read = spyOn(capabilities.sensors[0]!, "read");
   try {
-    expect(await dispatch(runtime, { kind: "controller", id: "joint-7", argv: ["rotate", "--help"] })).toBe("rotate <degrees>");
-    expect(await dispatch(runtime, { kind: "sensor", id: "thermal-9", argv: ["sample", "--help"] })).toBe("sample");
+    expect(runtime.list().controllers[0]!.help).toBe("rotate <degrees>");
+    expect(runtime.list().sensors[0]!.help).toBe("sample");
     expect(owner()).toBeUndefined();
     expect(execute).not.toHaveBeenCalled();
     expect(read).not.toHaveBeenCalled();
     const { epoch } = await runtime.start();
-    await expect(dispatch(runtime, { kind: "controller", id: "joint-7", argv: ["type", "--text", "--help"], epoch: epoch! })).rejects.toThrow("unknown operation");
+    await expect(core.execute("joint-7", ["type", "--text", "--help"], epoch!, new AbortController().signal)).rejects.toThrow("unknown operation");
     expect(execute.mock.calls[0]![0]).toEqual(["type", "--text", "--help"]);
   } finally { await runtime.close(); execute.mockRestore(); read.mockRestore(); }
+});
+
+test("RSA IPC rejects device calls and an agent environment cannot enable control through the CLI", async () => {
+  const { runtime, devices } = fixture();
+  const acquire = spyOn(devices, "acquire");
+  const path = `/tmp/rsa-management-${crypto.randomUUID()}.sock`;
+  const close = await listen(path, runtime);
+  try {
+    for (const kind of ["sensor", "controller"]) {
+      await expect(send(path, { kind, argv: ["any", "command"] })).rejects.toThrow("Unknown command");
+    }
+    const cli = Bun.spawn([process.execPath, resolve(import.meta.dir, "../src/app/main.ts"), "auto", "on"], {
+      env: { ...process.env, RSA_SOCKET: path, BASEWARE_EPOCH: "agent-cycle" }, stdout: "pipe", stderr: "pipe",
+    });
+    const errors = new Response(cli.stderr).text();
+    expect(await cli.exited).toBe(1);
+    expect(await errors).toContain("Control management belongs to the human");
+    expect(acquire).not.toHaveBeenCalled();
+    expect(runtime.status().mode).toBe("manual");
+  } finally { await runtime.close(); await close(); await rm(path, { force: true }); acquire.mockRestore(); }
 });
 
 test("parallel hosts route to independent devices and reject each other's epochs", async () => {
@@ -110,9 +136,9 @@ test("parallel hosts route to independent devices and reject each other's epochs
   const closeA = await listen(socketA, a.runtime), closeB = await listen(socketB, b.runtime);
   try {
     const ownerA = await a.runtime.start(), ownerB = await b.runtime.start();
-    await send(socketA, { kind: "controller", id: "joint-7", argv: ["rotate", "15"], epoch: ownerA.epoch! });
-    await send(socketB, { kind: "controller", id: "joint-7", argv: ["rotate", "30"], epoch: ownerB.epoch! });
-    await expect(send(socketB, { kind: "controller", id: "joint-7", argv: ["rotate", "100"], epoch: ownerA.epoch! }))
+    await a.core.execute("joint-7", ["rotate", "15"], ownerA.epoch!, new AbortController().signal);
+    await b.core.execute("joint-7", ["rotate", "30"], ownerB.epoch!, new AbortController().signal);
+    await expect(b.core.execute("joint-7", ["rotate", "100"], ownerA.epoch!, new AbortController().signal))
       .rejects.toThrow("STALE_EPOCH");
     expect([a.angle(), b.angle()]).toEqual([15, 30]);
     await expect(send(socketA, { kind: "auto", argv: ["off"], runId: b.runtime.status().runId })).rejects.toThrow("STALE_RUN");
@@ -121,7 +147,7 @@ test("parallel hosts route to independent devices and reject each other's epochs
     await send(socketA, { kind: "auto", argv: ["off"], runId: a.runtime.status().runId, expectedEpoch: ownerA.epoch });
     expect(a.runtime.status().mode).toBe("manual");
     expect(b.runtime.status().mode).toBe("auto");
-    await send(socketB, { kind: "controller", id: "joint-7", argv: ["rotate", "5"], epoch: ownerB.epoch! });
+    await b.core.execute("joint-7", ["rotate", "5"], ownerB.epoch!, new AbortController().signal);
     expect([a.angle(), b.angle()]).toEqual([15, 35]);
   } finally { await a.runtime.close(); await b.runtime.close(); await closeA(); await closeB(); }
 });
@@ -140,10 +166,10 @@ test("off completes device handback without waiting for the model, and prevents 
 });
 
 test("consolidation keeps devices manual, rejects overlap, and drains cancellation before admitting another task", async () => {
-  const { runtime, controller, owner } = fixture();
+  const { runtime, controller, capabilities, owner } = fixture();
   let deviceCalls = 0;
   controller.acquire = controller.release = async () => { deviceCalls++; };
-  runtime.capabilities.sensors[0].read = async () => { deviceCalls++; return []; };
+  capabilities.sensors[0].read = async () => { deviceCalls++; return []; };
   const prompt = Promise.withResolvers<void>(), cleanup = Promise.withResolvers<void>();
   let signal: AbortSignal | undefined;
   runtime.agent = {

@@ -32,8 +32,7 @@ export interface Cycle { epoch: string; signal: AbortSignal; purpose?: "consolid
 export function createRsaExtension(options: {
   runtime: Runtime;
   workspace: Workspace;
-  socket: string;
-  basewareSocket?: string;
+  basewareSocket: string;
   binDir: string;
   autoObserve: ObservationRequest[];
   cycle(): Cycle;
@@ -54,13 +53,17 @@ export function createRsaExtension(options: {
   let pythonDiscovery: PythonDiscovery = { capabilities: [], diagnostics: [] };
   let pythonVersion = "[]";
 
-  const commandEnvironment = (cycle: Cycle, parent: EventTrace): NodeJS.ProcessEnv => ({
-    ...process.env,
-    PATH: [options.binDir, resolve(import.meta.dir, "../../../../baseware/bin"), process.env.PATH ?? ""].join(delimiter),
-    PYTHONPATH: [...pythonModulePaths(), ...(process.env.PYTHONPATH ? [process.env.PYTHONPATH] : [])].join(delimiter),
-    BASEWARE_SOCKET: options.basewareSocket, BASEWARE_EPOCH: cycle.epoch, BASEWARE_TRACE: JSON.stringify(parent),
-    RSA_SOCKET: options.socket, RSA_EPOCH: cycle.epoch, RSA_TRACE: JSON.stringify(parent),
-  });
+  const commandEnvironment = (cycle: Cycle, parent: EventTrace): NodeJS.ProcessEnv => {
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      PATH: [options.binDir, resolve(import.meta.dir, "../../../../baseware/bin"), process.env.PATH ?? ""].join(delimiter),
+      PYTHONPATH: [...pythonModulePaths(), ...(process.env.PYTHONPATH ? [process.env.PYTHONPATH] : [])].join(delimiter),
+      BASEWARE_SOCKET: options.basewareSocket, BASEWARE_EPOCH: cycle.epoch, BASEWARE_TRACE: JSON.stringify(parent),
+    };
+    // A launching shell may still carry an obsolete RSA control context.
+    for (const name of ["RSA_SOCKET", "RSA_EPOCH", "RSA_TRACE"]) delete env[name];
+    return env;
+  };
 
   async function refreshPython() {
     if (!python) return;

@@ -113,7 +113,7 @@ async function main() {
     log = new EventLog(runDir, clock);
     log.record("run_start", { workspace, workspaceId: state.id });
     devices = await connectBaseware({ socket: basewareSocket, seconds, runDir, record: log.record });
-    runtime = new Runtime(devices.capabilities, log.record, devices.operations, seconds, runId);
+    runtime = new Runtime(devices, log.record, seconds, runId);
     devices.onHandback(reason => { void runtime!.stop(reason); });
     devices.onDisconnect((error) => { void runtime!.disconnected(error); });
     const model = values.model ?? "openai-codex/gpt-6.1-sol";
@@ -125,11 +125,11 @@ async function main() {
       unregisterCleanup = postmortem.register("rsa-run", close, { exitOnly: true });
       exit = postmortem.quit;
       const { createOmpAgent } = await import("../harness/omp/session.ts");
-      runtime.agent = await createOmpAgent({ runtime, workspace, state, runDir, socket, log, resume,
+      runtime.agent = await createOmpAgent({ runtime, workspace, state, runDir, log, resume,
         binDir: resolve(import.meta.dir, "../../bin"), basewareSocket, model, maxRequests, compactionThreshold, autoObserve,
       });
     }
-    await writeFile(join(runDir, "manifest.json"), JSON.stringify({ runId, workspace, workspaceId: state.id, stateDir: state.dir, socket, drivers: devices.catalog.drivers, provider: devices.catalog.drivers.map(driver => `${driver.id}-${driver.version}`).join(", "), basewareSocket, omp: "18.9.1", eventSchemaVersion: 1, model: values["device-only"] ? null : model, seconds, maxRequests, resume, autoObserve, compactionThreshold: compactionThreshold ?? null }, null, 2));
+    await writeFile(join(runDir, "manifest.json"), JSON.stringify({ runId, workspace, workspaceId: state.id, stateDir: state.dir, socket, drivers: devices.catalog.drivers, basewareSocket, omp: "18.9.1", eventSchemaVersion: 1, model: values["device-only"] ? null : model, seconds, maxRequests, resume, autoObserve, compactionThreshold: compactionThreshold ?? null }, null, 2));
     ready = true;
     console.log(JSON.stringify({ ready: true, socket, workspace, stateDir: state.dir, runDir, ...runtime.status() }, null, 2));
     await new Promise<void>((done) => { process.once("SIGINT", done); process.once("SIGTERM", done); });

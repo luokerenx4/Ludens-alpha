@@ -90,6 +90,7 @@ export class PythonCapabilities {
     options.signal?.throwIfAborted();
     const input = JSON.stringify(request);
     const env = { ...process.env, ...options.env };
+    for (const name of ["RSA_SOCKET", "RSA_EPOCH", "RSA_TRACE"]) delete env[name];
     env.PYTHONPATH = [...pythonModulePaths(), ...(env.PYTHONPATH ? [env.PYTHONPATH] : [])].join(delimiter);
     env.PYTHONDONTWRITEBYTECODE = "1";
     return new Promise((done, fail) => {

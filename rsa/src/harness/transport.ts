@@ -1,9 +1,8 @@
 import { createServer, connect } from "node:net";
 import { lstat, unlink } from "node:fs/promises";
 import type { Runtime } from "./runtime.ts";
-import type { EventTrace } from "./events.ts";
 
-export interface Request { kind: string; id?: string; argv: string[]; epoch?: string; runId?: string; expectedEpoch?: string | null; trace?: EventTrace }
+export interface Request { kind: string; argv: string[]; epoch?: string; runId?: string; expectedEpoch?: string | null }
 type Response = { ok: true; value: unknown } | { ok: false; error: string };
 
 export async function listen(path: string, runtime: Runtime | (() => Runtime)) {
@@ -23,7 +22,7 @@ export async function listen(path: string, runtime: Runtime | (() => Runtime)) {
     let buffer = "";
     let dispatched = false;
     socket.setEncoding("utf8");
-    socket.on("error", () => {}); // A CLI can disappear while a finite device action continues.
+    socket.on("error", () => {}); // A CLI can disappear while management cleanup finishes.
     socket.on("data", (chunk) => {
       buffer += chunk;
       const end = buffer.indexOf("\n");
@@ -44,7 +43,7 @@ export async function listen(path: string, runtime: Runtime | (() => Runtime)) {
 }
 
 export async function dispatch(runtime: Runtime, request: Request): Promise<unknown> {
-  const { kind, id, argv, epoch } = request;
+  const { kind, argv, epoch } = request;
   if (kind === "status") return runtime.status();
   if (kind === "auto" || kind === "consolidate") {
     if (epoch !== undefined) throw new Error("Control management belongs to the human, not an agent cycle");
@@ -61,15 +60,7 @@ export async function dispatch(runtime: Runtime, request: Request): Promise<unkn
     if (argv.length === 1 && argv[0] === "off") { await runtime.stop(); return runtime.status(); }
     throw new Error("Usage: rsa auto on [--message <text>] | rsa auto off");
   }
-  if (kind !== "sensor" && kind !== "controller") throw new Error("Unknown command; see rsa --help");
-  if (id === "list") return kind === "sensor" ? runtime.list().sensors : runtime.list().controllers;
-  if (!id) throw new Error("Missing capability ID");
-  // Both <id> --help and <id> <command> --help show the provider's capability help.
-  // Do not scan option values, which may legitimately contain the text "--help".
-  if (argv.length >= 1 && argv.length <= 2 && argv.at(-1) === "--help") return runtime.help(kind, id);
-  if (kind === "sensor") return runtime.observe({ sensorId: id, argv }, new AbortController().signal, request.trace);
-  if (epoch === undefined) throw new Error("Set RSA_EPOCH to the epoch returned by rsa auto on");
-  return await runtime.execute(id, argv, epoch, undefined, request.trace);
+  throw new Error("Unknown command; see rsa --help");
 }
 
 export function send(path: string, request: Request): Promise<unknown> {

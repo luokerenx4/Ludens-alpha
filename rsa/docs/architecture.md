@@ -30,7 +30,7 @@ flowchart LR
 | `rsa-dashboard/` | 日志读取、模型与动作统计、媒体展示、人工交还入口 | 模型推理与设备执行 |
 | `rsa-companion/` | 消费日志，在 Alice Pet 气泡中呈现活动、画面与声音 | 策略、driver、独立模型调用 |
 
-各组件独立安装，有自己的锁文件。`rsa` 以本地包依赖 `@playness/baseware` 的契约和客户端，生产代码不导入 `drivers/`。`rsa up` 是本机应用装配入口，可以选择设备类型并启动进程；这个选择不进入 Harness。
+各组件独立安装，有自己的锁文件。`rsa` 以本地包依赖 `@playness/baseware` 的契约和客户端，生产代码不导入 `drivers/`。`rsa up` 是本机应用装配入口，可以选择设备类型并启动进程；这个选择不进入 Harness。启动配置使用 `driver`；RSA CLI 只管理 Agent，设备调用统一通过 Baseware，移除了原有 sensor/controller 转发入口。
 
 ## Driver 与 Baseware
 
@@ -68,7 +68,7 @@ interface Controller {
 
 ## 操作权与人工接管
 
-RSA 创建每轮 epoch，通过一条持久连接向 Baseware 申请有期限的操作权。普通 CLI、API、MCP 调用携带该 epoch；它们不因打开连接而取得操作权。
+RSA 创建每轮 epoch，通过一条持久连接向 Baseware 申请一次有期限的服务操作权；即使目录只有 Sensor，也使用同一交接流程。普通 CLI、API、MCP 调用携带该 epoch；它们不因打开连接而取得操作权。
 
 Baseware 独立负责：
 

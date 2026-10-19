@@ -6,7 +6,7 @@ import { defaultSocket } from "@playness/baseware/address";
 import workspaceGuide from "../../templates/AGENTS.md" with { type: "text" };
 
 export const WORKSPACE_HELP = `Workspace startup (macOS):
-rsa init --provider ryubing|mgba [--game <path>] [--seconds <n>]
+rsa init --driver ryubing|mgba [--game <path>] [--seconds <n>]
 rsa up [--dry-run]
 rsa services
 rsa down [--keep-emulator] [--dashboard]
@@ -20,7 +20,7 @@ The shared Dashboard stays up unless --dashboard is given by its owning workspac
 Without game, prepare the emulator bridge yourself. mGBA always uses this mode.`;
 
 export interface LaunchConfig {
-  provider: "mgba" | "ryubing";
+  driver: "mgba" | "ryubing";
   game?: string;
   port: number;
   model: string;
@@ -34,12 +34,12 @@ export interface LaunchConfig {
 export function parseConfig(value: unknown): LaunchConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("rsa.json must be an object");
   const config = value as Record<string, unknown>;
-  const allowed = ["provider", "game", "port", "model", "seconds", "requests", "compactionThreshold", "dashboard", "pet"];
+  const allowed = ["driver", "game", "port", "model", "seconds", "requests", "compactionThreshold", "dashboard", "pet"];
   for (const key of Object.keys(config)) if (!allowed.includes(key)) throw new Error(`Unknown rsa.json field: ${key}`);
-  if (config.provider !== "mgba" && config.provider !== "ryubing") throw new Error("rsa.json provider must be mgba or ryubing");
+  if (config.driver !== "mgba" && config.driver !== "ryubing") throw new Error("rsa.json driver must be mgba or ryubing");
   if (config.game !== undefined && (typeof config.game !== "string" || !config.game.trim())) throw new Error("game must be a non-empty path");
-  if (config.provider === "mgba" && config.game !== undefined) throw new Error("mGBA: open the ROM and load bridge.lua in Tools → Scripting, then omit game from rsa.json");
-  const result = { port: config.provider === "mgba" ? 47653 : 47663, model: "openai-codex/gpt-6.1-sol",
+  if (config.driver === "mgba" && config.game !== undefined) throw new Error("mGBA: open the ROM and load bridge.lua in Tools → Scripting, then omit game from rsa.json");
+  const result = { port: config.driver === "mgba" ? 47653 : 47663, model: "openai-codex/gpt-6.1-sol",
     seconds: 1800, requests: 1000, compactionThreshold: 256000, dashboard: true, pet: true, ...config } as LaunchConfig;
   for (const key of ["port", "seconds", "requests", "compactionThreshold"] as const) {
     if (!Number.isInteger(result[key]) || result[key] <= 0) throw new Error(`${key} must be a positive integer`);
@@ -74,7 +74,7 @@ export async function launchPlan(config: LaunchConfig, workspace: string, repo =
     commands: {
       ...(config.game ? { emulator: ["env", `RSA_BRIDGE_PORT=${config.port}`,
         join(repo, "baseware/src/drivers/ryubing/launch.sh"), resolve(workspace, config.game)] } : {}),
-      baseware: [baseware, "serve", "--driver", config.provider, "--port", String(config.port), "--socket", basewareSocket,
+      baseware: [baseware, "serve", "--driver", config.driver, "--port", String(config.port), "--socket", basewareSocket,
         "--data-dir", join(workspace, "logs/baseware")],
       host: [rsa, "run", "--baseware-socket", basewareSocket, "--model", config.model,
         "--seconds", String(config.seconds), "--requests", String(config.requests), "--compaction-threshold", String(config.compactionThreshold)],
@@ -102,7 +102,7 @@ const systemIO: LaunchIO = {
     const env = { ...process.env };
     // Workspace selection must not inherit a previous agent shell's address or lease.
     for (const key of Object.keys(env)) {
-      if (key.startsWith("BASEWARE_") || ["RSA_SOCKET", "RSA_WORKSPACE", "RSA_EPOCH", "RSA_TRACE"].includes(key)) delete env[key];
+      if (key.startsWith("BASEWARE_") || ["RSA_SOCKET", "RSA_WORKSPACE"].includes(key)) delete env[key];
     }
     const child = Bun.spawn(argv, { cwd, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     const timer = setTimeout(() => child.kill(), 10_000);
@@ -200,7 +200,7 @@ export class WorkspaceLauncher {
             return !!pid && (await this.listeningPids(this.plan.config.port)).includes(pid);
           });
         } else if (!(await this.listeningPids(this.plan.config.port)).length) {
-          throw new Error(`No prepared bridge on port ${this.plan.config.port}. ${this.plan.config.provider === "mgba"
+          throw new Error(`No prepared bridge on port ${this.plan.config.port}. ${this.plan.config.driver === "mgba"
             ? "Open the ROM in mGBA and load baseware/src/drivers/mgba/bridge.lua in Tools → Scripting."
             : "Start the patched Ryubing with the desired game, or set game in rsa.json."}`);
         }
@@ -287,11 +287,11 @@ export class WorkspaceLauncher {
 export async function workspaceCommand(command: string, args: string[], selectedWorkspace: string) {
   if (args.includes("--help")) { console.log(WORKSPACE_HELP); return; }
   const { values } = parseArgs({ args, options: command === "init" ? {
-    provider: { type: "string" }, game: { type: "string" }, seconds: { type: "string" },
+    driver: { type: "string" }, game: { type: "string" }, seconds: { type: "string" },
   } : command === "up" ? { "dry-run": { type: "boolean" } }
     : command === "down" ? { dashboard: { type: "boolean" }, "keep-emulator": { type: "boolean" } } : {} });
   if (command === "init") {
-    const config = parseConfig({ provider: values.provider,
+    const config = parseConfig({ driver: values.driver,
       ...(values.game ? { game: values.game } : {}), ...(values.seconds ? { seconds: Number(values.seconds) } : {}) });
     await mkdir(selectedWorkspace, { recursive: true });
     const workspace = await realpath(selectedWorkspace);
@@ -302,7 +302,7 @@ export async function workspaceCommand(command: string, args: string[], selected
   }
   const workspace = await realpath(selectedWorkspace);
   // Status and shutdown remain available even if the launch config was removed or edited badly.
-  const config = command === "up" ? parseConfig(await Bun.file(join(workspace, "rsa.json")).json()) : parseConfig({ provider: "mgba" });
+  const config = command === "up" ? parseConfig(await Bun.file(join(workspace, "rsa.json")).json()) : parseConfig({ driver: "mgba" });
   const plan = await launchPlan(config, workspace);
   if (values["dry-run"]) { console.log(JSON.stringify(plan, null, 2)); return; }
   if (process.platform !== "darwin") throw new Error("Workspace service commands currently use macOS launchd");

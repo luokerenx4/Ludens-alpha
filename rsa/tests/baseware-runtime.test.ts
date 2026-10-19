@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -17,7 +17,7 @@ async function until(check: () => boolean) {
   }
 }
 
-async function fixture(seconds = 60, acquisition?: Promise<void>, releaseFailure = false) {
+async function fixture(seconds = 60, acquisition?: Promise<void>, releaseFailure = false, controllerCount = 1) {
   const directory = await mkdtemp(join(tmpdir(), "rsa-baseware-"));
   const socket = join(directory, "baseware.sock");
   const runDir = join(directory, "logs/run-1");
@@ -51,10 +51,11 @@ async function fixture(seconds = 60, acquisition?: Promise<void>, releaseFailure
         timing: { clock: "fixture", requestedAtMs: 3, receivedAtMs: 4 } })); },
     }],
   };
+  capabilities.controllers = Array.from({ length: controllerCount }, (_, index) => ({ ...capabilities.controllers[0]!, id: index ? `motor-${index}` : "motor" }));
   const core = new BasewareCore({ capabilities, drivers: [{ id: "fake", version: "1" }] });
   const closeServer = await listen(socket, core);
   const adapter = await connectBaseware({ socket, seconds, runDir, record: (type, data, trace) => events.push({ type, data, trace }) });
-  const runtime = new Runtime(adapter.capabilities, () => {}, adapter.operations, seconds);
+  const runtime = new Runtime(adapter, () => {}, seconds);
   adapter.onHandback(reason => { void runtime.stop(reason); });
   adapter.onDisconnect(error => { void runtime.disconnected(error); });
   runtime.agent = {
@@ -111,14 +112,14 @@ test("remote lease matches the configured budget and human revoke cancels a sepa
   } finally { await f.close(); }
 });
 
-test("RSA stop cancels its remote operation and releases the service owner", async () => {
+test("RSA stop cancels a direct Baseware client operation and releases the service owner", async () => {
   const f = await fixture();
   try {
     const { epoch } = await f.runtime.start();
-    const action = f.runtime.execute("motor", ["wait"], epoch!).catch(error => error);
+    const action = f.external.request({ kind: "controller", id: "motor", argv: ["wait"], epoch: epoch! });
     await f.acting;
     await f.runtime.stop();
-    expect(await action).toBeInstanceOf(Error);
+    expect(await action).toMatchObject({ status: "interrupted", exitCode: 130 });
     expect(f.runtime.status().mode).toBe("manual");
     expect(f.core.status().mode).toBe("manual");
     expect(f.cancellations()).toBe(1);
@@ -173,4 +174,21 @@ test("a failed physical release disconnects RSA even when handback itself succee
     expect(f.core.status()).toMatchObject({ mode: "manual", connected: false });
     expect(f.runtime.status()).toMatchObject({ mode: "manual", connected: false });
   } finally { await f.close(); }
+});
+
+
+test.each([0, 2])("RSA acquires one service lease for a catalog with %i controllers", async (count) => {
+  const f = await fixture(60, undefined, false, count);
+  const acquire = spyOn(f.core, "acquire"), release = spyOn(f.core, "release");
+  try {
+    expect(f.runtime.list().controllers).toHaveLength(count);
+    const state = await f.runtime.start();
+    expect(f.core.status()).toMatchObject({ mode: "auto", epoch: state.epoch });
+    expect(acquire).toHaveBeenCalledTimes(1);
+    expect(f.agentCalls()).toBe(1);
+    await f.external.request({ kind: "revoke" });
+    await until(() => f.runtime.status().mode === "manual" && !f.runtime.status().thinking);
+    expect(f.core.status().mode).toBe("manual");
+    expect(release).toHaveBeenCalledTimes(1);
+  } finally { acquire.mockRestore(); release.mockRestore(); await f.close(); }
 });

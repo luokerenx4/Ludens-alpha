@@ -10,7 +10,7 @@ export interface Manifest {
   runId: string;
   workspace: string;
   socket: string;
-  provider: string;
+  drivers: { id: string; version: string }[];
   model: string | null;
   seconds: number;
   maxRequests: number;
@@ -20,7 +20,7 @@ export interface RunInfo {
   id: string;
   model: string | null;
   seconds: number;
-  provider: string;
+  drivers: { id: string; version: string }[];
 }
 export interface Project {
   id: string;

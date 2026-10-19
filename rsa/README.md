@@ -18,7 +18,7 @@ bun install --frozen-lockfile
 export PATH="$PWD/bin:$PWD/../baseware/bin:$PATH"
 mkdir -p /absolute/path/to/workspace
 cd /absolute/path/to/workspace
-rsa init --provider ryubing --game /absolute/path/to/game.nsp --seconds 1800
+rsa init --driver ryubing --game /absolute/path/to/game.nsp --seconds 1800
 rsa up --dry-run
 rsa up
 rsa services
@@ -33,7 +33,7 @@ rsa auto on
 
 ```json
 {
-  "provider": "ryubing",
+  "driver": "ryubing",
   "game": "/absolute/path/to/game.nsp",
   "seconds": 1800,
   "requests": 1000,
@@ -44,9 +44,9 @@ rsa auto on
 }
 ```
 
-`provider` 为 `ryubing` 或 `mgba`。`game` 是 Ryubing 启动的游戏路径，相对路径以工作区为基准；省略时连接外部已准备好的模拟器。可选 `port` 指定桥端口，默认 mGBA 47653、Ryubing 47663。其余字段的默认值如上；`seconds` 和 `requests` 是每次接管的预算，达到任一预算即交还控制。
+`driver` 为 `ryubing` 或 `mgba`。`game` 是 Ryubing 启动的游戏路径，相对路径以工作区为基准；省略时连接外部已准备好的模拟器。可选 `port` 指定桥端口，默认 mGBA 47653、Ryubing 47663。其余字段的默认值如上；`seconds` 和 `requests` 是每次接管的预算，达到任一预算即交还控制。
 
-有 `game` 时使用现有 `launch.sh` 启动已安装的带桥 Ryubing；安装及设备前提见下方 [Switch / Ryubing](#switch--ryubing)。mGBA 的 ROM 和 Lua 桥仍按下一节手动准备，再执行 `rsa init --provider mgba` 和 `rsa up`。
+有 `game` 时使用现有 `launch.sh` 启动已安装的带桥 Ryubing；安装及设备前提见下方 [Switch / Ryubing](#switch--ryubing)。mGBA 的 ROM 和 Lua 桥仍按下一节手动准备，再执行 `rsa init --driver mgba` 和 `rsa up`。
 
 生命周期约定：
 
@@ -80,7 +80,7 @@ dofile("/absolute/path/to/repo/baseware/src/drivers/mgba/bridge.lua")
 
 ```sh
 cd /absolute/path/to/workspace
-rsa init --provider mgba
+rsa init --driver mgba
 rsa up --dry-run
 rsa up
 rsa services
@@ -147,11 +147,11 @@ RSA_BRIDGE_PORT = 47654
 dofile("/absolute/path/to/repo/baseware/src/drivers/mgba/bridge.lua")
 ```
 
-随后进入第二个工作区，用 `rsa init --provider mgba` 创建配置，将 `rsa.json` 的 `port` 改为 47654，再执行 `rsa up`。每个工作区有独立 Baseware 地址和 RSA 地址；真实设备也需独立实例。模型、预算在工作区 `rsa.json` 中配置。`provider` 和 `port` 只用于启动 Baseware，Harness 不据此选择设备代码。
+随后进入第二个工作区，用 `rsa init --driver mgba` 创建配置，将 `rsa.json` 的 `port` 改为 47654，再执行 `rsa up`。每个工作区有独立 Baseware 地址和 RSA 地址；真实设备也需独立实例。模型、预算在工作区 `rsa.json` 中配置。`driver` 和 `port` 只用于启动 Baseware，Harness 不据此选择设备代码。
 
 ### Switch / Ryubing
 
-macOS arm64 桥接基于 Ryubing 的 `Canary-1.3.351` 标签，固定到提交 `475615f0431b4995b03c930c5089d20f6f3570e0`，本地版本为 `1.3.351-rsa.2`。唯一安装应用是 `/Applications/Ryubing.app`，手动和 RSA 使用同一份程序；界面名称是 Ryubing，上游内部可执行文件与进程仍叫 `Ryujinx`。具体构建来源及补丁说明见 [provider README](../baseware/src/drivers/ryubing/README.md)。
+macOS arm64 桥接基于 Ryubing 的 `Canary-1.3.351` 标签，固定到提交 `475615f0431b4995b03c930c5089d20f6f3570e0`，本地版本为 `1.3.351-rsa.2`。唯一安装应用是 `/Applications/Ryubing.app`，手动和 RSA 使用同一份程序；界面名称是 Ryubing，上游内部可执行文件与进程仍叫 `Ryujinx`。具体构建来源及补丁说明见 [driver README](../baseware/src/drivers/ryubing/README.md)。
 
 准备 .NET 10 SDK、Python 3、Xcode Command Line Tools 后，在本目录执行。当前私有 SDK 为 10.0.402，不依赖全局 SDK：
 
@@ -169,11 +169,11 @@ macOS arm64 桥接基于 Ryubing 的 `Canary-1.3.351` 标签，固定到提交 `
 
 旧 Stable 基底的火纹验证使用 Vulkan、1× 分辨率、Hypervisor 关闭、一号 Pro Controller；这是历史记录，不表示已验证新版或其他游戏的兼容性。
 
-准备设备后，进入任务工作区使用 `rsa init --provider ryubing` / `rsa up`，或分别启动 `baseware serve --driver ryubing` 与 `rsa run`。项目从空经验开始，不加载其他游戏技能；模型循环与 GBA 使用同一实现。
+准备设备后，进入任务工作区使用 `rsa init --driver ryubing` / `rsa up`，或分别启动 `baseware serve --driver ryubing` 与 `rsa run`。项目从空经验开始，不加载其他游戏技能；模型循环与 GBA 使用同一实现。
 
 `screen capture` 请求模拟器呈现画面的原始 PNG；系统输入框弹出时，改采集该弹窗的真实界面，不采集桌面。可用 `capture --delay-ms 500` 在发送采集请求前等待固定时间；默认 0，等待可取消。这不检测动画完成，返回帧序号也不能保证画面已经呈现该次按键的结果。自动观测通过装配层配置，例如 `--auto-observe '[{"sensorId":"screen","argv":["capture","--delay-ms","500"]}]'`，Harness 只转发标准传感器请求。
 
-`pad` 提供 16 个数字按键和四个摇杆轴，原子动作参数见 `bin/rsa controller pad --help`。动作按墙钟时间执行，时长由调用方选择，每段为至少 16 ms 的安全整数，合计也须为安全整数，输入轮询处切换完整状态。命令等待动作完成，期间仍可用 `pad release` 中断。AI 模式覆盖一号手柄及其体感输入；其他玩家、触屏、模拟器快捷键不在此控制器范围内。完成/取消归零，关闭接管或 TCP 断连恢复一号原生手柄输入。桥接只监听本机回环地址，作为可信本机进程间接口，不是多用户安全隔离。
+`pad` 提供 16 个数字按键和四个摇杆轴，原子动作参数见 `baseware controller pad --help`。动作按墙钟时间执行，时长由调用方选择，每段为至少 16 ms 的安全整数，合计也须为安全整数，输入轮询处切换完整状态。命令等待动作完成，期间仍可用 `pad release` 中断。AI 模式覆盖一号手柄及其体感输入；其他玩家、触屏、模拟器快捷键不在此控制器范围内。完成/取消归零，关闭接管或 TCP 断连恢复一号原生手柄输入。桥接只监听本机回环地址，作为可信本机进程间接口，不是多用户安全隔离。
 
 实机测试会短按方向键和摇杆，请停在可安全操作的菜单。退出 RSA 宿主、保留游戏运行后：
 
@@ -187,25 +187,25 @@ RSA_SWITCH_TEST=1 bun test tests/switch.live.test.ts
 
 ## 单独使用传感器与控制器
 
-宿主使用 `rsa run --device-only` 启动，不加载 OMP、不访问模型。
+先运行 Baseware，再用 `rsa run --device-only` 启动不带模型的宿主来持有操作权；两者使用同一工作区默认地址。也可以通过 Baseware TS API 自行持有连接与操作权。
 
 ```sh
-bin/rsa sensor list
-bin/rsa sensor screen --help
-bin/rsa sensor screen capture
-bin/rsa controller pad --help
-bin/rsa auto on
+baseware sensor list
+baseware sensor screen --help
+baseware sensor screen capture
+baseware controller pad --help
+rsa auto on
 ```
 
 把 `auto on` 输出中的 UUID 原样放入当前 shell：
 
 ```sh
-export RSA_EPOCH='<刚才返回的 epoch>'
-bin/rsa controller pad apply --state '{"RIGHT":1,"A":1}' --for-ms 120
-bin/rsa controller pad state
-bin/rsa controller pad release
-unset RSA_EPOCH
-bin/rsa auto off
+export BASEWARE_EPOCH='<刚才返回的 epoch>'
+baseware controller pad apply --state '{"RIGHT":1,"A":1}' --for-ms 120
+baseware controller pad state
+baseware controller pad release
+unset BASEWARE_EPOCH
+rsa auto off
 ```
 
 手柄有 A/B/SELECT/START/RIGHT/LEFT/UP/DOWN/R/L 十个通道。一次动作替换完整状态，省略的键为 0；结束后全部释放。`play --file /absolute/sequence.json` 接受状态序列，每段时长由调用方选择，须为有限正数，按模拟时间执行。帧边界会带来取整，每段至少占一帧，累计帧数及结束帧须能安全表示。命令等待动作完成；`pad release` 可随时中止当前按键，`auto off` 才交还操作权。
@@ -230,7 +230,7 @@ RSA 扫描 workspace 中的 `.py` 文件，只暴露 `@capability` / `@capabilit
 
 `logs/`、`.git/`、依赖和虚拟环境目录不参与扫描。脚本可放在工作区根目录、`scripts/` 或技能目录，未标记的辅助函数保持普通 Python 用法。扫描发现语法错误会通知模型，供它自行修正；不执行猜测性修复。
 
-shell 与 Python 工具自动获得 Baseware CLI、Python 包路径及当前 `BASEWARE_SOCKET` / `BASEWARE_EPOCH` / `BASEWARE_TRACE`。`rsa` CLI 仍可用于控制宿主与转发设备请求，新的脚本优先直接调用 Baseware。人工接管会取消脚本进程组，并由 Baseware 释放设备；脚本不自行获取操作权。这里是可信本机 shell，不是 Python 沙箱。
+shell 与 Python 工具自动获得 Baseware CLI、Python 包路径及当前 `BASEWARE_SOCKET` / `BASEWARE_EPOCH` / `BASEWARE_TRACE`。`rsa` CLI 只管理宿主，设备操作统一调用 Baseware。人工接管会取消脚本进程组，并由 Baseware 释放设备；脚本不自行获取操作权。这里是可信本机 shell，不是 Python 沙箱。
 
 ## 边界与数据
 
@@ -312,7 +312,7 @@ WS 握手超时、socket 错误，以及连接到期（`websocket_connection_lim
 
 大对象放在 `payloads/<sha256>.json.gz` 或 `.bin.gz`，引用中的 hash 与 bytes 对应解压后的字节；不截断内容。相同内容复用文件。HTTP body 自身若启用了压缩，先解开日志的 gzip，再按该事件的 `contentEncoding` 解释。`streams/<modelCallId>.jsonl` 保存 OMP 暴露的原始 SSE 事件或 WebSocket 帧及时间，供核查服务端原始 usage；无流事件时不会创建该文件。`model_end.usage` 则是 OMP 统一后的统计格式。
 
-`tool_start/end`、`exec/exec_result`、`observation_start/end/error`、`command/execution/execution_error` 串起模型到能力边界的执行链。shell 和 Python 通过 `BASEWARE_TRACE` 将关联字段带入设备请求；`rsa` 转发入口使用 `RSA_TRACE`。这些只是观测元数据，操作权由本轮 epoch 校验。`python_capabilities`、`python_capability/result` 记录能力目录、源码 hash、调用参数及结果。Baseware 独立保存设备日志，同时推送给 RSA；RSA 将观测文件复制进自己的 run，保持 Dashboard 与 Pet 的日志读取方式。工具正文单独保存；观测文件与技能版本沿用已有存储。
+`tool_start/end`、`exec/exec_result`、`observation_start/end/error`、`command/execution/execution_error` 串起模型到能力边界的执行链。shell 和 Python 通过 `BASEWARE_TRACE` 将关联字段带入设备请求。这些只是观测元数据，操作权由本轮 epoch 校验。`python_capabilities`、`python_capability/result` 记录能力目录、源码 hash、调用参数及结果。Baseware 独立保存设备日志，同时推送给 RSA；RSA 将观测文件复制进自己的 run，保持 Dashboard 与 Pet 的日志读取方式。工具正文单独保存；观测文件与技能版本沿用已有存储。
 
 为排查 2026-10-15 实跑中的动作后过早采样和技能读取漏记，日志额外记录以下信息；这些诊断字段不进入模型上下文，也不改变采样时机：
 

@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSwitchProvider } from "@playness/baseware/drivers/ryubing/provider.ts";
 import { Bridge } from "@playness/baseware/drivers/bridge.ts";
-import { createTestRuntime } from "./runtime-fixture.ts";
+import { createTestDeviceSession } from "./runtime-fixture.ts";
+import { Runtime } from "../src/harness/runtime.ts";
 
 test.skipIf(process.env.RSA_SWITCH_TEST !== "1")("Ryubing captures frames, interrupts long actions, hands back control, rejects stale epochs and clears disconnects", async () => {
   const directory = await mkdtemp(join(tmpdir(), "rsa-switch-"));
@@ -73,27 +74,29 @@ test.skipIf(process.env.RSA_SWITCH_TEST !== "1")("Ryubing captures frames, inter
     const afterReconnect = JSON.parse((await pad.execute(["state"], { epoch: nextEpoch, signal })).stdout);
     expect(Object.values(afterReconnect.state).every(value => value === 0)).toBe(true);
     await pad.release(nextEpoch);
-    const runtime = createTestRuntime(provider.capabilities, () => {});
+    const { core, devices } = createTestDeviceSession(provider.capabilities);
+    const runtime = new Runtime(devices, () => {});
+    const execute = (argv: string[], epoch: string) => core.execute("pad", argv, epoch, signal);
     try {
-      const takeover = await runtime.start(); // Device-only Runtime: no model driver or model request.
+      const takeover = await runtime.start(); // Agent lifecycle around the device service: no model request.
       const runtimeEpoch = takeover.epoch!;
-      const longAction = runtime.execute("pad", ["apply", "--state", '{}', "--for-ms", "30000"], runtimeEpoch);
+      const longAction = execute(["apply", "--state", '{}', "--for-ms", "30000"], runtimeEpoch);
       await Bun.sleep(80);
-      const beforeHandback = JSON.parse((await runtime.execute("pad", ["state"], runtimeEpoch)).stdout);
+      const beforeHandback = JSON.parse((await execute(["state"], runtimeEpoch)).stdout);
       expect(beforeHandback.actionId).not.toBeNull();
       const handback = performance.now();
       await runtime.stop("human");
       expect((await longAction).status).toBe("interrupted");
       expect(performance.now() - handback).toBeLessThan(500);
       expect(runtime.status()).toMatchObject({ mode: "manual", epoch: null, reason: "human" });
-      await expect(runtime.execute("pad", ["state"], runtimeEpoch)).rejects.toThrow("STALE_EPOCH");
+      await expect(execute(["state"], runtimeEpoch)).rejects.toThrow("STALE_EPOCH");
       await expect(pad.execute(["state"], { epoch: runtimeEpoch, signal })).rejects.toThrow("STALE_EPOCH");
       const resumed = await runtime.start();
       expect(resumed.epoch).not.toBe(runtimeEpoch);
-      const afterHandback = JSON.parse((await runtime.execute("pad", ["state"], resumed.epoch!)).stdout);
+      const afterHandback = JSON.parse((await execute(["state"], resumed.epoch!)).stdout);
       expect(afterHandback.actionId).toBeNull();
       expect(Object.values(afterHandback.state).every(value => value === 0)).toBe(true);
-      await expect(runtime.execute("pad", ["state"], runtimeEpoch)).rejects.toThrow("STALE_EPOCH");
+      await expect(execute(["state"], runtimeEpoch)).rejects.toThrow("STALE_EPOCH");
     } finally { await runtime.close(); }
     provider.close();
     const wire = await Bridge.open(port);

@@ -162,7 +162,7 @@ void app.whenReady().then(async () => {
     { id: 'design:text', kind: 'text', at: '', title: 'Assistant', status: 'complete',
       text: 'I found the crafting table.\nNext I will make a healing item.' },
     { id: 'design:tool', kind: 'tool', at: '', title: 'exec', status: 'running', text: '',
-      tool: { intent: 'Move toward the stairs', args: { command: 'rsa controller pad apply --state \'{"LY":1}\' --for-ms 600' }, result: { exitCode: 0, stdout: 'Controller released.' } } },
+      tool: { intent: 'Move toward the stairs', args: { command: 'baseware controller pad apply --state \'{"LY":1}\' --for-ms 600' }, result: { exitCode: 0, stdout: 'Controller released.' } } },
     { id: 'design:system', kind: 'system', at: '', title: 'control', status: 'complete', text: '',
       data: { mode: 'manual', reason: 'time budget' } },
     { id: 'design:diagnostic', kind: 'diagnostic', at: '', title: 'model_end', status: 'complete', text: '',

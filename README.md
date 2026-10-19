@@ -30,7 +30,7 @@ export PATH="$PWD/baseware/bin:$PWD/rsa/bin:$PWD/rsa-companion/bin:$PATH"
 ```sh
 mkdir -p ../workspaces/my-task
 cd ../workspaces/my-task
-rsa init --provider ryubing --game /absolute/path/to/game.nsp --seconds 1800
+rsa init --driver ryubing --game /absolute/path/to/game.nsp --seconds 1800
 rsa up --dry-run
 rsa up
 rsa services
@@ -49,7 +49,7 @@ rsa down                  # 停止本工作区管理的 Host、Pet、Baseware、
 
 关闭模拟器可能丢失未保存的游戏进度。`down` 默认保留共用 Dashboard；`down --dashboard` 可关闭由本工作区启动的 Dashboard。手动在外部启动的进程不会被关闭。更换预算、模型或加载 Host 代码改动时，修改 `rsa.json` 后执行 `rsa down --keep-emulator`、`rsa up`，即可保留当前游戏并续接原会话。重复 `up` 不重启已就绪的 Host；更换游戏或模拟器启动配置则使用普通 `down` / `up`。
 
-mGBA 使用 `rsa init --provider mgba`，先按 [RSA 文档](rsa/README.md)手动打开 ROM 并加载 Lua 桥；这一入口暂不代装桥。模型访问需要本机 OMP 登录，默认模型为 `openai-codex/gpt-6.1-sol`。原来的 `rsa run` 等独立组件入口仍可用于开发和排查。
+mGBA 使用 `rsa init --driver mgba`，先按 [RSA 文档](rsa/README.md)手动打开 ROM 并加载 Lua 桥；这一入口暂不代装桥。模型访问需要本机 OMP 登录，默认模型为 `openai-codex/gpt-6.1-sol`。原来的 `rsa run` 等独立组件入口仍可用于开发和排查。
 
 ## 工作区自己长出的能力
 
@@ -101,4 +101,4 @@ Host 与 Dashboard 使用同一处 `artifacts/rsa/` 查找工作区。更换代�
 
 默认检查不调用在线模型或操作真实模拟器；真实设备测试需显式开启，命令见各组件文档。Pet 的窗口与音频烟测可单独执行 `pnpm smoke`。
 
-架构记录见 [rsa/docs/architecture.md](rsa/docs/architecture.md)。Alice Pet 保留 [OpenAlice 来源记录](rsa-companion/upstream.json)、[许可证](rsa-companion/LICENSE)和[资源声明](rsa-companion/ui/public/companion/NOTICE.md)。
+施工与验收见 [Baseware plan](rsa/docs/baseware-plan.md)，架构见 [rsa/docs/architecture.md](rsa/docs/architecture.md)。Alice Pet 保留 [OpenAlice 来源记录](rsa-companion/upstream.json)、[许可证](rsa-companion/LICENSE)和[资源声明](rsa-companion/ui/public/companion/NOTICE.md)。

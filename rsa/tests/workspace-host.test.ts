@@ -56,8 +56,9 @@ mock.module(${JSON.stringify(join(rsaDirectory, "src/harness/omp/session.ts"))},
     const env = { ...process.env };
     delete env.RSA_SOCKET;
     delete env.RSA_WORKSPACE;
-    delete env.RSA_EPOCH;
-    delete env.RSA_TRACE;
+    delete env.BASEWARE_SOCKET;
+    delete env.BASEWARE_EPOCH;
+    delete env.BASEWARE_TRACE;
     return { ...env, PI_CODING_AGENT_DIR: join(directory, "omp"), RSA_TEST_DRIVER_CALLS: driverCalls, ...extra };
   }
   function launch(workspace: string, options: string[] = [], extra: Record<string, string> = {}, fromCwd = false): Host {

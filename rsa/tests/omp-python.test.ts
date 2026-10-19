@@ -21,7 +21,7 @@ test("OMP refreshes Python tools after writes, edits and removal without exposin
   let session: AgentSession | undefined;
   let refreshes = 0;
   const extension = createRsaExtension({runtime, workspace: new Workspace(workspace, join(directory, "versions")),
-    socket: "/tmp/unused-rsa.sock", basewareSocket: "/tmp/unused-baseware.sock", binDir: resolveBin(),
+    basewareSocket: "/tmp/unused-baseware.sock", binDir: resolveBin(),
     maxRequests: 20, autoObserve: [], cycle: () => cycle,
     refreshPythonTools: async tools => { refreshes++; await session!.refreshRpcHostTools(tools); },
   });

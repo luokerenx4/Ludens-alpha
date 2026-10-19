@@ -12,10 +12,10 @@ test("skill and script edits update the next index while preserving earlier evid
   try {
     expect((await workspace.snapshot()).skills).toEqual([]);
     await writeFile(join(root, "skills/turn/SKILL.md"), "---\nname: turn\ndescription: A learned operation\n---\nObserved turn after command.");
-    await writeFile(join(root, "skills/turn/scripts/run.sh"), "rsa controller joint rotate 10\n");
+    await writeFile(join(root, "skills/turn/scripts/run.sh"), "baseware controller joint rotate 10\n");
     const first = await workspace.snapshot();
     const oldManifest = JSON.parse(await readFile(join(workspace.versions, `${first.version}.json`), "utf8"));
-    await writeFile(join(root, "skills/turn/scripts/run.sh"), "rsa controller joint rotate 20\n");
+    await writeFile(join(root, "skills/turn/scripts/run.sh"), "baseware controller joint rotate 20\n");
     const second = await workspace.snapshot();
     expect(second.skills[0].version).not.toBe(first.skills[0].version);
     expect(await readFile(join(workspace.versions, oldManifest["skills/turn/scripts/run.sh"]), "utf8")).toContain("rotate 10");

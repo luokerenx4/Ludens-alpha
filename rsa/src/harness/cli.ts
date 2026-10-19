@@ -4,29 +4,20 @@ export const HELP = `rsa status
 rsa auto on [--message <text>]
 rsa auto off
 rsa consolidate [--seconds <n>]
-rsa sensor list
-rsa sensor <id> --help | <arguments...>
-rsa controller list
-rsa controller <id> --help | <arguments...>
 
-Control commands require RSA_EPOCH from auto on. Agent shells receive it automatically.
+Control management is unavailable inside agent cycles carrying BASEWARE_EPOCH.
 The current directory is the workspace; --workspace <path> or RSA_WORKSPACE overrides it.
 RSA_SOCKET overrides its default host address. Each workspace resumes its own session.
-Device calls are forwarded to Baseware. Use baseware for direct CLI/API/MCP access.`;
+Use baseware for device discovery and actions.`;
 
 export async function cli(argv: string[], socket: string) {
   const [kind, ...rest] = argv;
   if (!kind || kind === "--help") { console.log(HELP); return; }
-  const capability = kind === "sensor" || kind === "controller";
+  if (!["status", "auto", "consolidate"].includes(kind)) throw new Error("Unknown command; see rsa --help");
   const control = kind === "auto" || kind === "consolidate" ? await send(socket, { kind: "status", argv: [] }) as { runId: string; epoch: string | null } : undefined;
   const value = await send(socket, {
-    kind,
-    id: capability ? rest[0] : undefined,
-    argv: capability ? rest.slice(1) : rest,
-    epoch: process.env.RSA_EPOCH,
+    kind, argv: rest, epoch: process.env.BASEWARE_EPOCH,
     ...(control ? { runId: control.runId, expectedEpoch: control.epoch } : {}),
-    trace: process.env.RSA_TRACE ? JSON.parse(process.env.RSA_TRACE) : undefined,
   });
   console.log(typeof value === "string" ? value : JSON.stringify(value, null, 2));
-  if (value && typeof value === "object" && "exitCode" in value) process.exitCode = Number(value.exitCode);
 }

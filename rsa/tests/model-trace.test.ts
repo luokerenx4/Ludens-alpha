@@ -10,10 +10,12 @@ import type { StreamFn } from "@oh-my-pi/pi-agent-core";
 import { logger } from "@oh-my-pi/pi-utils";
 import { EventLog } from "../src/harness/events.ts";
 import { installCompactionHttpTrace, installCompactionSpeculationTrace, ModelTrace } from "../src/harness/omp/trace.ts";
-import { createTestRuntime } from "./runtime-fixture.ts";
+import { BasewareCore } from "@playness/baseware/core";
+import { listen as listenBaseware } from "@playness/baseware/server";
+import { connectBaseware } from "../src/harness/baseware.ts";
+import { Runtime } from "../src/harness/runtime.ts";
 import { Workspace } from "../src/harness/workspace.ts";
 import { createRsaExtension } from "../src/harness/omp/extension.ts";
-import { listen } from "../src/harness/transport.ts";
 import { createOmpSession } from "../src/harness/omp/session.ts";
 
 const png = "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg==";
@@ -281,26 +283,30 @@ test("real OMP HTTP bodies retain DeepSeek image prefixes beyond five images and
   await Bun.write(image, Buffer.from(png, "base64"));
   const log = new EventLog(directory, {id: "wire-test", now: () => performance.now()});
   let samples = 0;
-  const runtime = createTestRuntime({controllers: [{id: "joint-7", help: () => "move <n>", acquire: async () => {}, release: async () => {},
+  const core = new BasewareCore({ drivers: [{id: "trace-fixture", version: "1"}], capabilities: {controllers: [{id: "joint-7", help: () => "move <n>", acquire: async () => {}, release: async () => {},
     async execute(argv) { return {id: crypto.randomUUID(), status: "completed", exitCode: 0, stdout: argv.join(" "), stderr: "",
       timing: {clock: "wire-test", requestedAtMs: performance.now(), receivedAtMs: performance.now()}}; },
   }], sensors: [{id: "camera-q", help: () => "sample", mediaTypes: ["image/png"], async read() {
     return [{id: `observation-${++samples}`, sensorId: "camera-q", mediaType: "image/png", path: image,
       sourceSequence: samples * 100,
       timing: {clock: "wire-test", requestedAtMs: performance.now(), receivedAtMs: performance.now()}}];
-  }}]}, log.record);
-  const socket = `/tmp/rsa-wire-${crypto.randomUUID()}.sock`;
-  const closeSocket = await listen(socket, runtime);
+  }}]} });
+  const basewareSocket = `/tmp/baseware-wire-${crypto.randomUUID()}.sock`;
+  const closeSocket = await listenBaseware(basewareSocket, core);
+  const devices = await connectBaseware({socket: basewareSocket, seconds: 300, runDir: directory, record: log.record});
+  const runtime = new Runtime(devices, log.record);
+  devices.onHandback(reason => { void runtime.stop(reason); });
+  devices.onDisconnect(error => { void runtime.disconnected(error); });
   const {epoch} = await runtime.start();
   const trace = new ModelTrace(log, () => ({epoch: epoch!, ...extension.context()}));
-  const extension = createRsaExtension({runtime, workspace: new Workspace(workspace, join(directory, "skill-versions")), socket,
+  const extension = createRsaExtension({runtime, workspace: new Workspace(workspace, join(directory, "skill-versions")), basewareSocket,
     binDir: resolve(import.meta.dir, "../bin"), autoObserve: [{sensorId: "camera-q", argv: ["sample"]}],
     cycle: () => ({epoch: epoch!, signal: new AbortController().signal}), maxRequests: 7, trace: trace.current});
   const received: string[] = [];
   const server = Bun.serve({hostname: "127.0.0.1", port: 0, async fetch(request) {
     received.push(await request.text());
     const delta = received.length === 1 ? {role: "assistant", content: "", reasoning_content: "probe",
-      tool_calls: [1, 2].map((n, index) => ({index, id: `tool-${n}`, type: "function", function: {name: "exec", arguments: JSON.stringify({command: `rsa controller joint-7 move ${n}`})}}))}
+      tool_calls: [1, 2].map((n, index) => ({index, id: `tool-${n}`, type: "function", function: {name: "exec", arguments: JSON.stringify({command: `baseware controller joint-7 move ${n}`})}}))}
       : received.length < 7 ? {role: "assistant", content: "", reasoning_content: "probe",
         tool_calls: [{index: 0, id: `round-${received.length}`, type: "function", function: received.length === 6
           ? {name: "read", arguments: JSON.stringify({path: "skills/notes.md:2-3"})}
@@ -395,7 +401,7 @@ test("real OMP HTTP bodies retain DeepSeek image prefixes beyond five images and
     expect(eventText).not.toContain("private-fake-api-key");
     expect(eventText).not.toContain("private-response-cookie");
   } finally {
-    detach(); await session.dispose(); auth.close(); await runtime.close(); await closeSocket();
+    detach(); await session.dispose(); auth.close(); await runtime.close(); devices.close(); await closeSocket();
     server.stop(true); await rm(directory, {recursive: true, force: true});
   }
 }, 30_000);

@@ -274,7 +274,7 @@ test("workspace index discovers external workspace logs alongside retained histo
     await mkdir(join(state, "runs/old"), { recursive: true });
     await mkdir(join(workspace, "logs/new"), { recursive: true });
     await writeFile(join(state, "workspace.json"), JSON.stringify({ workspace }));
-    const manifest = JSON.stringify({ model: "test", seconds: 600, provider: "test" });
+    const manifest = JSON.stringify({ model: "test", seconds: 600, drivers: [{ id: "test", version: "1" }] });
     await writeFile(join(state, "runs/old/manifest.json"), manifest);
     await writeFile(join(workspace, "logs/new/manifest.json"), manifest);
     assert.equal(await resolveRun("ws-workspace-a", "new", root), join(workspace, "logs/new"));

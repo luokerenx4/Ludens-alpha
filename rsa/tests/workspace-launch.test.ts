@@ -92,15 +92,15 @@ class FakeServices implements LaunchIO {
   }
 }
 
-const plan = () => launchPlan(parseConfig({ provider: "ryubing", game: "games/A game; $(touch BAD).nsp" }),
+const plan = () => launchPlan(parseConfig({ driver: "ryubing", game: "games/A game; $(touch BAD).nsp" }),
   "/tmp/Workspace with spaces", "/tmp/Source with spaces", "/tmp/baseware-test.sock");
 
 test("launch config keeps limits explicit and paths as literal argv entries", async () => {
   const value = await plan();
   expect(value.config).toMatchObject({ port: 47663, seconds: 1800, requests: 1000, compactionThreshold: 256000 });
-  expect(parseConfig({ provider: "mgba" }).port).toBe(47653);
-  expect(() => parseConfig({ provider: "ryubing", second: 10 })).toThrow("Unknown");
-  expect(() => parseConfig({ provider: "mgba", game: "game.gba" })).toThrow("mGBA");
+  expect(parseConfig({ driver: "mgba" }).port).toBe(47653);
+  expect(() => parseConfig({ driver: "ryubing", second: 10 })).toThrow("Unknown");
+  expect(() => parseConfig({ driver: "mgba", game: "game.gba" })).toThrow("mGBA");
   expect(value.commands.emulator).toEqual(["env", "RSA_BRIDGE_PORT=47663",
     "/tmp/Source with spaces/baseware/src/drivers/ryubing/launch.sh",
     "/tmp/Workspace with spaces/games/A game; $(touch BAD).nsp"]);
@@ -109,7 +109,7 @@ test("launch config keeps limits explicit and paths as literal argv entries", as
     "--data-dir", "/tmp/Workspace with spaces/logs/baseware"]);
   expect(value.commands.host).toContain("/tmp/Source with spaces/rsa/bin/rsa");
   expect(value.commands.host).toContain("--baseware-socket");
-  expect(value.commands.host).not.toContain("--provider");
+  expect(value.commands.host).not.toContain("--driver");
   expect(value.commands.host).not.toContain("--port");
   expect(value.commands.pet).toContain("/tmp/Workspace with spaces");
 });
@@ -136,12 +136,12 @@ test("init and dry-run preserve existing workspace files and never invoke servic
       const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
       return { code, stdout, stderr };
     };
-    expect((await run("init", "--provider", "ryubing", "--game", "games/Uninstalled ; $ game.nsp", "--seconds", "600")).code).toBe(0);
+    expect((await run("init", "--driver", "ryubing", "--game", "games/Uninstalled ; $ game.nsp", "--seconds", "600")).code).toBe(0);
     const configBefore = await readFile(join(workspace, "rsa.json"), "utf8");
     const preview = await run("up", "--dry-run");
     expect(preview.code).toBe(0);
     expect(JSON.parse(preview.stdout)).toMatchObject({ workspace: await realpath(workspace), config: { seconds: 600 } });
-    expect((await run("init", "--provider", "mgba")).code).not.toBe(0);
+    expect((await run("init", "--driver", "mgba")).code).not.toBe(0);
     expect(await readFile(join(workspace, "rsa.json"), "utf8")).toBe(configBefore);
     expect(await readFile(join(workspace, "AGENTS.md"), "utf8")).toBe("My existing workspace instructions\n");
     expect((await readdir(workspace)).sort()).toEqual(["AGENTS.md", "rsa.json"]);
@@ -204,7 +204,7 @@ test("an external Ryubing process blocks startup before spawning or stopping any
 });
 
 test("a bridge used by another workspace neither receives a second host nor gets stopped", async () => {
-  const prepared = await launchPlan(parseConfig({ provider: "ryubing" }), "/tmp/Second workspace", undefined, "/tmp/second-baseware.sock");
+  const prepared = await launchPlan(parseConfig({ driver: "ryubing" }), "/tmp/Second workspace", undefined, "/tmp/second-baseware.sock");
   const attach = new FakeServices(prepared);
   attach.preparedBridgePid = 700;
   attach.bridgeClientPids = [701];

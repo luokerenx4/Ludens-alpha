@@ -81,7 +81,7 @@ export async function catalog(root = artifactRoot): Promise<Project[]> {
                 id,
                 model: m.model,
                 seconds: m.seconds,
-                provider: m.provider,
+                drivers: m.drivers,
               };
             } catch (error) {
               if ((error as NodeJS.ErrnoException).code === "ENOENT")

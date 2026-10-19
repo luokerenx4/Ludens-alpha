@@ -2,15 +2,11 @@ import { BasewareClient } from "@playness/baseware/client";
 import { createHash } from "node:crypto";
 import { copyFileSync, mkdirSync, constants } from "node:fs";
 import { extname, join } from "node:path";
-import type { Capabilities, ExecutionResult, Observation } from "@playness/baseware/contracts";
+import type { Observation } from "@playness/baseware/contracts";
+import type { Catalog } from "@playness/baseware/protocol";
 import type { RecordEvent, EventTrace } from "./events.ts";
-import type { DeviceOperations } from "./runtime.ts";
+import type { DeviceSession } from "./runtime.ts";
 
-interface Catalog {
-  drivers: { id: string; version: string }[];
-  sensors: { id: string; mediaTypes: string[]; help: string }[];
-  controllers: { id: string; help: string }[];
-}
 interface ControlStatus { mode: string; epoch: string | null; connected: boolean; remainingSeconds: number | null }
 
 /** One persistent control connection; shell/API clients share its epoch. */
@@ -57,7 +53,6 @@ export async function connectBaseware(options: { socket: string; seconds: number
     const initial = await client.request({ kind: "status" }) as ControlStatus;
     if (!initial.connected || disconnected) throw disconnected ?? new Error("Baseware driver disconnected");
     async function acquire(epoch: string) {
-      if (owner === epoch) return;
       pendingOwner = epoch;
       try {
         const state = await client.request({ kind: "acquire", epoch, seconds: options.seconds }) as ControlStatus;
@@ -73,22 +68,14 @@ export async function connectBaseware(options: { socket: string; seconds: number
       owner = undefined;
       await client.request({ kind: "release", epoch });
     }
-    const operations: DeviceOperations = {
+    const session: DeviceSession = {
+      catalog, acquire, release,
       async observe(request, signal, trace, origin) {
         const observations = await client.request({ kind: "sensor", id: request.sensorId, argv: request.argv, epoch: owner, trace: { ...trace }, origin }, signal) as Observation[];
         return observations.map(observation => ({ ...observation, path: localPath(observation) }));
       },
-      execute(id, argv, epoch, signal, trace) {
-        return client.request({ kind: "controller", id, argv, epoch, trace: { ...trace } }, signal) as Promise<ExecutionResult>;
-      },
     };
-    const capabilities: Capabilities = {
-      sensors: catalog.sensors.map(sensor => ({ ...sensor, help: () => sensor.help,
-        read: (argv, signal) => operations.observe({ sensorId: sensor.id, argv: [...argv] }, signal, {}, "cli") })),
-      controllers: catalog.controllers.map(controller => ({ id: controller.id, help: () => controller.help, acquire, release,
-        execute: (argv, { epoch, signal }) => operations.execute(controller.id, [...argv], epoch, signal, {}) })),
-    };
-    return { catalog, capabilities, operations,
+    return { ...session,
       onDisconnect(handler: (error: Error) => void) { onDisconnect = handler; if (disconnected) handler(disconnected); },
       onHandback(handler: (reason: string) => void) { onHandback = handler; },
       close() { client.close(); },

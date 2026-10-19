@@ -1,4 +1,5 @@
-import type { Capabilities, ExecutionResult, Observation, ObservationRequest } from "@playness/baseware/contracts";
+import type { Observation, ObservationRequest } from "@playness/baseware/contracts";
+import type { Catalog } from "@playness/baseware/protocol";
 import type { EventTrace, RecordEvent } from "./events.ts";
 
 export interface AgentRunner {
@@ -10,9 +11,11 @@ export interface AgentRunner {
 
 export type ObservationOrigin = "cli" | "explicit" | "prompt_start" | "tool_batch";
 
-export interface DeviceOperations {
+export interface DeviceSession {
+  readonly catalog: Catalog;
+  acquire(epoch: string): Promise<void>;
+  release(epoch: string): Promise<void>;
   observe(request: ObservationRequest, signal: AbortSignal, trace: EventTrace, origin: ObservationOrigin): Promise<Observation[]>;
-  execute(id: string, argv: string[], epoch: string, signal: AbortSignal, trace: EventTrace): Promise<ExecutionResult>;
 }
 
 export class Runtime {
@@ -24,14 +27,13 @@ export class Runtime {
   private running?: Promise<void>;
   private aborting?: Promise<void>;
   private consolidating = false;
-  private acquired: Capabilities["controllers"] = [];
   private timer?: ReturnType<typeof setTimeout>;
   private takeoverDeadlineMs = 0;
   private reason = "startup";
   private connected = true;
   agent?: AgentRunner;
 
-  constructor(readonly capabilities: Capabilities, readonly record: RecordEvent, private devices: DeviceOperations, private maxSeconds = 300, private runId: string = crypto.randomUUID()) {}
+  constructor(private devices: DeviceSession, readonly record: RecordEvent, private maxSeconds = 300, private runId: string = crypto.randomUUID()) {}
 
   status() {
     // The host can outlive many takeovers; its log clock is not this cycle's budget.
@@ -39,26 +41,15 @@ export class Runtime {
     return { runId: this.runId, maxSeconds: this.maxSeconds, remainingSeconds, mode: this.mode, epoch: this.mode === "auto" ? this.epoch : null, connected: this.connected, reason: this.reason, agent: !!this.agent, thinking: !!this.running, consolidating: this.consolidating };
   }
 
-  list() {
-    return {
-      sensors: this.capabilities.sensors.map((s) => ({ id: s.id, mediaTypes: s.mediaTypes })),
-      controllers: this.capabilities.controllers.map((c) => ({ id: c.id })),
-    };
-  }
+  list() { return this.devices.catalog; }
 
   async start(message?: string) {
     if (this.mode !== "manual" || this.running) throw new Error("Previous control cycle has not finished");
-    if (!this.connected) throw new Error("Provider disconnected; restart the application");
+    if (!this.connected) throw new Error("Baseware disconnected; restart the application");
     const epoch = this.epoch = crypto.randomUUID();
     const control = this.control = new AbortController();
     this.mode = "acquiring";
-    this.opening = (async () => {
-      for (const controller of this.capabilities.controllers) {
-        await controller.acquire(epoch);
-        this.acquired.push(controller);
-        if (control.signal.aborted) return;
-      }
-    })();
+    this.opening = this.devices.acquire(epoch);
     try { await this.opening; }
     catch (error) { await this.stop(String(error)); throw error; }
     if (control.signal.aborted) return this.status();
@@ -131,12 +122,10 @@ export class Runtime {
     this.abortAgent();
     this.stopping = (async () => {
       await this.opening?.catch(() => {});
-      const outcomes = await Promise.allSettled(this.acquired.map((c) => c.release(this.epoch)));
-      this.acquired = [];
-      const failure = outcomes.find((r) => r.status === "rejected");
-      if (failure?.status === "rejected") {
+      try { await this.devices.release(this.epoch); }
+      catch (error) {
         this.connected = false;
-        this.record("error", String(failure.reason));
+        this.record("error", String(error));
       }
       this.mode = "manual";
       this.record("control", this.status(), { epoch: this.epoch });
@@ -150,27 +139,8 @@ export class Runtime {
     this.record("disconnected", error.message);
   }
 
-  private sensor(id: string) {
-    const sensor = this.capabilities.sensors.find((s) => s.id === id);
-    if (!sensor) throw new Error(`Unknown sensor: ${id}`);
-    return sensor;
-  }
-
-  help(kind: string, id: string) {
-    if (kind === "sensor") return this.sensor(id).help();
-    const controller = this.capabilities.controllers.find((c) => c.id === id);
-    if (!controller) throw new Error(`Unknown controller: ${id}`);
-    return controller.help();
-  }
-
   async observe(request: ObservationRequest, signal: AbortSignal, parent: EventTrace = {}, origin: ObservationOrigin = "cli"): Promise<Observation[]> {
     return await this.devices.observe(request, signal, parent, origin);
-  }
-
-  async execute(id: string, argv: string[], epoch: string, signal?: AbortSignal, parent: EventTrace = {}) {
-    if (this.mode !== "auto" || epoch !== this.epoch) throw new Error("STALE_EPOCH: acquire control and use its original RSA_EPOCH");
-    const combined = signal ? AbortSignal.any([signal, this.control!.signal]) : this.control!.signal;
-    return await this.devices.execute(id, argv, epoch, combined, parent);
   }
 
   async close() {

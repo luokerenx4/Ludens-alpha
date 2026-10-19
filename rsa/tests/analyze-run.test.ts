@@ -268,7 +268,7 @@ test("analysis retains controller errors when the shell batch succeeds and isola
   const failed = { ...trace, operationId: "keyboard" };
   const success = { ...trace, operationId: "pad" };
   const error = "Error: Unknown keyboard key";
-  const command = "rsa controller keyboard press --key ESC; rsa controller pad release; sleep .5";
+  const command = "baseware controller keyboard press --key ESC; baseware controller pad release; sleep .5";
   const events = [
     event("control", "old", { mode: "auto", epoch: "old" }),
     event("command", "old", { id: "old-controller", argv: ["old-args"] }, failed),

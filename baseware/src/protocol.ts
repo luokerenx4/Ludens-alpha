@@ -1,6 +1,12 @@
 export type Trace = Record<string, unknown>;
 export interface DeviceEvent { type: string; data: unknown; trace: Trace }
 export type RecordEvent = (type: string, data: unknown, trace?: Trace) => void;
+/** Serializable service discovery; driver implementation objects never cross this boundary. */
+export interface Catalog {
+  drivers: { id: string; version: string }[];
+  sensors: { id: string; mediaTypes: readonly string[]; help: string }[];
+  controllers: { id: string; help: string }[];
+}
 export interface Request {
   kind: "status" | "list" | "help" | "acquire" | "release" | "revoke" | "sensor" | "controller" | "cancel" | "subscribe";
   id?: string;

@@ -1,5 +1,5 @@
 import type { Capabilities, ExecutionResult, Observation, ObservationRequest } from "./contracts.ts";
-import type { DeviceEvent, RecordEvent, Request, Trace } from "./protocol.ts";
+import type { Catalog, DeviceEvent, RecordEvent, Request, Trace } from "./protocol.ts";
 
 export interface DriverInfo { id: string; version: string }
 export interface ClientContext { id: string; onEvent?(event: DeviceEvent): void }
@@ -52,7 +52,7 @@ export class BasewareCore {
       remainingSeconds: this.mode === "auto" ? Math.max(0, Math.ceil((this.deadline - performance.now()) / 1000)) : null };
   }
 
-  list() {
+  list(): Catalog {
     return { drivers: this.drivers,
       sensors: this.capabilities.sensors.map(s => ({ id: s.id, mediaTypes: s.mediaTypes, help: s.help() })),
       controllers: this.capabilities.controllers.map(c => ({ id: c.id, help: c.help() })) };

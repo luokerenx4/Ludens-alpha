@@ -30,7 +30,7 @@ test("consolidation uses the same session with file tools, records memory reads,
   const control = new AbortController();
   let cycle: Cycle = { epoch: "play-before", signal: control.signal };
   const extension = createRsaExtension({ runtime, workspace: new Workspace(workspace, join(directory, "skill-versions")),
-    socket: "/tmp/unused.sock", binDir: "/tmp", autoObserve: [{ sensorId: "camera", argv: [] }],
+    basewareSocket: "/tmp/unused.sock", binDir: "/tmp", autoObserve: [{ sensorId: "camera", argv: [] }],
     maxRequests: 5, cycle: () => cycle,
   });
   const settings = Settings.isolated({ "memory.backend": "off", "autolearn.enabled": false,

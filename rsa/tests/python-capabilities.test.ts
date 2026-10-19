@@ -207,7 +207,7 @@ test("Python calls the real Baseware service using the persistent owner's lease 
     await writeFile(observation.path, JSON.stringify({position: {x: 3, y: 4}, visible: true, label: "地图"}));
     await writeFile(join(directory, "actions.py"), `from rsa_tools import capability
 from baseware import Client
-import json
+import json, os
 @capability
 def step(label: str):
     """Execute an action and read the resulting JSON observation."""
@@ -216,16 +216,18 @@ def step(label: str):
     observations = client.sensor("camera", ["capture"])
     with open(observations[0]["path"], encoding="utf-8") as source:
         data = json.load(source)
-    return {"execution": execution, "observations": observations, "data": data}
+    return {"execution": execution, "observations": observations, "data": data,
+            "rsa_context": [os.environ.get(name) for name in ("RSA_SOCKET", "RSA_EPOCH", "RSA_TRACE")]}
 `);
     await owner.request({kind: "acquire", epoch: "owner-epoch", seconds: 30});
     const registry = new PythonCapabilities(directory);
     const {capabilities: [capability]} = await registry.discover();
-    const env = {BASEWARE_SOCKET: socketPath, BASEWARE_EPOCH: "owner-epoch", BASEWARE_TRACE: JSON.stringify({toolCallId: "python-real-call"})};
+    const env = {BASEWARE_SOCKET: socketPath, BASEWARE_EPOCH: "owner-epoch", BASEWARE_TRACE: JSON.stringify({toolCallId: "python-real-call"}),
+      RSA_SOCKET: "/tmp/obsolete.sock", RSA_EPOCH: "obsolete", RSA_TRACE: "{}"};
     const result = await registry.invoke(capability!.id, {label: "前进"}, {env});
     expect(result).toMatchObject({isError: false, details: {result: {
       execution: {status: "completed", stdout: "完了"}, observations: [observation],
-      data: {position: {x: 3, y: 4}, visible: true, label: "地图"},
+      data: {position: {x: 3, y: 4}, visible: true, label: "地图"}, rsa_context: [null, null, null],
     }}});
     expect(actions).toEqual([["前进"]]);
     expect(acquired).toBe(1);

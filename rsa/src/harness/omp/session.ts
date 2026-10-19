@@ -54,7 +54,7 @@ export async function createOmpSession(options: Parameters<typeof createAgentSes
 }
 
 export async function createOmpAgent(options: {
-  runtime: Runtime; workspace: string; runDir: string; socket: string; basewareSocket: string;
+  runtime: Runtime; workspace: string; runDir: string; basewareSocket: string;
   state: WorkspaceState;
   binDir: string; model: string; autoObserve: ObservationRequest[]; maxRequests: number;
   resume?: string;

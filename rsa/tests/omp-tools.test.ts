@@ -27,7 +27,7 @@ test("request budgets reset on a new takeover while repeated prompts share the s
     async close() {},
   };
   const extension = createRsaExtension({runtime, workspace: new Workspace(workspace, join(directory, "skill-versions")),
-    socket: "/tmp/unused.sock", binDir: "/tmp", autoObserve: [], maxRequests: 2,
+    basewareSocket: "/tmp/unused.sock", binDir: "/tmp", autoObserve: [], maxRequests: 2,
     cycle: () => cycle,
   });
   const handlers: Record<string, (event: any) => any> = {};
@@ -67,7 +67,7 @@ test("OMP's SDK adapter delivers the abort signal correctly and returns real ima
   }] }, () => {});
   const control = new AbortController();
   const extension = createRsaExtension({ runtime, workspace: new Workspace(join(directory, "workspace"), join(directory, "skill-versions")),
-    socket: "/tmp/unused.sock", binDir: "/tmp", autoObserve: [], maxRequests: 1,
+    basewareSocket: "/tmp/unused.sock", binDir: "/tmp", autoObserve: [], maxRequests: 1,
     cycle: () => ({ epoch: "test-epoch", signal: control.signal }),
   });
   // This is the same conversion createAgentSession applies to SDK customTools.
@@ -80,8 +80,8 @@ test("OMP's SDK adapter delivers the abort signal correctly and returns real ima
     expect(result.content.find((p) => p.type === "image")).toMatchObject({ type: "image", data: resized.data, mimeType: resized.mimeType });
     expect(resized.width).toBe(200);
     expect(resized.decodeFailed).toBeUndefined();
-    const executed = await exec.execute("shell", { command: "printf '%s' \"$RSA_EPOCH\"" }, control.signal, () => {}, ctx);
-    expect(executed.details).toMatchObject({ exitCode: 0, stdout: "test-epoch" });
+    const executed = await exec.execute("shell", { command: "printf '%s|%s|%s|%s' \"$BASEWARE_EPOCH\" \"${RSA_EPOCH-unset}\" \"${RSA_TRACE-unset}\" \"${RSA_SOCKET-unset}\"" }, control.signal, () => {}, ctx);
+    expect(executed.details).toMatchObject({ exitCode: 0, stdout: "test-epoch|unset|unset|unset" });
     control.abort();
     await expect(exec.execute("cancelled", { command: "touch should-not-exist" }, control.signal, () => {}, ctx)).rejects.toThrow();
     expect(await Bun.file(join(directory, "workspace", "should-not-exist")).exists()).toBe(false);
@@ -108,7 +108,7 @@ test("tool batches reuse the latest explicit sample per sensor and invalidate al
   }))}, (type, data) => { if (type === "observation_context") contexts.push(data as typeof contexts[number]); });
   const control = new AbortController();
   const extension = createRsaExtension({runtime, workspace: new Workspace(workspace, join(directory, "skill-versions")),
-    socket: "/tmp/unused.sock", binDir: "/tmp", maxRequests: 3,
+    basewareSocket: "/tmp/unused.sock", binDir: "/tmp", maxRequests: 3,
     autoObserve: ["camera", "second-camera"].map(sensorId => ({sensorId, argv: ["default"]})),
     cycle: () => ({epoch: "test", signal: control.signal}),
   });
