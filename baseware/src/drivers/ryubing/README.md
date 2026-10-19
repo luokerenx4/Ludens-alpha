@@ -1,12 +1,12 @@
 # Ryubing driver
 
-`provider.ts` implements `Controller` for screen capture, pad input and text entry. `RsaBridge.cs` is compiled inside the emulator; `ryubing.patch` adds its integration points: input override, presented-frame capture, native text-entry dialog, and disposal. Baseware's service entrypoint chooses this driver; RSA consumes its catalog and operations through the Baseware client.
+`provider.ts` implements `Controller` for screen capture, pad input, touch and text entry. `RsaBridge.cs` is compiled inside the emulator; `ryubing.patch` adds its integration points: pad/touch input override, presented-frame capture, native text-entry dialog, and disposal. Baseware's service entrypoint chooses this driver; RSA consumes its catalog and operations through the Baseware client.
 
 ## Rebuild
 
 Paths under `artifacts/` below refer to the monorepo's sibling directory `<repo>/../artifacts/`, not files shipped in the repository.
 
-Run `build.sh` on Apple Silicon macOS with .NET 10, Python 3 and Xcode command line tools. `RSA_DOTNET` selects the SDK executable; default is the private `artifacts/switch/dotnet/dotnet` (locally installed SDK 10.0.402). The build is pinned to Ryubing tag `Canary-1.3.351`, resolving to commit `475615f0431b4995b03c930c5089d20f6f3570e0` in the [Starforge source archive](https://starforgejo.dev/archive/Ryubing). Source lives in `artifacts/switch/ryubing-canary-source`; the local version is `1.3.351-rsa.2`. This is a locally modified development build, not an official release.
+Run `build.sh` on Apple Silicon macOS with .NET 10, Python 3 and Xcode command line tools. `RSA_DOTNET` selects the SDK executable; default is the private `artifacts/switch/dotnet/dotnet` (locally installed SDK 10.0.402). The build is pinned to Ryubing tag `Canary-1.3.351`, resolving to commit `475615f0431b4995b03c930c5089d20f6f3570e0` in the [Starforge source archive](https://starforgejo.dev/archive/Ryubing). Source lives in `artifacts/switch/ryubing-canary-source`; the local version is `1.3.351-rsa.3`. This is a locally modified development build, not an official release.
 
 The source's NuGet configuration replaces only the upstream LibHac feed URL with `https://nuget.ryulynx.org/v3/index.json`; package versions, source mappings and other upstream configuration remain unchanged. The stable build's LibHac version substitution and read-only title iteration changes are no longer needed. `ryubing.patch` contains bridge integration and this feed URL replacement, both applied by `build.sh`. Upstream macOS bundle tooling performs local ad-hoc signing with its normal JIT entitlements. No Gatekeeper or system security settings are changed.
 
@@ -16,7 +16,7 @@ The source's NuGet configuration replaces only the upstream LibHac feed URL with
 
 ## Wire and clocks
 
-One TCP client on `127.0.0.1`, newline-delimited tab fields, UUID request IDs. The shared provider transport correlates concurrent replies. `HELLO` returns `ryubing-rsa-2`; `CAPTURE <absolute-path>` waits for the next presented framebuffer and returns its monotonically increasing presentation sequence. A frozen renderer fails capture after 15 seconds. PNG encoding runs off the GPU thread.
+One TCP client on `127.0.0.1`, newline-delimited tab fields, UUID request IDs. The shared provider transport correlates concurrent replies. `HELLO` returns `ryubing-rsa-3`; `CAPTURE <absolute-path>` waits for the next presented framebuffer and returns its monotonically increasing presentation sequence. A frozen renderer fails capture after 15 seconds. PNG encoding runs off the GPU thread.
 
 The bridge queues Screenshot through the full renderer before the corresponding Present, and fixes the sequence on that request. This ordering fix was introduced in the stable-based `rsa.3` build and is retained in the Canary build. Previously the base-renderer flag could be consumed by an older queued Present, while the reply read the later global frame counter. This change corrects ordering and frame attribution; it is not a measured latency improvement. The renderer wait runs outside the bridge lock.
 
@@ -28,8 +28,29 @@ Game screenshots use lossless PNG with zlib level 1. A quick check on one real 1
 
 The input callback substitutes the AI state before Npad writes to emulated HID. Idle AI ownership substitutes neutral input; manual mode returns null and leaves native input intact. Motion for that player is neutral while overridden. Actions start on the first input poll, follow a cumulative monotonic wall-clock timeline, and clear at the first poll after the last span. The caller chooses each finite duration, at least 16 integer milliseconds; there is no policy upper limit. The provider requires safe integer durations and total milliseconds, and the bridge rejects integer overflow. Durations are not game frames: if emulation stalls, a wall-time action may produce no game progress. Finite actions, explicit cancellation, epoch validation and disconnect cleanup are enforced in the device bridge as well as at the Harness boundary. `STOP`/`DISOWN` are processed while an `APPLY` reply is pending. Handoff becomes visible to the emulated HID at its next input poll.
 
-Model screenshots contain only the game framebuffer; host-window focus does not gate AI input or capture. This version supplies screen, one pad and a foreground text-entry keyboard, without audio, touch or system Home/Capture buttons. The TCP endpoint is intended for trusted local processes, not as an authentication boundary.
+Model screenshots contain only the game framebuffer; host-window focus does not gate AI input or capture. This version supplies screen, one pad, one touchscreen contact and a foreground text-entry keyboard, without audio or system Home/Capture buttons. The TCP endpoint is intended for trusted local processes, not as an authentication boundary.
 
+
+## Native touchscreen
+
+`TOUCH_INFO` returns `0 0 1279 719`: the inclusive integer X/Y bounds of the native
+1280×720 Switch touch panel, independent of framebuffer scale and window position.
+`TOUCH_DOWN <epoch> <x> <y>`, `TOUCH_MOVE <epoch> <x> <y>` and `TOUCH_UP <epoch>`
+change a single contact at the emulator's touch-HID input boundary. DOWN requires a
+released contact; MOVE requires an already-held contact. UP is idempotent. Invalid
+coordinates are rejected without changing the contact. Accepted transitions reply
+`completed` after an input poll (`interrupted` if cancelled before that poll); held contact continues until UP, cancellation or handback,
+without a duration limit. No tap, drag, screenshot cropping or coordinate conversion
+is implemented in the driver.
+
+Touch shares pad/keyboard ownership. Native mouse-to-touch input is suppressed
+while the epoch owns the device, including when no contact is held. `STOP <epoch>`
+releases pad and touch; `STOP <epoch> <request-id>` releases a touch only if that ID
+is its most recent accepted touch command, so late cancellation cannot release a
+later contact. `DISOWN`, TCP disconnect and disposal release the contact. A final
+neutral poll emits the end event before native mouse-to-touch input resumes. Touch
+polling continues while the emulator window is unfocused; it still follows the
+emulator's input update loop, so a stopped loop cannot acknowledge a new transition.
 
 ## Native system keyboard
 

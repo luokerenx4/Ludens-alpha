@@ -33,9 +33,10 @@ test("Switch accepts long actions and sequences while rejecting invalid or unsaf
 });
 
 async function withSwitchBridge(run: (provider: Awaited<ReturnType<typeof createSwitchProvider>>,
-  captures: { path: string; atMs: number }[]) => Promise<void>) {
+  captures: { path: string; atMs: number }[], requests: string[]) => Promise<void>) {
   const directory = await mkdtemp(join(tmpdir(), "rsa-switch-capture-"));
   const captures: { path: string; atMs: number }[] = [];
+  const requests: string[] = [];
   const server = createServer(socket => {
     let buffer = "";
     socket.setEncoding("utf8");
@@ -45,7 +46,10 @@ async function withSwitchBridge(run: (provider: Awaited<ReturnType<typeof create
       while ((end = buffer.indexOf("\n")) >= 0) {
         const [id, op, path] = buffer.slice(0, end).split("\t");
         buffer = buffer.slice(end + 1);
-        if (op === "HELLO") socket.write(`${id}\tOK\tryubing-rsa-2\n`);
+        requests.push(op);
+        if (op === "HELLO") socket.write(`${id}\tOK\tryubing-rsa-3\n`);
+        else if (op === "OWN" || op === "DISOWN") socket.write(`${id}\tOK\n`);
+        else if (op === "TOUCH_INFO") socket.write(`${id}\tOK\t0\t0\t1279\t719\n`);
         else if (op === "CAPTURE") {
           captures.push({ path, atMs: performance.now() });
           socket.write(`${id}\tOK\t${captures.length}\n`);
@@ -56,7 +60,7 @@ async function withSwitchBridge(run: (provider: Awaited<ReturnType<typeof create
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const provider = await createSwitchProvider({ port: (server.address() as AddressInfo).port,
     artifactsDir: directory, clock: { id: "test", now: () => performance.now() } });
-  try { await run(provider, captures); }
+  try { await run(provider, captures, requests); }
   finally {
     provider.close();
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
@@ -110,5 +114,20 @@ test("Switch capture cancellation during the delay never sends CAPTURE", async (
     expect(captures).toHaveLength(0);
     await expect(screen.execute(["capture"], { signal: abort.signal })).rejects.toThrow();
     expect(captures).toHaveLength(0);
+  });
+});
+
+
+test("Switch touch and pad share one owner acquisition and release", async () => {
+  await withSwitchBridge(async (provider, _captures, requests) => {
+    const pad = provider.capabilities.controllers.find(c => c.id === "pad")!;
+    const touch = provider.capabilities.controllers.find(c => c.id === "touch")!;
+    await pad.acquire!("epoch");
+    await touch.acquire!("epoch");
+    await touch.release!("epoch");
+    await pad.release!("epoch");
+    expect(requests.filter(op => op === "OWN")).toHaveLength(1);
+    expect(requests.filter(op => op === "DISOWN")).toHaveLength(1);
+    expect(touch.help()).toContain("x=0..1279, y=0..719");
   });
 });

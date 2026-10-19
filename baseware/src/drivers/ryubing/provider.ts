@@ -4,6 +4,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { parseArgs } from "node:util";
 import type { Capabilities, Clock, Controller, ExecutionResult } from "../../contracts.ts";
 import { Bridge } from "../bridge.ts";
+import { createTouchController } from "../touch.ts";
 
 // Order matches the physical bits in Ryubing's ControllerKeys, not game actions.
 export const BUTTONS = ["A", "B", "X", "Y", "LSTICK", "RSTICK", "L", "R", "ZL", "ZR", "PLUS", "MINUS", "LEFT", "UP", "RIGHT", "DOWN"];
@@ -53,7 +54,7 @@ export async function createSwitchProvider(options: { port: number; artifactsDir
   const bridge = await Bridge.open(options.port);
   try {
     const [version] = await bridge.request("HELLO");
-    if (version !== "ryubing-rsa-2") throw new Error(`Unexpected bridge: ${version}`);
+    if (version !== "ryubing-rsa-3") throw new Error(`Unexpected bridge: ${version}`);
   } catch (error) { bridge.close(); throw error; }
   let owner: string | undefined;
   async function acquire(epoch: string) {
@@ -158,8 +159,11 @@ Observe screen capture to see the current dialog and its text. These commands do
         timing: { clock: clock.id, requestedAtMs, receivedAtMs: clock.now() } };
     },
   };
+  let touch: Controller;
+  try { touch = await createTouchController({ bridge, clock, acquire, release, owns: epoch => owner === epoch }); }
+  catch (error) { bridge.close(); throw error; }
   return {
-    capabilities: { controllers: [pad, keyboard, screen] } satisfies Capabilities,
+    capabilities: { controllers: [pad, keyboard, touch, screen] } satisfies Capabilities,
     onDisconnect(handler: (error: Error) => void) { bridge.onDisconnect = handler; },
     close() { bridge.close(); },
   };

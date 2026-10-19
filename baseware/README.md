@@ -49,6 +49,35 @@ Upstream cancellation and native input cleanup remain in Cua Driver. `down` clos
 not the shared CuaDriver.app daemon or the user's applications. Separate workspaces still share
 the real desktop. Use separate OS sessions or VMs when independent desktops are needed.
 
+Native touch is exposed by the patched Ryubing and Azahar drivers as one `touch`
+controller. It uses device coordinates, with the origin at the top-left, +x right
+and +y down:
+
+| Device | Inclusive x range | Inclusive y range |
+| --- | --- | --- |
+| Switch / Ryubing | 0–1279 | 0–719 |
+| 3DS / Azahar | 0–319 | 0–239 |
+
+The public commands are only `down --x <integer> --y <integer>`,
+`move --x <integer> --y <integer>` and `up`. A contact persists between calls;
+`down` requires no current contact and `move` requires one. A transition completes
+after the emulator samples it. Cancellation or returning control lifts the contact.
+There are no built-in tap, drag, timing, screen-layout or screenshot-coordinate
+conversion commands. Callers compose those behaviors in workspace code.
+
+Azahar combines its native touch bridge with the existing Cua controllers for raw
+observations, keyboard and desktop operations. Prepare the patched emulator using
+the [Azahar driver instructions](src/drivers/azahar/README.md), then connect:
+
+```sh
+baseware serve --driver azahar --port 47673 --cua-command /absolute/path/to/cua-driver
+baseware controller touch --help
+```
+
+The same `touch` help and commands are available with `--driver ryubing`.
+CLI is the primary discovery and invocation path; TypeScript, Python and MCP
+clients use the same capability and control lease.
+
 `baseware/bin/baseware` is the repository CLI. The default socket uses the canonical current directory: `/tmp/playness-baseware-<uid>-<sha256-first16>.sock`. Device data defaults to `$XDG_STATE_HOME/playness/baseware/<socket-name>`, or `~/.local/state/playness/baseware/<socket-name>`. A service starts in manual mode. Device files referenced by calls should use absolute paths.
 
 A persistent client acquires a lease and shares its epoch with temporary callers. Controllers marked `requiresControl: true` must supply that epoch. Read-only controllers such as `screen` work without a lease. Closing the owner connection, expiration, driver disconnection or `baseware revoke` restores manual input. Closing a temporary caller only cancels its pending calls. Revocation stops new input immediately and waits for the driver's cleanup before reporting manual; it does not wait for model requests. The driver stays connected for the next lease.

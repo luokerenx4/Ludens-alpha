@@ -32,6 +32,12 @@ internal sealed class RsaBridge : IDisposable
     private ActionRun _action;
     private Capture _capture;
     private GamepadInput _state;
+    private bool _touchDown;
+    private uint _touchX;
+    private uint _touchY;
+    private bool _touchReleasePending;
+    private TaskCompletionSource<string[]> _touchRequest;
+    private string _touchCommandId;
     private long _frame;
 
     private sealed record Span(GamepadInput State, long EndMs);
@@ -82,6 +88,58 @@ internal sealed class RsaBridge : IDisposable
             }
             return _state;
         }
+    }
+
+    // A held contact survives between calls. null restores native mouse-to-touch input.
+    // A final neutral sample releases the contact before returning control to the user.
+    public (bool Down, uint X, uint Y)? PollTouch()
+    {
+        lock (_gate)
+        {
+            if (_touchReleasePending)
+            {
+                _touchReleasePending = false;
+                return (false, _touchX, _touchY);
+            }
+            if (_epoch == null) return null;
+            _touchRequest?.TrySetResult(["completed"]);
+            _touchRequest = null;
+            return (_touchDown, _touchX, _touchY);
+        }
+    }
+
+    private Task<string[]> Touch(string operation, string[] fields)
+    {
+        if (_touchRequest != null) throw new InvalidOperationException("TOUCH_BUSY");
+        if (operation == "TOUCH_UP")
+        {
+            if (fields.Length != 3) throw new ArgumentException("Invalid touch command");
+            if (!_touchDown) return Task.FromResult(new[] { "completed" });
+            _touchDown = false;
+        }
+        else
+        {
+            if ((operation == "TOUCH_DOWN") == _touchDown)
+                throw new InvalidOperationException(_touchDown ? "TOUCH_ALREADY_DOWN" : "TOUCH_NOT_DOWN");
+            if (fields.Length != 5 || !uint.TryParse(fields[3], NumberStyles.None, CultureInfo.InvariantCulture, out uint x)
+                || !uint.TryParse(fields[4], NumberStyles.None, CultureInfo.InvariantCulture, out uint y)
+                || x > 1279 || y > 719) throw new ArgumentException("TOUCH_OUT_OF_RANGE");
+            _touchX = x;
+            _touchY = y;
+            _touchDown = true;
+        }
+        _touchCommandId = fields[0];
+        _touchRequest = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        return _touchRequest.Task;
+    }
+
+    private void ReleaseTouch()
+    {
+        _touchDown = false;
+        _touchCommandId = null;
+        _touchReleasePending = true;
+        _touchRequest?.TrySetResult(["interrupted"]);
+        _touchRequest = null;
     }
 
     // Invoked on the GPU thread immediately before presentation.
@@ -233,6 +291,7 @@ internal sealed class RsaBridge : IDisposable
         lock (_gate)
         {
             FinishAction("interrupted");
+            if (_epoch != null) ReleaseTouch();
             _epoch = null;
             _capture?.Done.TrySetException(new IOException("Device bridge disconnected"));
             _capture = null;
@@ -285,7 +344,8 @@ internal sealed class RsaBridge : IDisposable
         lock (_gate)
         {
             string op = fields[1];
-            if (op == "HELLO") return Task.FromResult(new[] { "ryubing-rsa-2" });
+            if (op == "HELLO") return Task.FromResult(new[] { "ryubing-rsa-3" });
+            if (op == "TOUCH_INFO") return Task.FromResult(new[] { "0", "0", "1279", "719" });
             if (op == "CAPTURE")
             {
                 if (_capture != null) throw new InvalidOperationException("CAPTURE_BUSY");
@@ -301,15 +361,18 @@ internal sealed class RsaBridge : IDisposable
                 if (_epoch != null) throw new InvalidOperationException("OWNED");
                 _epoch = epoch;
                 _state = default;
+                _touchDown = false;
                 return Task.FromResult(Array.Empty<string>());
             }
             if (_epoch == null || _epoch != epoch) throw new InvalidOperationException("STALE_EPOCH");
             switch (op)
             {
                 case "KEYBOARD": return Keyboard(epoch, fields[3], Encoding.UTF8.GetString(Convert.FromBase64String(fields[4])));
-                case "DISOWN": FinishAction("interrupted"); _epoch = null; break;
+                case "TOUCH_DOWN": case "TOUCH_MOVE": case "TOUCH_UP": return Touch(op, fields);
+                case "DISOWN": FinishAction("interrupted"); ReleaseTouch(); _epoch = null; break;
                 case "STOP":
                     if (fields.Length < 4 || fields[3] == _action?.Id) FinishAction("interrupted");
+                    if (fields.Length < 4 || fields[3] == _touchCommandId) ReleaseTouch();
                     break;
                 case "STATE": return Task.FromResult(new[] {
                     ((long)_state.Buttons).ToString(CultureInfo.InvariantCulture),

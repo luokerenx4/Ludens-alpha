@@ -22,7 +22,7 @@ fi
 cp "$provider_dir/RsaBridge.cs" "$source_dir/src/Ryujinx/Systems/RsaBridge.cs"
 export DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1
 "$sdk" publish "$source_dir/src/Ryujinx/Ryujinx.csproj" -c Release -r osx-arm64 \
-  --self-contained true -p:Version=1.3.351-rsa.2 -p:SourceRevisionId=475615f04 \
+  --self-contained true -m:2 -p:Version=1.3.351-rsa.3 -p:SourceRevisionId=475615f04 \
   -o "$artifact_dir/ryubing-publish"
 
 cd "$source_dir/distribution/macos"
@@ -36,7 +36,7 @@ with open(path, 'rb') as file:
 info.update(CFBundleIdentifier='dev.playness.Ryubing', CFBundleName='Ryubing',
             CFBundleDisplayName='Ryubing',
             CFBundleShortVersionString='1.3.351', CFBundleVersion='1.3.351',
-            CFBundleLongVersionString='1.3.351-rsa.2-475615f04')
+            CFBundleLongVersionString='1.3.351-rsa.3-475615f04')
 with open(path, 'wb') as file:
     plistlib.dump(info, file)
 PY

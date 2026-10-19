@@ -1,6 +1,6 @@
 # RSA 实验
 
-给模型统一的设备能力 CLI 和一个空工作区，让它自行探索并积累技能。`rsa controller` 统一发现和调用设备能力与工作区 Python 函数；设备由独立 Baseware 服务的 mGBA / Ryubing / Cua driver 提供。RSA 使用同一份 OMP 18.9.1 循环。模型凭据复用本机 OMP 登录，默认 `openai-codex/gpt-6.1-sol`。
+给模型统一的设备能力 CLI 和一个空工作区，让它自行探索并积累技能。`rsa controller` 统一发现和调用设备能力与工作区 Python 函数；设备由独立 Baseware 服务的 mGBA / Ryubing / Azahar / Cua driver 提供。RSA 使用同一份 OMP 18.9.1 循环。模型凭据复用本机 OMP 登录，默认 `openai-codex/gpt-6.1-sol`。
 
 ## 启动
 
@@ -44,9 +44,9 @@ rsa auto on
 }
 ```
 
-`driver` 为 `ryubing`、`mgba` 或 `cua`。`game` 是 Ryubing 启动的游戏路径，相对路径以工作区为基准；省略时连接外部已准备好的模拟器。可选 `port` 指定桥端口，默认 mGBA 47653、Ryubing 47663。Cua 不使用 `game` 或 `port`，可用 `cuaCommand` 指定 Cua Driver 可执行路径，默认从 PATH 查找 `cua-driver`。其余字段的默认值如上；`seconds` 和 `requests` 是每次接管的预算，达到任一预算即交还控制。
+`driver` 为 `ryubing`、`mgba`、`azahar` 或 `cua`。`game` 是 Ryubing / Azahar 启动的游戏路径，相对路径以工作区为基准；省略时连接外部已准备好的模拟器。可选 `port` 指定桥端口，默认 mGBA 47653、Ryubing 47663、Azahar 47673。Cua 不使用 `game` 或 `port`；Cua 和 Azahar 可用 `cuaCommand` 指定 Cua Driver 可执行路径，默认从 PATH 查找 `cua-driver`。其余字段的默认值如上；`seconds` 和 `requests` 是每次接管的预算，达到任一预算即交还控制。
 
-有 `game` 时使用现有 `launch.sh` 启动已安装的带桥 Ryubing；安装及设备前提见下方 [Switch / Ryubing](#switch--ryubing)。mGBA 的 ROM 和 Lua 桥仍按下一节手动准备，再执行 `rsa init --driver mgba` 和 `rsa up`。
+有 `game` 时使用对应的 `launch.sh` 启动带桥 Ryubing / Azahar；安装及设备前提见下方 [Switch / Ryubing](#switch--ryubing) 和 [3DS / Azahar](#3ds--azahar)。mGBA 的 ROM 和 Lua 桥仍按下一节手动准备，再执行 `rsa init --driver mgba` 和 `rsa up`。
 
 生命周期约定：
 
@@ -85,7 +85,23 @@ rsa controller controller/cua.get_desktop_state
 
 Baseware 持有一个 Cua Driver MCP 子进程，桌面能力仍通过同一 `rsa controller` 目录和 Python API 使用，不注入 OMP 工具列表。Cua 工作区启动不探测模拟器或 TCP 桥；自动观测使用 `cua.get_desktop_state`，将图像和文本一起交给现有循环。需要接管时执行 `rsa auto on`，`rsa auto off` 交还控制；`rsa down` 结束本工作区的服务。桌面应用仍留在当前系统，工作区只隔离 Agent 的文件与会话。
 
-NDS 的 [melonDS](https://github.com/melonDS-emu/melonDS/releases) 和 3DS 的 [Azahar](https://github.com/azahar-emu/azahar/releases) 也按桌面应用接入：启动原装模拟器，在各自工作区执行上述 Cua 启动流程，再通过目录发现窗口、键鼠和采样能力。无需给模拟器打桥接补丁。屏幕布局、裁剪和观测选择由工作区代码自行适配，Baseware 不预设双屏含义。两种模拟器各自加载本地游戏文件；空窗口连通不等于游戏兼容性验证。
+NDS 的 [melonDS](https://github.com/melonDS-emu/melonDS/releases) 可按桌面应用接入：启动原装模拟器，在自己的工作区执行上述 Cua 启动流程，再通过目录发现窗口、键鼠和采样能力。屏幕布局、裁剪和观测选择由工作区代码自行适配，Baseware 不预设双屏含义。空窗口连通不等于游戏兼容性验证。
+
+### 3DS / Azahar
+
+Azahar 装配将原生触屏与现有 Cua 观察、键盘及桌面操作放在同一能力目录。先按 [Azahar driver 文档](../baseware/src/drivers/azahar/README.md) 构建带桥模拟器，并准备 Cua Driver，然后在独立工作区启动：
+
+```sh
+rsa init --driver azahar --game /absolute/path/to/game.3ds --seconds 1800
+rsa up --dry-run
+rsa up
+rsa controller list
+rsa controller controller/touch --help
+```
+
+已有带桥模拟器运行时可省略 `--game`；默认原生桥端口为 47673。触屏通过模拟器内部输入状态注入，不依赖桌面鼠标坐标或窗口焦点；观察仍来自 Cua。初始自动观测是 `cua.get_desktop_state`，Agent 可在 workspace 中自行写 observe hook 选择窗口或处理画面。驱动不识别上下屏、不裁剪、不推导屏幕到触点的坐标关系。
+
+`touch` 只提供 `down --x <整数> --y <整数>`、`move --x <整数> --y <整数>`、`up`。3DS 范围为 x=0..319、y=0..239，均包含端点；原点在左上，x 向右、y 向下。状态跨调用保留，down 要求当前未按下，move 要求已经按下，释放操作权或取消会抬起。点按、拖拽、等待和画面坐标转换由 Agent 自己组合成 workspace 脚本，仍优先通过 `rsa controller` 发现和使用。
 
 ### mGBA 设备准备
 
@@ -170,7 +186,7 @@ dofile("/absolute/path/to/repo/baseware/src/drivers/mgba/bridge.lua")
 
 ### Switch / Ryubing
 
-macOS arm64 桥接基于 Ryubing 的 `Canary-1.3.351` 标签，固定到提交 `475615f0431b4995b03c930c5089d20f6f3570e0`，本地版本为 `1.3.351-rsa.2`。唯一安装应用是 `/Applications/Ryubing.app`，手动和 RSA 使用同一份程序；界面名称是 Ryubing，上游内部可执行文件与进程仍叫 `Ryujinx`。具体构建来源及补丁说明见 [driver README](../baseware/src/drivers/ryubing/README.md)。
+macOS arm64 桥接基于 Ryubing 的 `Canary-1.3.351` 标签，固定到提交 `475615f0431b4995b03c930c5089d20f6f3570e0`，本地版本为 `1.3.351-rsa.3`。唯一安装应用是 `/Applications/Ryubing.app`，手动和 RSA 使用同一份程序；界面名称是 Ryubing，上游内部可执行文件与进程仍叫 `Ryujinx`。具体构建来源及补丁说明见 [driver README](../baseware/src/drivers/ryubing/README.md)。
 
 准备 .NET 10 SDK、Python 3、Xcode Command Line Tools 后，在本目录执行。当前私有 SDK 为 10.0.402，不依赖全局 SDK：
 
@@ -193,6 +209,8 @@ macOS arm64 桥接基于 Ryubing 的 `Canary-1.3.351` 标签，固定到提交 `
 `screen capture` 请求模拟器呈现画面的原始 PNG；系统输入框弹出时，改采集该弹窗的真实界面，不采集桌面。可用 `capture --delay-ms 500` 在发送采集请求前等待固定时间；默认 0，等待可取消。这不检测动画完成，返回帧序号也不能保证画面已经呈现该次按键的结果。自动观测通过装配层配置，例如 `--auto-observe '[{"controllerId":"screen","argv":["capture","--delay-ms","500"]}]'`，Harness 通过同一 Controller 调用采样，不维护另一套传感器接口。
 
 `pad` 提供 16 个数字按键和四个摇杆轴，原子动作参数见 `rsa controller controller/pad --help`。动作按墙钟时间执行，时长由调用方选择，每段为至少 16 ms 的安全整数，合计也须为安全整数，输入轮询处切换完整状态。命令等待动作完成，期间仍可用 `pad release` 中断。AI 模式覆盖一号手柄及其体感输入；其他玩家、触屏、模拟器快捷键不在此控制器范围内。完成/取消归零，关闭接管或 TCP 断连恢复一号原生手柄输入。桥接只监听本机回环地址，作为可信本机进程间接口，不是多用户安全隔离。
+
+同一装配还提供原生 `touch`，与 `pad` / `keyboard` 共用操作权。查看 `rsa controller controller/touch --help`；公开命令只有 `down --x <整数> --y <整数>`、`move --x <整数> --y <整数>` 和 `up`，范围为 x=0..1279、y=0..719（包含端点），左上为原点，x 向右、y 向下。每个状态转换等模拟器采样后返回，触点跨调用保留。驱动不提供点按或拖拽，也不把截图坐标转换成触屏坐标；这些组合留给 Agent 的 workspace 代码。
 
 实机测试会短按方向键和摇杆，请停在可安全操作的菜单。退出 RSA 宿主、保留游戏运行后：
 

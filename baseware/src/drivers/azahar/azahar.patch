@@ -1,0 +1,117 @@
+diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
+index 37eee4f..5adc0a8 100644
+--- a/src/core/CMakeLists.txt
++++ b/src/core/CMakeLists.txt
+@@ -122,6 +122,8 @@ add_library(citra_core STATIC EXCLUDE_FROM_ALL
+     frontend/camera/interface.cpp
+     frontend/camera/interface.h
+     frontend/emu_window.cpp
++    frontend/rsa_touch_bridge.cpp
++    frontend/rsa_touch_bridge.h
+     frontend/emu_window.h
+     frontend/framebuffer_layout.cpp
+     frontend/framebuffer_layout.h
+diff --git a/src/core/frontend/emu_window.cpp b/src/core/frontend/emu_window.cpp
+index d09b804..526dd9c 100644
+--- a/src/core/frontend/emu_window.cpp
++++ b/src/core/frontend/emu_window.cpp
+@@ -3,15 +3,18 @@
+ // Refer to the license.txt file included.
+
+ #include <cmath>
++#include <cstdlib>
+ #include <mutex>
+ #include "common/settings.h"
+ #include "core/3ds.h"
+ #include "core/frontend/emu_window.h"
+ #include "core/frontend/input.h"
++#include "core/frontend/rsa_touch_bridge.h"
+
+ namespace Frontend {
+ /// We need a global touch state that is shared across the different window instances
+ static std::weak_ptr<EmuWindow::TouchState> global_touch_state;
++static std::unique_ptr<RsaTouchBridge> rsa_touch_bridge;
+
+ GraphicsContext::~GraphicsContext() = default;
+
+@@ -24,6 +27,8 @@ public:
+
+     std::mutex mutex;
+
++    bool native_owned = false;
++    std::uint64_t generation = 0;
+     bool touch_pressed = false; ///< True if touchpad area is currently pressed, otherwise false
+     float touch_x = 0.0f;       ///< Touchpad X-position
+     float touch_y = 0.0f;       ///< Touchpad Y-position
+@@ -34,8 +39,15 @@ private:
+         explicit Device(std::weak_ptr<TouchState>&& touch_state) : touch_state(touch_state) {}
+         std::tuple<float, float, bool> GetStatus() const override {
+             if (auto state = touch_state.lock()) {
+-                std::scoped_lock guard{state->mutex};
+-                return std::make_tuple(state->touch_x, state->touch_y, state->touch_pressed);
++                std::tuple<float, float, bool> result;
++                std::uint64_t generation;
++                {
++                    std::scoped_lock guard{state->mutex};
++                    result = std::make_tuple(state->touch_x, state->touch_y, state->touch_pressed);
++                    generation = state->generation;
++                }
++                if (rsa_touch_bridge) rsa_touch_bridge->Sampled(generation);
++                return result;
+             }
+             return std::make_tuple(0.0f, 0.0f, false);
+         }
+@@ -150,6 +162,24 @@ void EmuWindow::CreateTouchState() {
+     touch_state = std::make_shared<TouchState>();
+     Input::RegisterFactory<Input::TouchDevice>("emu_window", touch_state);
+     global_touch_state = touch_state;
++    if (!rsa_touch_bridge) {
++        if (const char* port = std::getenv("RSA_BRIDGE_PORT")) {
++            std::weak_ptr<TouchState> weak = touch_state;
++            rsa_touch_bridge = std::make_unique<RsaTouchBridge>(
++                std::stoul(port), [weak](bool owned, bool pressed, unsigned x, unsigned y,
++                                         std::uint64_t generation) {
++                    if (auto state = weak.lock()) {
++                        std::scoped_lock guard{state->mutex};
++                        state->native_owned = owned;
++                        state->touch_pressed = pressed;
++                        // HID truncates the normalized values; use pixel centers to round-trip.
++                        state->touch_x = (static_cast<float>(x) + 0.5f) / 320.f;
++                        state->touch_y = (static_cast<float>(y) + 0.5f) / 240.f;
++                        state->generation = generation;
++                    }
++                });
++        }
++    }
+ }
+
+ bool EmuWindow::TouchPressed(unsigned framebuffer_x, unsigned framebuffer_y) {
+@@ -167,6 +197,7 @@ bool EmuWindow::TouchPressed(unsigned framebuffer_x, unsigned framebuffer_y) {
+     }
+
+     std::scoped_lock guard(touch_state->mutex);
++    if (touch_state->native_owned) return false;
+
+     if (render_3d_mode == Settings::StereoRenderOption::SideBySide) {
+         touch_state->touch_x =
+@@ -193,14 +224,18 @@ bool EmuWindow::TouchPressed(unsigned framebuffer_x, unsigned framebuffer_y) {
+
+ void EmuWindow::TouchReleased() {
+     std::scoped_lock guard{touch_state->mutex};
++    if (touch_state->native_owned) return;
+     touch_state->touch_pressed = false;
+     touch_state->touch_x = 0;
+     touch_state->touch_y = 0;
+ }
+
+ void EmuWindow::TouchMoved(unsigned framebuffer_x, unsigned framebuffer_y) {
+-    if (!touch_state->touch_pressed)
+-        return;
++    {
++        std::scoped_lock guard{touch_state->mutex};
++        if (touch_state->native_owned || !touch_state->touch_pressed)
++            return;
++    }
+
+     if (!IsWithinTouchscreen(framebuffer_layout, framebuffer_x, framebuffer_y))
+         std::tie(framebuffer_x, framebuffer_y) = ClipToTouchScreen(framebuffer_x, framebuffer_y);
