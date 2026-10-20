@@ -11,7 +11,8 @@ When measurement helps, use `@benchmark` from `rsa_tools` and `rsa bench` to eva
 
 Own perception in `perception.py:Perception`. Read its starter contract, implement
 sampling and processing, and use `rsa perception reload` to load code or weight changes.
-The process retains models and state; you choose whether to run a background loop.
+The process stays alive between observations, retaining models and state.
+Choose continuous background sampling or on-demand sampling in `observe()`.
 Use `rsa perception status` or `rsa perception observe` to inspect it. Empty or failed perception
 arrives as text so you can implement or repair it; there is no default screenshot.
 
