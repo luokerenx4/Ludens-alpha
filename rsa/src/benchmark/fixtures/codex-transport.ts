@@ -30,6 +30,7 @@ function completedEvents(id: string) {
 export interface SimulatedSocket {
   message(value: object): void;
   expire(): void;
+  closeFromServer(code: number): void;
 }
 
 /** No networking occurs: all WebSocket and fetch paths are replaced before invoking the real provider. */
@@ -58,6 +59,7 @@ export function codexTransport() {
     message(value: object) { this.onmessage?.({ data: JSON.stringify(value) }); }
     expire() { this.message({ type: "error", code: "websocket_connection_limit_reached",
       message: "Responses websocket connection limit reached (60 minutes). Create a new websocket connection to continue." }); }
+    closeFromServer(code: number) { this.readyState = FakeSocket.CLOSED; this.onclose?.({ code, reason: "" }); }
     close() { this.readyState = FakeSocket.CLOSED; }
   }
   const fetch: FetchImpl = async (_input, init) => {

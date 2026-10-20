@@ -361,11 +361,13 @@ OMP 18.9.1 的提供者图片预算表没有 DeepSeek，它会使用默认上限
 
 Harness 的 OMP 设置采用 `providers.openaiWebsockets: auto`，Codex 使用原生 WebSocket 增量链，保持完整历史。2026-10-16 的 5 分钟实跑中，约 9.1 MB 完整首帧成功，后续 31 次增量请求中位约 250 KB、6 秒；之前 SSE 续玩一轮的请求耗时中位约 22.7 秒。场景不同，这是实际使用对比，不是严格基准。
 
-`package.json` / `bun.lock` 固定 [pi-ai 18.9.1 补丁](patches/@oh-my-pi%2Fpi-ai@18.9.1.patch)：实际序列化 WS JSON 帧超过 **15 MiB**（本地预算，非服务端上限），或收到远端 `1009`，立即改走完整 SSE；尺寸阻断期间不反复握手，等 OMP 原生压缩后再允许 WS。小的增量帧不受累计历史大小影响。其他传输故障、取消和已交付输出的防重复逻辑仍由 OMP 处理。用 `bun install --frozen-lockfile` 可重现补丁，不需要修改全局 OMP。
+`package.json` / `bun.lock` 固定 [pi-ai 18.9.1 补丁](patches/@oh-my-pi%2Fpi-ai@18.9.1.patch)：实际序列化 WS JSON 帧超过 **15 MiB**（本地预算，非服务端上限），或收到远端 `1009`，未交付内容时改走完整 SSE；尺寸阻断期间不反复握手，等 OMP 原生压缩后再允许 WS。小的增量帧不受累计历史大小影响。已交付文字、thinking 或工具的响应不自动重放，故障仍记录为后续请求的恢复条件。用 `bun install --frozen-lockfile` 可重现补丁，不需要修改全局 OMP。
 
 最初的 12 MiB 本地预算曾把 13.9 MB 的合法候选首帧提前挡回 SSE。放宽后，15,112,911 字节的完整首帧实跑成功，后续回到约 260 KB 增量。完整首帧仍花费约 66 秒，因此按五分钟观察效果时复用同一宿主与连接；只有加载代码改动才重启。256k 压缩阈值保持不变。
 
-WS 握手超时、socket 错误，以及连接到期（`websocket_connection_limit_reached`）需要回退 SSE 时，采用同一个 60 秒冷却；之后由下一次正常请求重建 WS，发送完整历史，再恢复增量链。2026-10-18 六小时实跑中，到期前的空 thinking 占位触发了 OMP 的 SSE 重放和永久禁用；现将到期纳入已有临时恢复逻辑，保留当前请求的重试上限与已交付工具调用不重放规则。`model_start` / `model_end` 的 `transportDetails` 中，`sizeBlockedUntilCompaction` 表示等待原生压缩解除的尺寸阻断，`retryWebsocketAt` 是临时回退后允许重试的 Unix 毫秒时间，与永久故障标记 `websocketDisabled` 分开。
+WS 临时传输故障（连接到期、关闭、握手/首事件超时等）需要回退时，统一采用 60 秒冷却；之后由下一次正常请求重建 WS，发送完整历史，再恢复增量链。明确的协议、数据或策略拒绝保持会话 WS 禁用，人工取消不激活回退。2026-10-18 六小时实跑的到期恢复已修；2026-10-19/20 八小时实跑又暴露 `closed (1012)` 被永久禁用，本次将恢复分类集中处理，并覆盖已交付输出后不能重放、但后续仍应恢复的边界。`transportDetails` 中，`sizeBlockedUntilCompaction` 表示等待原生压缩，`retryWebsocketAt` 是允许重试的 Unix 毫秒时间，`websocketDisabled` 表示会话禁用。
+
+这次按架构施工期的专项 TDD 处理：测试集中在本仓库 `tests/`，不放进 OMP 依赖或补丁；真实故障来源、合成工况、虚拟时间和测试边界见 [外部测试工况表](tests/README.md)。`bun run test:transport` 运行完整契约矩阵，`rsa bench run ws-recovery` 运行可在看板核查的两类故障基准。
 
 2026-10-17 第十八轮出现连接已断、但 append 状态仍保留时发送旧 `previous_response_id` 的情况。OMP 原先先构造增量体，再取得连接；后一步重建连接虽清除了状态，已构造的请求却仍引用旧响应。补丁将请求体构造移到连接确定之后：新连接首帧发送完整历史，同一连接继续增量。离线回归先复现旧行为，再验证重连后的全量请求和随后恢复增量；不改变重试次数或 SSE 策略。该轮另一次无入站事件的 WS 失败随后恢复，现有日志不足以确定具体关闭原因，不将它一并归因于上述问题。
 

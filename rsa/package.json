@@ -5,6 +5,7 @@
   "scripts": {
     "rsa": "bun src/app/main.ts",
     "test": "bun test",
+    "test:transport": "bun test tests/omp-websocket.test.ts",
     "check": "tsc --noEmit"
   },
   "devDependencies": {

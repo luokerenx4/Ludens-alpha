@@ -1,7 +1,39 @@
+diff --git a/dist/types/providers/openai-codex-responses.d.ts b/dist/types/providers/openai-codex-responses.d.ts
+index b1ee36e47828cf042d971f046ac86cf78e6535f8..483e76603f47e5e1423bcee15b4aa8bead3f49df 100644
+--- a/dist/types/providers/openai-codex-responses.d.ts
++++ b/dist/types/providers/openai-codex-responses.d.ts
+@@ -153,6 +153,8 @@ export interface OpenAICodexTransportDetails {
+     websocketPreferred: boolean;
+     lastTransport?: CodexTransport;
+     websocketDisabled: boolean;
++    sizeBlockedUntilCompaction: boolean;
++    retryWebsocketAt?: number;
+     websocketConnected: boolean;
+     fallbackCount: number;
+     canAppend: boolean;
+@@ -160,6 +162,7 @@ export interface OpenAICodexTransportDetails {
+     hasSessionState: boolean;
+     hasTurnState: boolean;
+     lastFallbackAt?: number;
++    lastFallbackError?: string;
+ }
+ export declare function getOpenAICodexWebSocketDebugStats(model: Model<"openai-codex-responses">, options?: {
+     sessionId?: string;
+@@ -199,7 +202,8 @@ type CodexToolPayload = {
+ /** @internal Exported for tests. */
+ export declare function convertOpenAICodexResponsesTools(tools: Tool[], model: Model<"openai-codex-responses">): CodexToolPayload[];
+ export declare class CodexWebSocketTransportError extends Error {
+-    constructor(detail: string, options?: ErrorOptions);
++    readonly closeCode?: number;
++    constructor(detail: string, options?: ErrorOptions & { closeCode?: number });
+ }
+ declare class CodexProviderStreamError extends Error {
+     readonly retryable: boolean;
 diff --git a/src/providers/openai-codex-responses.ts b/src/providers/openai-codex-responses.ts
+index 621fada2f0d2ef7d9cf5bd2cbe3bc7ea2d49022d..445aba03680018fe641e2fc7293f65cc15850888 100644
 --- a/src/providers/openai-codex-responses.ts
 +++ b/src/providers/openai-codex-responses.ts
-@@ -278,6 +278,8 @@
+@@ -278,6 +278,8 @@ const CODEX_WEBSOCKET_IDLE_TIMEOUT_MS = Number($env.PI_CODEX_WEBSOCKET_IDLE_TIME
   */
  const CODEX_WEBSOCKET_FIRST_EVENT_TIMEOUT_MS = Number($env.PI_CODEX_WEBSOCKET_FIRST_EVENT_TIMEOUT_MS || 300_000);
  const CODEX_WEBSOCKET_RETRY_BUDGET = Number($env.PI_CODEX_WEBSOCKET_RETRY_BUDGET || CODEX_MAX_RETRIES);
@@ -10,7 +42,18 @@ diff --git a/src/providers/openai-codex-responses.ts b/src/providers/openai-code
  const CODEX_WEBSOCKET_RETRY_DELAY_MS = Number($env.PI_CODEX_WEBSOCKET_RETRY_DELAY_MS || CODEX_RETRY_DELAY_MS);
  const CODEX_WEBSOCKET_TRANSPORT_ERROR_PREFIX = "Codex websocket transport error";
  // The native-lane steering rejection is replayable: the session stops steering
-@@ -439,6 +441,10 @@
+@@ -299,7 +301,9 @@ const CODEX_WS_RESPONSES_LITE_CLIENT_METADATA_KEY = "ws_request_header_x_openai_
+ /** `response.metadata` payload key carrying ChatGPT moderation metadata. */
+ const CODEX_MODERATION_METADATA_KEY = "openai_chatgpt_moderation_metadata";
+ /** Connection-level websocket failures that should immediately fall back to SSE without retrying. */
+-const CODEX_WEBSOCKET_FATAL_PATTERNS = ["websocket error:", "websocket closed before open", "connection timeout"];
++const CODEX_WEBSOCKET_FALLBACK_PATTERNS = ["websocket error:", "websocket closed before open", "connection timeout"];
++// Protocol/data/policy rejection needs a configuration change, not another identical connection.
++const CODEX_WEBSOCKET_REJECTED_CLOSE_CODES = new Set([1002, 1003, 1007, 1008, 1010, 3000, 3003]);
+ /** Max total time to spend retrying 429s with server-provided delays (5 minutes). */
+ const CODEX_RATE_LIMIT_BUDGET_MS = 5 * 60 * 1000;
+ const CODEX_ADDITIONAL_PROGRESS_EVENT_TYPES = new Set(["response.done", "response.incomplete"]);
+@@ -439,6 +443,10 @@ export interface OpenAICodexWebSocketDebugStats {
  type CodexWebSocketSessionState = {
  	sessionId: string;
  	disableWebsocket: boolean;
@@ -21,7 +64,7 @@ diff --git a/src/providers/openai-codex-responses.ts b/src/providers/openai-code
  	lastRequest?: RequestBody;
  	/** Last completed response; an in-progress response cannot replace the retry baseline. */
  	lastResponseId?: string;
-@@ -457,6 +463,7 @@
+@@ -457,6 +465,7 @@ type CodexWebSocketSessionState = {
  	lastTransport?: CodexTransport;
  	fallbackCount: number;
  	lastFallbackAt?: number;
@@ -29,7 +72,7 @@ diff --git a/src/providers/openai-codex-responses.ts b/src/providers/openai-code
  	prewarmed: boolean;
  	stats: OpenAICodexWebSocketDebugStats;
  };
-@@ -761,6 +768,7 @@
+@@ -761,6 +770,7 @@ export function resetOpenAICodexHistoryAfterCompaction(options: OpenAICodexCompa
  	if (!isCodexProviderSessionState(providerState)) return;
  	for (const websocketState of providerState.webSocketSessions.values()) {
  		resetCodexWebSocketAppendState(websocketState);
@@ -37,18 +80,45 @@ diff --git a/src/providers/openai-codex-responses.ts b/src/providers/openai-code
  	}
  	const sessionId = normalizeOpenAIPromptCacheKey(options.sessionId);
  	if (!sessionId) return;
-@@ -1124,8 +1132,10 @@
+@@ -1122,23 +1132,21 @@ function getCodexProviderSessionState(
+ 	return created;
+ }
  
++/** Connection recovery is independent of whether this response can safely be replayed. */
++function codexWebSocketRecovery(error: unknown): "cooldown" | "compaction" | "disabled" | undefined {
++	if (error instanceof CodexWebSocketMessageTooLargeError) return "compaction";
++	if (error instanceof CodexWebSocketTransportError) {
++		return error.closeCode !== undefined && CODEX_WEBSOCKET_REJECTED_CLOSE_CODES.has(error.closeCode)
++			? "disabled" : "cooldown";
++	}
++	if (error instanceof CodexProviderStreamError && error.code === "websocket_connection_limit_reached") {
++		return "cooldown";
++	}
++	return undefined;
++}
++
  function isCodexWebSocketRetryableStreamError(error: unknown): boolean {
- 	if (!(error instanceof CodexWebSocketTransportError)) return false;
-+	if (error instanceof CodexWebSocketMessageTooLargeError) return true;
- 	const message = error.message.toLowerCase();
- 	return (
-+		message.startsWith(`${CODEX_WEBSOCKET_TRANSPORT_ERROR_PREFIX.toLowerCase()}: websocket error:`) ||
- 		message.includes("websocket closed (") ||
- 		message.includes("websocket closed before response completion") ||
- 		message.includes("websocket connection is unavailable") ||
-@@ -1509,6 +1519,8 @@
+-	if (!(error instanceof CodexWebSocketTransportError)) return false;
+-	const message = error.message.toLowerCase();
+-	return (
+-		message.includes("websocket closed (") ||
+-		message.includes("websocket closed before response completion") ||
+-		message.includes("websocket connection is unavailable") ||
+-		message.includes("websocket send failed") ||
+-		message.includes("websocket ping failed") ||
+-		message.includes("websocket pong timeout") ||
+-		message.includes("websocket message queue exceeded") ||
+-		message.includes("websocket request already in progress") ||
+-		message.includes("idle timeout waiting for websocket") ||
+-		message.includes("timeout waiting for first websocket event") ||
+-		message.includes("syntaxerror") ||
+-		message.includes("json")
+-	);
++	return error instanceof CodexWebSocketTransportError;
+ }
+ function toCodexHeaderRecord(value: unknown): Record<string, string> | null {
+ 	if (!value || typeof value !== "object") return null;
+@@ -1509,6 +1517,8 @@ function createCodexRequestContext(
  			: sharedWebsocketState;
  	if (isolatedTransportState && websocketState && sharedWebsocketState) {
  		websocketState.disableWebsocket = sharedWebsocketState.disableWebsocket;
@@ -57,7 +127,15 @@ diff --git a/src/providers/openai-codex-responses.ts b/src/providers/openai-code
  		websocketState.modelsEtag = sharedWebsocketState.modelsEtag;
  	}
  	const metadataSessionId = transportSessionId ?? crypto.randomUUID();
-@@ -1688,7 +1700,7 @@
+@@ -1682,13 +1692,13 @@ async function openInitialCodexEventStream(
+ 					options ? event => options.onSseEvent?.(event, model) : undefined,
+ 				);
+ 			} catch (error) {
+-				if (!(error instanceof CodexWebSocketTransportError)) throw error;
++				if (requestSetup.requestSignal.aborted || !(error instanceof CodexWebSocketTransportError)) throw error;
+ 				const fatalWebSocketMessage = error.message.toLowerCase();
+-				const isFatal = CODEX_WEBSOCKET_FATAL_PATTERNS.some(pattern =>
++				const isFatal = CODEX_WEBSOCKET_FALLBACK_PATTERNS.some(pattern =>
  					fatalWebSocketMessage.includes(pattern.toLowerCase()),
  				);
  				const activateFallback = isFatal || websocketRetries >= websocketRetryBudget;
@@ -66,19 +144,16 @@ diff --git a/src/providers/openai-codex-responses.ts b/src/providers/openai-code
  				CODEX_DEBUG &&
  					logger.debug("[codex] codex websocket fallback", {
  						error: error.message,
-@@ -1788,7 +1800,10 @@
+@@ -1788,7 +1798,7 @@ async function* streamCodexCompactionEvents(
  					throw error;
  				}
  				const state = requestContext.websocketState;
 -				if (state) recordCodexWebSocketFailure(state, true);
-+				if (state) {
-+					if (error instanceof CodexWebSocketMessageTooLargeError) state.sizeBlockedUntilCompaction = true;
-+					recordCodexWebSocketFailure(state, !(error instanceof CodexWebSocketMessageTooLargeError), error);
-+				}
++				if (state) recordCodexWebSocketFailure(state, true, error);
  				const fallback = await openCodexSseTransport(model, requestContext, requestSetup, options, state);
  				if (state) state.lastTransport = fallback.transport;
  				yield* drainCodexCompactionEvents(fallback.eventStream, requestContext);
-@@ -1870,8 +1885,6 @@
+@@ -1870,8 +1880,6 @@ async function openCodexWebSocketTransport(
  }> {
  	const steered = websocketState.acceptedSteering;
  	websocketState.acceptedSteering = undefined;
@@ -87,7 +162,7 @@ diff --git a/src/providers/openai-codex-responses.ts b/src/providers/openai-code
  	const websocketHeaders = createCodexHeaders(
  		requestContext.requestHeaders,
  		requestContext.accountId,
-@@ -1894,6 +1907,10 @@
+@@ -1894,6 +1902,10 @@ async function openCodexWebSocketTransport(
  		model.provider,
  		requestSetup.requestSignal,
  	);
@@ -98,7 +173,55 @@ diff --git a/src/providers/openai-codex-responses.ts b/src/providers/openai-code
  	const timeouts: CodexWebSocketRequestTimeouts = {
  		idleTimeoutMs: requestSetup.websocketIdleTimeoutMs,
  		firstEventTimeoutMs: requestSetup.websocketFirstEventTimeoutMs,
-@@ -2980,7 +2997,7 @@
+@@ -2832,7 +2844,25 @@ class CodexStreamProcessor {
+ 		resetCodexWebSocketAppendState(state);
+ 	}
+ 
++	get #canReplayOutput(): boolean {
++		return (
++			this.runtime.canSafelyReplayWebsocketOverSse &&
++			!hasVisibleAssistantContent(this.output) &&
++			!this.output.content.some(block =>
++				(block.type === "text" && block.text.length > 0) ||
++				(block.type === "thinking" && block.thinking.length > 0),
++			)
++		);
++	}
++
+ 	async #recoverStreamError(error: unknown): Promise<boolean> {
++		if (this.requestSetup.requestSignal.aborted) return false;
++		const state = this.requestContext.websocketState;
++		if (state && this.runtime.transport === "websocket" && codexWebSocketRecovery(error) && !this.#canReplayOutput) {
++			// Preserve already-delivered output. Only future requests may recover the transport.
++			recordCodexWebSocketFailure(state, true, error);
++			return false;
++		}
+ 		this.#stopSteeringOnNativeLaneRejection(error);
+ 		if (
+ 			error instanceof CodexSteerCommitError &&
+@@ -2942,11 +2972,9 @@ class CodexStreamProcessor {
+ 
+ 	/**
+ 	 * Handles `websocket_connection_limit_reached` errors by closing the stale connection
+-	 * and opening a fresh websocket. If content has already been emitted to the caller,
+-	 * falls back to SSE replay (same as other WS failures) since we cannot safely
+-	 * continue a partial response on a new connection. If a tool call was already
+-	 * delivered (`canSafelyReplayWebsocketOverSse` is false), the error surfaces
+-	 * instead — replaying would re-emit the same tool calls.
++	 * and opening a fresh websocket. Empty output placeholders can be discarded
++	 * and replayed over SSE; #recoverStreamError already rejects replay once
++	 * text, thinking or a tool has been delivered.
+ 	 */
+ 	async #tryReconnectWebSocketOnConnectionLimit(error: unknown): Promise<boolean> {
+ 		if (!(error instanceof CodexProviderStreamError) || error.code !== "websocket_connection_limit_reached") {
+@@ -2975,12 +3003,12 @@ class CodexStreamProcessor {
+ 			});
+ 
+ 		if (this.output.content.length > 0) {
+-			// Content already emitted to the caller — cannot safely continue on a new WS.
+-			// Reset and replay the full request over SSE.
++			// Only empty placeholders remain; balance their events before replay.
++			this.#closeOpenBlocksForReplay();
  			this.runtime.resetAccumulators();
  			resetOutputState(this.output);
  			this.firstTokenTime = undefined;
@@ -107,7 +230,7 @@ diff --git a/src/providers/openai-codex-responses.ts b/src/providers/openai-code
  			await this.#reopenSseStream(websocketState);
  			return true;
  		}
-@@ -2993,7 +3010,7 @@
+@@ -2993,7 +3021,7 @@ class CodexStreamProcessor {
  		this.runtime.resetAccumulators();
  		this.firstTokenTime = undefined;
  		if (this.runtime.websocketStreamRetries >= CODEX_WEBSOCKET_RETRY_BUDGET) {
@@ -116,24 +239,56 @@ diff --git a/src/providers/openai-codex-responses.ts b/src/providers/openai-code
  			await this.#reopenSseStream(websocketState);
  			return true;
  		}
-@@ -3088,11 +3105,15 @@
- 		const isFatal = CODEX_WEBSOCKET_FATAL_PATTERNS.some(pattern =>
+@@ -3085,14 +3113,15 @@ class CodexStreamProcessor {
+ 		const streamError = error instanceof Error ? error : new Error(String(error));
+ 		const replayingBufferedOutputOverSse = this.output.content.length > 0;
+ 		const fatalWebSocketMessage = streamError.message.toLowerCase();
+-		const isFatal = CODEX_WEBSOCKET_FATAL_PATTERNS.some(pattern =>
++		const isFatal = CODEX_WEBSOCKET_FALLBACK_PATTERNS.some(pattern =>
  			fatalWebSocketMessage.includes(pattern.toLowerCase()),
  		);
-+		const sizeBlocked = error instanceof CodexWebSocketMessageTooLargeError;
-+		if (sizeBlocked) state.sizeBlockedUntilCompaction = true;
  		const activateFallback =
-+			sizeBlocked ||
++			codexWebSocketRecovery(error) !== "cooldown" ||
  			replayingBufferedOutputOverSse ||
  			isFatal ||
  			this.runtime.websocketStreamRetries >= CODEX_WEBSOCKET_RETRY_BUDGET;
 -		recordCodexWebSocketFailure(state, activateFallback);
-+		// Size is history-dependent; transport errors use their own recovery policy.
-+		recordCodexWebSocketFailure(state, activateFallback && !sizeBlocked, error);
++		recordCodexWebSocketFailure(state, activateFallback, error);
  		CODEX_DEBUG &&
  			logger.debug("[codex] codex websocket stream fallback", {
  				error: streamError.message,
-@@ -3236,7 +3257,7 @@
+@@ -3117,6 +3146,7 @@ class CodexStreamProcessor {
+ 			return true;
+ 		}
+ 
++		this.#closeOpenBlocksForReplay();
+ 		this.runtime.resetAccumulators();
+ 		resetOutputState(this.output);
+ 		this.firstTokenTime = undefined;
+@@ -3164,16 +3194,9 @@ class CodexStreamProcessor {
+ 		// already-delivered events, so treat the attempt as committed. Emptiness is
+ 		// measured by the streamed block length (whitespace counts), not by visible
+ 		// final content.
+-		const streamedContent = this.output.content.some(
+-			block =>
+-				(block.type === "text" && block.text.length > 0) ||
+-				(block.type === "thinking" && block.thinking.length > 0),
+-		);
+ 		if (
+ 			!retryable ||
+-			hasVisibleAssistantContent(this.output) ||
+-			streamedContent ||
+-			!this.runtime.canSafelyReplayWebsocketOverSse ||
++			!this.#canReplayOutput ||
+ 			this.runtime.providerRetryAttempt >= CODEX_MAX_RETRIES ||
+ 			this.options?.signal?.aborted
+ 		) {
+@@ -3232,11 +3255,11 @@ class CodexStreamProcessor {
+ 			this.runtime.transport = next.transport;
+ 			state.lastTransport = next.transport;
+ 		} catch (error) {
+-			if (!(error instanceof CodexWebSocketTransportError)) throw error;
++			if (this.requestSetup.requestSignal.aborted || !(error instanceof CodexWebSocketTransportError)) throw error;
  			// Reopen failed at the websocket layer (handshake refused, connect timeout, etc.).
  			// Activate fallback so subsequent turns use SSE, and replay this turn over SSE
  			// instead of surfacing a raw transport error to the caller.
@@ -142,7 +297,7 @@ diff --git a/src/providers/openai-codex-responses.ts b/src/providers/openai-code
  			CODEX_DEBUG &&
  				logger.debug("[codex] codex websocket reopen failed, falling back to SSE", {
  					error: error.message,
-@@ -3499,7 +3520,11 @@
+@@ -3499,7 +3522,11 @@ function resetCodexWebSocketAppendState(state: CodexWebSocketSessionState): void
  	state.lastResponseItems = undefined;
  }
  
@@ -155,28 +310,31 @@ diff --git a/src/providers/openai-codex-responses.ts b/src/providers/openai-code
  	resetCodexWebSocketAppendState(state);
  	// Never tear down a CONNECTING socket: it belongs to a concurrent caller's
  	// in-flight handshake (prewarm/request race); closing it would reject that
-@@ -3510,6 +3535,20 @@
+@@ -3510,10 +3537,20 @@ function recordCodexWebSocketFailure(state: CodexWebSocketSessionState, activate
  		state.connection = undefined;
  	}
  	state.lastFallbackAt = Date.now();
+-	if (activateFallback && !state.disableWebsocket) {
+-		state.disableWebsocket = true;
+-		state.fallbackCount += 1;
 +	state.lastFallbackError = error instanceof Error ? error.message : undefined;
-+	if (
-+		activateFallback &&
-+		((error instanceof CodexProviderStreamError && error.code === "websocket_connection_limit_reached") ||
-+			(error instanceof CodexWebSocketTransportError &&
-+				(error.message === `${CODEX_WEBSOCKET_TRANSPORT_ERROR_PREFIX}: connection timeout` ||
-+					error.message.startsWith(`${CODEX_WEBSOCKET_TRANSPORT_ERROR_PREFIX}: websocket error:`))))
-+	) {
-+		// Expiry invalidates the connection, not WS support. Keep this turn on SSE,
-+		// then retry on a later turn after the same cooldown as transient failures.
-+		state.retryWebsocketAt = state.lastFallbackAt + 60_000;
-+		state.fallbackCount += 1;
-+		return;
-+	}
- 	if (activateFallback && !state.disableWebsocket) {
- 		state.disableWebsocket = true;
- 		state.fallbackCount += 1;
-@@ -3537,7 +3576,11 @@
++	if (!activateFallback) return;
++	state.retryWebsocketAt = undefined;
++	switch (codexWebSocketRecovery(error)) {
++		case "compaction":
++			state.sizeBlockedUntilCompaction = true;
++			break;
++		case "cooldown":
++			state.retryWebsocketAt = state.lastFallbackAt + 60_000;
++			break;
++		default:
++			state.disableWebsocket = true;
+ 	}
++	state.fallbackCount += 1;
+ }
+ 
+ /**
+@@ -3537,7 +3574,11 @@ function shouldUseCodexWebSocket(
  	// Explicitly disabled by the model or session state.
  	if (model.preferWebsockets === false) return false;
  	// Explicitly disabled by the session state.
@@ -189,7 +347,7 @@ diff --git a/src/providers/openai-codex-responses.ts b/src/providers/openai-code
  	// Env val > Preference
  	const envVal = getOpenAICodexWebSocketEnvValue();
  	if (envVal !== undefined) return envVal;
-@@ -3550,6 +3593,8 @@
+@@ -3550,6 +3591,8 @@ export interface OpenAICodexTransportDetails {
  	websocketPreferred: boolean;
  	lastTransport?: CodexTransport;
  	websocketDisabled: boolean;
@@ -198,7 +356,7 @@ diff --git a/src/providers/openai-codex-responses.ts b/src/providers/openai-code
  	websocketConnected: boolean;
  	fallbackCount: number;
  	canAppend: boolean;
-@@ -3557,6 +3602,7 @@
+@@ -3557,6 +3600,7 @@ export interface OpenAICodexTransportDetails {
  	hasSessionState: boolean;
  	hasTurnState: boolean;
  	lastFallbackAt?: number;
@@ -206,7 +364,7 @@ diff --git a/src/providers/openai-codex-responses.ts b/src/providers/openai-code
  }
  
  function getCodexWebSocketStateForPublicSession(
-@@ -3622,6 +3668,8 @@
+@@ -3622,6 +3666,8 @@ export function getOpenAICodexTransportDetails(
  		websocketPreferred,
  		lastTransport: state?.lastTransport,
  		websocketDisabled: state?.disableWebsocket ?? false,
@@ -215,7 +373,7 @@ diff --git a/src/providers/openai-codex-responses.ts b/src/providers/openai-code
  		websocketConnected: state?.connection?.isOpen() ?? false,
  		fallbackCount: state?.fallbackCount ?? 0,
  		canAppend: state?.canAppend ?? false,
-@@ -3629,6 +3677,7 @@
+@@ -3629,6 +3675,7 @@ export function getOpenAICodexTransportDetails(
  		hasSessionState: state !== undefined,
  		hasTurnState,
  		lastFallbackAt: state?.lastFallbackAt,
@@ -223,20 +381,24 @@ diff --git a/src/providers/openai-codex-responses.ts b/src/providers/openai-code
  	};
  }
  
-@@ -4117,7 +4166,11 @@
- 				reject(new CodexWebSocketTransportError(`websocket closed before open (${event.code})`));
+@@ -4114,10 +4161,14 @@ class CodexWebSocketConnection {
+ 			if (!settled) {
+ 				settled = true;
+ 				clearPending();
+-				reject(new CodexWebSocketTransportError(`websocket closed before open (${event.code})`));
++				reject(new CodexWebSocketTransportError(`websocket closed before open (${event.code})`, { closeCode: event.code }));
  				return;
  			}
 -			this.#push(new CodexWebSocketTransportError(`websocket closed (${event.code})`));
 +			this.#push(
 +				event.code === 1009
 +					? new CodexWebSocketMessageTooLargeError(`websocket closed (1009)`)
-+					: new CodexWebSocketTransportError(`websocket closed (${event.code})`),
++					: new CodexWebSocketTransportError(`websocket closed (${event.code})`, { closeCode: event.code }),
 +			);
  			this.#push(null);
  		};
  		socket.onmessage = event => {
-@@ -4224,6 +4277,12 @@
+@@ -4224,6 +4275,12 @@ class CodexWebSocketConnection {
  					: undefined;
  
  				const requestPayload = JSON.stringify(request);
@@ -249,8 +411,16 @@ diff --git a/src/providers/openai-codex-responses.ts b/src/providers/openai-code
  				notifyCodexWebSocketOutbound(onSseEvent, request, requestPayload);
  				// Re-check liveness: the debug-session await above can outlive the socket.
  				// Preserve the abort cause: onAbort already queued a caused error, but this
-@@ -5233,6 +5292,8 @@
+@@ -5228,11 +5285,15 @@ export function convertOpenAICodexResponsesTools(
+ }
+ 
+ export class CodexWebSocketTransportError extends Error {
+-	constructor(detail: string, options?: ErrorOptions) {
++	readonly closeCode?: number;
++	constructor(detail: string, options?: ErrorOptions & { closeCode?: number }) {
+ 		super(`${CODEX_WEBSOCKET_TRANSPORT_ERROR_PREFIX}: ${detail}`, options);
  		this.name = "CodexWebSocketTransportError";
++		this.closeCode = options?.closeCode;
  	}
  }
 +/** A request-size rejection can recover after history compaction; it is never retried unchanged. */
@@ -258,23 +428,3 @@ diff --git a/src/providers/openai-codex-responses.ts b/src/providers/openai-code
  /**
   * The server failed to commit accepted steering to its automatic successor, so
   * the request that was reading that successor must be sent explicitly instead.
-diff --git a/dist/types/providers/openai-codex-responses.d.ts b/dist/types/providers/openai-codex-responses.d.ts
---- a/dist/types/providers/openai-codex-responses.d.ts
-+++ b/dist/types/providers/openai-codex-responses.d.ts
-@@ -153,6 +153,8 @@
-     websocketPreferred: boolean;
-     lastTransport?: CodexTransport;
-     websocketDisabled: boolean;
-+    sizeBlockedUntilCompaction: boolean;
-+    retryWebsocketAt?: number;
-     websocketConnected: boolean;
-     fallbackCount: number;
-     canAppend: boolean;
-@@ -160,6 +162,7 @@
-     hasSessionState: boolean;
-     hasTurnState: boolean;
-     lastFallbackAt?: number;
-+    lastFallbackError?: string;
- }
- export declare function getOpenAICodexWebSocketDebugStats(model: Model<"openai-codex-responses">, options?: {
-     sessionId?: string;

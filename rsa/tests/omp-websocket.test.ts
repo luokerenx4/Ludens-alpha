@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import * as piUtils from "@oh-my-pi/pi-utils";
+import { scheduler } from "node:timers/promises";
 import {
   getOpenAICodexTransportDetails,
   resetOpenAICodexHistoryAfterCompaction,
@@ -8,6 +9,15 @@ import {
   type OpenAICodexResponsesOptions,
 } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import type { Context, FetchImpl, ProviderSessionState } from "@oh-my-pi/pi-ai/types";
+
+/**
+ * External OMP transport contract tests: architecture-development TDD exception.
+ * Production seed: Mario Maker 8h run 2026-10-19T13-19-53.903Z, explicit expiry
+ * recovered at 23:21 Asia/Shanghai, but close(1012) at 23:46:56 stayed on SSE.
+ * The close-code/partial-output/cancellation matrix below is fault injection,
+ * not a claim that each condition occurred in that run. No live model or auth.
+ * Policy and condition catalogue: ./README.md.
+ */
 
 const frameLimit = 15 * 1024 * 1024;
 const model = buildModel({
@@ -64,7 +74,7 @@ function fixture() {
   const sockets: FakeSocket[] = [];
   const frames: string[] = [];
   const http: Payload[] = [];
-  let failHandshake = false;
+  let handshakeCloseCode: number | undefined;
   let stallNextHandshake = false;
   let onSend = (socket: FakeSocket) => {
     for (const event of completedEvents(`ws_${frames.length}`)) socket.message(event);
@@ -89,9 +99,8 @@ function fixture() {
       }
       queueMicrotask(() => {
         if (this.readyState !== FakeSocket.CONNECTING) return;
-        if (failHandshake) {
-          this.readyState = FakeSocket.CLOSED;
-          this.onclose?.({code: 1002, reason: "unsupported handshake"});
+        if (handshakeCloseCode !== undefined) {
+          this.remoteClose(handshakeCloseCode);
           return;
         }
         this.readyState = FakeSocket.OPEN;
@@ -100,14 +109,18 @@ function fixture() {
     }
     send(data: string) { frames.push(data); onSend(this); }
     message(value: object) { this.onmessage?.({data: JSON.stringify(value)}); }
+    raw(data: string) { this.onmessage?.({data}); }
+    remoteClose(code: number) {
+      this.readyState = FakeSocket.CLOSED;
+      this.onclose?.({code, reason: "injected close"});
+    }
     fail(message: string) { this.onerror?.({message}); }
     expire() {
       this.message({type: "error", code: "websocket_connection_limit_reached",
         message: "Responses websocket connection limit reached (60 minutes). Create a new websocket connection to continue."});
     }
     rejectSize() {
-      this.readyState = FakeSocket.CLOSED;
-      this.onclose?.({code: 1009, reason: "message too big"});
+      this.remoteClose(1009);
     }
     close() { this.readyState = FakeSocket.CLOSED; }
   }
@@ -124,7 +137,8 @@ function fixture() {
   };
   return {
     sockets, frames, http,
-    failHandshake() { failHandshake = true; },
+    failHandshake(code = 1002) { handshakeCloseCode = code; },
+    restoreHandshake() { handshakeCloseCode = undefined; },
     stallNextHandshake() { stallNextHandshake = true; },
     onSend(callback: typeof onSend) { onSend = callback; },
     stream(input: Context, extra: OpenAICodexResponsesOptions = {}) {
@@ -277,18 +291,20 @@ test("native compaction reset permits a fresh small websocket bootstrap after a 
   } finally { f.close(); }
 });
 
-test("native compaction reset preserves sticky fallback for unrelated fatal websocket errors", async () => {
+// Synthetic protocol/unsupported-data/policy failures are not temporary outages.
+test.each([1002, 1003, 1007, 1008, 1010])("handshake close(%d) stays disabled across cooldown and native compaction", async code => {
   const f = fixture();
   let now = Date.now();
   const dateNow = spyOn(Date, "now").mockImplementation(() => now);
   try {
-    f.failHandshake();
+    f.failHandshake(code);
     expect((await f.stream(context("before failure")).result()).stopReason).toBe("stop");
     expect(f.sockets).toHaveLength(1);
     expect(f.frames).toHaveLength(0);
     expect(f.http).toHaveLength(1);
     expect(f.details()).toMatchObject({websocketDisabled: true,
-      lastFallbackError: "Codex websocket transport error: websocket closed before open (1002)"});
+      lastFallbackError: `Codex websocket transport error: websocket closed before open (${code})`});
+    f.restoreHandshake();
     f.compact();
     now += 60_001;
     expect((await f.stream(context("compact summary")).result()).stopReason).toBe("stop");
@@ -298,7 +314,9 @@ test("native compaction reset preserves sticky fallback for unrelated fatal webs
   } finally { dateNow.mockRestore(); f.close(); }
 });
 
-test.each(["socket error", "connection expiry"] as const)("%s uses SSE during cooldown then restores full websocket history and delta chaining", async failure => {
+// 1012 reproduces the overnight failure; the other closes cover adjacent ordinary
+// connection loss/service restart conditions. An empty reasoning start is replay-safe.
+test.each(["socket error", "connection expiry", "close 1000", "close 1001", "close 1006", "close 1011", "close 1012", "close 1013"] as const)("%s uses SSE during cooldown then restores full websocket history and delta chaining", async failure => {
   const f = fixture();
   let now = Date.now();
   const dateNow = spyOn(Date, "now").mockImplementation(() => now);
@@ -312,19 +330,29 @@ test.each(["socket error", "connection expiry"] as const)("%s uses SSE during co
         socket.message({type: "response.output_item.added", item: {
           type: "reasoning", id: "rs_empty", summary: [], content: [],
         }});
-        socket.expire();
+        if (failure === "connection expiry") socket.expire();
+        else socket.remoteClose(Number(failure.split(" ")[1]));
       }
     });
     const failedContext: Context = {messages: [...initial.messages, first, user("second question")]};
-    const recovered = await f.stream(failedContext).result();
+    const recovering = f.stream(failedContext);
+    const thinkingBlocks: string[] = [];
+    for await (const event of recovering) {
+      if (event.type === "thinking_start" || event.type === "thinking_end") thinkingBlocks.push(event.type);
+    }
+    const recovered = await recovering.result();
     expect(recovered.stopReason).toBe("stop");
+    // Pet/log consumers must not retain an orphan thinking block from the
+    // abandoned empty placeholder when this attempt is replaced by SSE.
+    expect(thinkingBlocks).toEqual(failure === "socket error" ? [] : ["thinking_start", "thinking_end"]);
     expect(f.frames).toHaveLength(2);
     expect(f.http).toHaveLength(1);
     expect(inputTexts(f.http[0]!)).toEqual(["first question", "second question"]);
     expect(f.details()).toMatchObject({websocketDisabled: false, sizeBlockedUntilCompaction: false,
       retryWebsocketAt: now + 60_000, fallbackCount: 1});
     expect(f.details().lastFallbackError).toContain(failure === "socket error"
-      ? "websocket error: temporary connection failure" : "connection limit reached (60 minutes)");
+      ? "websocket error: temporary connection failure" : failure === "connection expiry"
+        ? "connection limit reached (60 minutes)" : `websocket closed (${failure.split(" ")[1]})`);
 
     now += 59_999;
     const cooldownContext: Context = {messages: [...failedContext.messages, recovered, user("third question")]};
@@ -372,6 +400,18 @@ test("1009 after a delivered tool call never replays that tool over SSE", async 
     expect(delivered).toBe(1);
     expect(f.frames).toHaveLength(1);
     expect(f.http).toHaveLength(0);
+    // Refusing to replay this request must still retain the size decision for
+    // later turns; only native history compaction makes another frame worthwhile.
+    expect(f.details()).toMatchObject({sizeBlockedUntilCompaction: true, websocketDisabled: false});
+    expect((await f.stream(context("another turn before compaction")).result()).stopReason).toBe("stop");
+    expect(f.frames).toHaveLength(1);
+    expect(f.http).toHaveLength(1);
+    f.compact();
+    f.onSend(socket => { for (const event of completedEvents("after_partial_size")) socket.message(event); });
+    expect((await f.stream(context("compact summary")).result()).stopReason).toBe("stop");
+    expect(f.frames).toHaveLength(2);
+    expect(f.http).toHaveLength(1);
+    expect(JSON.parse(f.frames[1]!).previous_response_id).toBeUndefined();
   } finally { f.close(); }
 });
 
@@ -482,4 +522,158 @@ test("handshake timeout uses SSE during cooldown and retries websocket after 60 
     dateNow.mockRestore();
     f.close();
   }
+});
+
+// Fault injection at the earlier handshake boundary must have the same future-
+// request policy as a close after the socket opened; no response was committed.
+test.each([1006, 1012, 1013])("transient handshake close(%d) falls back once and recovers after cooldown", async code => {
+  const f = fixture();
+  let now = Date.now();
+  const dateNow = spyOn(Date, "now").mockImplementation(() => now);
+  try {
+    f.failHandshake(code);
+    const initial = context("handshake request");
+    const first = await f.stream(initial).result();
+    expect(first.stopReason).toBe("stop");
+    expect(f.sockets).toHaveLength(1);
+    expect(f.frames).toHaveLength(0);
+    expect(f.http).toHaveLength(1);
+    expect(f.details()).toMatchObject({websocketDisabled: false, retryWebsocketAt: now + 60_000});
+    f.restoreHandshake();
+    now += 59_999;
+    const secondContext: Context = {messages: [...initial.messages, first, user("cooldown")]};
+    const second = await f.stream(secondContext).result();
+    expect(f.sockets).toHaveLength(1);
+    expect(f.http).toHaveLength(2);
+    now += 2;
+    expect((await f.stream({messages: [...secondContext.messages, second, user("recover")]}).result()).stopReason).toBe("stop");
+    expect(f.sockets).toHaveLength(2);
+    expect(f.http).toHaveLength(2);
+    const bootstrap = JSON.parse(f.frames[0]!) as Payload;
+    expect(bootstrap.previous_response_id).toBeUndefined();
+    expect(inputTexts(bootstrap)).toEqual(["handshake request", "cooldown", "recover"]);
+  } finally { dateNow.mockRestore(); f.close(); }
+});
+
+// Completed tools already had a regression guard. Text and thinking deltas also
+// reach consumers, so replay cannot be justified just by absence of toolcall_end.
+for (const output of ["text", "thinking", "tool"] as const) {
+  test.each(["close 1012", "connection expiry"] as const)(`${output} already delivered: %s does not replay, next requests still recover`, async failure => {
+    const f = fixture();
+    let now = Date.now();
+    const dateNow = spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      f.onSend(socket => {
+        if (output === "text") {
+          for (const event of completedEvents("partial").slice(0, 4)) socket.message(event);
+        } else if (output === "thinking") {
+          socket.message({type: "response.output_item.added", item: {type: "reasoning", id: "rs_partial", summary: [], content: []}});
+          socket.message({type: "response.reasoning_summary_text.delta", delta: "partial thought"});
+        } else {
+          const item = {type: "function_call", id: "fc_once", call_id: "call_once", name: "move", arguments: ""};
+          socket.message({type: "response.output_item.added", item});
+          socket.message({type: "response.output_item.done", item: {...item, arguments: "{}"}});
+        }
+        if (failure === "close 1012") socket.remoteClose(1012);
+        else socket.expire();
+      });
+      const initial = context("perform a step");
+      const stream = f.stream(initial);
+      let delivered = 0;
+      const committedEvent = output === "tool" ? "toolcall_end" : output === "thinking" ? "thinking_delta" : "text_delta";
+      for await (const event of stream) if (event.type === committedEvent) delivered++;
+      const partial = await stream.result();
+      expect(partial.stopReason).toBe("error");
+      expect(delivered).toBe(1);
+      expect(f.frames).toHaveLength(1);
+      expect(f.http).toHaveLength(0);
+      expect(f.details()).toMatchObject({websocketDisabled: false, retryWebsocketAt: now + 60_000});
+
+      f.onSend(socket => { for (const event of completedEvents(`ws_${f.frames.length}`)) socket.message(event); });
+      const cooldownContext: Context = {messages: [...initial.messages, partial, user("continue after interrupted response")]};
+      const cooldown = await f.stream(cooldownContext).result();
+      expect(cooldown.stopReason).toBe("stop");
+      expect(f.frames).toHaveLength(1);
+      expect(f.http).toHaveLength(1);
+      now += 60_001;
+      const recoveryContext: Context = {messages: [...cooldownContext.messages, cooldown, user("retry websocket")]};
+      const recovered = await f.stream(recoveryContext).result();
+      expect(recovered.stopReason).toBe("stop");
+      expect(f.sockets).toHaveLength(2);
+      expect(f.http).toHaveLength(1);
+      const bootstrap = JSON.parse(f.frames[1]!) as Payload;
+      expect(bootstrap.previous_response_id).toBeUndefined();
+      expect(inputTexts(bootstrap)).toEqual(["perform a step", "continue after interrupted response", "retry websocket"]);
+      const next = await f.stream({messages: [...recoveryContext.messages, recovered, user("next delta")]}).result();
+      expect(next.stopReason).toBe("stop");
+      const delta = JSON.parse(f.frames[2]!) as Payload;
+      expect(delta.previous_response_id).toBe("ws_2");
+      expect(inputTexts(delta)).toEqual(["next delta"]);
+    } finally { dateNow.mockRestore(); f.close(); }
+  });
+}
+
+test("cancellation during handshake does not poison the next request or launch SSE", async () => {
+  const f = fixture();
+  const controller = new AbortController();
+  try {
+    f.stallNextHandshake();
+    const stream = f.stream(context("cancel before socket opens"), {signal: controller.signal});
+    // Wait for the connection to be installed, without depending on wall-clock sleeps.
+    while (f.sockets.length === 0) await new Promise<void>(resolve => setImmediate(resolve));
+    controller.abort(new Error("human took control"));
+    expect((await stream.result()).stopReason).toBe("aborted");
+    expect(f.frames).toHaveLength(0);
+    expect(f.http).toHaveLength(0);
+    expect(f.details()).toMatchObject({websocketDisabled: false});
+    expect(f.details().retryWebsocketAt).toBeUndefined();
+    expect((await f.stream(context("new turn after handoff")).result()).stopReason).toBe("stop");
+    expect(f.sockets).toHaveLength(2);
+    expect(f.frames).toHaveLength(1);
+    expect(f.http).toHaveLength(0);
+  } finally { f.close(); }
+});
+
+// Synthetic no-output failures exercise the bounded in-request retry path,
+// separately from the real-run empty-reasoning path that falls back immediately.
+test.each(["send throws", "malformed frame", "first event timeout"] as const)("%s exhausts bounded retries, then cools down and recovers", async failure => {
+  const f = fixture();
+  let now = Date.now();
+  const dateNow = spyOn(Date, "now").mockImplementation(() => now);
+  const waits: number[] = [];
+  // Virtualize retry backoff only, leaving the actual stream watchdog observable.
+  const wait = spyOn(scheduler, "wait").mockImplementation(async (delay, options) => {
+    options?.signal?.throwIfAborted();
+    waits.push(delay);
+  });
+  try {
+    f.onSend(socket => {
+      if (failure === "send throws") throw new Error("injected send failure");
+      if (failure === "malformed frame") socket.raw("{invalid JSON");
+      // Timeout case sends nothing, so the first-event watchdog expires.
+    });
+    const initial = context("request with no output yet");
+    const first = await f.stream(initial, {streamFirstEventTimeoutMs: 1}).result();
+    expect(first.stopReason).toBe("stop");
+    expect(f.http).toHaveLength(1);
+    expect(f.frames.length).toBeGreaterThan(0);
+    expect(f.frames.length).toBeLessThanOrEqual(6); // Current provider budget: initial + five retries.
+    expect(waits.length).toBeLessThanOrEqual(5);
+    expect(f.details()).toMatchObject({websocketDisabled: false, retryWebsocketAt: now + 60_000});
+    const connections = f.sockets.length;
+    const frameCount = f.frames.length;
+    const secondContext: Context = {messages: [...initial.messages, first, user("cooldown request")]};
+    const second = await f.stream(secondContext).result();
+    expect(second.stopReason).toBe("stop");
+    expect(f.sockets).toHaveLength(connections);
+    expect(f.http).toHaveLength(2);
+    now += 60_001;
+    f.onSend(socket => { for (const event of completedEvents(`ws_${f.frames.length}`)) socket.message(event); });
+    expect((await f.stream({messages: [...secondContext.messages, second, user("recovery request")]}).result()).stopReason).toBe("stop");
+    expect(f.sockets).toHaveLength(connections + 1);
+    expect(f.http).toHaveLength(2);
+    const bootstrap = JSON.parse(f.frames[frameCount]!) as Payload;
+    expect(bootstrap.previous_response_id).toBeUndefined();
+    expect(inputTexts(bootstrap)).toEqual(["request with no output yet", "cooldown request", "recovery request"]);
+  } finally { wait.mockRestore(); dateNow.mockRestore(); f.close(); }
 });

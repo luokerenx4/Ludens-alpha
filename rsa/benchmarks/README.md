@@ -14,7 +14,7 @@ rsa bench run capability-reuse --live --seconds 180 --requests 30
 | Case | 检查 | 范围与限制 |
 | --- | --- | --- |
 | `control-handoff` | 原始 driver / 嵌套 Python 长动作中断，输入释放，旧 epoch 拒绝 | 真实 Runtime、socket、Baseware 和 Python；模拟可中断设备，释放延迟不是模拟器性能 |
-| `ws-recovery` | 到期 → SSE 冷却 → WS 全历史恢复 → delta，已交付工具不重放 | 真实 OMP provider；模拟 WS/HTTP，并虚拟推进冷却时间，不测在线网络性能 |
+| `ws-recovery` v2 | Besiege 6h 连接到期与 Mario Maker 8h 响应中关闭 1012，分别验证 SSE 冷却 → WS 全历史恢复 → delta、已交付工具不重放 | 生产故障驱动的 TDD 特例；真实 OMP provider，模拟 WS/HTTP，虚拟推进冷却时间；只测本地处理开销 |
 | `background-compaction` | 后台候选复用、尾部保留、晚到归属、取消后不提交 | 真实 OMP maintenance / V2；注入接近阈值的 token 计数和受控 SSE，不下调生产阈值 |
 | `capability-reuse` v2 | 两批订单完成、自主创建 Python 函数、跨批次实际复用 | 真实模型与 PNG 传感器；允许直接 import 或统一接口调用，不代表长期泛化 |
 
