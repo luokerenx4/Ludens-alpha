@@ -4,6 +4,7 @@ import { connect } from "node:net";
 import { aggregate, parseEvents, selectCycle } from "./aggregate";
 import { getLivePhase } from "./live-phase";
 import { projectTelemetry } from "./telemetry";
+import { latestGameRun } from "./initial-selection";
 import type { Event, Manifest, Project, RunData, LiveStatus } from "./types";
 // Runtime state lives in artifacts beside the monorepo, outside its Git tree.
 export const artifactRoot = resolve(process.cwd(), "../../artifacts/rsa");
@@ -48,7 +49,7 @@ export async function resolveRun(
 ) {
   return resolveInRoots(run, await runRoots(project, root));
 }
-export async function catalog(root = artifactRoot): Promise<Project[]> {
+export async function catalog(root = artifactRoot, includeEmpty = false): Promise<Project[]> {
   const directories = await readdir(/* turbopackIgnore: true */ root, {
     withFileTypes: true,
   }).catch((error: NodeJS.ErrnoException) => {
@@ -80,6 +81,7 @@ export async function catalog(root = artifactRoot): Promise<Project[]> {
               );
               return {
                 id,
+                ...(m.kind ? { kind: m.kind } : {}),
                 model: m.model,
                 seconds: m.seconds,
                 drivers: m.drivers,
@@ -97,8 +99,9 @@ export async function catalog(root = artifactRoot): Promise<Project[]> {
       }),
   );
   return projects
-    .filter((p): p is Project => !!p && p.runs.length > 0)
-    .sort((a, b) => b.runs[0].id.localeCompare(a.runs[0].id));
+    .filter((p): p is Project => !!p && (includeEmpty || p.runs.length > 0))
+    .sort((a, b) => (latestGameRun(b)?.id ?? b.runs[0]?.id ?? "")
+      .localeCompare(latestGameRun(a)?.id ?? a.runs[0]?.id ?? ""));
 }
 const eventCache = new Map<
   string,
@@ -178,7 +181,7 @@ export function selectRunEvents(manifest: Manifest, events: Event[], epoch?: str
   const selected = selectCycle(events, epoch);
   // Offline fixtures have trace epochs, but do not claim a Runtime takeover.
   // Their original run is still inspectable as a whole, without inventing cycles.
-  if (manifest.benchmark && !selected.cycles.length && !epoch)
+  if (manifest.kind === "benchmark" && !selected.cycles.length && !epoch)
     return { ...selected, events };
   return selected;
 }
@@ -192,10 +195,10 @@ export async function getRun(
     catalog(),
   ]);
   const cycle = selectRunEvents(manifest, events, epoch);
-  const latest = projects.find((p) => p.id === project)?.runs[0].id;
+  const latest = latestGameRun(projects.find((p) => p.id === project))?.id;
   let live: LiveStatus | null = null;
   // Only the newest manifest may designate a live socket. Archived runs never contact hosts.
-  if (latest === run && !manifest.benchmark)
+  if (latest === run && manifest.kind !== "benchmark")
     live = await hostRequest(manifest.socket, {
       kind: "status",
       argv: [],

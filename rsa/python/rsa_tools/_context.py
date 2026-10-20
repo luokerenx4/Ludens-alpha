@@ -65,12 +65,23 @@ def scope(context):
 def emit(context, event_type, data):
     """Diagnostics must not change a function's result or retry device actions."""
     global _sequence, _warned
-    if not context["run_id"] or not context["socket_path"]:
+    host_available = context["run_id"] and context["socket_path"]
+    sink = context.get("event_sink")
+    if not host_available and sink is None:
         return
     _sequence += 1
     origin = {"eventId": f"{_clock_id}:{_sequence}", "clockId": _clock_id,
               "seq": _sequence, "at": datetime.now(timezone.utc).isoformat(),
               "atMs": time.monotonic() * 1000}
+    if sink is not None:
+        try:
+            sink(context, event_type, data, origin)
+        except Exception as error:
+            if not _warned:
+                print(f"RSA Python logging unavailable: {error}", file=sys.stderr)
+                _warned = True
+    if not host_available:
+        return
     try:
         request(context["socket_path"], {
             "kind": "workspace_event", "argv": [], "runId": context["run_id"],

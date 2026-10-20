@@ -37,10 +37,10 @@ async function main() {
     args.splice(0, 2);
   }
   if (!args.length || args[0] === "--help" || (args[0] === "run" && args.includes("--help"))) {
-    console.log(`${WORKSPACE_HELP}\n\n${RUN_HELP}\n${HELP}\nrsa bench <list|run> — isolated Harness benchmarks; rsa bench --help`);
+    console.log(`${WORKSPACE_HELP}\n\n${RUN_HELP}\n${HELP}\nrsa bench <list|help|run|history|compare> — unified benchmarks; rsa bench --help`);
     return;
   }
-  if (args[0] === "bench") return (await import("../benchmark/runner.ts")).benchmarkCommand(args.slice(1), artifactRoot);
+  if (args[0] === "bench") return (await import("../benchmark/runner.ts")).benchmarkCommand(args.slice(1), artifactRoot, selectedWorkspace);
   if (["init", "up", "services", "down"].includes(args[0]!)) return workspaceCommand(args[0]!, args.slice(1), selectedWorkspace);
   if (args[0] !== "run") {
     const socket = process.env.RSA_SOCKET ?? (await resolveWorkspaceState(selectedWorkspace, artifactRoot)).socket;
@@ -112,10 +112,12 @@ async function main() {
     await writeFile(guidePath, workspaceGuide, { flag: "wx" }).catch(async error => {
       if (error.code !== "EEXIST") throw error;
       const existing = await readFile(guidePath, "utf8");
-      if (!existing.includes("baseware.json")) {
-        const catalogGuide = workspaceGuide.split("\n").find(line => line.startsWith("- `baseware.json`:"))!;
-        await appendFile(guidePath, `${existing.endsWith("\n") ? "" : "\n"}\n${catalogGuide}\n`);
-      }
+      const additions = [
+        ["baseware.json", "- `baseware.json`:"],
+        ["@benchmark", "When measurement helps,"],
+      ].filter(([marker]) => !existing.includes(marker!))
+        .map(([, prefix]) => workspaceGuide.split("\n").find(line => line.startsWith(prefix!))!);
+      if (additions.length) await appendFile(guidePath, `${existing.endsWith("\n") ? "" : "\n"}\n${additions.join("\n\n")}\n`);
     });
     // Let the dashboard locate logs even when this workspace is outside the checkout.
     await writeFile(join(state.dir, "workspace.json"), JSON.stringify({ workspace }, null, 2));

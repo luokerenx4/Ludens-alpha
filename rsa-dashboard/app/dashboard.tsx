@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import type { Project, RunData } from "@/lib/types";
 import type { LogBlock } from "@/lib/activity";
-import { initialSelection } from "@/lib/initial-selection";
+import { initialSelection, latestGameRun } from "@/lib/initial-selection";
 import { medianRequestWaits } from "@/lib/transport";
 import { ActivityFeed } from "@/components/activity-feed";
 import { AliceSettings } from "@/components/alice-settings";
@@ -130,7 +130,8 @@ export default function Dashboard() {
   const [requestLimit, setRequestLimit] = useState(100);
   const selection = initialSelection(search, projects);
   const project = projects.find((p) => p.id === selection.project);
-  const run = selection.run || project?.runs[0]?.id || "";
+  const latest = latestGameRun(project);
+  const run = selection.run || latest?.id || "";
   const key = selection.project + "/" + run + "/" + selection.epoch;
   const data = loaded?.key === key ? loaded.data : null;
   const blocks =
@@ -324,7 +325,7 @@ export default function Dashboard() {
         </a>
         <div className="workspace-picker">
           <label htmlFor="workspace">
-            {benchmarkCases ? "基准用例 · 跨工作空间" : "工作空间"}
+            {benchmarkCases ? "评测目录 · 跨工作空间" : "工作空间"}
           </label>
           {benchmarkCases ? (
             <div className="bench-global-workspace">所有工作空间</div>
@@ -414,13 +415,14 @@ export default function Dashboard() {
                 >
                   <option value="">
                     最新运行
-                    {project?.runs[0]
-                      ? " · " + runDate(project.runs[0].id)
+                    {latest
+                      ? " · " + runDate(latest.id)
                       : ""}
                   </option>
                   {project?.runs.map((r) => (
                     <option key={r.id} value={r.id}>
                       {runDate(r.id)}
+                      {r.kind === "benchmark" ? " · 评测" : ""}
                     </option>
                   ))}
                 </select>
@@ -439,7 +441,7 @@ export default function Dashboard() {
                   }
                 >
                   <option value="">
-                    {data?.manifest.benchmark && !data.cycles.length
+                    {data?.manifest.kind === "benchmark" && !data.cycles.length
                       ? "完整基准运行"
                       : "最新周期"}
                     {data?.cycles.length ? " · #" + data.cycles.length : ""}
@@ -466,9 +468,9 @@ export default function Dashboard() {
         <main className="page-content">
           <div className="page-heading">
             <div>
-              <h1>{benchmarkCases ? "基准用例" : views[view][1]}</h1>
+              <h1>{benchmarkCases ? "评测目录" : views[view][1]}</h1>
               <p>
-                {benchmarkCases ? "固定场景，可核对的改进。" : views[view][2]}
+                {benchmarkCases ? "重复评测能力，查看指标、条件与原始证据。" : views[view][2]}
               </p>
             </div>
             {view !== "alice" && !benchmarkCases && (
@@ -486,7 +488,7 @@ export default function Dashboard() {
             <nav className="benchmark-tabs" aria-label="Benchmark 视图">
               {[
                 ["analysis", "运行剖析"],
-                ["cases", "基准用例"],
+                ["cases", "评测目录"],
               ].map(([tab, title]) => (
                 <button
                   key={tab}

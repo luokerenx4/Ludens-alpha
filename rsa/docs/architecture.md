@@ -25,7 +25,7 @@ flowchart LR
 | 组件 | 拥有的职责 | 不包含的职责 |
 | --- | --- | --- |
 | `baseware/` | driver 装配、设备连接、能力目录、操作权、动作取消、CLI / TS API / Python API / MCP、设备日志 | 模型、OMP、技能、工作区脚本发现 |
-| `rsa/` | Shiori 装配、Agent 生命周期、观测循环、预算、统一能力 CLI/API、Python 发现与执行、工作区与运行日志 | 设备私有协议、按键含义、游戏策略 |
+| `rsa/` | Shiori 装配、Agent 生命周期、观测循环、预算、统一能力 CLI/API、Python 发现与执行、工作区、Benchmark 与运行日志 | 设备私有协议、按键含义、游戏策略 |
 | `rsa-dashboard/` | 日志读取、模型与动作统计、媒体展示、人工交还入口 | 模型推理与设备执行 |
 | `rsa-companion/` | 消费日志，在 Alice Pet 气泡中呈现活动、画面与声音 | 策略、driver、独立模型调用 |
 
@@ -92,8 +92,9 @@ workspace/
   skills/<name>/SKILL.md   # 可复用的方法；可带辅助脚本
   memory/current.md       # 当前目标、状态、疑问和下一步
   scripts/*.py            # 可选；不要求固定脚本目录
+  benchmarks/*.py         # 可选评测；也可与能力代码同目录
   logs/
-    <run-id>/             # RSA 事件、模型记录、观测
+    <run-id>/             # RSA 运行或独立 Benchmark 的记录与产物
     baseware/             # 设备服务日志与源观测
     background/           # 本机进程日志与 launchd 描述
     consumers/            # Pet 消费、排队和展示提交的独立日志
@@ -108,6 +109,16 @@ workspace/
 目录、help 与只读 Controller 无需接管；输入和 Python 函数须携带当前 epoch，由 Runtime 检查和绑定取消信号。CLI/API 连接关闭会取消自身调用，人工交还会取消本周期全部调用及 Python 进程组。嵌套调用复用同一宿主和 epoch，不使用会阻塞嵌套请求的全局队列。设备自身的并发约束仍由 Baseware driver 执行。
 
 shell/Python 自动继承 RSA 与 Baseware 地址、本轮 epoch 与 trace。设备操作最终进入 Baseware，传感器调用通过 RSA 观测路径落盘，模型工具和脚本内多次设备操作能关联到同一日志链。一次 shell 中的复合操作结束后，循环仍统一补充观测。不同工作区默认不共享这些派生能力。此实现是可信本机执行环境，不提供 OS 沙箱或多用户权限边界。
+
+## Benchmark
+
+`rsa bench list/help/run/history/compare` 管理内置 Harness 工况和工作区 `@benchmark` 函数，统一契约在 `src/benchmark/contract.ts`。声明与能力复用静态发现和 JSON 参数 schema，但评测有独立目录，不进入 Controller 或 OMP 工具列表。作者可以关联被测能力、返回指标和可选断言，也可以用普通 Python 辅助函数组织数据、训练和评测。
+
+直接 import 或 Python `rsa_tools.benchmarks.run` 在当前进程执行，复用已加载的模型；CLI 启动一次 Python 入口。内置故障工况仍在临时工作区和独立 worker 内执行，避免全局故障注入污染调用方。执行差异留在适配器，不产生另一套结果或看板。没有新增执行服务或训练平台。
+
+每次评测写入所属 `workspace/logs/<run-id>/`，保存定义快照、参数、条件、被测对象引用、指标、断言、产物和事件。`status` 表示执行状态，`verdict` 表示可选断言结论；没有断言的指标评测可以正常完成。父运行和 trace 关联 Agent 发起的评测；纯本地评测无 Host 也能落盘。数据和权重不自动复制，版本由作者显式声明。
+
+CLI 与 Dashboard 共用比较规则：标出评测定义、参数和条件变化，将代码或模型变化视为被测对象变化。历史结果不随新规则改写。完整用法、工况来源和边界见 [Benchmark 说明](../benchmarks/README.md)。
 
 ## Shiori、OMP 循环与经验
 

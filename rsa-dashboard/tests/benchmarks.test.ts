@@ -10,29 +10,50 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { selectRunEvents } from "../lib/data";
+import { catalog, selectRunEvents } from "../lib/data";
+import { initialSelection, latestGameRun } from "../lib/initial-selection";
 import type { Event, Manifest } from "../lib/types";
 import { benchmarkCatalog, benchmarkEvidence } from "../lib/benchmark-data";
 import {
+  benchmarkCommand,
   benchmarkRunUrl,
+  compareResults,
   compatibleBaseline,
   comparisonChanges,
+  definitionKey,
   resultKey,
+  resultLabel,
+  type BenchmarkDefinition,
   type BenchmarkResult,
 } from "../lib/benchmarks";
 
-const result = (patch: Partial<BenchmarkResult> = {}): BenchmarkResult => ({
-  schemaVersion: 1,
-  caseId: "ws-recovery",
-  caseVersion: 1,
+const definition = (
+  patch: Partial<BenchmarkDefinition> = {},
+): BenchmarkDefinition => ({
+  id: "ws-recovery",
   title: "WS 到期恢复",
+  description: "恢复连接",
+  scope: "本地模拟传输",
+  revision: "2",
+  source: "builtin",
   mode: "offline",
-  status: "failed",
+  parameters: {},
+  targets: [],
+  entry: { kind: "builtin", caseId: "ws-recovery" },
+  ...patch,
+});
+const result = (patch: Partial<BenchmarkResult> = {}): BenchmarkResult => ({
+  schemaVersion: 2,
+  definition: definition(),
+  status: "completed",
+  verdict: "failed",
   startedAt: "2026-10-19T01:00:00Z",
   endedAt: "2026-10-19T01:00:01Z",
   durationMs: 1000,
   runId: "new",
   project: "ws-bench",
+  workspace: "/workspace",
+  trace: {},
   parameters: { model: null, seconds: 180, maxRequests: 30, seed: 7 },
   provenance: { code: null, prompts: {}, workspaceInstructionsSHA256: "abc" },
   checks: [
@@ -60,22 +81,30 @@ async function fixture() {
     join(root, "ws-bench/workspace.json"),
     JSON.stringify({ workspace }),
   );
-  const manifest = {
-    model: null,
-    seconds: 180,
-    drivers: [],
-    benchmark: { caseId: "ws-recovery", caseVersion: 1, mode: "offline" },
+  const save = async (value: BenchmarkResult) => {
+    const path = join(workspace, "logs", value.runId);
+    await mkdir(path, { recursive: true });
+    await writeFile(
+      join(path, "manifest.json"),
+      JSON.stringify({
+        kind: "benchmark",
+        model: null,
+        seconds: 180,
+        drivers: [],
+        benchmark: {
+          id: value.definition.id,
+          revision: value.definition.revision,
+          mode: value.definition.mode,
+        },
+      }),
+    );
+    await writeFile(
+      join(path, "benchmark.json"),
+      JSON.stringify({ ...value, workspace }),
+    );
+    return path;
   };
-  await writeFile(join(directory, "manifest.json"), JSON.stringify(manifest));
-  await writeFile(join(directory, "benchmark.json"), JSON.stringify(result()));
-  const definitions = join(base, "cases.json");
-  await writeFile(
-    definitions,
-    JSON.stringify([
-      { id: "ws-recovery", title: "WS 到期恢复", version: 1, mode: "offline" },
-      { id: "capability-reuse", title: "能力复用", version: 1, mode: "live" },
-    ]),
-  );
+  await save(result());
   await writeFile(
     join(directory, "events.jsonl"),
     [
@@ -96,30 +125,36 @@ async function fixture() {
       .map((event) => JSON.stringify(event))
       .join("\n") + "\n",
   );
+  const definitions = [
+    definition(),
+    definition({ id: "capability-reuse", title: "能力复用", mode: "live" }),
+  ];
   return {
     base,
     root,
     workspace,
     directory,
     definitions,
+    save,
     cleanup: () => rm(temp, { recursive: true, force: true }),
   };
 }
 
-test("catalog reads indexed benchmark sidecars across workspaces and keeps actual failure/unknown values", async () => {
+test("unified catalog preserves execution/check distinction and does not inspect game sidecars", async () => {
   const f = await fixture();
   try {
-    await mkdir(join(f.root, "game/runs/play"), { recursive: true });
+    const game = join(f.workspace, "logs/game");
+    await mkdir(game);
     await writeFile(
-      join(f.root, "game/runs/play/manifest.json"),
+      join(game, "manifest.json"),
       JSON.stringify({ model: "model", drivers: [], seconds: 20 }),
     );
-    // Invalid content here must not be scanned: it is a game run, not a benchmark.
-    await writeFile(join(f.root, "game/runs/play/benchmark.json"), "invalid");
+    await writeFile(join(game, "benchmark.json"), "invalid");
     const data = await benchmarkCatalog(f.root, f.definitions);
-    assert.equal(data.cases.length, 2); // Never-run cases remain available.
+    assert.equal(data.benchmarks.length, 2);
     assert.equal(data.results.length, 1);
-    assert.equal(data.results[0].status, "failed");
+    assert.equal(data.results[0].status, "completed");
+    assert.equal(data.results[0].verdict, "failed");
     assert.equal(data.results[0].checks[0].passed, false);
     assert.equal(data.results[0].metrics[0].value, null);
     assert.deepEqual(data.issues, []);
@@ -135,7 +170,134 @@ test("catalog reads indexed benchmark sidecars across workspaces and keeps actua
   }
 });
 
-test("evidence resolves exact referenced events, exposes missing sequence and preserves epoch", async () => {
+test("many evaluations share a workspace and metrics-only completion has no invented verdict", async () => {
+  const f = await fixture();
+  try {
+    const measured = result({
+      runId: "z-second",
+      parentRunId: "game",
+      checks: [],
+      verdict: null,
+      metrics: [{ id: "latency", value: 23, unit: "ms", direction: "lower" }],
+    });
+    await f.save(measured);
+    await f.save(
+      result({
+        runId: "z-third",
+        status: "error",
+        verdict: null,
+        checks: [],
+        error: "sample unavailable",
+      }),
+    );
+    const data = await benchmarkCatalog(f.root, f.definitions);
+    assert.equal(data.results.length, 3);
+    const found = data.results.find((item) => item.runId === measured.runId)!;
+    assert.equal(found.parentRunId, "game");
+    assert.equal(resultLabel(found), "已完成");
+    assert.equal(resultKey(found), "ws-bench/z-second");
+    assert.equal(
+      resultLabel(data.results.find((item) => item.runId === "z-third")!),
+      "执行异常",
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("snapshots list never-run workspace definitions and retain deleted definitions from results", async () => {
+  const f = await fixture();
+  try {
+    const workspaceDefinition = definition({
+      id: "python/evaluate.py:score",
+      source: "workspace",
+      revision: "source-hash",
+      targets: ["python/vision.py:locate"],
+      entry: {
+        kind: "python",
+        path: "evaluate.py",
+        function: "score",
+        codeSHA: "source-hash",
+      },
+    });
+    const neverRunWorkspace = join(f.base, "never-run");
+    await mkdir(join(neverRunWorkspace, "logs"), { recursive: true });
+    await mkdir(join(f.root, "ws-never"));
+    await writeFile(
+      join(f.root, "ws-never/workspace.json"),
+      JSON.stringify({ workspace: neverRunWorkspace }),
+    );
+    await writeFile(
+      join(neverRunWorkspace, "logs/benchmarks-catalog.json"),
+      JSON.stringify({ benchmarks: [workspaceDefinition], diagnostics: [] }),
+    );
+    await f.save(result({ definition: workspaceDefinition }));
+    const data = await benchmarkCatalog(f.root, f.definitions);
+    const current = data.benchmarks.find(
+      (item) => item.key === definitionKey(workspaceDefinition, "ws-never"),
+    )!;
+    const historical = data.benchmarks.find(
+      (item) => item.key === definitionKey(workspaceDefinition, "ws-bench"),
+    )!;
+    assert.equal(current.available, true);
+    assert.equal(current.workspace, neverRunWorkspace);
+    assert.equal(historical.available, false);
+    assert.deepEqual(
+      historical.definition.targets,
+      workspaceDefinition.targets,
+    );
+    assert.match(
+      benchmarkCommand(current),
+      /--workspace .* bench run 'python\/evaluate.py:score'/,
+    );
+    assert.deepEqual(data.issues, []);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("old, mismatched and corrupt results are isolated as issues", async () => {
+  const f = await fixture();
+  try {
+    const old = await f.save(result({ runId: "old" }));
+    await writeFile(
+      join(old, "benchmark.json"),
+      JSON.stringify({ schemaVersion: 1 }),
+    );
+    const broken = await f.save(result({ runId: "broken" }));
+    await writeFile(join(broken, "benchmark.json"), "{unfinished");
+    const mismatch = await f.save(result({ runId: "mismatch" }));
+    await writeFile(
+      join(mismatch, "benchmark.json"),
+      JSON.stringify(
+        result({
+          runId: "mismatch",
+          definition: definition({ revision: "other" }),
+        }),
+      ),
+    );
+    await writeFile(
+      join(f.workspace, "logs/benchmarks-catalog.json"),
+      JSON.stringify({
+        benchmarks: [],
+        diagnostics: [{ path: "bad.py", message: "unsupported declaration" }],
+      }),
+    );
+    const data = await benchmarkCatalog(f.root, f.definitions);
+    assert.equal(data.results.length, 1);
+    assert.equal(data.issues.length, 4);
+    assert.ok(data.issues.some((issue) => issue.error.includes("manifest")));
+    assert.ok(
+      data.issues.some((issue) =>
+        issue.error.includes("unsupported declaration"),
+      ),
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("evidence resolves referenced events, exposes missing sequences and rejects symlink escape", async () => {
   const f = await fixture();
   try {
     const evidence = await benchmarkEvidence("ws-bench", "new", f.root);
@@ -145,7 +307,6 @@ test("evidence resolves exact referenced events, exposes missing sequence and pr
     );
     assert.deepEqual(evidence.missingSeq, [9]);
     assert.equal(evidence.epoch, "first");
-    assert.deepEqual(evidence.epochs, ["first"]);
     const url = new URL(
       benchmarkRunUrl(
         evidence.result,
@@ -176,30 +337,74 @@ test("evidence resolves exact referenced events, exposes missing sequence and pr
   }
 });
 
-test("baseline requires case/version/mode identity but reports changed model, budget and seed", () => {
-  const current = result(),
-    baseline = result({ runId: "old" });
-  assert.equal(resultKey(current), "ws-bench/new");
+test("shared comparison reports condition/subject changes and rejects metric unit/direction deltas", () => {
+  const current = result({
+    metrics: [
+      { id: "accuracy", value: 0.9, unit: "ratio", direction: "higher" },
+    ],
+    subjects: [{ id: "model", sha256: "new" }],
+  });
+  const baseline = result({
+    runId: "old",
+    metrics: [
+      { id: "accuracy", value: 0.8, unit: "ratio", direction: "higher" },
+    ],
+    subjects: [{ id: "model", sha256: "old" }],
+  });
   assert.equal(compatibleBaseline(current, baseline), true);
-  for (const patch of [
-    { caseId: "other" },
-    { caseVersion: 2 },
-    { mode: "live" as const },
-  ])
-    assert.equal(compatibleBaseline(current, result(patch)), false);
   assert.deepEqual(comparisonChanges(current, baseline), []);
-  assert.deepEqual(
-    comparisonChanges(
-      current,
-      result({
-        parameters: { model: "other", seconds: 60, maxRequests: 10, seed: 8 },
-      }),
-    ),
-    ["模型", "时限", "请求预算", "随机种子"],
-  );
+  const compared = compareResults(current, baseline);
+  assert.equal(compared.subjectsChanged, true);
+  assert.ok(compared.metrics[0].delta! > 0.09);
+  const changed = result({
+    definition: definition({ revision: "3", mode: "live" }),
+    parameters: {},
+    conditions: { dataset: "other" },
+  });
+  assert.equal(compatibleBaseline(current, changed), false);
+  assert.deepEqual(comparisonChanges(current, changed), [
+    "评测定义",
+    "运行模式",
+    "参数",
+    "评测条件",
+  ]);
+  for (const metric of [
+    { id: "accuracy", value: 80, unit: "%", direction: "higher" as const },
+    { id: "accuracy", value: 0.8, unit: "ratio", direction: "lower" as const },
+  ]) {
+    const comparison = compareResults(current, result({ metrics: [metric] }));
+    assert.equal(comparison.metrics[0].delta, null);
+    assert.equal(comparison.metrics[0].comparable, false);
+  }
 });
 
-test("offline benchmark trace epochs remain inspectable without fabricating takeover cycles", async () => {
+test("newer benchmark runs do not replace the latest game selection", async () => {
+  const f = await fixture();
+  try {
+    const game = join(f.workspace, "logs/game");
+    await mkdir(game);
+    await writeFile(
+      join(game, "manifest.json"),
+      JSON.stringify({ model: "model", drivers: [], seconds: 20 }),
+    );
+    const projects = await catalog(f.root);
+    assert.equal(projects[0].runs[0].kind, "benchmark");
+    assert.equal(latestGameRun(projects[0])?.id, "game");
+    assert.deepEqual(initialSelection("?project=ws-bench", projects), {
+      project: "ws-bench",
+      run: "",
+      epoch: "",
+    });
+    assert.equal(
+      initialSelection("?project=ws-bench&run=new", projects).run,
+      "new",
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("offline trace epochs remain inspectable without fabricating takeover cycles", async () => {
   const events: Event[] = [
     {
       seq: 1,
@@ -211,7 +416,8 @@ test("offline benchmark trace epochs remain inspectable without fabricating take
     },
   ];
   const manifest = {
-    benchmark: { caseId: "ws-recovery", caseVersion: 1, mode: "offline" },
+    kind: "benchmark",
+    benchmark: { id: "ws-recovery", revision: "2", mode: "offline" },
   } as Manifest;
   const scope = selectRunEvents(manifest, events);
   assert.equal(scope.selectedEpoch, null);

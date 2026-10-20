@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .client import Client, RSAError
 from ._context import invocation
+from .benchmarks import benchmark, current_benchmark
 
 
 def capability(function=None, *, hook=None):
@@ -45,4 +46,4 @@ def capability(function=None, *, hook=None):
     return mark if function is None else mark(function)
 
 
-__all__ = ["Client", "RSAError", "capability"]
+__all__ = ["Client", "RSAError", "capability", "benchmark", "current_benchmark"]

@@ -450,7 +450,7 @@ mGBA 0.10.5 的 socket 析构会再次关闭未置为无效的描述符（[源�
 
 ## 验证
 
-可重复的 Harness 基准用例复用同一日志和看板：`rsa bench list` 查看四个 case，`rsa bench run all` 执行离线可靠性验证，`rsa bench run capability-reuse --live` 在全新 workspace 中评测真实模型的能力创建与复用。结果在 **Benchmark → 基准用例** 查看；不会操作当前游戏。执行参数、判定和限制见 [Benchmark 说明](benchmarks/README.md)。
+Benchmark 统一管理内置 Harness 工况与 workspace 的 `@benchmark` Python 函数：`rsa bench list/help/run/history/compare` 用于发现、执行与比较，结果均在本工作区 `logs/` 和看板 **Benchmark → 基准用例** 查看。Python 直接 import 评测也自动记录，可复用原进程模型；不进入 Controller 或 OMP 工具列表。`rsa bench run all` 跳过需要 `--live` 的工况；`rsa bench run capability-reuse --live` 在隔离工作区评测真实模型的能力创建与复用。内置工况不操作当前游戏，自定义评测按作者代码执行。执行参数、结果协议和边界见 [Benchmark 说明](benchmarks/README.md)。
 
 ```sh
 bun run check

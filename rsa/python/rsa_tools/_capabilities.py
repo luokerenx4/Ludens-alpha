@@ -81,14 +81,14 @@ def validate(value, schema, location="arguments"):
             validate(item, child_schema, location + "." + name)
 
 
-def function_schema(node):
+def function_schema(node, kind="capability"):
     if isinstance(node, ast.AsyncFunctionDef):
-        raise ValueError("Async capabilities are unsupported; use a synchronous function")
+        raise ValueError("Async %s are unsupported; use a synchronous function" % ("capabilities" if kind == "capability" else "benchmarks"))
     if node.args.posonlyargs or node.args.vararg or node.args.kwarg:
         raise ValueError("Positional-only parameters, *args and **kwargs are unsupported")
     description = ast.get_docstring(node)
     if not description or not description.strip():
-        raise ValueError("A capability must have a docstring describing its use")
+        raise ValueError("A %s must have a docstring describing its use" % kind)
     args = node.args.args + node.args.kwonlyargs
     defaults = [None] * (len(node.args.args) - len(node.args.defaults)) + node.args.defaults + node.args.kw_defaults
     properties, required = {}, []
@@ -111,18 +111,18 @@ def function_schema(node):
     return description, {"type": "object", "properties": properties, "required": required, "additionalProperties": False}
 
 
-def marked_functions(tree):
+def marked_functions(tree, marker_name="capability"):
     decorators, modules = set(), set()
     for node in tree.body:
         if isinstance(node, ast.ImportFrom) and node.module == "rsa_tools":
-            decorators.update(alias.asname or alias.name for alias in node.names if alias.name == "capability")
+            decorators.update(alias.asname or alias.name for alias in node.names if alias.name == marker_name)
         if isinstance(node, ast.Import):
             modules.update(alias.asname or alias.name for alias in node.names if alias.name == "rsa_tools")
     def is_marker(node):
         if isinstance(node, ast.Call):
             node = node.func
         return (isinstance(node, ast.Name) and node.id in decorators) or (
-            isinstance(node, ast.Attribute) and node.attr == "capability" and isinstance(node.value, ast.Name) and node.value.id in modules)
+            isinstance(node, ast.Attribute) and node.attr == marker_name and isinstance(node.value, ast.Name) and node.value.id in modules)
     return [(node, [item for item in node.decorator_list if is_marker(item)])
             for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
             and any(is_marker(item) for item in node.decorator_list)]
@@ -148,8 +148,9 @@ def marker_hook(marker):
     return hook
 
 
-def discover(workspace):
-    capabilities, diagnostics = [], []
+def workspace_sources(workspace, diagnostics):
+    """Read ordinary workspace sources without importing or following links."""
+    workspace = Path(workspace).resolve()
     for directory, folders, files in os.walk(workspace, followlinks=False):
         folders[:] = sorted(folder for folder in folders if folder not in EXCLUDED)
         for filename in sorted(files):
@@ -167,33 +168,39 @@ def discover(workspace):
                 if raw is None or b"rsa_tools" in raw:
                     diagnostics.append({"path": relative, "line": getattr(error, "lineno", None), "message": str(error)})
                 continue
-            for node, markers in marked_functions(tree):
-                hook = declared_hook(markers)
-                try:
-                    if node not in tree.body:
-                        raise ValueError("Capabilities must be top-level functions, not methods or nested functions")
-                    if len(markers) != 1 or len(node.decorator_list) != 1:
-                        raise ValueError("A capability function must use only one @capability decorator")
-                    marker = markers[0]
-                    hook = marker_hook(marker)
-                    if hook == "observe" and (node.args.posonlyargs or node.args.args or node.args.kwonlyargs or node.args.vararg or node.args.kwarg):
-                        raise ValueError("An observe hook must have no parameters")
-                    if sum(isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and item.name == node.name for item in tree.body) != 1:
-                        raise ValueError("A capability function name must be unique within its source file")
-                    description, parameters = function_schema(node)
-                    identity = relative + ":" + node.name
-                    name = re.sub(r"[^a-zA-Z0-9_]", "_", "python_" + relative[:-3] + "_" + node.name)[:53]
-                    name += "_" + hashlib.sha256(identity.encode()).hexdigest()[:10]
-                    capabilities.append({"id": name, "name": name, "description": description, "parameters": parameters,
-                        "origin": {"path": relative, "function": node.name, "line": node.lineno}, "codeSHA": hashlib.sha256(raw).hexdigest(),
-                        **({"hook": hook} if hook is not None else {})})
-                except (ValueError, SyntaxError) as error:
-                    diagnostics.append({"path": relative, "function": node.name, "line": node.lineno, "message": str(error),
-                        **({"hook": hook} if hook is not None else {})})
+            yield relative, raw, tree
+
+
+def discover(workspace):
+    capabilities, diagnostics = [], []
+    for relative, raw, tree in workspace_sources(workspace, diagnostics):
+        for node, markers in marked_functions(tree):
+            hook = declared_hook(markers)
+            try:
+                if node not in tree.body:
+                    raise ValueError("Capabilities must be top-level functions, not methods or nested functions")
+                if len(markers) != 1 or len(node.decorator_list) != 1:
+                    raise ValueError("A capability function must use only one @capability decorator")
+                marker = markers[0]
+                hook = marker_hook(marker)
+                if hook == "observe" and (node.args.posonlyargs or node.args.args or node.args.kwonlyargs or node.args.vararg or node.args.kwarg):
+                    raise ValueError("An observe hook must have no parameters")
+                if sum(isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and item.name == node.name for item in tree.body) != 1:
+                    raise ValueError("A capability function name must be unique within its source file")
+                description, parameters = function_schema(node)
+                identity = relative + ":" + node.name
+                name = re.sub(r"[^a-zA-Z0-9_]", "_", "python_" + relative[:-3] + "_" + node.name)[:53]
+                name += "_" + hashlib.sha256(identity.encode()).hexdigest()[:10]
+                capabilities.append({"id": name, "name": name, "description": description, "parameters": parameters,
+                    "origin": {"path": relative, "function": node.name, "line": node.lineno}, "codeSHA": hashlib.sha256(raw).hexdigest(),
+                    **({"hook": hook} if hook is not None else {})})
+            except (ValueError, SyntaxError) as error:
+                diagnostics.append({"path": relative, "function": node.name, "line": node.lineno, "message": str(error),
+                    **({"hook": hook} if hook is not None else {})})
     return {"capabilities": capabilities, "diagnostics": diagnostics}
 
 
-def load_function(workspace, relative_path, function_name, *, raw=None):
+def load_function(workspace, relative_path, function_name, *, raw=None, marker="capability"):
     """Load a marked function once, sharing ordinary Python imports by file."""
     workspace = Path(workspace).resolve()
     source = (workspace / relative_path).resolve()
@@ -224,6 +231,7 @@ def load_function(workspace, relative_path, function_name, *, raw=None):
             spec = importlib.util.spec_from_file_location(module_name, source)
             module = importlib.util.module_from_spec(spec)
             module.__rsa_source_sha__ = hashlib.sha256(raw).hexdigest()
+            module.__rsa_source_bytes__ = raw
             sys.modules[module_name] = module
             try:
                 exec(compile(raw, str(source), "exec"), module.__dict__)
@@ -233,8 +241,8 @@ def load_function(workspace, relative_path, function_name, *, raw=None):
             if parent is not None:
                 setattr(parent, child_name, module)
     function = getattr(module, function_name)
-    if not callable(function) or not getattr(function, "__rsa_capability__", False):
-        raise ValueError("The selected function is not marked @capability")
+    if not callable(function) or not getattr(function, "__rsa_%s__" % marker, False):
+        raise ValueError("The selected function is not marked @%s" % marker)
     return function
 
 

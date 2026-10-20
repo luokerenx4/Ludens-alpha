@@ -1,15 +1,17 @@
 "use client";
 import { useEffect, useState } from "react";
 import {
+  benchmarkCommand,
   benchmarkRunUrl,
-  compatibleBaseline,
-  comparisonChanges,
+  compareResults,
+  definitionKey,
   resultKey,
+  resultLabel,
   statusLabels,
+  verdictLabels,
   type BenchmarkCatalog,
   type BenchmarkEvidence,
   type BenchmarkResult,
-  type BenchmarkStatus,
 } from "@/lib/benchmarks";
 
 const date = (value: string) =>
@@ -19,24 +21,35 @@ const date = (value: string) =>
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
-    hour12: false,
   });
 const number = (value: number | null) =>
   value === null
     ? "—"
-    : value.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
+    : value !== 0 && Math.abs(value) < 0.01
+      ? value.toExponential(3)
+      : value.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
+const revision = (value: string) =>
+  value.length > 16 ? value.slice(0, 12) : value;
 async function read<T>(url: string, signal: AbortSignal): Promise<T> {
   const response = await fetch(url, { cache: "no-store", signal });
   const body = await response.json();
   if (!response.ok) throw new Error(body.error ?? "读取失败");
   return body;
 }
-function Status({ value }: { value: BenchmarkStatus }) {
+function Status({ result }: { result: BenchmarkResult }) {
   return (
-    <span className={`bench-status ${value}`}>
-      <i />
-      {statusLabels[value]}
-    </span>
+    <>
+      <span className={`bench-status ${result.status}`}>
+        <i />
+        {statusLabels[result.status]}
+      </span>
+      {result.verdict && (
+        <span className={`bench-status ${result.verdict}`}>
+          <i />
+          {verdictLabels[result.verdict]}
+        </span>
+      )}
+    </>
   );
 }
 
@@ -61,31 +74,45 @@ export function BenchmarkCases({
   const [openCheck, setOpenCheck] = useState<string | null>(null);
   const [copyState, setCopyState] = useState("");
   const query = new URLSearchParams(search);
-  const selectedCase =
-    catalog?.cases.find((item) => item.id === query.get("case")) ??
-    catalog?.cases[0];
+  const sourceFilter = query.get("benchSource") ?? "";
+  const targetFilter = query.get("benchTarget") ?? "";
+  const targets = [
+    ...new Set(
+      catalog?.benchmarks.flatMap((item) => item.definition.targets) ?? [],
+    ),
+  ].sort();
+  const entries =
+    catalog?.benchmarks.filter(
+      (item) =>
+        (!sourceFilter || item.definition.source === sourceFilter) &&
+        (!targetFilter || item.definition.targets.includes(targetFilter)),
+    ) ?? [];
+  const selectedEntry =
+    entries.find((item) => item.key === query.get("case")) ?? entries[0];
   const history =
-    catalog?.results.filter((result) => result.caseId === selectedCase?.id) ??
-    [];
+    catalog?.results.filter(
+      (result) =>
+        definitionKey(result.definition, result.project) === selectedEntry?.key,
+    ) ?? [];
   const selected =
     history.find((result) => resultKey(result) === query.get("result")) ??
     history[0];
   const selectedKey = selected ? resultKey(selected) : "";
-  const candidates = selected
-    ? history.filter(
-        (result) =>
-          resultKey(result) !== selectedKey &&
-          compatibleBaseline(selected, result),
-      )
-    : [];
+  // Changed conditions stay inspectable; the shared comparison contract explains
+  // why a pair is not a controlled comparison instead of silently hiding it.
+  const candidates = history.filter(
+    (result) =>
+      resultKey(result) !== selectedKey && result.status === "completed",
+  );
   const baseline = candidates.find(
     (result) => resultKey(result) === query.get("baseline"),
   );
+  const comparison =
+    selected && baseline ? compareResults(selected, baseline) : null;
   const proof = evidence?.key === selectedKey ? evidence.data : null;
-  const changes =
-    selected && baseline ? comparisonChanges(selected, baseline) : [];
-  const command = selectedCase
-    ? `rsa bench run ${selectedCase.id}${selectedCase.mode === "live" ? " --live" : ""}`
+  const definition = selected?.definition ?? selectedEntry?.definition;
+  const command = selectedEntry
+    ? benchmarkCommand(selectedEntry)
     : "rsa bench list";
 
   useEffect(() => {
@@ -135,12 +162,11 @@ export function BenchmarkCases({
       });
     return () => controller.abort();
   }, [project, run, endedAt, status]);
-  function runLink(result: BenchmarkResult) {
-    return benchmarkRunUrl(
+  const runLink = (result: BenchmarkResult) =>
+    benchmarkRunUrl(
       result,
       resultKey(result) === selectedKey ? proof?.epoch : undefined,
     );
-  }
   const link = (event: React.MouseEvent<HTMLAnchorElement>, url: string) => {
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
       return;
@@ -155,11 +181,19 @@ export function BenchmarkCases({
       setCopyState("复制失败，请选择下方命令复制");
     }
   };
+  const selectResult = (result: BenchmarkResult) => {
+    setOpenCheck(null);
+    navigate({
+      case: definitionKey(result.definition, result.project),
+      result: resultKey(result),
+      baseline: null,
+    });
+  };
   if (!catalog)
     return (
       <section className="surface empty-state main-empty" aria-live="polite">
-        <h2>{error ? "暂时无法读取基准用例" : "正在读取基准用例"}</h2>
-        <p>{error || "从各工作区的日志读取结果。"}</p>
+        <h2>{error ? "暂时无法读取评测" : "正在读取评测"}</h2>
+        <p>{error || "从各工作区的日志读取目录和结果。"}</p>
       </section>
     );
   return (
@@ -172,47 +206,101 @@ export function BenchmarkCases({
       )}
       {catalog.issues.length > 0 && (
         <details className="bench-warning">
-          <summary>{catalog.issues.length} 条结果无法读取</summary>
-          {catalog.issues.map((issue) => (
-            <p key={`${issue.project}/${issue.runId}`}>
-              <code>{issue.runId}</code> · {issue.error}
+          <summary>{catalog.issues.length} 条目录或结果诊断</summary>
+          {catalog.issues.map((issue, index) => (
+            <p key={`${issue.project}/${issue.runId}/${index}`}>
+              <code>
+                {issue.project}
+                {issue.runId ? ` / ${issue.runId}` : ""}
+              </code>{" "}
+              · {issue.error}
             </p>
           ))}
         </details>
       )}
+      <div className="bench-selectors bench-filters">
+        <label>
+          来源
+          <select
+            aria-label="评测来源"
+            value={sourceFilter}
+            onChange={(event) =>
+              navigate({
+                benchSource: event.target.value || null,
+                case: null,
+                result: null,
+                baseline: null,
+              })
+            }
+          >
+            <option value="">全部来源</option>
+            <option value="builtin">RSA 内置</option>
+            <option value="workspace">工作区</option>
+          </select>
+        </label>
+        <label>
+          关联能力
+          <select
+            aria-label="关联能力"
+            value={targetFilter}
+            onChange={(event) =>
+              navigate({
+                benchTarget: event.target.value || null,
+                case: null,
+                result: null,
+                baseline: null,
+              })
+            }
+          >
+            <option value="">全部能力</option>
+            {targets.map((target) => (
+              <option key={target} value={target}>
+                {target}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
       <div className="bench-case-layout">
-        <aside className="surface bench-case-list" aria-label="基准用例">
+        <aside className="surface bench-case-list" aria-label="评测目录">
           <div className="bench-list-heading">
-            <span>{catalog.cases.length} 个核心场景</span>
+            <span>{entries.length} 个评测</span>
             <small>所有工作空间</small>
           </div>
-          {catalog.cases.map((item) => {
+          {entries.map((item) => {
             const latest = catalog.results.find(
-              (result) => result.caseId === item.id,
+              (result) =>
+                definitionKey(result.definition, result.project) === item.key,
             );
             return (
               <button
-                key={item.id}
+                key={item.key}
                 className={
                   "bench-case-item" +
-                  (selectedCase?.id === item.id ? " selected" : "")
+                  (selectedEntry?.key === item.key ? " selected" : "")
                 }
-                aria-pressed={selectedCase?.id === item.id}
+                aria-pressed={selectedEntry?.key === item.key}
                 onClick={() => {
                   setOpenCheck(null);
                   setCopyState("");
-                  navigate({ case: item.id, result: null, baseline: null });
+                  navigate({ case: item.key, result: null, baseline: null });
                 }}
               >
                 <div>
-                  <strong>{item.title}</strong>
-                  <span className={"bench-mode " + item.mode}>{item.mode}</span>
+                  <strong>{item.definition.title}</strong>
+                  <span className={"bench-mode " + item.definition.mode}>
+                    {item.definition.mode}
+                  </span>
                 </div>
-                <p>{item.description}</p>
+                <p>{item.definition.description}</p>
+                <small>
+                  {item.workspace ?? "RSA"}
+                  {!item.available ? " · 历史定义" : ""}
+                </small>
                 <footer>
-                  <span>v{item.version}</span>
+                  <span>{revision(item.definition.revision)}</span>
                   {latest ? (
-                    <Status value={latest.status} />
+                    <Status result={latest} />
                   ) : (
                     <span className="muted">尚未运行</span>
                   )}
@@ -231,28 +319,38 @@ export function BenchmarkCases({
             <header className="bench-result-heading">
               <div>
                 <div className="bench-title">
-                  <h2>{selectedCase?.title}</h2>
-                  {selected && <Status value={selected.status} />}
+                  <h2>{definition?.title ?? "暂无评测"}</h2>
+                  {selected && <Status result={selected} />}
                 </div>
-                <p>{selectedCase?.scope}</p>
+                <p>{definition?.scope}</p>
               </div>
-              <button className="control-button" onClick={copy}>
-                {copyState === "已复制" ? "✓ 已复制" : "复制运行命令"}
-              </button>
+              {selectedEntry?.available && (
+                <button className="control-button" onClick={copy}>
+                  {copyState === "已复制" ? "✓ 已复制" : "复制运行命令"}
+                </button>
+              )}
             </header>
-            <div className="bench-command">
-              <code>{command}</code>
-              <span role="status">
-                {copyState ||
-                  (selectedCase?.mode === "live"
-                    ? "真实模型 · 需显式 --live"
-                    : "离线 · 不请求模型")}
-              </span>
-            </div>
+            {selectedEntry?.available ? (
+              <div className="bench-command">
+                <code>{command}</code>
+                <span role="status">{copyState || "在终端显式执行"}</span>
+              </div>
+            ) : (
+              <p className="bench-note">
+                {selectedEntry
+                  ? "当前目录中没有此定义，历史结果仍可查看。使用 rsa bench list 刷新工作区目录。"
+                  : "没有符合筛选条件的评测。使用 rsa bench list 刷新工作区目录。"}
+              </p>
+            )}
+            {!!definition?.targets.length && (
+              <p className="bench-note">
+                关联能力：{definition.targets.join("、")}
+              </p>
+            )}
             {!selected ? (
               <div className="empty-state bench-never">
                 <h3>尚未运行</h3>
-                <p>在终端执行上方命令。结果会自动出现在这里。</p>
+                <p>执行后，结果会自动出现在这里。</p>
               </div>
             ) : (
               <>
@@ -260,15 +358,13 @@ export function BenchmarkCases({
                   <label>
                     本次执行
                     <select
-                      aria-label="基准执行记录"
+                      aria-label="评测执行记录"
                       value={selectedKey}
                       onChange={(event) => {
-                        setOpenCheck(null);
-                        navigate({
-                          case: selected.caseId,
-                          result: event.target.value,
-                          baseline: null,
-                        });
+                        const result = history.find(
+                          (item) => resultKey(item) === event.target.value,
+                        );
+                        if (result) selectResult(result);
                       }}
                     >
                       {history.map((result) => (
@@ -276,8 +372,8 @@ export function BenchmarkCases({
                           key={resultKey(result)}
                           value={resultKey(result)}
                         >
-                          {date(result.startedAt)} ·{" "}
-                          {statusLabels[result.status]} · v{result.caseVersion}
+                          {date(result.startedAt)} · {resultLabel(result)} ·{" "}
+                          {revision(result.definition.revision)}
                         </option>
                       ))}
                     </select>
@@ -289,7 +385,7 @@ export function BenchmarkCases({
                       value={baseline ? resultKey(baseline) : ""}
                       onChange={(event) =>
                         navigate({
-                          case: selected.caseId,
+                          case: selectedEntry!.key,
                           result: selectedKey,
                           baseline: event.target.value || null,
                         })
@@ -301,8 +397,7 @@ export function BenchmarkCases({
                           key={resultKey(result)}
                           value={resultKey(result)}
                         >
-                          {date(result.startedAt)} ·{" "}
-                          {statusLabels[result.status]}
+                          {date(result.startedAt)} · {resultLabel(result)}
                         </option>
                       ))}
                     </select>
@@ -310,25 +405,34 @@ export function BenchmarkCases({
                 </div>
                 {query.get("result") && query.get("result") !== selectedKey && (
                   <p className="bench-warning">
-                    所选记录已不可用，当前展示本用例的最近执行。
+                    所选记录已不可用，当前展示此评测的最近执行。
                   </p>
                 )}
                 {query.get("baseline") && !baseline && (
                   <p className="bench-warning">
-                    该基线不可用，仅可比较同一用例、版本和运行模式。
+                    该基线不可用，请选择同一评测的已完成记录。
                   </p>
                 )}
-                {changes.length > 0 && (
+                {!!comparison?.changes.length && (
                   <p className="bench-warning">
-                    比较条件不同：{changes.join("、")}
+                    比较条件不同：{comparison.changes.join("、")}
                     。差值仅供观察，不代表改动造成了变化。
+                  </p>
+                )}
+                {comparison?.subjectsChanged && (
+                  <p className="bench-note">
+                    被测能力或模型版本已变化。下方版本记录保留本次与基线的对象信息。
                   </p>
                 )}
                 {selected.status === "running" && (
                   <p className="bench-note" role="status">
-                    此用例仍在执行，检查与指标尚未定稿。
+                    尚无结束记录。评测可能仍在执行或已中断，当前无法确认；检查与指标尚未定稿。
                   </p>
                 )}
+                {selected.status === "completed" &&
+                  selected.verdict === null && (
+                    <p className="bench-note">评测已完成，未声明通过标准。</p>
+                  )}
                 {selected.error && (
                   <div className="error-banner" role="alert">
                     {selected.error}
@@ -337,33 +441,35 @@ export function BenchmarkCases({
                 <div className="bench-metrics">
                   {selected.metrics.length ? (
                     selected.metrics.map((metric) => {
-                      const previous = baseline?.metrics.find(
-                        (item) =>
-                          item.id === metric.id && item.unit === metric.unit,
+                      const compared = comparison?.metrics.find(
+                        (item) => item.id === metric.id,
                       );
-                      const delta =
-                        previous?.value != null && metric.value !== null
-                          ? metric.value - previous.value
-                          : null;
+                      const delta = compared?.delta ?? null;
                       const improved =
+                        comparison?.compatible &&
                         delta !== null &&
                         delta !== 0 &&
                         ((metric.direction === "lower" && delta < 0) ||
                           (metric.direction === "higher" && delta > 0));
                       return (
                         <div key={metric.id}>
-                          <span>{metric.label}</span>
+                          <span>{metric.label ?? metric.id}</span>
                           <strong>
                             {number(metric.value)} <small>{metric.unit}</small>
                           </strong>
                           {baseline && (
                             <p>
-                              基线 {number(previous?.value ?? null)}{" "}
+                              基线 {number(compared?.baseline ?? null)}{" "}
                               <b className={improved ? "bench-improved" : ""}>
                                 {delta === null
                                   ? "—"
                                   : `${delta > 0 ? "+" : ""}${number(delta)} ${metric.unit}`}
                               </b>
+                              {compared && !compared.comparable && (
+                                <small>
+                                  指标缺失，或单位 / 方向不同，无法计算差值。
+                                </small>
+                              )}
                             </p>
                           )}
                         </div>
@@ -384,68 +490,97 @@ export function BenchmarkCases({
                     href={runLink(selected)}
                     onClick={(event) => link(event, runLink(selected))}
                   >
-                    查看运行剖析 ↗
+                    查看评测运行 ↗
                   </a>
                 </div>
-                <div className="bench-table-scroll">
-                  <table className="bench-table">
-                    <thead>
-                      <tr>
-                        <th>检查项 / 预期</th>
-                        <th>实际结果</th>
-                        <th>证据</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {selected.checks.map((check) => (
-                        <tr key={check.id}>
-                          <td>
-                            <strong>{check.label}</strong>
-                            <small>{check.expected}</small>
-                          </td>
-                          <td>
-                            <span
-                              className={`bench-check-state ${check.passed === true ? "passed" : check.passed === false ? "failed" : "inconclusive"}`}
-                            >
-                              {check.passed === true
-                                ? "✓ 通过"
-                                : check.passed === false
-                                  ? "× 未通过"
-                                  : "— 证据不足"}
-                            </span>
-                            <small>{check.actual}</small>
-                          </td>
-                          <td>
-                            {check.evidenceSeq.length ? (
-                              <button
-                                className="text-button bench-evidence-button"
-                                aria-expanded={openCheck === check.id}
-                                onClick={() =>
-                                  setOpenCheck(
-                                    openCheck === check.id ? null : check.id,
-                                  )
-                                }
-                              >
-                                #{check.evidenceSeq[0]}
-                                {check.evidenceSeq.length > 1
-                                  ? ` +${check.evidenceSeq.length - 1}`
-                                  : ""}{" "}
-                                {openCheck === check.id ? "↑" : "↓"}
-                              </button>
-                            ) : (
-                              <span className="muted">未提供</span>
-                            )}
-                          </td>
+                {selected.parentRunId && (
+                  <p className="bench-note">
+                    <a
+                      className="text-button"
+                      href={
+                        "/?" +
+                        new URLSearchParams({
+                          project: selected.project,
+                          run: selected.parentRunId,
+                          view: "live",
+                        })
+                      }
+                      onClick={(event) =>
+                        link(
+                          event,
+                          "/?" +
+                            new URLSearchParams({
+                              project: selected.project,
+                              run: selected.parentRunId!,
+                              view: "live",
+                            }),
+                        )
+                      }
+                    >
+                      查看发起评测的运行 ↗
+                    </a>
+                  </p>
+                )}
+                {selected.checks.length ? (
+                  <div className="bench-table-scroll">
+                    <table className="bench-table">
+                      <thead>
+                        <tr>
+                          <th>检查项 / 预期</th>
+                          <th>实际结果</th>
+                          <th>证据</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                {!selected.checks.length && (
+                      </thead>
+                      <tbody>
+                        {selected.checks.map((check) => (
+                          <tr key={check.id}>
+                            <td>
+                              <strong>{check.label}</strong>
+                              <small>{check.expected}</small>
+                            </td>
+                            <td>
+                              <span
+                                className={`bench-check-state ${check.passed === true ? "passed" : check.passed === false ? "failed" : "inconclusive"}`}
+                              >
+                                {check.passed === true
+                                  ? "✓ 通过"
+                                  : check.passed === false
+                                    ? "× 未通过"
+                                    : "— 证据不足"}
+                              </span>
+                              <small>{check.actual}</small>
+                            </td>
+                            <td>
+                              {check.evidenceSeq.length ? (
+                                <button
+                                  className="text-button"
+                                  aria-expanded={openCheck === check.id}
+                                  onClick={() =>
+                                    setOpenCheck(
+                                      openCheck === check.id ? null : check.id,
+                                    )
+                                  }
+                                >
+                                  #{check.evidenceSeq[0]}
+                                  {check.evidenceSeq.length > 1
+                                    ? ` +${check.evidenceSeq.length - 1}`
+                                    : ""}{" "}
+                                  {openCheck === check.id ? "↑" : "↓"}
+                                </button>
+                              ) : (
+                                <span className="muted">未提供</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
                   <p className="bench-note">
                     {selected.status === "running"
                       ? "等待检查完成"
-                      : "本次没有检查结果"}
+                      : "本次没有检查项"}
                   </p>
                 )}
                 {openCheck && (
@@ -506,8 +641,21 @@ export function BenchmarkCases({
                   <div className="bench-limitations">
                     <h3>适用范围与限制</h3>
                     <ul>
-                      {selected.limitations.map((item, i) => (
-                        <li key={i}>{item}</li>
+                      {selected.limitations.map((item, index) => (
+                        <li key={index}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {!!selected.artifacts?.length && (
+                  <div className="bench-limitations">
+                    <h3>评测产物</h3>
+                    <ul>
+                      {selected.artifacts.map((artifact, index) => (
+                        <li key={`${artifact.path}/${index}`}>
+                          {artifact.label && <span>{artifact.label} · </span>}
+                          <code>{artifact.path}</code>
+                        </li>
                       ))}
                     </ul>
                   </div>
@@ -516,42 +664,56 @@ export function BenchmarkCases({
                   <summary>
                     执行配置与版本{" "}
                     <span>
-                      v{selected.caseVersion} · {selected.mode} ·{" "}
-                      {selected.provenance.code?.commit.slice(0, 7) ??
-                        "无代码版本"}
-                      {selected.provenance.code?.dirty ? " + 未提交改动" : ""}
+                      {revision(selected.definition.revision)} ·{" "}
+                      {selected.definition.mode} · {number(selected.durationMs)}{" "}
+                      ms
                     </span>
                   </summary>
                   <dl className="fact-grid">
                     <div>
-                      <dt>模型</dt>
-                      <dd>{selected.parameters.model ?? "离线模拟"}</dd>
+                      <dt>工作区</dt>
+                      <dd>{selected.workspace}</dd>
                     </div>
                     <div>
-                      <dt>预算</dt>
-                      <dd>
-                        {selected.parameters.seconds}s /{" "}
-                        {selected.parameters.maxRequests} 请求
-                      </dd>
-                    </div>
-                    <div>
-                      <dt>随机种子</dt>
-                      <dd>{selected.parameters.seed}</dd>
-                    </div>
-                    <div>
-                      <dt>用时</dt>
-                      <dd>{number(selected.durationMs)} ms</dd>
-                    </div>
-                    <div>
-                      <dt>Project</dt>
-                      <dd>{selected.project}</dd>
-                    </div>
-                    <div>
-                      <dt>Run</dt>
+                      <dt>评测运行</dt>
                       <dd>{selected.runId}</dd>
                     </div>
                   </dl>
-                  <pre>{JSON.stringify(selected.provenance, null, 2)}</pre>
+                  <h3>本次执行</h3>
+                  <pre>
+                    {JSON.stringify(
+                      {
+                        definition: selected.definition,
+                        parameters: selected.parameters,
+                        conditions: selected.conditions ?? {},
+                        subjects: selected.subjects ?? [],
+                        provenance: selected.provenance,
+                        artifacts: selected.artifacts ?? [],
+                        trace: selected.trace,
+                      },
+                      null,
+                      2,
+                    )}
+                  </pre>
+                  {baseline && (
+                    <>
+                      <h3>比较基线</h3>
+                      <pre>
+                        {JSON.stringify(
+                          {
+                            runId: baseline.runId,
+                            definition: baseline.definition,
+                            parameters: baseline.parameters,
+                            conditions: baseline.conditions ?? {},
+                            subjects: baseline.subjects ?? [],
+                            provenance: baseline.provenance,
+                          },
+                          null,
+                          2,
+                        )}
+                      </pre>
+                    </>
+                  )}
                 </details>
               </>
             )}
@@ -559,7 +721,7 @@ export function BenchmarkCases({
           <section className="surface bench-history">
             <div className="surface-heading">
               <h2>执行历史</h2>
-              <span>{history.length} 次 · 同一用例</span>
+              <span>{history.length} 次 · 同一评测</span>
             </div>
             {history.length ? (
               <div className="bench-table-scroll">
@@ -567,8 +729,8 @@ export function BenchmarkCases({
                   <thead>
                     <tr>
                       <th>执行时间</th>
-                      <th>状态</th>
-                      <th>条件</th>
+                      <th>状态 / 结论</th>
+                      <th>定义</th>
                       <th>操作</th>
                     </tr>
                   </thead>
@@ -583,26 +745,20 @@ export function BenchmarkCases({
                         <td>
                           <button
                             className="text-button"
-                            onClick={() => {
-                              setOpenCheck(null);
-                              navigate({
-                                case: result.caseId,
-                                result: resultKey(result),
-                                baseline: null,
-                              });
-                            }}
+                            onClick={() => selectResult(result)}
                           >
                             {date(result.startedAt)}
                           </button>
                         </td>
                         <td>
-                          <Status value={result.status} />
+                          <Status result={result} />
                         </td>
                         <td>
-                          v{result.caseVersion} · {result.mode}
+                          {revision(result.definition.revision)} ·{" "}
+                          {result.definition.mode}
                           <small>
-                            {result.parameters.model ?? "模拟传输 / 驱动"} ·
-                            seed {result.parameters.seed}
+                            {result.definition.targets.join("、") ||
+                              result.definition.id}
                           </small>
                         </td>
                         <td>

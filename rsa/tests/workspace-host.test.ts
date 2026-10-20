@@ -162,8 +162,10 @@ test("hosts route by workspace, resume only its selected session, and can start 
     expect(firstGuide).toStartWith("Keep these task instructions.\n");
     expect(firstGuide.match(/baseware\.json/g)).toHaveLength(1);
     expect(firstGuide).toContain("`baseware export`");
+    expect(firstGuide.match(/@benchmark/g)).toHaveLength(1);
     expect(await readFile(join(second.workspace, "AGENTS.md"), "utf8")).toContain("`logs/`");
     expect(await readFile(join(second.workspace, "AGENTS.md"), "utf8")).toContain("`baseware.json`");
+    expect(await readFile(join(second.workspace, "AGENTS.md"), "utf8")).toContain("`@benchmark`");
     expect(testbed.operations).toEqual(["HELLO", "HELLO"]);
     const secondCatalog = await readFile(join(second.workspace, "baseware.json"), "utf8");
     firstHost.child.kill("SIGTERM");

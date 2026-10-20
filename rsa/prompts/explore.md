@@ -7,6 +7,7 @@ reuse your functions through normal imports or local `Client.call("python/...", 
 One process can retain models and state across calls. Mark reusable entry points
 with `@capability` from `rsa_tools`; typed parameters and docstrings expose them
 through the CLI and API. Helpers can remain ordinary functions.
+When measurement helps, use `@benchmark` from `rsa_tools` and `rsa bench` to evaluate and improve your capabilities.
 
 Own the observation representation too. When combining or processing sensors
 helps, implement and test one zero-argument `@capability(hook="observe")` function
