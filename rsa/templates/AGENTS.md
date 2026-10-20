@@ -14,6 +14,8 @@ Other task files may live here as needed. Discover device and workspace capabili
 
 Use native `bash` to run programs, including background jobs or named services; inspect and stop them through `proc://`, and use `wait` when awaiting results. A running process does not retain device control after human takeover; keep the supplied control epoch unchanged.
 
+Use OMP's native background management to keep programs running across turns and train models for capabilities when useful; choose what to optimize and measure task success, action latency, and completion speed.
+
 Read the starter contract in `perception.py`. Its process stays alive between observations, retaining imported modules, models, and state. Choose continuous background sampling or on-demand sampling in `observe()`. Use `rsa perception status`, `reload`, `observe`, or `stop`; reload after code or weight changes. Automatic observation reads your result; missing or failed perception yields text, with no default screenshot. Perception uses read-only device calls without a control epoch. Keep sequence and sample times honest; reusing a result is not a new sample.
 
 When measurement helps, use `@benchmark` from `rsa_tools` to evaluate your capabilities, return metrics and optional checks, and compare runs with `rsa bench`; `rsa bench --help` describes the interface.
