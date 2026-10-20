@@ -198,7 +198,7 @@ export async function activityBlocks(path: string, events: Event[]): Promise<Log
   for (const event of events) {
     const { data, trace } = event;
     const id = trace.modelCallId && trace.toolCallId ? toolId(trace.modelCallId, trace.toolCallId) : null;
-    if (id && ["tool_start", "tool_end", "exec", "exec_result"].includes(event.type)) {
+    if (id && ["tool_start", "tool_update", "tool_end", "exec", "exec_result"].includes(event.type)) {
       const previous = blocks.get(id);
       const tool = tools.get(id) ?? { name: previous?.title ?? "工具", intent: "", args: previous?.text ?? "", result: "" };
       if (data.toolName) tool.name = data.toolName;
@@ -206,7 +206,8 @@ export async function activityBlocks(path: string, events: Event[]): Promise<Log
       if (event.type === "tool_start") tool.args = argumentsText(data.args);
       if (event.type === "exec" && !tool.args) tool.args = argumentsText({ command: data.command });
       if (event.type === "exec_result") tool.result = readable(data);
-      if (event.type === "tool_end" && data.result !== undefined) tool.result = await payloadText(path, data.result);
+      if (["tool_update", "tool_end"].includes(event.type) && data.result !== undefined)
+        tool.result = await payloadText(path, data.result);
       tools.set(id, tool);
       blocks.set(id, { id, kind: "tool", at: previous?.at ?? event.at, title: tool.name, ...provenance(event),
         text: [tool.intent && `意图：${tool.intent}`, tool.args && `参数：\n${tool.args}`, tool.result && `结果：\n${tool.result}`].filter(Boolean).join("\n\n"),
@@ -228,7 +229,8 @@ export async function activityBlocks(path: string, events: Event[]): Promise<Log
         }
       }
     }
-    const system = failed || event.type === "control" || event.type === "perception_status" || event.type.includes("compaction") || event.type === "run_end";
+    const system = failed || event.type === "control" || event.type === "perception_status"
+      || event.type.startsWith("background_") || event.type.includes("compaction") || event.type === "run_end";
     blocks.set(`event:${path.split("/").at(-1)}:${event.seq}`, {
       id: `event:${path.split("/").at(-1)}:${event.seq}`, kind: system ? "system" : "diagnostic",
       at: event.at, title: event.type, text: readable(data), data: structuredText(readable(data)) as Record<string, unknown>,

@@ -83,6 +83,16 @@ test("commands, captures and observation processing are nested and joined by the
   assert.equal(phase(events)?.kind, "idle");
 });
 
+test("native bash is a command until tool return, including a background launch", () => {
+  const tool = { modelCallId: "model", toolCallId: "bash" };
+  const events = [event("tool_start", 100, tool, { toolName: "bash",
+    args: { command: "python worker.py", async: true } })];
+  assert.equal(phase(events)?.kind, "command");
+  events.push(event("tool_end", 200, tool, { toolName: "bash", isError: false,
+    result: { path: `payloads/${"a".repeat(64)}.json.gz` } }));
+  assert.equal(phase(events)?.kind, "idle"); // Process lifetime is not this tool span.
+});
+
 test("perception reads retain their own wait across unrelated late completions", () => {
   const first = { traceId: "perception", spanId: "one" };
   const second = { traceId: "perception", spanId: "two" };

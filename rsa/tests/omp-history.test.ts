@@ -50,7 +50,7 @@ test.each([1, 26])("OMP persists batches of %i images and reuses the Codex prefi
     skills: [], rules: [], contextFiles: [], promptTemplates: [], slashCommands: [],
     enableMCP: false, enableLsp: false, enableIrc: false, skipPythonPreflight: true,
     disableExtensionDiscovery: true, restrictToolNames: true, allowRestrictedCustomTools: true,
-    toolNames: ["exec", "observe"], customTools: extension.tools,
+    toolNames: ["bash", "observe"], customTools: extension.tools,
     preloadedPreparedExtensions: [{ path: "rsa-test", resolvedPath: "rsa-test", factory: extension.factory, error: null }],
   });
   let { session } = await openSession();
@@ -71,11 +71,11 @@ test.each([1, 26])("OMP persists batches of %i images and reuses the Codex prefi
     textCounts.push((text.match(/interface-state-\d+/g) ?? []).length);
     const index = ++requests;
     const done = index >= 7;
-    const exec = (suffix: string, command: string) => ({ type: "toolCall" as const, id: `call_${index}_${suffix}`, name: "exec", arguments: { command } });
+    const exec = (suffix: string, command: string) => ({ type: "toolCall" as const, id: `call_${index}_${suffix}`, name: "bash", arguments: { command } });
     const observe = () => ({ type: "toolCall" as const, id: `call_${index}_observe`, name: "observe", arguments: {} });
-    const invalid = (suffix: string) => ({ type: "toolCall" as const, id: `call_${index}_${suffix}`, name: "exec", arguments: {} });
+    const invalid = (suffix: string) => ({ type: "toolCall" as const, id: `call_${index}_${suffix}`, name: "bash", arguments: {} });
     const batches = [
-      [invalid("bad_before"), exec("a", "printf first > position"), exec("b", "printf second > position"), invalid("bad_after")],
+      [invalid("bad_before"), exec("a", "printf first > independent"), exec("b", "printf second > position"), invalid("bad_after")],
       [exec("a", "sleep 0.03; printf third > position"), observe()],
       [observe(), exec("a", "printf fourth > position")],
       [observe()],
@@ -124,9 +124,13 @@ test.each([1, 26])("OMP persists batches of %i images and reuses the Codex prefi
     expect(entries.filter((e) => e.type === "custom_message" && e.customType === "rsa-observation")).toHaveLength(3);
     const results = entries.filter((e) => e.type === "message" && e.message.role === "toolResult");
     expect(results).toHaveLength(11);
-    expect(results.map(entry => entry.type === "message" && entry.message.role === "toolResult"
-      ? entry.message.content.filter(part => part.type === "image").length : 0))
-      .toEqual([0, 0, 1, 0, 0, 1, 1, 1, 1, 1, 1].map(n => n * batchSize));
+    const counts = results.map(entry => entry.type === "message" && entry.message.role === "toolResult"
+      ? entry.message.content.filter(part => part.type === "image").length : 0);
+    // Native bash can finish independent commands in either order. The batch
+    // gets one observation on its last successful tool, never on invalid calls.
+    expect(counts.slice(0, 4)).toEqual([0, expect.any(Number), expect.any(Number), 0]);
+    expect(counts.slice(1, 3).toSorted((a, b) => a - b)).toEqual([0, batchSize]);
+    expect(counts.slice(4)).toEqual([0, 1, 1, 1, 1, 1, 1].map(n => n * batchSize));
   } finally {
     await session.dispose(); authStorage.close(); await runtime.close();
     await rm(directory, { recursive: true, force: true });

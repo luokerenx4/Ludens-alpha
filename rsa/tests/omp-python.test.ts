@@ -30,7 +30,7 @@ test("workspace Python capabilities do not grow OMP's tool list across writes, r
   authStorage.keys.setRuntime("openai-codex", "offline-test-only");
   const modelRegistry = new ModelRegistry(authStorage, undefined, {settings});
   const model = modelRegistry.find("openai-codex", "gpt-6.1-sol")!;
-  const baseTools = ["read", "write", "edit", "observe", "exec"];
+  const baseTools = ["read", "write", "edit", "observe", "bash"];
   const source = `from rsa_tools import capability
 @capability
 def calculate(value: int = 4):
@@ -56,7 +56,7 @@ def calculate(value: int = 4):
       let content: AssistantMessage["content"] = [{type: "text", text: "Finished."}];
       if (index === 1) content = call("write", {path: "actions.py", content: source});
       if (index === 2) content = call("write", {path: "actions.py", content: source.replace("plus one", "plus two").replace("value + 1", "value + 2")});
-      if (index === 3) content = call("exec", {command: "rm actions.py && printf '%s|%s' \"$RSA_SOCKET\" \"$BASEWARE_EPOCH\""});
+      if (index === 3) content = call("bash", {command: "rm actions.py && printf '%s|%s' \"$RSA_SOCKET\" \"$BASEWARE_EPOCH\""});
       const message: AssistantMessage = {role: "assistant", api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), content,
         stopReason: index <= 3 ? "toolUse" : "stop",
         usage: {input: 100, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 110, cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0}}};
@@ -70,7 +70,9 @@ def calculate(value: int = 4):
       expect(snapshot.tools.sort()).toEqual([...baseTools].sort());
       expect(snapshot.messages).not.toContain("workspaceCapabilities");
     }
-    expect(events.find(event => event.type === "exec_result")?.data).toMatchObject({exitCode: 0, stdout: `${rsaSocket}|python-epoch`});
+    const shellResult = session.sessionManager.getEntries().find(entry => entry.type === "message"
+      && entry.message.role === "toolResult" && entry.message.toolName === "bash");
+    expect(JSON.stringify(shellResult)).toContain(`${rsaSocket}|python-epoch`);
     expect(events.some(event => event.type === "python_capability" || event.type === "python_capability_result")).toBe(false);
     expect(session.sessionManager.getEntries().filter(entry => entry.type === "message" && entry.message.role === "toolResult")).toHaveLength(3);
 

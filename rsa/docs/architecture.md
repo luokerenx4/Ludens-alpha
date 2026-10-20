@@ -8,7 +8,7 @@
 flowchart LR
     H[人类接管] --> R[RSA / Shiori: OMP]
     R <--> W[普通 workspace]
-    R --> S[exec / rsa controller CLI]
+    R --> S[OMP bash / rsa controller CLI]
     S --> F[RSA 能力目录与执行器]
     P[Python / rsa_tools.Client] --> F
     F --> P
@@ -75,7 +75,7 @@ Baseware 独立负责：
 4. 普通短连接关闭只取消这个客户端的在途请求，不结束整轮接管。
 5. 旧 epoch 的迟到动作被拒绝。
 
-RSA 负责停止 Agent、取消 shell/Python 进程组、更新会话和日志。设备交还不等待模型结束。Baseware 的交还事件也会停止 RSA 循环，避免独立设备服务已经释放而模型还继续操作。正在交还或清理时不接受新的接管。
+RSA 负责停止当前 Agent 循环、取消自身管理的 Python/设备调用、更新会话和日志；通用 shell 和后台任务的生命周期交给 OMP。设备交还不等待模型或后台进程结束，旧 epoch 随即失去动作权限。Baseware 的交还事件也会停止 RSA 循环。正在交还或清理时不接受新的接管。
 
 动作时长由调用方选择，不设两秒上限；各 driver 只检查自己的数值表示、最小采样单位和输入格式。预算与人工接管请求取消长动作，清理完成才报告 manual；底层已开始的调用可先收尾。
 
@@ -109,7 +109,7 @@ workspace/
 
 目录、help 与只读 Controller 无需接管；输入和 Python 函数须携带当前 epoch，由 Runtime 检查和绑定取消信号。CLI/API 连接关闭会取消自身调用，人工交还会取消本周期全部调用及 Python 进程组。嵌套调用复用同一宿主和 epoch，不使用会阻塞嵌套请求的全局队列。设备自身的并发约束仍由 Baseware driver 执行。
 
-shell/Python 自动继承 RSA 与 Baseware 地址、本轮 epoch 与 trace。设备操作最终进入 Baseware，传感器调用通过 RSA 观测路径落盘，模型工具和脚本内多次设备操作能关联到同一日志链。一次 shell 中的复合操作结束后，循环仍统一补充观测。不同工作区默认不共享这些派生能力。此实现是可信本机执行环境，不提供 OS 沙箱或多用户权限边界。
+shell/Python 自动继承 RSA 与 Baseware 地址、run 与本轮 epoch。RSA 插件在周期开始时设置宿主环境并调用 OMP 现有的 `refreshShellConfigCache()`，同一 epoch 内保持稳定；每个 workspace 有独立宿主，不改 OMP 或工具调用历史。原生后台任务与服务保留启动时的环境。设备操作最终进入 Baseware，传感器调用通过 RSA 观测路径落盘；OMP 内部 trace 与跨进程 Python/设备子链分别保留，跨 shell 边界只有 run/epoch 归属时不伪造精确父工具。每批工具返回后，循环仍统一补充观测；后台启动返回不代表工作已完成。不同工作区默认不共享这些派生能力。此实现是可信本机执行环境，不提供 OS 沙箱或多用户权限边界。
 
 ## Benchmark
 
@@ -127,7 +127,9 @@ Shiori 定义职责，不要求独立进程或新包。当前适配代码仍在 
 
 在一次宿主生命周期内复用同一 OMP 会话；再次接管只重置预算与 epoch。重启宿主默认续接该 workspace 的当前会话。新 workspace 从空文件和空会话开始，显式复制的文件属于其初始内容。
 
-OMP 固定暴露 `read/write/edit/exec/observe`；能力通过 `exec` 中的 CLI 按需调用，不追加每个装饰器函数的模型工具定义。循环在初始 prompt 和每批工具完成后提供观测及 skill/memory 索引。模型默认使用这些观测，`observe` 用于按需额外采样。自动观测读取 workspace 常驻感知结果，显式采样独立留在工具返回中；结果序号与来源时间用于辨别复用和新采样。环境在模型思考期间继续运行。
+OMP 暴露原生 `read/write/edit/bash/wait`，RSA 只注册 `observe`；能力通过 `bash` 中的 CLI 按需调用，不追加每个装饰器函数的模型工具定义。命令执行、超时、后台任务、命名服务及 `proc://` 管理使用 OMP 原生实现，不维护 RSA `exec` 或另一套通用进程管理。后台任务和命名服务具有各自的上游生命周期，不与一次模型请求或设备控制权绑定。
+
+RSA 继续负责外层自动续轮，初始 prompt 和每批工具返回后提供观测及 skill/memory 索引。模型默认使用这些观测，`observe` 用于按需额外采样。自动观测读取 workspace 常驻感知结果，显式采样独立留在工具返回中；结果序号与来源时间用于辨别复用和新采样。环境在模型思考期间继续运行。
 
 工作区的 `perception.py:Perception` 是常驻感知入口，生命周期为 `start(context)/observe()/close()`。实例及普通 import 的模块跨轮保留，模型和后台循环由 workspace 自行组织；`rsa perception reload` 显式关闭旧进程并加载代码、helper 与权重修改。返回 `sequence` 及可选文字、媒体、实际采样时间和来源，RSA 归档被采用的结果。感知进程不继承控制 epoch，只读采样无需接管；单次读取取消不销毁模型缓存。空实现、无结果或错误以文字交给 OMP，允许它自行实现或修复，没有默认截图回退。显式 `observe` 工具也读取这份感知结果；原始设备通过 `rsa controller` 或 Python API 按需访问。该机制不预设屏幕数量、融合算法或游戏语义，不允许修改 Harness 本身。
 
@@ -139,7 +141,7 @@ OMP 原生压缩阈值保持 256000，图片数量预算为 Infinity，观测入
 
 Baseware 独立记录设备事件，并向订阅者发送相同事件。RSA 将它们放入当前 run 的 `events.jsonl`，观测复制到该 run 的 `observations/`；Dashboard 和 Pet 因此仍能读取完整的单次运行。
 
-设备事件保留 Baseware 的 source/origin，RSA 转发只新增本地收件时序和观测路径。`traceId/spanId/parentSpanId` 串起 Shiori 工具、工作区能力、嵌套 Python 与设备动作；`modelCallId/toolCallId/operationId/epoch` 继续标识各自职责。能力查询、调用、异常和取消都有终态。Baseware 的控制事件使用 `baseware_control`，与 RSA 的 `control` 分开；不把文件写入、调用成功或帧数增加当成学习效果。
+设备事件保留 Baseware 的 source/origin，RSA 转发只新增本地收件时序和观测路径。OMP 内部 `traceId/spanId/parentSpanId` 保留模型与工具关系，工作区能力、嵌套 Python 与设备动作保留自身调用链；`modelCallId/toolCallId/operationId/epoch` 按实际已知范围标识各自职责。原生 shell 不注入精确的父工具 trace，跨进程记录按 run/epoch 归属，不把缺失关系补成一条完整链。能力查询、调用、异常和取消都有终态。Baseware 的控制事件使用 `baseware_control`，与 RSA 的 `control` 分开；不把文件写入、调用成功或帧数增加当成学习效果。
 
 OMP 原生 telemetry 经 session 局部 tracer 写入同一 EventLog，无外部 exporter 或全局 tracer 替换。原生 loop 汇总单独保存，不与已有模型用量相加。消费者保留日志来源并记录自己的进度；日志协议、指标口径与边界见 [logging.md](logging.md)。
 

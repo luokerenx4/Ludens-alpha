@@ -1,8 +1,8 @@
-import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { delimiter, join, resolve } from "node:path";
+import { delimiter, resolve } from "node:path";
 import type { ExtensionFactory, CustomTool, ReadToolResultEvent } from "@oh-my-pi/pi-coding-agent";
 import { resizeImage } from "@oh-my-pi/pi-coding-agent/utils/image-resize";
+import { refreshShellConfigCache } from "@oh-my-pi/pi-utils/procmgr";
 import * as z from "@oh-my-pi/omptype/zod";
 import type { Clock, Observation } from "@playness/baseware/contracts";
 import type { Runtime } from "../runtime.ts";
@@ -52,21 +52,18 @@ export function createRsaExtension(options: {
   let latestContext: { observations: string[]; executions: string[]; skills: Awaited<ReturnType<Workspace["snapshot"]>> };
   const trace = (toolCallId?: string): EventTrace => ({ epoch: options.cycle().epoch, ...options.trace?.(toolCallId), ...(toolCallId ? { toolCallId } : {}) });
   const observeParameters = z.object({});
-  const execParameters = z.object({ command: z.string() });
-
-  const commandEnvironment = (cycle: Cycle, parent: EventTrace): NodeJS.ProcessEnv => {
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      PATH: [options.binDir, resolve(import.meta.dir, "../../../../baseware/bin"), process.env.PATH ?? ""].join(delimiter),
-      PYTHONPATH: [...pythonModulePaths(), ...(process.env.PYTHONPATH ? [process.env.PYTHONPATH] : [])].join(delimiter),
-      RSA_SOCKET: options.rsaSocket,
-      RSA_WORKSPACE: workspace.path, RSA_RUN_ID: runtime.status().runId,
-      BASEWARE_SOCKET: options.basewareSocket, BASEWARE_EPOCH: cycle.epoch, BASEWARE_TRACE: JSON.stringify(parent),
-    };
-    // A launching shell may still carry an obsolete RSA control context.
-    for (const name of ["RSA_EPOCH", "RSA_TRACE"]) delete env[name];
-    return env;
+  // Each RSA host owns one OMP session. Use OMP's existing extension environment
+  // mechanism; native bash and its process manager own execution. Capture paths
+  // once so repeated prompts do not keep prepending the same directories.
+  const environment = {
+    PATH: [options.binDir, resolve(import.meta.dir, "../../../../baseware/bin"), process.env.PATH ?? ""].join(delimiter),
+    PYTHONPATH: [...pythonModulePaths(), ...(process.env.PYTHONPATH ? [process.env.PYTHONPATH] : [])].join(delimiter),
+    RSA_SOCKET: options.rsaSocket ?? "",
+    RSA_WORKSPACE: workspace.path, RSA_RUN_ID: runtime.status().runId,
+    BASEWARE_SOCKET: options.basewareSocket, BASEWARE_EPOCH: "", BASEWARE_TRACE: "{}",
+    RSA_EPOCH: "", RSA_TRACE: "",
   };
+  const originalEnvironment = Object.fromEntries(Object.keys(environment).map(key => [key, process.env[key]]));
 
   const observe: CustomTool<typeof observeParameters> = {
     name: "observe", label: "Observe", loadMode: "essential", approval: "read",
@@ -78,45 +75,6 @@ export function createRsaExtension(options: {
       const content = await perceptionContent(read, trace(id));
       observed = read;
       return { content, details: read, isError: read.status.state === "error" };
-    },
-  };
-
-  const exec: CustomTool<typeof execParameters> = {
-    name: "exec", label: "Shell", loadMode: "essential", approval: "exec",
-    description: "Run a foreground shell command in the workspace. Use rsa controller to discover and invoke capabilities; the Python API and current control epoch are supplied.",
-    parameters: execParameters,
-    async execute(id, params, _onUpdate, _ctx, signal) {
-      const cycle = options.cycle();
-      const combined = signal ? AbortSignal.any([signal, cycle.signal]) : cycle.signal;
-      combined.throwIfAborted();
-      // A shell command may change the environment; earlier observations no
-      // longer describe the end of this batch, even if that command fails.
-      observed = undefined;
-      const skills = await workspace.snapshot();
-      combined.throwIfAborted();
-      const parent = trace(id);
-      runtime.record("exec", { command: params.command, epoch: cycle.epoch, skillVersion: skills.version, memoryVersion: skills.memory.version }, parent);
-      const result = await new Promise<{ exitCode: number; stdout: string; stderr: string }>((done, fail) => {
-        const child = spawn("/bin/sh", ["-c", params.command], {
-          cwd: workspace.path, detached: true,
-          env: commandEnvironment(cycle, parent),
-          stdio: ["ignore", "pipe", "pipe"],
-        });
-        let stdout = "", stderr = "";
-        child.stdout.on("data", (data) => { stdout += data; });
-        child.stderr.on("data", (data) => { stderr += data; });
-        const cancel = () => {
-          if (child.pid) {
-            try { process.kill(-child.pid, "SIGKILL"); }
-            catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") fail(error); }
-          }
-        };
-        combined.addEventListener("abort", cancel, { once: true });
-        child.once("error", fail);
-        child.once("close", (code) => { combined.removeEventListener("abort", cancel); done({ exitCode: code ?? 130, stdout, stderr }); });
-      });
-      runtime.record("exec_result", result, parent);
-      return { content: [{ type: "text", text: JSON.stringify(result) }], details: result, isError: result.exitCode !== 0 };
     },
   };
 
@@ -177,21 +135,36 @@ export function createRsaExtension(options: {
     // OMP persists both the initial custom message and enriched tool results.
     // Keep history immutable between compactions so provider prefixes can be reused.
     pi.on("before_agent_start", async () => {
+      const cycle = options.cycle();
+      cycle.signal.throwIfAborted();
+      // Existing processes retain their startup epoch. Only future shells get
+      // this lease; child processes never inherit a later takeover implicitly.
+      Object.assign(process.env, environment, {
+        BASEWARE_EPOCH: cycle.epoch, BASEWARE_TRACE: JSON.stringify({ epoch: cycle.epoch }),
+      });
+      refreshShellConfigCache();
       observed = undefined;
       return { message: { customType: "rsa-observation", content: await captureContext({ epoch: options.cycle().epoch }, "prompt_start"), display: false } };
+    });
+    pi.on("session_shutdown", () => {
+      for (const [key, value] of Object.entries(originalEnvironment)) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
+      refreshShellConfigCache();
     });
     pi.on("assistant_message", () => {
       pendingTools.clear();
       observed = undefined;
     });
     pi.on("tool_result", async (event) => {
+      if (event.toolName === "bash") observed = undefined;
       if (event.toolName === "read") {
         // OMP resolves selectors such as SKILL.md:19-22. Use its result metadata
         // instead of treating the selector as part of a filesystem path.
         const details = (event as ReadToolResultEvent).details;
         const source = details?.meta?.source;
         const resolvedPath = details?.resolvedPath ?? (source?.type === "path" ? source.value : undefined);
-        const path = resolvedPath ? resolve(workspace.path, resolvedPath) : undefined;
+        const path = resolvedPath && source?.type !== "url" && !resolvedPath.includes("://") ? resolve(workspace.path, resolvedPath) : undefined;
         const file = path ? Bun.file(path) : undefined;
         const hash = !event.isError && file && await file.exists()
           ? new Bun.CryptoHasher("sha256").update(await file.arrayBuffer()).digest("hex") : undefined;
@@ -226,6 +199,6 @@ export function createRsaExtension(options: {
       pendingTools.add(event.toolCallId);
     });
   };
-  return { factory, tools: [observe, exec], context: () => ({ observations: latestContext?.observations, executions: latestContext?.executions,
+  return { factory, tools: [observe], context: () => ({ observations: latestContext?.observations, executions: latestContext?.executions,
     skillVersion: latestContext?.skills.version, memoryVersion: latestContext?.skills.memory.version }) };
 }

@@ -664,7 +664,10 @@ export function RequestDetails({
                 <p className="help-text">
                   {t.name === "exec" &&
                     "命令执行 " + seconds(t.commandMs) + " · "}
-                  工具全程 {seconds(t.durationMs)}（含后续观测）
+                  工具全程 {seconds(t.durationMs)}
+                  {t.name === "bash"
+                    ? "（至工具返回，不代表后台进程已结束）"
+                    : "（含结果整理）"}
                 </p>
               </article>
             ))}

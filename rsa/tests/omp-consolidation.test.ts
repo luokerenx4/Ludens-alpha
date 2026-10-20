@@ -48,7 +48,7 @@ test("consolidation uses the same session with file tools, records memory reads,
     skills: [], rules: [], contextFiles: [], promptTemplates: [], slashCommands: [],
     enableMCP: false, enableLsp: false, enableIrc: false, skipPythonPreflight: true,
     disableExtensionDiscovery: true, restrictToolNames: true, allowRestrictedCustomTools: true,
-    toolNames: ["read", "write", "edit", "observe", "exec"], customTools: extension.tools,
+    toolNames: ["read", "write", "edit", "observe", "bash"], customTools: extension.tools,
     preloadedPreparedExtensions: [{ path: "rsa-test", resolvedPath: "rsa-test", factory: extension.factory, error: null }],
   });
   const originalTools = session.getActiveToolNames();
@@ -109,7 +109,7 @@ test("consolidation uses the same session with file tools, records memory reads,
 
 test.each(["prompt failure", "abort during tool change"])("consolidation restores tools after %s", async (failure) => {
   const control = new AbortController();
-  const original = ["read", "write", "edit", "observe", "exec"];
+  const original = ["read", "write", "edit", "observe", "bash"];
   const changes: string[][] = [];
   let prompts = 0;
   const session: Parameters<typeof consolidateOmpSession>[0] = {

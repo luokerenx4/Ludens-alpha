@@ -88,7 +88,6 @@ test("OMP's SDK adapter delivers the abort signal correctly and returns real ima
   });
   // This is the same conversion createAgentSession applies to SDK customTools.
   const observe = customToolToDefinition(extension.tools[0]);
-  const exec = customToolToDefinition(extension.tools[1]);
   const ctx = {} as ExtensionContext;
   try {
     const result = await observe.execute("capture", {}, control.signal, () => {}, ctx);
@@ -98,11 +97,8 @@ test("OMP's SDK adapter delivers the abort signal correctly and returns real ima
     expect(result.content).toContainEqual({ type: "text", text: '{"role":"window","title":"Document"}' });
     expect(resized.width).toBe(200);
     expect(resized.decodeFailed).toBeUndefined();
-    const executed = await exec.execute("shell", { command: "printf '%s|%s|%s|%s' \"$BASEWARE_EPOCH\" \"${RSA_EPOCH-unset}\" \"${RSA_TRACE-unset}\" \"${RSA_SOCKET-unset}\"" }, control.signal, () => {}, ctx);
-    expect(executed.details).toMatchObject({ exitCode: 0, stdout: "test-epoch|unset|unset|unset" });
     control.abort();
-    await expect(exec.execute("cancelled", { command: "touch should-not-exist" }, control.signal, () => {}, ctx)).rejects.toThrow();
-    expect(await Bun.file(join(directory, "workspace", "should-not-exist")).exists()).toBe(false);
+    await expect(observe.execute("cancelled", {}, control.signal, () => {}, ctx)).rejects.toThrow();
   } finally { await runtime.close(); await rm(directory, { recursive: true }); }
 });
 

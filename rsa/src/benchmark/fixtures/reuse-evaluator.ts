@@ -1,5 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { posix } from "node:path";
+import { readFileSync } from "node:fs";
+import { join, posix } from "node:path";
+import { gunzipSync } from "node:zlib";
 import type { EventTrace } from "../../harness/events.ts";
 import type { CaseOutcome } from "../types.ts";
 
@@ -22,9 +24,33 @@ interface PythonEvidence {
   call?: { path: string; function: string };
 }
 
+const shellCommand = (event: ReuseEvent): string | undefined => {
+  const command = event.type === "exec" ? event.data.command
+    : event.type === "tool_start" && event.data.toolName === "bash" ? event.data.args?.command : undefined;
+  return typeof command === "string" ? command : undefined;
+};
+
+function successfulShellEnd(event: ReuseEvent, runDir?: string): boolean {
+  if (event.type === "exec_result") return event.data.exitCode === 0;
+  if (event.type !== "tool_end" || event.data.toolName !== "bash" || event.data.isError !== false) return false;
+  let result = event.data.result;
+  if (result?.encoding === "gzip") {
+    if (!runDir) return false;
+    try { result = JSON.parse(gunzipSync(readFileSync(join(runDir, result.path))).toString("utf8")); }
+    catch { return false; }
+  }
+  // Native bash omits exitCode on success. A background/service launch is only
+  // acceptance, not a completed command; never turn it into positive reuse.
+  if (!result || result.isError || result.details?.timedOut || result.details?.service) return false;
+  const details = result.details ?? {};
+  return (details.exitCode === undefined || details.exitCode === 0)
+    && (!details.async || details.async.state === "completed");
+}
+
 function parsePython(events: ReuseEvent[]) {
   const inputs = events.flatMap<{ seq: number; command?: string; source?: string }>(event => {
-    if (event.type === "exec" && typeof event.data.command === "string") return [{ seq: event.seq, command: event.data.command }];
+    const command = shellCommand(event);
+    if (command !== undefined) return [{ seq: event.seq, command }];
     const args = event.data.args;
     if (event.type === "tool_start" && event.data.toolName === "write" && typeof args?.path === "string"
       && args.path.endsWith(".py") && typeof args.content === "string") return [{ seq: event.seq, source: args.content }];
@@ -38,7 +64,7 @@ function parsePython(events: ReuseEvent[]) {
 }
 
 /** Judge the environment's facts and causality; agent prose is never a verdict. */
-export function evaluateReuse(all: ReuseEvent[], epoch: string): CaseOutcome {
+export function evaluateReuse(all: ReuseEvent[], epoch: string, runDir?: string): CaseOutcome {
   const events = all.filter(event => event.trace.epoch === epoch).sort((a, b) => a.seq - b.seq);
   const benchmark = (type: string) => events.filter(event => event.type === type && event.source?.component === "benchmark");
   const baseline = benchmark("benchmark_reuse_workspace")[0];
@@ -118,12 +144,12 @@ export function evaluateReuse(all: ReuseEvent[], epoch: string): CaseOutcome {
     return delivered.length ? [{ event, id, key, route: "local", evidence: [created.event.seq, event.seq, result.seq], orders: delivered }] : [];
   });
   calls.push(...localCalls);
-  const directCalls = events.filter(event => event.type === "exec").flatMap(event => {
+  const directCalls = events.filter(event => shellCommand(event) !== undefined).flatMap(event => {
     const call = python.get(event.seq)?.call, key = spanKey(event);
     if (!call || !key) return [];
     const write = writes.filter(write => write.path === call.path && write.end.seq < event.seq).at(-1);
-    const result = events.find(result => result.type === "exec_result" && spanKey(result) === key
-      && result.seq > event.seq && result.data.exitCode === 0);
+    const result = events.find(result => spanKey(result) === key && result.seq > event.seq
+      && successfulShellEnd(result, runDir));
     if (!write?.passiveModule || !write.effectfulFunctions?.includes(call.function) || !result) return [];
     const delivered = orders.filter(({ execution }) => execution.seq > event.seq && execution.seq < result.seq
       && isDescendant(execution, key) && !calls.some(call => isDescendant(execution, call.key)));
@@ -150,7 +176,7 @@ export function evaluateReuse(all: ReuseEvent[], epoch: string): CaseOutcome {
   // inspection scope, not positive evidence that discovery or reuse happened.
   const discoveryScope = evidence([...(baseline ? [baseline.seq] : []), ...discoveries.map(event => event.seq), ...(finish ? [finish.seq] : [])]);
   const reuseScope = evidence([...discoveryScope, ...phases.map(event => event.seq),
-    ...events.filter(event => event.type === "exec").map(event => event.seq),
+    ...events.filter(event => shellCommand(event) !== undefined).map(event => event.seq),
     ...requests.filter(event => event.data.action === "call" && event.data.id?.startsWith("python/")).map(event => event.seq)]);
   const models = events.filter(event => event.type === "model_start");
   const phaseOrders = (phase: number) => new Set(orders.filter(({ order }) => order.data.phase === phase).map(({ order }) => order.data.orderId)).size;
@@ -194,7 +220,7 @@ export function evaluateReuse(all: ReuseEvent[], epoch: string): CaseOutcome {
       "脚本数量不是成绩；空函数、失败调用和未推动订单的调用不算能力复用。",
       "结束后的评测侧 AST 盘点仅证明能力已创建，不代表 Agent 主动发现或通过统一接口复用。",
       "本地装饰器调用依据匹配源码版本的成功终态与后代设备订单归因；已计入外部 runner 的子调用不重复计数。",
-      "直接 import 根据成功写入的源码、简单 Python exec 的 AST、成功退出及同一调用链的订单判定；不执行工作区代码。复杂脚本、动态导入等未覆盖时保留待定，不等于没有学会。",
+      "直接 import 根据成功写入的源码、简单 Python shell 命令的 AST、原生工具成功终态及同一调用链的订单判定；不执行工作区代码。仅后台启动成功、复杂脚本和动态导入等未覆盖时保留待定，不等于没有学会。",
       "两批难度相近但不是严格对照实验，请求/订单变化仅作诊断。",
       "这是合作式 Agent 的功能评测，workspace 没有对恶意篡改日志做安全隔离。",
     ],

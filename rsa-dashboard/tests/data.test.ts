@@ -84,6 +84,27 @@ test("run summary retains controller, cache, compaction and skill evidence", () 
   ]);
 });
 
+test("epoch-only shell actions count in the run without being attributed to a nearby model request", () => {
+  let seq = 0;
+  const event = (type: string, data = {}, trace = {}): Event => ({
+    seq: ++seq, at: new Date(seq * 1000).toISOString(), atMs: seq * 1000,
+    type, data, trace: { epoch: "cycle", ...trace },
+  });
+  const success = { requiresControl: true, status: "completed", exitCode: 0 };
+  const result = aggregate(selectCycle([
+    event("control", { mode: "auto" }),
+    event("model_start", {}, { modelCallId: "first" }),
+    event("execution", success, { traceId: "shell", spanId: "action" }),
+    event("execution", { ...success, requiresControl: false }, { traceId: "shell", spanId: "sampling" }),
+    event("execution", success, { epoch: "other", traceId: "other", spanId: "action" }),
+    event("model_start", {}, { modelCallId: "second" }),
+    event("execution", success, { traceId: "background", spanId: "late-action" }),
+    event("execution", success, { modelCallId: "first", traceId: "explicit", spanId: "action" }),
+  ], "cycle").events);
+  assert.equal(result.summary.actions, 3);
+  assert.deepEqual(result.calls.map(call => call.actions), [1, 0]);
+});
+
 test("startup compaction is visible without fabricating a main-loop request", () => {
   const start: Event = {
     seq: 1,

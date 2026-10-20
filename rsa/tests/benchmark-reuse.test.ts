@@ -14,7 +14,8 @@ import { renderBoard } from "../src/benchmark/fixtures/reuse-board.ts";
 import { ReuseEnvironment } from "../src/benchmark/fixtures/reuse-environment.ts";
 import { evaluateReuse, type ReuseEvent } from "../src/benchmark/fixtures/reuse-evaluator.ts";
 
-const passed = (events: ReuseEvent[], epoch: string, id: string) => evaluateReuse(events, epoch).checks.find(check => check.id === id)?.passed;
+const passed = (events: ReuseEvent[], epoch: string, id: string, runDir?: string) =>
+  evaluateReuse(events, epoch, runDir).checks.find(check => check.id === id)?.passed;
 
 test("the benchmark sensor emits an actual readable, deterministic PNG", async () => {
   const view = { phase: 1, order: 1, completed: 0, values: [0, 0, 0], target: [2, 4, 1], waiting: false, done: false, notice: "READY" };
@@ -60,7 +61,7 @@ for (const route of ["controller", "local", "import"] as const) test(`evaluator 
       recordBenchmark("benchmark_reuse_workspace", { pythonFiles: [], experienceFiles: 0, session: "new" }, trace);
       environment.begin(trace!);
     }
-    if (type === "exec_result") environment.afterExec(trace!);
+    if (type === "tool_end") environment.afterExec(trace!);
   };
   const prefix = `/tmp/rsa-bench-test-${crypto.randomUUID()}`;
   const basewareSocket = `${prefix}-b.sock`, rsaSocket = `${prefix}-r.sock`;
@@ -79,11 +80,15 @@ for (const route of ["controller", "local", "import"] as const) test(`evaluator 
   const exec = async (command: string[]) => {
     const trace = { epoch, traceId: "0123456789abcdef0123456789abcdef", spanId: String(++round).padStart(16, "0"), modelCallId: `model-${round}` };
     log.record("model_start", {}, trace);
-    log.record("exec", { command: command.map(arg => `'${arg.replaceAll("'", "'\\''")}'`).join(" ") }, trace);
+    log.record("tool_start", { toolName: "bash", args: {
+      command: command.map(arg => `'${arg.replaceAll("'", "'\\''")}'`).join(" "),
+    } }, trace);
     const child = Bun.spawn(command, { cwd: workspace,
       env: { ...env, BASEWARE_EPOCH: epoch, BASEWARE_TRACE: JSON.stringify(trace) }, stdout: "pipe", stderr: "pipe" });
     const [stdout, stderr, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-    record("exec_result", { stdout, stderr, exitCode }, trace);
+    record("tool_end", { toolName: "bash", isError: exitCode !== 0,
+      result: log.artifact({ content: [{ type: "text", text: stdout + stderr }],
+        details: exitCode ? { exitCode } : {} }) }, trace);
     expect({ stderr, exitCode }).toEqual({ stderr: "", exitCode: 0 });
     return stdout;
   };
@@ -119,7 +124,9 @@ def configure(values: list[int]) -> dict:
     }
     recordBenchmark("benchmark_reuse_finished", environment.summary(), { epoch });
     const events = (await readFile(join(runDir, "events.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line) as ReuseEvent);
-    const outcome = evaluateReuse(events, epoch);
+    const judge = (records: ReuseEvent[]) => evaluateReuse(records, epoch, runDir);
+    const check = (records: ReuseEvent[], id: string) => passed(records, epoch, id, runDir);
+    const outcome = judge(events);
     expect(outcome.checks.filter(check => check.passed !== true)).toEqual([]);
     expect(outcome.metrics.find(metric => metric.id === "productive-capability-calls")?.value).toBe(6);
     expect(outcome.metrics.find(metric => metric.id === "productive-reuse-calls")?.value).toBe(3);
@@ -136,26 +143,42 @@ def configure(values: list[int]) -> dict:
         "from scripts.bench import configure\nconfigure([1,2,3])\nmanual_driver_call()", // Mixed operations are ambiguous.
       ]) {
         const ambiguous = structuredClone(events);
-        for (const event of ambiguous.filter(event => event.type === "exec")) event.data.command = `python3 - <<'PY'\n${code}\nPY`;
-        expect(passed(ambiguous, epoch, "capability-reused")).toBeNull();
+        for (const event of ambiguous.filter(event => event.type === "tool_start" && event.data.toolName === "bash"))
+          event.data.args.command = `python3 - <<'PY'\n${code}\nPY`;
+        expect(check(ambiguous, "capability-reused")).toBeNull();
       }
       const failedExec = structuredClone(events);
-      for (const event of failedExec.filter(event => event.type === "exec_result")) event.data.exitCode = 1;
-      expect(passed(failedExec, epoch, "capability-reused")).toBeNull();
+      for (const event of failedExec.filter(event => event.type === "tool_end" && event.data.toolName === "bash")) event.data.isError = true;
+      expect(check(failedExec, "capability-reused")).toBeNull();
+      const background = structuredClone(events);
+      for (const event of background.filter(event => event.type === "tool_end" && event.data.toolName === "bash"))
+        event.data.result = log.artifact({ content: [], details: { async: { state: "running", jobId: "bg_1" } } });
+      expect(check(background, "capability-reused")).toBeNull();
+      // Historical exec/exec_result logs remain readable after new runs switch
+      // to native tool results and artifact-backed details.
+      const legacy = structuredClone(events);
+      for (const event of legacy.filter(event => event.data.toolName === "bash")) {
+        if (event.type === "tool_start") {
+          event.type = "exec"; event.data = { command: event.data.args.command };
+        } else if (event.type === "tool_end") {
+          event.type = "exec_result"; event.data = { exitCode: 0 };
+        }
+      }
+      expect(passed(legacy, epoch, "capability-reused")).toBe(true);
       const failedWrite = structuredClone(events);
-      failedWrite.find(event => event.type === "tool_end")!.data.isError = true;
-      expect(passed(failedWrite, epoch, "capability-created")).toBe(false);
-      expect(passed(failedWrite, epoch, "capability-reused")).toBeNull();
+      failedWrite.find(event => event.type === "tool_end" && event.data.toolName === "write")!.data.isError = true;
+      expect(check(failedWrite, "capability-created")).toBe(false);
+      expect(check(failedWrite, "capability-reused")).toBeNull();
       const emptyHelper = structuredClone(events);
-      emptyHelper.find(event => event.type === "tool_start")!.data.args.content = "def configure(values):\n    return None\n";
-      expect(passed(emptyHelper, epoch, "capability-reused")).toBeNull();
+      emptyHelper.find(event => event.type === "tool_start" && event.data.toolName === "write")!.data.args.content = "def configure(values):\n    return None\n";
+      expect(check(emptyHelper, "capability-reused")).toBeNull();
     }
 
     // Invocation does its own AST lookup, but that is not an explicit discovery.
     const noDiscovery = events.filter(event => !(event.type === "capability_start" && event.data.action === "list"));
-    expect(passed(noDiscovery, epoch, "capability-created")).toBe(true);
-    expect(evaluateReuse(noDiscovery, epoch).metrics.find(metric => metric.id === "controller-discovered")?.value).toBe(0);
-    expect(passed(noDiscovery, epoch, "capability-reused")).toBe(true);
+    expect(check(noDiscovery, "capability-created")).toBe(true);
+    expect(judge(noDiscovery).metrics.find(metric => metric.id === "controller-discovered")?.value).toBe(0);
+    expect(check(noDiscovery, "capability-reused")).toBe(true);
 
     if (route === "controller") {
     // Independent post-run AST inventory can prove creation when the agent used
@@ -165,45 +188,45 @@ def configure(values: list[int]) -> dict:
       type: "benchmark_reuse_inventory", source: { component: "benchmark" }, trace: { epoch },
       data: { stage: "post-run", ...audited } };
     const inventoryOnly = [...events.filter(event => !event.type.startsWith("python_capabilit") && !event.type.startsWith("python_call_")), inventory];
-    expect(passed(inventoryOnly, epoch, "task-completed")).toBe(true);
-    expect(passed(inventoryOnly, epoch, "capability-created")).toBe(true);
-    expect(evaluateReuse(inventoryOnly, epoch).metrics.find(metric => metric.id === "controller-discovered")?.value).toBe(0);
-    expect(passed(inventoryOnly, epoch, "capability-reused")).toBeNull();
-    expect(evaluateReuse(inventoryOnly, epoch).checks.find(check => check.id === "capability-created")?.evidenceSeq).toEqual([inventory.seq]);
+    expect(check(inventoryOnly, "task-completed")).toBe(true);
+    expect(check(inventoryOnly, "capability-created")).toBe(true);
+    expect(judge(inventoryOnly).metrics.find(metric => metric.id === "controller-discovered")?.value).toBe(0);
+    expect(check(inventoryOnly, "capability-reused")).toBeNull();
+    expect(judge(inventoryOnly).checks.find(check => check.id === "capability-created")?.evidenceSeq).toEqual([inventory.seq]);
     const untrustedInventory = structuredClone(inventoryOnly);
     untrustedInventory.at(-1)!.source = { component: "rsa" };
-    expect(passed(untrustedInventory, epoch, "capability-created")).toBe(false);
+    expect(check(untrustedInventory, "capability-created")).toBe(false);
     const wrongStage = structuredClone(inventoryOnly);
     wrongStage.at(-1)!.data.stage = "agent-turn";
-    expect(passed(wrongStage, epoch, "capability-created")).toBe(false);
+    expect(check(wrongStage, "capability-created")).toBe(false);
     }
 
     // Manual orders plus unrelated successful Python calls are not productive reuse.
     const unlinked = structuredClone(events);
     for (const event of unlinked.filter(event => event.type === "execution")) event.trace.parentSpanId = "unrelated-manual";
-    expect(passed(unlinked, epoch, "task-completed")).toBe(true);
-    expect(passed(unlinked, epoch, "capability-reused")).toBeNull();
+    expect(check(unlinked, "task-completed")).toBe(true);
+    expect(check(unlinked, "capability-reused")).toBeNull();
 
     // A success-looking summary without real Baseware completions is not a pass.
     const noExecutions = events.filter(event => event.type !== "execution");
-    expect(passed(noExecutions, epoch, "task-completed")).toBe(false);
-    expect(passed(noExecutions, epoch, "capability-reused")).toBeNull();
+    expect(check(noExecutions, "task-completed")).toBe(false);
+    expect(check(noExecutions, "capability-reused")).toBeNull();
 
     // One model round, different epochs, failed macros, and prefilled abilities fail learning checks.
     const sameRound = structuredClone(events);
     for (const event of sameRound) if (event.trace.modelCallId) event.trace.modelCallId = "one-round";
-    expect(passed(sameRound, epoch, "capability-reused")).toBeNull();
+    expect(check(sameRound, "capability-reused")).toBeNull();
     const splitEpoch = structuredClone(events), transfer = splitEpoch.find(event => event.type === "benchmark_reuse_phase" && event.data.phase === 2)!.seq;
     for (const event of splitEpoch) if (event.seq >= transfer) event.trace.epoch = "other-epoch";
-    expect(passed(splitEpoch, epoch, "capability-reused")).toBeNull();
+    expect(check(splitEpoch, "capability-reused")).toBeNull();
     const failed = structuredClone(events);
     for (const event of failed.filter(event => event.type === "python_capability_result" || event.type === "python_call_end")) event.data.outcome = "error";
-    if (route !== "import") expect(passed(failed, epoch, "capability-reused")).toBeNull();
+    if (route !== "import") expect(check(failed, "capability-reused")).toBeNull();
     const prefilled = structuredClone(events);
     prefilled.find(event => event.type === "benchmark_reuse_workspace")!.data.pythonFiles = ["scripts/bench.py"];
-    expect(passed(prefilled, epoch, "fresh-workspace")).toBe(false);
-    expect(passed(prefilled, epoch, "capability-created")).toBe(false);
-    expect(passed(prefilled, epoch, "capability-reused")).toBeNull();
+    expect(check(prefilled, "fresh-workspace")).toBe(false);
+    expect(check(prefilled, "capability-created")).toBe(false);
+    expect(check(prefilled, "capability-reused")).toBeNull();
   } finally {
     await runtime.close(); devices.close(); await closeRsa(); await closeBaseware();
     await rm(workspace, { recursive: true, force: true });

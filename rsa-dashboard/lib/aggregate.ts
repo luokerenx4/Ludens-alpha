@@ -55,6 +55,7 @@ export function aggregate(events: Event[], now = Date.now()) {
   const compactionHttpAttempts = new Map<string, number>();
   let autoStarted: number | undefined;
   let elapsedMs = 0;
+  let actions = 0;
   const executionErrors = new Set(events
     .filter(event => event.type === "execution_error" && event.trace.traceId && event.trace.spanId)
     .map(event => JSON.stringify([event.trace.epoch, event.trace.traceId, event.trace.spanId])));
@@ -253,12 +254,13 @@ export function aggregate(events: Event[], now = Date.now()) {
     }
     if (
       event.type === "execution" &&
-      call &&
       d.requiresControl !== false &&
       d.status === "completed" &&
       d.exitCode === 0
-    )
-      call.actions++;
+    ) {
+      actions++;
+      if (call) call.actions++;
+    }
     for (const observation of eventObservations(event)) {
       const o: Observation = {
         id: observation.id,
@@ -395,7 +397,7 @@ export function aggregate(events: Event[], now = Date.now()) {
       : null,
     summary: {
       completed: completed.length,
-      actions: calls.reduce((n, c) => n + c.actions, 0),
+      actions,
       explicitObserves: calls.reduce(
         (n, c) => n + c.tools.filter((t) => t.name === "observe").length,
         0,

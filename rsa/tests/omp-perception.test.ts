@@ -44,7 +44,7 @@ test("OMP bootstraps empty perception and repairs it through the real reload CLI
   const modelRegistry = new ModelRegistry(authStorage, undefined, { settings });
   const model = modelRegistry.find("openai-codex", "gpt-6.1-sol")!;
   const manager = SessionManager.create(workspace, join(directory, "session"));
-  const baseTools = ["read", "write", "edit", "exec", "observe"];
+  const baseTools = ["read", "write", "edit", "bash", "observe"];
   const source = (text: string, broken = false) => `class Perception:
     def start(self, context): pass
     def close(self): pass
@@ -75,7 +75,7 @@ test("OMP bootstraps empty perception and repairs it through the real reload CLI
       const sources = [source("adapted-v1"), source("adapted-v2"), broken, source("adapted-v3")];
       const content: AssistantMessage["content"] = index <= sources.length
         ? [{ type: "toolCall", id: `write-observer-${index}`, name: "write", arguments: { path: "perception.py", content: sources[index - 1] } },
-           { type: "toolCall", id: `reload-${index}`, name: "exec", arguments: { command: "rsa perception reload" } }]
+           { type: "toolCall", id: `reload-${index}`, name: "bash", arguments: { command: "rsa perception reload" } }]
         : [{ type: "text", text: "Observer repaired." }];
       const message: AssistantMessage = { role: "assistant", api: model.api, provider: model.provider, model: model.id,
         timestamp: Date.now(), content, stopReason: index <= sources.length ? "toolUse" : "stop",

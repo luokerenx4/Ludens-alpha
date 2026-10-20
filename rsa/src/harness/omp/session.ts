@@ -48,7 +48,7 @@ export async function createOmpSession(options: Parameters<typeof createAgentSes
   // The CustomTool adapter does not expose concurrency. Set it on the actual
   // AgentTools: an observation must wait for preceding environment actions.
   for (const tool of result.session.agent.state.tools) {
-    if (tool.name === "exec" || tool.name === "observe") tool.concurrency = "exclusive";
+    if (tool.name === "observe") tool.concurrency = "exclusive";
   }
   return result;
 }
@@ -82,6 +82,7 @@ export async function createOmpAgent(options: {
     // The pinned pi-ai patch routes oversized bootstrap frames through SSE
     // until native compaction, instead of repeatedly retrying close 1009.
     "providers.openaiWebsockets": "auto",
+    "async.enabled": true, "launch.enabled": true,
   });
   const authStorage = await discoverAuthStorage(undefined, { settings, cwd: options.workspace });
   // OMP's remote/background compactor bypasses agent.streamFn. This host-local
@@ -107,11 +108,16 @@ export async function createOmpAgent(options: {
       promptTemplates: [], slashCommands: [],
       enableMCP: false, enableLsp: false, enableIrc: false, skipPythonPreflight: true,
       disableExtensionDiscovery: true, restrictToolNames: true, allowRestrictedCustomTools: true,
-      toolNames: ["read", "write", "edit", "observe", "exec"], customTools: extension.tools,
+      toolNames: ["read", "write", "edit", "observe", "bash", "wait"], customTools: extension.tools,
       // Restricted sessions accept explicit prepared hooks and caller-supplied tools only.
       preloadedPreparedExtensions: [{ path: extensionPath, resolvedPath: extensionPath, factory: extension.factory, error: null }],
     });
     initializedSession = session;
+    // Native background completions can wake an idle OMP session. Handback ends
+    // permission to call the model as well as the device, without killing jobs.
+    const removeControlGate = session.agent.addBeforeModelCall(() => {
+      if (!cycle || cycle.signal.aborted) return { stop: true, reason: "RSA control cycle is inactive" };
+    });
     const sessionFile = await selectWorkspaceSession(options.state, manager);
     const unsubscribe = trace.attach(session);
     options.log.recorder(SHIORI_SOURCE)("session", { file: sessionFile, model: options.model, tools: session.getActiveToolNames() });
@@ -137,7 +143,7 @@ export async function createOmpAgent(options: {
       abort: () => session.abort(),
       async close() {
         try { await session.dispose(); }
-        finally { unsubscribe(); untraceCompaction(); await trace.shiori.close(); authStorage.close(); }
+        finally { removeControlGate(); unsubscribe(); untraceCompaction(); await trace.shiori.close(); authStorage.close(); }
       },
     };
   } catch (error) {

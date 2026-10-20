@@ -102,7 +102,7 @@ test("DeepSeek chat chunks retain readable thinking, assistant text and function
   assert.deepEqual(streamBlocks(chunk({ content: "\n" }, "stop"), "model", anchor), []);
 });
 
-test("cached growing streams update the same block and tool execution/result joins the provider call", async () => {
+test("cached growing streams and native bash artifact results join the same provider call without exec events", async () => {
   const temporary = await mkdtemp(join(tmpdir(), "rsa-activity-"));
   const root = await realpath(temporary);
   try {
@@ -117,16 +117,21 @@ test("cached growing streams update the same block and tool execution/result joi
     const next = (await activityBlocks(root, events)).filter(b => b.kind === "text");
     assert.equal(next.length, 1); assert.equal(next[0].id, first.find(b => b.kind === "text")?.id);
     assert.equal(next[0].text, "Hello there"); assert.equal(next[0].status, "complete");
-    await appendFile(file, frame({ type: "response.output_item.done", item: { type: "function_call", id: "fc_1", call_id: "call_1", name: "exec", arguments: '{"command":"ls"}' } }));
+    await appendFile(file, frame({ type: "response.output_item.done", item: { type: "function_call", id: "fc_1", call_id: "call_1", name: "bash", arguments: '{"command":"ls"}' } }));
     const resultPath = `payloads/${"a".repeat(64)}.json.gz`;
     await writeFile(join(root, resultPath), gzipSync(JSON.stringify({ content: [
       { type: "text", text: '{"stdout":"result.txt","exitCode":0}' }, { type: "image", mimeType: "image/png", data: "IMAGE-BASE64" },
     ] })));
-    events.push(event("tool_start", 1, { toolName: "exec", args: { command: "ls" }, intent: "List files" }, "cycle", "call_1|fc_1"));
-    events.push(event("exec_result", 2, { stdout: "result.txt", exitCode: 0 }, "cycle", "call_1|fc_1"));
-    events.push(event("tool_end", 3, { toolName: "exec", isError: false, result: { path: resultPath } }, "cycle", "call_1|fc_1"));
+    events.push(event("tool_start", 1, { toolName: "bash", args: { command: "ls" }, intent: "List files" }, "cycle", "call_1|fc_1"));
+    events.push(event("tool_update", 2, { toolName: "bash",
+      result: { content: [{ type: "text", text: "reading files…" }] } }, "cycle", "call_1|fc_1"));
+    const progress = (await activityBlocks(root, events)).filter(b => b.kind === "tool");
+    assert.equal(progress.length, 1); assert.equal(progress[0].status, "running");
+    assert.equal(progress[0].tool?.result, "reading files…");
+    events.push(event("tool_end", 3, { toolName: "bash", isError: false, result: { path: resultPath } }, "cycle", "call_1|fc_1"));
     const tools = (await activityBlocks(root, events)).filter(b => b.kind === "tool");
     assert.equal(tools.length, 1); assert.equal(tools[0].status, "complete");
+    assert.equal(tools[0].title, "bash");
     assert.match(tools[0].text, /List files/); assert.match(tools[0].text, /result.txt/);
     assert.deepEqual(tools[0].tool, { intent: "List files", args: { command: "ls" }, result: { stdout: "result.txt", exitCode: 0 } });
     assert.equal(JSON.stringify(tools[0]).includes("IMAGE-BASE64"), false);
@@ -144,10 +149,12 @@ test("system and diagnostic blocks preserve structured event data with the exist
       event("control", 1, { mode: "manual", reason: "budget" }),
       event("model_http_end", 2, { elapsedMs: 123, status: 200, signature: "HIDDEN-SIGNATURE",
         observation: { type: "image", mimeType: "image/png", data: "IMAGE-BASE64" } }),
+      event("background_result", 3, { kind: "job", jobId: "job-one", status: "completed", isError: false }),
     ]);
     assert.deepEqual(blocks.map(block => [block.kind, block.data]), [
       ["system", { mode: "manual", reason: "budget" }],
       ["diagnostic", { elapsedMs: 123, status: 200, observation: { type: "image", mimeType: "image/png" } }],
+      ["system", { kind: "job", jobId: "job-one", status: "completed", isError: false }],
     ]);
     assert.equal(JSON.stringify(blocks).includes("HIDDEN-SIGNATURE"), false);
     assert.equal(JSON.stringify(blocks).includes("IMAGE-BASE64"), false);

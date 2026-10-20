@@ -255,7 +255,9 @@ rsa auto off
 
 ## 工作区 Python 能力
 
-OMP 可通过 `exec` 直接运行 `python experiment.py`。程序自行加载模型、采集数据、训练和连续操作；模型实例与中间状态由该进程持有。需要复用时直接 import 工作区函数，也可按能力 ID 使用 `Client.call()`。装饰器用于声明可发现的入口，不要求每个辅助函数都装饰。
+OMP 通过原生 `bash` 运行 `python experiment.py`。程序自行加载模型、采集数据、训练和连续操作；模型实例与中间状态由该进程持有。需要复用时直接 import 工作区函数，也可按能力 ID 使用 `Client.call()`。装饰器用于声明可发现的入口，不要求每个辅助函数都装饰。
+
+命令执行、输出截断、超时、后台任务和命名服务复用 OMP，不再维护 RSA 自定义 `exec`。`bash` 的 `async` 启动后台任务，`timeout: 0` 可关闭其执行期限；`name` 启动有就绪检查的命名服务。模型通过原生 `read proc://` 查看、`write proc://<id>/kill` 停止，或用 `wait` 等待结果。一次工具返回或模型轮次结束不等于后台进程结束；命名服务由 OMP 的项目 broker 管理，具体存活范围遵循上游配置。RSA 的外层续轮、自动观测和接管预算保持不变。
 
 例如在 `scripts/sampling.py` 中写：
 
@@ -300,9 +302,11 @@ RSA 按需扫描 workspace 中的 `.py` 文件，只登记 `@capability` / `@cap
 
 装饰器为直接调用和本地 `Client.call()` 记录入口身份、实际加载的源码版本、耗时及终态，并将嵌套设备调用接入同一 trace。日志不要求模型对象或训练张量转换成 JSON；参数与返回值的 JSON 约束保留在跨进程入口。模型缓存和内部执行循环由工作区程序管理；自动感知拥有专门的常驻 Python 进程，不把普通能力调用改成通用常驻执行服务。
 
-`logs/`、`.git/`、依赖和虚拟环境目录不参与扫描。脚本可放在工作区根目录、`scripts/` 或技能目录，未标记的辅助函数保持普通 Python 用法。签名与语法诊断通过目录返回，供 Agent 自行修正。OMP 仍只暴露 `read/write/edit/exec/observe`，不会逐轮注入完整能力目录或各函数 schema；模型通过 CLI 按需发现。
+`logs/`、`.git/`、依赖和虚拟环境目录不参与扫描。脚本可放在工作区根目录、`scripts/` 或技能目录，未标记的辅助函数保持普通 Python 用法。签名与语法诊断通过目录返回，供 Agent 自行修正。OMP 暴露原生 `read/write/edit/bash/wait` 及 RSA 的 `observe`，不会逐轮注入完整能力目录或各函数 schema；模型通过 CLI 按需发现。
 
-shell 与 Python 能力自动获得 RSA/Baseware CLI、Python 包路径及当前 `RSA_WORKSPACE` / `RSA_RUN_ID` / `RSA_SOCKET` / `BASEWARE_SOCKET` / `BASEWARE_EPOCH` / `BASEWARE_TRACE`。设备请求和调用日志连接同一 RSA 宿主，原始设备调用最终交给 Baseware，观测与调用 trace 保持连通。人工接管会取消宿主管理的在途调用和脚本进程组，并由 Baseware 释放设备；脚本不自行获取操作权。这里是可信本机 shell，不是 Python 沙箱。
+shell 与 Python 能力自动获得 RSA/Baseware CLI、Python 包路径及当前 `RSA_WORKSPACE` / `RSA_RUN_ID` / `RSA_SOCKET` / `BASEWARE_SOCKET` / `BASEWARE_EPOCH`。RSA 插件在接管周期开始时设置宿主环境，调用 OMP 现有的 `refreshShellConfigCache()` 更新原生 shell 配置；每个 workspace 使用独立宿主。环境在同一 epoch 内保持稳定，后台进程保留启动时的 epoch，不随下一轮接管取得新权限。无需修改 OMP、工具参数或命令历史。
+
+OMP 内部模型和工具调用保留原生 trace；跨进程的设备调用保留 run/epoch 归属，并从自身调用开始记录 Python/设备子链，不伪造精确的 bash 父调用或按邻近时间猜测 modelCallId。人工接管由 Baseware 撤销操作权并释放设备，RSA 取消自身管理的在途 Python/设备调用；普通 shell 和后台任务遵循 OMP 生命周期。即使进程继续存在，旧 epoch 也不能继续输入；脚本不自行获取操作权。这里是可信本机 shell，不是 Python 沙箱。
 
 ### 工作区感知进程
 
@@ -421,7 +425,7 @@ Agent Loop 内核语义上称为 **Shiori**，当前实现 OMP 18.9.1。schema 2
 
 大对象放在 `payloads/<sha256>.json.gz` 或 `.bin.gz`，引用中的 hash 与 bytes 对应解压后的字节；不截断内容。相同内容复用文件。HTTP body 自身若启用了压缩，先解开日志的 gzip，再按该事件的 `contentEncoding` 解释。`streams/<modelCallId>.jsonl` 保存 OMP 暴露的原始 SSE 事件或 WebSocket 帧及时间，供核查服务端原始 usage；无流事件时不会创建该文件。`model_end.usage` 则是 OMP 统一后的统计格式。
 
-`tool_start/end`、`exec/exec_result`、`observation_start/end/error`、`command/execution/execution_error` 串起模型到能力边界的执行链。shell 和 Python 通过 `BASEWARE_TRACE` 将关联字段带入设备请求。这些只是观测元数据，操作权由本轮 epoch 校验。`python_capabilities`、`python_capability/result` 记录能力目录、源码 hash、调用参数及结果。Baseware 独立保存设备日志，同时推送给 RSA；RSA 将观测文件复制进自己的 run，保持 Dashboard 与 Pet 的日志读取方式。工具正文单独保存；观测文件与技能版本沿用已有存储。
+`tool_start/end` 记录 OMP 内部工具执行，`observation_start/end/error`、`command/execution/execution_error` 记录能力调用与设备事实。新运行的 shell 记录来自原生 `bash` 工具，结果正文和 details 保存在 `tool_end.result` 引用的 artifact；不再另产 `exec/exec_result`，分析器仍能读取旧日志。后台启动成功不等于任务完成。原生 shell 子进程继承 run/epoch，不把某次工具的 trace 注入整个周期；设备调用从自己的 span 开始，已知的 Python 嵌套调用继续传递父子关系。缺少跨 shell 边界的精确父关联时保持缺失，不按时间补猜。这些只是观测元数据，操作权由本轮 epoch 校验。`python_capabilities`、`python_capability/result` 记录能力目录、源码 hash、调用参数及结果。Baseware 独立保存设备日志，同时推送给 RSA；RSA 将观测文件复制进自己的 run，保持 Dashboard 与 Pet 的日志读取方式。工具正文单独保存；观测文件与技能版本沿用已有存储。
 
 为排查 2026-10-15 实跑中的动作后过早采样和技能读取漏记，日志额外记录以下信息；这些诊断字段不进入模型上下文，也不改变采样时机：
 

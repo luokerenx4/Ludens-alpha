@@ -49,9 +49,10 @@ export async function run(ctx: BenchmarkContext): Promise<CaseOutcome> {
       recordBenchmark("benchmark_reuse_workspace", { ...baseline, session: "new" }, trace);
       environment.begin(trace ?? {});
     }
-    if (type === "exec_result") {
+    if (type === "tool_end") {
       environment.afterExec(trace ?? {});
-      // The last Python/RPC result has settled; now stop without cancelling it.
+      // The operation has returned to the agent (including wait/read after a
+      // background job); now stop without cancelling its final tool result.
       if (environment.done) queueMicrotask(() => { void runtime?.stop("benchmark tasks completed"); });
     }
   };
@@ -104,5 +105,5 @@ export async function run(ctx: BenchmarkContext): Promise<CaseOutcome> {
   const inventory = await new PythonCapabilities(ctx.workspace).discover(ctx.signal);
   recordBenchmark("benchmark_reuse_inventory", { stage: "post-run", ...inventory }, { epoch });
   const events = (await readFile(join(ctx.runDir, "events.jsonl"), "utf8")).split("\n").filter(Boolean).map(line => JSON.parse(line) as ReuseEvent);
-  return evaluateReuse(events, epoch!);
+  return evaluateReuse(events, epoch!, ctx.runDir);
 }

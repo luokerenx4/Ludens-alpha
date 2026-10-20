@@ -403,7 +403,8 @@ def analyze(run, epoch=None):
             "endAt": finish["at"] if finish else None, "endAtMs": finish["atMs"] if finish else None,
             "durationMs": finish["atMs"] - start["atMs"] if finish else None,
             "state": "pending" if not finish else "error" if is_error else "completed",
-            "isError": is_error, "exec": command})
+            "isError": is_error, "args": start["data"].get("args", {}),
+            "result": finish["data"].get("result") if finish else None, "exec": command})
     skills = []
     for event in tool_starts:
         data = event["data"]
@@ -592,7 +593,7 @@ def analyze(run, epoch=None):
             "Cache denominator is usage.input + cacheRead + cacheWrite. Warm excludes request index 1, not later post-compaction cache resets.",
             "controllerActions counts completed controller executions that require control; sampling calls with requiresControl=false are excluded. Older execution events without this field retain their original action meaning. Inspect argv for state queries/releases or multi-step sequences. independentObserveRequests counts completed requests whose sole executed tool is observe.",
             "controllerExecutionErrors counts explicit execution_error events belonging to the selected epoch, including late events and those marked aborted. Details retain the original error and match command by epoch/operationId. This is independent of toolErrors: a shell batch can finish successfully after an inner controller command fails. Stderr is not parsed to infer errors.",
-            "toolExecution measures tool_start to tool_end, including any capture/result preparation; execCommandMs measures only exec to exec_result. Commands are nested within tools: do not add these durations together. Pending spans have no duration, and command text is not parsed to infer waiting or action time.",
+            "toolExecution measures tool_start to tool_end, including result preparation. Native bash/background tool completion is not the lifetime or exit status of a background process. Tool args and result artifact references are retained without opening payloads; execCommandMs only measures historical exec to exec_result events. These durations overlap and must not be added. Pending spans have no duration, and command text is not parsed to infer waiting or action time.",
             "Skill read/write/edit counts use successful tool completion and named SKILL.md paths. They do not prove the quality of learned content or that an edit changed its hash.",
             "Capture intervals include waiting, GPU readback and file encoding. sourceSequence advance does not prove that the frame reflects the preceding action.",
             "perception measures explicitly traced snapshot reads, including late ends, not background sampling or controller actions. New/reused counts use the recorded reused flag; unique snapshot IDs are separate from read count. sampleAgeMs is read-end wall time minus the declared sampledAt only when both have timezones and the age is nonnegative; missing/invalid/future timestamps remain unknown. It does not measure model-dispatch age, sample freshness guarantees, or sensor capture duration. Status events without the selected epoch are not assigned by time.",

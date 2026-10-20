@@ -458,6 +458,26 @@ test("analysis retains controller errors when the shell batch succeeds and isola
   }]);
 });
 
+test("native bash and background tool results retain arguments and artifact references without inventing command timing", async () => {
+  const event = fixture();
+  const trace = { modelCallId: "call", toolCallId: "bash" };
+  const args = { command: "python worker.py", async: true };
+  const result = { path: `payloads/${"a".repeat(64)}.json.gz`, bytes: 42 };
+  const report = await analyze([
+    event("control", "one", { mode: "auto", epoch: "one" }),
+    event("tool_start", "one", { toolName: "bash", args }, trace),
+    event("tool_end", "one", { toolName: "bash", isError: false, result }, trace),
+    event("tool_start", "one", { toolName: "wait", args: {} }, { ...trace, toolCallId: "pending" }),
+    event("control", "one", { mode: "manual", reason: "human" }),
+  ]);
+  expect(report.summary.toolCounts).toEqual({ bash: 1, wait: 1 });
+  expect(report.summary.execCommandMs).toEqual(emptyStats);
+  expect(report.tools[0]).toMatchObject({ toolName: "bash", args, result,
+    durationMs: 1000, state: "completed", isError: false, exec: null });
+  expect(report.tools[1]).toMatchObject({ toolName: "wait", args: {},
+    result: null, durationMs: null, state: "pending", isError: null, exec: null });
+});
+
 test("unified sampling controllers preserve observations without adding input actions", async () => {
   const event = fixture();
   const trace = { operationId: "capture" };

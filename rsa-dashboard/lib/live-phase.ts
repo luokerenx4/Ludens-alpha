@@ -114,7 +114,7 @@ export function getLivePhase(
         finish(modelKey, event);
         break;
       case "tool_start":
-        start(toolKey, "tool", event, owner);
+        start(toolKey, d.toolName === "bash" ? "command" : "tool", event, owner);
         break;
       case "exec":
       case "exec_result":

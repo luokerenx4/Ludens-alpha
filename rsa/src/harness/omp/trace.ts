@@ -4,6 +4,8 @@ import type { StreamFn } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import { getOpenAICodexTransportDetails } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent";
+import { ASYNC_RESULT_MESSAGE_TYPE, type AsyncResultDetails } from "@oh-my-pi/pi-coding-agent/session/async-job-delivery";
+import { LAUNCH_COMPLETION_MESSAGE_TYPE, type LaunchCompletionEntry } from "@oh-my-pi/pi-coding-agent/session/launch-completion";
 import { logger } from "@oh-my-pi/pi-utils";
 import { childTrace, EventLog, type EventTrace } from "../events.ts";
 import { SHIORI_SOURCE, ShioriTelemetry } from "./shiori.ts";
@@ -185,12 +187,56 @@ export class ModelTrace {
     const original = session.agent.streamFn;
     session.agent.streamFn = this.wrap(original);
     const disposeCompactionTrace = installCompactionSpeculationTrace(this.log, this.compactionParent);
+    // A delayed native notification belongs to its launcher, even after another
+    // model turn or takeover. Service names alone are reusable, so include PID.
+    const background = new Map<string, EventTrace>();
+    const serviceKey = (name: string, pid?: number) => JSON.stringify(["service", name, pid]);
     const unsubscribe = session.subscribe((event) => {
       if (event.type === "tool_execution_start") this.record("tool_start", event, this.current(event.toolCallId));
-      if (event.type === "tool_execution_end") this.record("tool_end", {
-        toolName: event.toolName, toolCallId: event.toolCallId, isError: event.isError,
-        result: this.log.artifact(event.result),
+      if (event.type === "tool_execution_update") this.record("tool_update", {
+        toolName: event.toolName, toolCallId: event.toolCallId, result: this.log.artifact(event.partialResult),
       }, this.current(event.toolCallId));
+      if (event.type === "tool_execution_end") {
+        const trace = this.current(event.toolCallId);
+        const result = this.log.artifact(event.result);
+        this.record("tool_end", {
+          toolName: event.toolName, toolCallId: event.toolCallId, isError: event.isError, result,
+        }, trace);
+        if (event.toolName === "bash") {
+          const details = event.result?.details;
+          const job = details?.async, service = details?.service;
+          const key = job?.jobId ? `job:${job.jobId}` : service?.name ? serviceKey(service.name, service.pid) : undefined;
+          if (key) {
+            const owner = childTrace(trace);
+            background.set(key, owner);
+            this.record("background_start", {
+              kind: job ? "job" : "service", ...(job ?? service), result,
+            }, owner);
+          }
+        }
+      }
+      if (event.type === "message_end" && event.message.role === "custom") {
+        const message = event.message;
+        const jobs = message.customType === ASYNC_RESULT_MESSAGE_TYPE
+          ? (message.details as AsyncResultDetails | undefined)?.jobs : undefined;
+        const daemons = message.customType === LAUNCH_COMPLETION_MESSAGE_TYPE
+          ? (message.details as { daemons?: LaunchCompletionEntry["daemon"][] } | undefined)?.daemons : undefined;
+        if (jobs?.length || daemons?.length) {
+          const result = this.log.artifact(message);
+          for (const job of jobs ?? []) {
+            const key = `job:${job.jobId}`;
+            this.record("background_result", { kind: "job", ...job, result,
+              isError: job.status === "failed" }, background.get(key) ?? {});
+            background.delete(key);
+          }
+          for (const daemon of daemons ?? []) {
+            const key = serviceKey(daemon.name, daemon.pid);
+            this.record("background_result", { kind: "service", ...daemon, result,
+              isError: daemon.state === "failed" }, background.get(key) ?? {});
+            background.delete(key);
+          }
+        }
+      }
       if (event.type === "auto_compaction_start" || event.type === "auto_compaction_end") {
         if (event.type === "auto_compaction_start")
           this.maintenance = { trace: { ...childTrace(this.compactionParent()), operationId: crypto.randomUUID() }, startedAt: this.log.clock.now() };
@@ -199,7 +245,7 @@ export class ModelTrace {
         if (event.type === "auto_compaction_end") this.maintenance = undefined;
       }
     });
-    return () => { unsubscribe(); disposeCompactionTrace(); session.agent.streamFn = original; };
+    return () => { unsubscribe(); disposeCompactionTrace(); background.clear(); session.agent.streamFn = original; };
   }
 
   wrap(streamFn: StreamFn): StreamFn {

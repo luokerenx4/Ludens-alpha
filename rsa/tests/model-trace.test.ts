@@ -316,7 +316,7 @@ test("compaction HTTP failures and cancellation retain safe diagnostics and inde
   } finally { uninstall(); globalThis.fetch = original; await rm(directory, {recursive: true, force: true}); }
 });
 
-test("real OMP HTTP bodies retain DeepSeek image prefixes beyond five images and correlate through shell IPC", async () => {
+test("real OMP preserves image prefixes and native tool traces while shell IPC retains only its declared epoch", async () => {
   const globalProvider = otelTrace.getTracerProvider();
   const directory = await mkdtemp(join(tmpdir(), "rsa-wire-"));
   const workspace = join(directory, "workspace");
@@ -353,11 +353,12 @@ test("real OMP HTTP bodies retain DeepSeek image prefixes beyond five images and
   const server = Bun.serve({hostname: "127.0.0.1", port: 0, async fetch(request) {
     received.push(await request.text());
     const delta = received.length === 1 ? {role: "assistant", content: "", reasoning_content: "probe",
-      tool_calls: [1, 2].map((n, index) => ({index, id: `tool-${n}`, type: "function", function: {name: "exec", arguments: JSON.stringify({command: `baseware controller joint-7 move ${n}`})}}))}
+      tool_calls: [1, 2].map((n, index) => ({index, id: `tool-${n}`, type: "function", function: {name: "bash", arguments: JSON.stringify({command: `baseware controller joint-7 move ${n}`})}}))}
       : received.length < 7 ? {role: "assistant", content: "", reasoning_content: "probe",
         tool_calls: [{index: 0, id: `round-${received.length}`, type: "function", function: received.length === 6
           ? {name: "read", arguments: JSON.stringify({path: "skills/notes.md:2-3"})}
-          : {name: "exec", arguments: JSON.stringify({command: `printf sample-${received.length}`})}}]}
+          : received.length === 5 ? {name: "observe", arguments: "{}"}
+          : {name: "bash", arguments: JSON.stringify({command: `printf sample-${received.length}`})}}]}
       : {role: "assistant", content: "done"};
     return new Response(sse(delta, received.length < 7 ? "tool_calls" : "stop", `response-${received.length}`), {
       headers: {"Content-Type": "text/event-stream", "x-request-id": `http-${received.length}`, "set-cookie": "private-response-cookie",
@@ -373,7 +374,7 @@ test("real OMP HTTP bodies retain DeepSeek image prefixes beyond five images and
     authStorage: auth, modelRegistry: registry, sessionManager: SessionManager.create(workspace, join(directory, "session")), telemetry: trace.shiori.config,
     systemPrompt: "Use the supplied tools.", cacheWarming: false, skills: [], rules: [], contextFiles: [], promptTemplates: [], slashCommands: [],
     enableMCP: false, enableLsp: false, enableIrc: false, skipPythonPreflight: true, disableExtensionDiscovery: true,
-    restrictToolNames: true, allowRestrictedCustomTools: true, toolNames: ["exec", "read"], customTools: extension.tools,
+    restrictToolNames: true, allowRestrictedCustomTools: true, toolNames: ["bash", "read", "observe"], customTools: extension.tools,
     preloadedPreparedExtensions: [{path: "trace-test", resolvedPath: "trace-test", factory: (pi) => {
       extension.factory(pi);
       pi.on("before_provider_request", event => ({...event.payload as object, diagnostic_marker: "after-extension"}));
@@ -440,7 +441,7 @@ test("real OMP HTTP bodies retain DeepSeek image prefixes beyond five images and
     const summaries = events.filter(e => e.type === "shiori_run_end");
     expect(summaries).toHaveLength(1);
     expect(summaries[0].data).toMatchObject({ scope: "agent_loop", summary: {chats: {total: 7}, tools: {total: 7, ok: 7}},
-      coverage: {toolsAvailable: ["exec", "read"], toolsInvoked: ["exec", "read"]} });
+      coverage: {toolsAvailable: ["bash", "observe", "read"], toolsInvoked: ["bash", "observe", "read"]} });
     expect(summaries[0].trace.spanId).toBe(nativeRun.trace.spanId);
     expect(otelTrace.getTracerProvider()).toBe(globalProvider);
     for (const [index, request] of requests.entries()) {
@@ -451,29 +452,38 @@ test("real OMP HTTP bodies retain DeepSeek image prefixes beyond five images and
     expect(JSON.stringify(nativeEnds)).not.toContain("gen_ai.tool.call.arguments");
     const firstCall = requests[0].trace.modelCallId;
     for (const tool of ["tool-1", "tool-2"]) {
-      for (const type of ["tool_start", "tool_end", "exec", "exec_result", "command", "execution"]) {
+      for (const type of ["tool_start", "tool_end"]) {
         const event = events.find(e => e.type === type && e.trace.toolCallId === tool);
         expect(event, `${tool} ${type}`).toBeDefined();
         expect(event.trace).toMatchObject({epoch, modelCallId: firstCall, requestId: requests[0].trace.requestId});
       }
     }
     for (const tool of nativeTools) {
-      for (const type of ["tool_start", "tool_end", "exec", "exec_result"].filter(type => tool.data.toolName === "exec" || type.startsWith("tool_"))) {
+      for (const type of ["tool_start", "tool_end"]) {
         const event = events.find(e => e.type === type && e.trace.toolCallId === tool.trace.toolCallId);
         expect(event.trace.spanId, `${type} native parent`).toBe(tool.trace.spanId);
       }
     }
+    const firstBatchEnd = events.filter(e => e.type === "tool_end" && e.trace.modelCallId === firstCall).at(-1)!;
     expect(events.filter(e => e.type === "observation" && e.trace.modelCallId === firstCall)
-      .map(e => e.trace.toolCallId)).toEqual(["tool-2"]);
+      .map(e => e.trace.toolCallId)).toEqual([firstBatchEnd.trace.toolCallId]);
     const observations = events.filter(e => e.type === "observation");
     expect(observations[0].data.origin).toBe("cli");
     expect(observations[1].data).toMatchObject({origin: "cli", sourceSequenceDelta: 100,
       previousObservationId: "observation-1"});
     const perceptionReads = events.filter(e => e.type === "perception_observe_end");
     expect(perceptionReads).toHaveLength(7);
-    expect(perceptionReads[1].trace).toMatchObject({epoch, modelCallId: firstCall, toolCallId: "tool-2"});
+    expect(perceptionReads[1].trace).toMatchObject({epoch, modelCallId: firstCall, toolCallId: firstBatchEnd.trace.toolCallId});
     expect(perceptionReads[1].data.result.observations.map((value: {id: string}) => value.id)).toEqual(["observation-2"]);
     expect(perceptionReads[1].data.durationMs).toBeGreaterThanOrEqual(0);
+    const explicitObserve = nativeTools.find(e => e.trace.toolCallId === "round-5");
+    expect(perceptionReads[5].trace).toMatchObject({ epoch, modelCallId: requests[4].trace.modelCallId,
+      toolCallId: "round-5", traceId: explicitObserve.trace.traceId });
+    expect(observations[5].trace).toMatchObject({ modelCallId: requests[4].trace.modelCallId,
+      toolCallId: "round-5", traceId: explicitObserve.trace.traceId });
+    // This fixture's sampling uses no control lease; Runtime does not propagate
+    // an epoch to the raw device call, but keeps its explicit native ancestry.
+    expect(observations[5].trace).not.toHaveProperty("epoch");
     expect(events.filter(e => e.type === "observation_media")).toHaveLength(7);
     expect(events.find(e => e.type === "read").data).toMatchObject({
       requestedPath: "skills/notes.md:2-3", path: notes, isError: false,
@@ -482,11 +492,19 @@ test("real OMP HTTP bodies retain DeepSeek image prefixes beyond five images and
     const commands = events.filter(e => e.type === "command" && e.data.requiresControl);
     expect(commands.map(e => e.trace.operationId)).toHaveLength(2);
     expect(events.filter(e => e.type === "command" && e.data.requiresControl === false)).toHaveLength(7);
+    expect(new Set(commands.map(e => e.trace.traceId)).size).toBe(2);
+    expect(commands.map(e => e.data.argv).sort()).toEqual([["move", "1"], ["move", "2"]]);
     for (const command of commands) {
-      const nativeTool = nativeTools.find(e => e.trace.toolCallId === command.trace.toolCallId);
-      expect(command.trace.traceId).toBe(nativeTool.trace.traceId);
-      expect(command.trace.parentSpanId).toBe(nativeTool.trace.spanId);
-      expect(command.trace.spanId).not.toBe(nativeTool.trace.spanId);
+      expect(command.trace.epoch).toBe(epoch);
+      expect(command.trace.traceId).toMatch(/^[a-f0-9]{32}$/);
+      expect(command.trace.spanId).toMatch(/^[a-f0-9]{16}$/);
+      expect(command.trace.traceId).not.toBe(nativeRun.trace.traceId);
+      for (const key of ["modelCallId", "toolCallId", "requestId", "parentSpanId"])
+        expect(command.trace).not.toHaveProperty(key);
+      const execution = events.find(e => e.type === "execution" && e.trace.operationId === command.trace.operationId);
+      expect(execution.trace).toEqual(command.trace);
+      expect(execution.source.component).toBe("baseware");
+      expect(execution.origin.clockId).toBe(command.origin.clockId);
     }
     expect(events.filter(e => e.type === "execution").map(e => e.trace.operationId))
       .toEqual(events.filter(e => e.type === "command").map(e => e.trace.operationId));
@@ -587,10 +605,10 @@ test("transport retries share a request but get distinct HTTP IDs; reused tool I
   let attempts = 0;
   const fetch = async () => {
     if (++attempts === 1) return Response.json({error: {message: "retry fixture"}}, {status: 503, headers: {"retry-after": "0"}});
-    return new Response(sse({role: "assistant", content: "", reasoning_content: "probe", tool_calls: [{index: 0, id: "reused-tool", type: "function", function: {name: "exec", arguments: "{}"}}]}, "tool_calls", `response-${attempts}`), {headers: {"content-type": "text/event-stream"}});
+    return new Response(sse({role: "assistant", content: "", reasoning_content: "probe", tool_calls: [{index: 0, id: "reused-tool", type: "function", function: {name: "bash", arguments: "{}"}}]}, "tool_calls", `response-${attempts}`), {headers: {"content-type": "text/event-stream"}});
   };
   try {
-    const context = {messages: [{role: "user" as const, content: "test", timestamp: 0}], tools: [{name: "exec", description: "probe", parameters: {type: "object", properties: {}}}]};
+    const context = {messages: [{role: "user" as const, content: "test", timestamp: 0}], tools: [{name: "bash", description: "probe", parameters: {type: "object", properties: {}}}]};
     await (await stream(model, context, {apiKey: "fake", fetch})).result();
     const first = trace.current("reused-tool");
     await (await stream(model, context, {apiKey: "fake", fetch})).result();
