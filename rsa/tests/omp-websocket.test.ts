@@ -1,4 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
+import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
+import { type as schema } from "@oh-my-pi/omptype";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import * as piUtils from "@oh-my-pi/pi-utils";
 import { scheduler } from "node:timers/promises";
@@ -14,6 +16,8 @@ import type { Context, FetchImpl, ProviderSessionState } from "@oh-my-pi/pi-ai/t
  * External OMP transport contract tests: architecture-development TDD exception.
  * Production seed: Mario Maker 8h run 2026-10-19T13-19-53.903Z, explicit expiry
  * recovered at 23:21 Asia/Shanghai, but close(1012) at 23:46:56 stayed on SSE.
+ * Boundary correction: run 2026-10-20T14-57-50.713Z expired while a custom
+ * tool's input was incomplete; restore OMP's native toolcall_end commit point.
  * The close-code/partial-output/cancellation matrix below is fault injection,
  * not a claim that each condition occurred in that run. No live model or auth.
  * Policy and condition catalogue: ./README.md.
@@ -79,6 +83,7 @@ function fixture() {
   let onSend = (socket: FakeSocket) => {
     for (const event of completedEvents(`ws_${frames.length}`)) socket.message(event);
   };
+  let onHttp: () => object[] = () => completedEvents(`sse_${http.length}`);
   class FakeSocket {
     static readonly CONNECTING = 0;
     static readonly OPEN = 1;
@@ -126,7 +131,7 @@ function fixture() {
   }
   const fetch: FetchImpl = async (_input, init) => {
     http.push(decodeBody(init?.body));
-    return new Response(completedEvents(`sse_${http.length}`)
+    return new Response(onHttp()
       .map(event => `data: ${JSON.stringify(event)}\n\n`).join(""),
     {headers: {"content-type": "text/event-stream"}});
   };
@@ -141,6 +146,7 @@ function fixture() {
     restoreHandshake() { handshakeCloseCode = undefined; },
     stallNextHandshake() { stallNextHandshake = true; },
     onSend(callback: typeof onSend) { onSend = callback; },
+    onHttp(callback: typeof onHttp) { onHttp = callback; },
     stream(input: Context, extra: OpenAICodexResponsesOptions = {}) {
       return streamOpenAICodexResponses(model, input, {...options, ...extra});
     },
@@ -162,6 +168,80 @@ function fixture() {
     },
   };
 }
+
+test("expiry during custom tool input recovers through the native Agent and executes the completed tool once", async () => {
+  const f = fixture();
+  let now = Date.now();
+  const dateNow = spyOn(Date, "now").mockImplementation(() => now);
+  const executed: string[] = [];
+  const input = "record the first pit";
+  const parameters = schema({input: "string"});
+  const tool: AgentTool<typeof parameters> = {
+    name: "record", label: "Record", description: "Record text in the offline fixture.",
+    parameters, intent: "omit", customWireName: "record",
+    customFormat: {syntax: "regex", definition: ".+"},
+    async execute(_id, args) {
+      executed.push(args.input);
+      return {content: [{type: "text", text: "recorded"}], details: {}};
+    },
+  };
+  const agent = new Agent({
+    initialState: {model, tools: [tool]},
+    streamFn: (_model, input, options) => f.stream(input, {signal: options?.signal}),
+  });
+  try {
+    f.onSend(socket => {
+      socket.message({type: "response.created", response: {id: "ws_interrupted"}});
+      socket.message({type: "response.output_item.added", output_index: 0, item: {
+        type: "custom_tool_call", id: "ct_partial", call_id: "call_partial", name: "record", input: "",
+      }});
+      socket.message({type: "response.custom_tool_call_input.delta",
+        item_id: "ct_partial", output_index: 0, delta: "record the first"});
+      // Production failure: input was still streaming, so no toolcall_end and
+      // no executable call had been handed to the native Agent.
+      socket.expire();
+    });
+    f.onHttp(() => {
+      if (f.http.length > 1) return completedEvents(`sse_${f.http.length}`);
+      const item = {type: "custom_tool_call", id: "ct_complete",
+        call_id: "call_complete", name: "record", input};
+      return [
+        {type: "response.created", response: {id: "sse_tool"}},
+        {type: "response.output_item.added", output_index: 0, item: {...item, input: ""}},
+        {type: "response.custom_tool_call_input.delta", item_id: item.id, output_index: 0, delta: input},
+        {type: "response.custom_tool_call_input.done", item_id: item.id, output_index: 0, input},
+        {type: "response.output_item.done", output_index: 0, item},
+        {type: "response.completed", response: {id: "sse_tool", status: "completed",
+          usage: {input_tokens: 5, output_tokens: 1, total_tokens: 6, input_tokens_details: {cached_tokens: 0}}}},
+      ];
+    });
+
+    await agent.prompt("record a step");
+    expect(executed).toEqual([input]);
+    expect(agent.state.messages.filter(message => message.role === "toolResult")).toHaveLength(1);
+    expect(agent.state.messages.at(-1)).toMatchObject({role: "assistant", stopReason: "stop"});
+    expect(f.frames).toHaveLength(1);
+    // Native Agent dispatches the recovered call, then sends its result during
+    // the same prompt. Both requests use SSE while the socket is cooling down.
+    expect(f.http).toHaveLength(2);
+    expect(f.http[1]!.input).toContainEqual(expect.objectContaining({
+      type: "custom_tool_call_output", call_id: "call_complete", output: "recorded",
+    }));
+    expect(f.details()).toMatchObject({websocketDisabled: false, retryWebsocketAt: now + 60_000});
+
+    now += 60_001;
+    f.onSend(socket => { for (const event of completedEvents(`ws_${f.frames.length}`)) socket.message(event); });
+    await agent.prompt("recover websocket");
+    expect(f.sockets).toHaveLength(2);
+    expect(f.http).toHaveLength(2);
+    expect(JSON.parse(f.frames[1]!).previous_response_id).toBeUndefined();
+    await agent.prompt("next delta");
+    const delta = JSON.parse(f.frames[2]!) as Payload;
+    expect(delta.previous_response_id).toBe("ws_2");
+    expect(inputTexts(delta)).toEqual(["next delta"]);
+    expect(executed).toEqual([input]);
+  } finally { agent.abort(); dateNow.mockRestore(); f.close(); }
+});
 
 test("oversize UTF-8 websocket frame falls back to complete SSE and stays blocked until compaction", async () => {
   const f = fixture();
@@ -555,10 +635,10 @@ test.each([1006, 1012, 1013])("transient handshake close(%d) falls back once and
   } finally { dateNow.mockRestore(); f.close(); }
 });
 
-// Completed tools already had a regression guard. Text and thinking deltas also
-// reach consumers, so replay cannot be justified just by absence of toolcall_end.
+// Follow OMP's native commit boundary: text/thinking may be replaced by SSE;
+// a completed tool call is already executable and must never be replayed.
 for (const output of ["text", "thinking", "tool"] as const) {
-  test.each(["close 1012", "connection expiry"] as const)(`${output} already delivered: %s does not replay, next requests still recover`, async failure => {
+  test.each(["close 1012", "connection expiry"] as const)(`${output} delivered: %s follows the native replay boundary and later restores websocket`, async failure => {
     const f = fixture();
     let now = Date.now();
     const dateNow = spyOn(Date, "now").mockImplementation(() => now);
@@ -583,10 +663,13 @@ for (const output of ["text", "thinking", "tool"] as const) {
       const committedEvent = output === "tool" ? "toolcall_end" : output === "thinking" ? "thinking_delta" : "text_delta";
       for await (const event of stream) if (event.type === committedEvent) delivered++;
       const partial = await stream.result();
-      expect(partial.stopReason).toBe("error");
-      expect(delivered).toBe(1);
+      const replayed = output !== "tool";
+      expect(partial.stopReason).toBe(replayed ? "stop" : "error");
+      // SSE emits another text delta after the abandoned partial text; this is
+      // the native stream contract, not evidence of executing a tool twice.
+      expect(delivered).toBe(output === "text" ? 2 : 1);
       expect(f.frames).toHaveLength(1);
-      expect(f.http).toHaveLength(0);
+      expect(f.http).toHaveLength(replayed ? 1 : 0);
       expect(f.details()).toMatchObject({websocketDisabled: false, retryWebsocketAt: now + 60_000});
 
       f.onSend(socket => { for (const event of completedEvents(`ws_${f.frames.length}`)) socket.message(event); });
@@ -594,13 +677,13 @@ for (const output of ["text", "thinking", "tool"] as const) {
       const cooldown = await f.stream(cooldownContext).result();
       expect(cooldown.stopReason).toBe("stop");
       expect(f.frames).toHaveLength(1);
-      expect(f.http).toHaveLength(1);
+      expect(f.http).toHaveLength(replayed ? 2 : 1);
       now += 60_001;
       const recoveryContext: Context = {messages: [...cooldownContext.messages, cooldown, user("retry websocket")]};
       const recovered = await f.stream(recoveryContext).result();
       expect(recovered.stopReason).toBe("stop");
       expect(f.sockets).toHaveLength(2);
-      expect(f.http).toHaveLength(1);
+      expect(f.http).toHaveLength(replayed ? 2 : 1);
       const bootstrap = JSON.parse(f.frames[1]!) as Payload;
       expect(bootstrap.previous_response_id).toBeUndefined();
       expect(inputTexts(bootstrap)).toEqual(["perform a step", "continue after interrupted response", "retry websocket"]);
