@@ -79,6 +79,42 @@ test("analysis pairs concurrent capabilities by span, keeps late cancellation, a
   expect(report.summary.completedRequests).toBe(0);
 });
 
+test("analysis separates local Python calls from runners and actions, retaining nested and late identities", async () => {
+  const event = fixture();
+  const trace = (spanId: string, parentSpanId?: string) => ({ traceId: "trace", spanId, parentSpanId });
+  const definition = { id: "python/actions.py:step", origin: { path: "actions.py", function: "step", line: 4 }, codeSHA: "loaded-code", pid: 42 };
+  const local = (type: string, epoch: string, spanId: string, parentSpanId: string, data = {}) => ({
+    ...event(type, epoch, { ...definition, ...data }, trace(spanId, parentSpanId)),
+    source: { component: "workspace", implementation: "python" },
+    origin: { clockId: "python-42", eventId: type + spanId, seq: 1, at: "2026-10-20T00:00:00.000Z", atMs: 100 },
+  });
+  const events = [
+    event("control", "one", { mode: "auto", epoch: "one" }),
+    event("python_capability", "one", { capabilityId: definition.id }, trace("runner", "tool")),
+    local("python_call_start", "one", "outer", "runner"),
+    local("python_call_start", "one", "inner", "outer"),
+    event("command", "one", { controllerId: "pad", requiresControl: true }, { ...trace("device", "inner"), operationId: "input" }),
+    event("execution", "one", { id: "input", status: "completed", timing: { requestedAtMs: 1, receivedAtMs: 2 } }, { ...trace("device", "inner"), operationId: "input" }),
+    local("python_call_end", "one", "inner", "outer", { outcome: "success", durationMs: 5 }),
+    event("control", "one", { mode: "manual", reason: "time budget" }),
+    event("control", "two", { mode: "auto", epoch: "two" }),
+    local("python_call_start", "two", "outer", "runner"),
+    local("python_call_end", "one", "outer", "runner", { outcome: "cancelled", durationMs: 10, error: "cancelled" }),
+    event("python_capability_result", "one", { outcome: "cancelled", durationMs: 12 }, trace("runner", "tool")),
+  ];
+  const report = await analyze(events, "one");
+  expect(report.summary.localPythonCalls).toMatchObject({ started: 2, outcomes: { success: 1, cancelled: 1 }, durationMs: { median: 7.5 } });
+  expect(report.localPythonCalls[0]).toMatchObject({ name: definition.id, codeSHA: "loaded-code", pid: 42,
+    functionOrigin: definition.origin, origin: { clockId: "python-42" }, endOrigin: { clockId: "python-42" },
+    trace: { parentSpanId: "runner" }, outcome: "cancelled", error: "cancelled" });
+  expect(report.localPythonCalls[1].trace.parentSpanId).toBe("outer");
+  expect(report.summary.pythonCapabilities.started).toBe(1);
+  expect(report.summary.controllerActions).toBe(1);
+  const next = await analyze(events, "two");
+  expect(next.summary.localPythonCalls).toMatchObject({ started: 1, outcomes: { pending: 1 }, durationMs: emptyStats });
+  expect(next.summary.controllerActions).toBe(0);
+});
+
 test("analysis retains ready and applied boundaries and reports candidate duration separately from waiting", async () => {
   const event = fixture();
   const events = [

@@ -7,7 +7,8 @@
 | source.component | 职责 | 当前实现 |
 | --- | --- | --- |
 | `shiori` | Agent Loop、模型请求、工具调度、会话/压缩 | `implementation=omp`，`implementationVersion=18.9.1` |
-| `rsa` | 环境循环、控制周期、统一能力入口、工作区 Python | RSA 宿主 |
+| `rsa` | 环境循环、控制周期、统一能力入口、Python 进程启动 | RSA 宿主 |
+| `workspace` | 工作区程序中装饰器入口的实际调用 | `implementation=python` |
 | `baseware` | 设备操作权、统一 Controller 与采样结果 | 独立 Baseware 服务；driver 信息见 manifest |
 | `dashboard` | 日志投影、读取高水位 | Dashboard activity API |
 | `pet` | 读取日志、气泡队列、提交展示 | Alice Pet |
@@ -21,7 +22,7 @@ RSA 和 Baseware 的 schema 2 JSONL 包含：
 
 - `runId` 或 `serviceId`、`seq`、`at`、`atMs`：当前写入者的文件顺序与时间。
 - `source`：产生事实的组件和实现。
-- `origin`：`eventId/clockId/seq/at/atMs`。Baseware 生成一次，落盘和转发保持不变；RSA 复制观测文件后可替换本地路径，但不重新创造事实身份。
+- `origin`：`eventId/clockId/seq/at/atMs`。产生事件的进程生成一次，落盘和转发保持不变；RSA 复制观测文件后可替换本地路径，但不重新创造事实身份。
 - `trace`：`traceId/spanId/parentSpanId` 是调用关系；`epoch/modelCallId/requestId/httpId/toolCallId/operationId` 保留原业务身份。
 - `type/data`：操作语义和事实内容。
 
@@ -37,16 +38,22 @@ Shiori invoke_agent
 ├── compaction              后台候选准备 / 前台维护（独立 operation）
 │   └── compaction-http     HTTP 到响应头，不代表摘要就绪
 └── execute_tool            OMP 工具调用
-    └── capability          rsa controller / rsa_tools.Client
-        ├── discovery       静态发现 Python 函数
-        ├── capability      宏内部调用另一个能力
-        │   └── device      Baseware execute
-        └── device
+    ├── capability          rsa controller 入口 / 设备 API
+    │   ├── discovery       静态发现 Python 函数
+    │   └── python_call     CLI 启动的 Python 入口
+    └── python_call         直接运行工作区 Python 程序
+        └── python_call     同进程 import / Client.call
+            └── capability
+                └── device Baseware execute
 ```
 
 `capability_start/end` 覆盖 list/help/call，含参数/ID/epoch 拒绝。`outcome` 为 `success/error/cancelled`，终态带本地 `durationMs`。同一工具内并发调用相同函数也使用不同 span。
 
 `python_capability/result` 是能力 span 的细节，保存函数位置、源码 hash、参数与结果。进程启动异常和取消均记录终态后沿原路径抛出；普通 Python helper 内部语句不逐行打点。`python_capabilities_start/python_capabilities` 对应独立 discovery 子 span。直接调用 Python runner 也生成独立 span。
+
+`python_call_start/end` 来自工作区 Python 进程，覆盖被 `@capability` 标记的直接调用和本地 `Client.call("python/...")`。每次调用产生独立子 span，记录 ID、函数位置、注册时的源码 hash、PID、耗时及成功/错误；参数和返回值保持原生 Python 对象，不写入日志。嵌套的 `rsa_tools.Client` 设备调用继承当前 span 与 epoch。普通未装饰 helper 不逐函数追踪；直接使用底层 Baseware SDK 时保留其显式或环境 trace。
+
+宿主为 shell 和 Python 入口注入 `RSA_WORKSPACE`、`RSA_RUN_ID` 与原有 socket/epoch/trace。日志通过现有 RSA socket 接收，校验 runId 并保留源时钟和原 epoch；未注入运行上下文时，装饰函数可作为普通 Python 代码运行。日志发送失败只报告诊断，不替换函数结果或重试动作。进程被强制结束时，本地函数可能只有 start；分析保留 pending，外层 exec/runner 的 cancelled 表明进程已结束，不伪造函数正常返回。
 
 自动观察每次发现工作区 hook。`observe_hook_start/end` 记录选中函数、源码 hash、结果、耗时与终态，内部 Python 和设备调用沿同一 trace 继续；选择失败或媒体编码失败记录 `observe_hook_error`。`observation_context` 的 `hook/hookError` 表示这一批模型输入使用的观察方式和回退原因。源码留在 run 的 `observer-sources/<hash>.py`，返回媒体复制到 `observations/`，便于核对实际输入。没有 hook 时只保留 discovery 与既有默认观测事件。
 
@@ -65,7 +72,7 @@ Dashboard 的 activity 投影保留来源和调用关联，并返回投影耗时
 `python3 scripts/analyze-run.py <run> --epoch <epoch>` 离线生成分析：
 
 - 原有模型/工具/设备/观测/压缩指标；时延统计增加 nearest-rank p95。动作频率只计需要控制权的成功执行，`requiresControl: false` 的采样调用保留在执行明细中，不算输入动作；旧日志未声明时沿用原动作口径。
-- 按 source 统计事件；能力、Python 调用与 discovery 按显式 span 配对，保留 late cleanup 和 pending。
+- 按 source 统计事件；能力、Python runner、本地 Python 调用与 discovery 按显式 span 配对，保留 late cleanup 和 pending。本地调用单列 `localPythonCalls`，不并入设备动作数。
 - Shiori spans 与原生 loop summary 单列；旧日志缺 span 时不从名字/顺序猜测宏调用。
 
 **禁止相加的包含关系**：原生 Shiori usage 与现有 model usage；工具耗时与其内部 exec/宏/设备耗时；capability span 与 Python 细节耗时。上述数据描述同一工作的不同层次。

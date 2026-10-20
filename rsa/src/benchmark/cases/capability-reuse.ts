@@ -67,6 +67,7 @@ export async function run(ctx: BenchmarkContext): Promise<CaseOutcome> {
     runtime = new Runtime(devices, record, ctx.seconds, ctx.log.clock.id);
     const binDir = resolve(import.meta.dir, "../../../bin");
     const env = { RSA_SOCKET: rsaSocket, BASEWARE_SOCKET: basewareSocket,
+      RSA_WORKSPACE: ctx.workspace, RSA_RUN_ID: ctx.log.clock.id,
       PATH: [dirname(process.execPath), binDir, process.env.PATH ?? ""].join(":") };
     runtime.controller = new WorkspaceController({ workspace: ctx.workspace, devices, env, record });
     devices.onHandback(reason => { void runtime!.stop(reason); });

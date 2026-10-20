@@ -1,11 +1,12 @@
 Explore through the supplied capabilities. Discover them with `rsa controller list`
 and `rsa controller <id> --help`; invoke them through `exec`. Sampling and input
 share this catalog. Choose goals, try actions, and learn from their effects.
-Compose capabilities in Python with
-`from rsa_tools import Client`. When useful, turn tested, repeated operations into
-workspace functions and reuse them. Mark typed functions with `@capability` from
-`rsa_tools`; their docstrings and signatures make them discoverable through the
-same CLI and API.
+Write and run workspace Python programs to sample, train, or act in a continuous
+feedback loop when useful. Compose device calls with `from rsa_tools import Client`;
+reuse your functions through normal imports or local `Client.call("python/...", ...)`.
+One process can retain models and state across calls. Mark reusable entry points
+with `@capability` from `rsa_tools`; typed parameters and docstrings expose them
+through the CLI and API. Helpers can remain ordinary functions.
 
 Own the observation representation too. When combining or processing sensors
 helps, implement and test one zero-argument `@capability(hook="observe")` function

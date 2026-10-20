@@ -3,6 +3,7 @@
 - `baseware/` 是独立设备服务、driver、CLI/API/MCP；`rsa/` 是 Harness、Shiori 和工作区能力；`rsa-dashboard/` 是日志 API 与统一运行 / Benchmark / Alice 界面；`rsa-companion/` 是加载同一界面的 Electron 壳与原生 Pet。不要另建一套桌面主 UI。Shiori 是 Agent Loop 内核的语义名称，当前实现为 OMP，代码仍在 `rsa/src/harness/omp/`。
 - 日志来源按职责标注 source.component，实现/版本独立标注；转发保留 origin，跨进程调用传 traceId/spanId/parentSpanId。Shiori 复用 OMP 原生 telemetry，分析与 UI 消费已有事实；不要把调用成功当任务成功。契约见 `rsa/docs/logging.md`。
 - Harness 通过 Baseware 客户端发现和调用统一 Controller（包括返回信息或媒体的采样能力），不导入具体 driver。设备协议与输入仲裁留在 Baseware；RSA 用 `rsa controller` / `rsa_tools.Client` 统一访问原始设备和工作区 Python 装饰器能力，按需查询，不自动注册为 OMP 工具。MCP 不默认注入。
+- Workspace 是普通 Coding 工作区：Python 程序自行组织采样、训练和动作闭环；直接 import 和 `Client.call("python/...")` 在当前进程执行并复用模块，设备调用仍走 RSA/Baseware。装饰器声明入口并记录调用，不要求装饰辅助函数。CLI 和自动 observe 各启动一次 Python 入口，不跨调用共享内存；不另建沙盒、常驻执行服务或训练平台。
 - 工作区可用单个无参数 `@capability(hook="observe")` 替换自动观测，自行采集和处理后返回文字及媒体路径；下一次观察边界加载改动，异常反馈并回退默认观测。不要把屏幕布局或任务特有的处理写进 Harness/driver。
 - 各组件独立安装和验证，使用各自锁文件。运行数据和任务 workspace 不进仓库。
 - 工作区由模型生成的 skill / memory 不手工整理，不注入游戏攻略。

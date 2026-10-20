@@ -1,11 +1,12 @@
 import { createServer, connect } from "node:net";
 import { lstat, unlink } from "node:fs/promises";
 import type { Runtime } from "./runtime.ts";
-import { childTrace, type EventTrace } from "./events.ts";
+import { childTrace, type EventTrace, type EventMetadata } from "./events.ts";
 
 export interface Request {
   kind: string; argv: string[]; epoch?: string; runId?: string; expectedEpoch?: string | null;
   action?: "list" | "help" | "call"; id?: string; arguments?: unknown; trace?: EventTrace;
+  event?: { type: "python_call_start" | "python_call_end"; data: { id: string; [key: string]: unknown }; origin: EventMetadata["origin"] };
 }
 type Response = { ok: true; value: unknown } | { ok: false; error: string };
 
@@ -53,9 +54,20 @@ export async function listen(path: string, runtime: Runtime | (() => Runtime)) {
 export async function dispatch(runtime: Runtime, request: Request, signal = new AbortController().signal): Promise<unknown> {
   const { kind, argv, epoch } = request;
   if (kind === "status") return runtime.status();
+  if (kind === "workspace_event") {
+    if (request.runId !== runtime.status().runId) throw new Error("STALE_RUN: Python log belongs to a different run");
+    const event = request.event;
+    if (!event || !["python_call_start", "python_call_end"].includes(event.type) || typeof event.data?.id !== "string" || !event.origin)
+      throw new Error("Invalid workspace Python event");
+    // Late completions keep their originating epoch, even after handback.
+    runtime.record(event.type, event.data, { ...request.trace, ...(epoch ? { epoch } : {}) }, {
+      source: { component: "workspace", implementation: "python" }, origin: event.origin,
+    });
+    return null;
+  }
   if (kind === "controller") {
-    // One span owns the public call, including rejected calls. A Python function
-    // reuses it; calls made from that function arrive here as children.
+    // One span owns the public call, including rejected calls. The Python
+    // runner reuses it; the entry function and nested calls have child spans.
     const trace = childTrace({ ...request.trace, ...(epoch ? { epoch } : {}) });
     const started = performance.now();
     const operation = { action: request.action, id: request.id };

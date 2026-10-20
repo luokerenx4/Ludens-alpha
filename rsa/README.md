@@ -156,7 +156,7 @@ rsa run --workspace /absolute/path/to/workspace \
 
 ### 工作区与并行运行
 
-`workspace` 就是启动时的当前目录，保存模型自己的技能、记忆、脚本和 `logs/` 运行记录。Harness 源码、提示词和依赖留在 `rsa/`。进入工作区后直接 `rsa run`，宿主、OMP 和工具 shell 都在这个目录运行；这里不复制 runtime、不安装项目插件，也不初始化 Git。
+`workspace` 就是启动时的当前目录，保存模型自己的技能、记忆、代码、数据、权重和 `logs/` 运行记录。它是普通 Coding 工作区，模型通过 shell 编写和运行 Python 程序，自行组织采样、训练与动作闭环。Harness 源码、提示词和依赖留在 `rsa/`。进入工作区后直接 `rsa run`，宿主、OMP 和工具 shell 都在这个目录运行；这里不复制 runtime、不安装项目插件，也不初始化 Git。
 
 首次启动若缺少 `AGENTS.md`，写入一份简短目录说明；已有文件保留原样。OMP 使用原生 `contextFiles` 加载该工作区根目录的 `AGENTS.md`，配合 `customSystemPrompt` 保留 Harness 主提示；不隐式加载父目录或全局指令，也不把不断增长的日志目录树加入模型上下文。
 
@@ -224,7 +224,7 @@ RSA_SWITCH_TEST=1 bun test tests/switch.live.test.ts
 
 ## 统一能力 CLI
 
-`rsa controller` 是 Agent 的主要能力入口，原始 Baseware 目录自动填入同一目录。采样与输入都是 Controller：采样能力主要返回信息或媒体，`requiresControl` 单独声明是否需要操作权，不根据返回图片来判断。CLI 和 Python API 使用同一执行器；能力不会自动追加到 OMP 的 tools。Baseware 原有 CLI / API / MCP 仍可单独使用，RSA 当前不接入 MCP，也不新增 RSA MCP 适配器。
+`rsa controller` 是 Agent 的主要能力发现入口，原始 Baseware 目录自动填入同一目录。采样与输入都是 Controller：采样能力主要返回信息或媒体，`requiresControl` 单独声明是否需要操作权，不根据返回图片来判断。CLI 和 Python API 使用同一目录与设备接口；Python 内部组合在当前进程执行。能力不会自动追加到 OMP 的 tools。Baseware 原有 CLI / API / MCP 仍可单独使用，RSA 当前不接入 MCP，也不新增 RSA MCP 适配器。
 
 先运行 Baseware，再用 `rsa run --device-only` 启动不带模型的宿主；两者使用同一工作区默认地址。目录和 help 不需要接管：
 
@@ -235,7 +235,7 @@ rsa controller controller/pad --help
 rsa auto on
 ```
 
-标记为 `requiresControl: false` 的采样能力可在手动模式直接调用；输入能力及工作区 Python 函数需要当前接管周期。把 `auto on` 输出中的 UUID 原样放入当前 shell；模型的 shell 会自动得到这些环境变量：
+标记为 `requiresControl: false` 的采样能力可在手动模式直接调用；输入能力及通过 CLI 启动的工作区 Python 能力需要当前接管周期。普通 Python 程序可以独立运行，设备操作仍按该设备接口校验控制权。把 `auto on` 输出中的 UUID 原样放入当前 shell；模型的 shell 会自动得到这些环境变量：
 
 ```sh
 export BASEWARE_EPOCH='<刚才返回的 epoch>'
@@ -252,6 +252,8 @@ rsa auto off
 采样和输入共用 Controller 调用与执行结果；结果中的 `observations` 保存不可变媒体路径及采样区间，观测文件同时保存到 RSA run。普通文本或 JSON 输出保留在 `stdout`。OMP 的 `observe` 工具只接受不需要控制权的 Controller，并将其观测转换为模型图片块；通常直接使用循环在动作后提供的画面即可。动作时长由调用方决定，人工接管仍能打断。
 
 ## 工作区 Python 能力
+
+OMP 可通过 `exec` 直接运行 `python experiment.py`。程序自行加载模型、采集数据、训练和连续操作；模型实例与中间状态由该进程持有。需要复用时直接 import 工作区函数，也可按能力 ID 使用 `Client.call()`。装饰器用于声明可发现的入口，不要求每个辅助函数都装饰。
 
 例如在 `scripts/sampling.py` 中写：
 
@@ -272,7 +274,7 @@ rsa controller python/scripts/sampling.py:sample --help
 rsa controller python/scripts/sampling.py:sample --args '{"controller_id":"screen","argv":["capture"]}'
 ```
 
-Python 可用同一入口组合原始能力和其他工作区能力：
+Python 可用同一目录组合原始设备能力和其他工作区能力：
 
 ```python
 from rsa_tools import Client
@@ -287,11 +289,18 @@ result = client.call("python/scripts/sampling.py:sample", {
 
 RSA 按需扫描 workspace 中的 `.py` 文件，只登记 `@capability` / `@capability()` 标记的顶层函数。每个参数都需要类型标注，函数需要非空 docstring；默认值来自函数签名。暂不暴露 async、可变参数或仅限位置参数的函数。支持字符串、整数、浮点、布尔、列表、字符串键字典和可空类型；不支持的签名作为诊断返回，不猜测 schema。Python 3.9 使用 `T | None` 时需要 `from __future__ import annotations`。
 
-`list` 以及 Python 能力的 help/call 会重新静态读取 AST，不运行 import 或顶层代码；新增、改动和删除无需重启会话。真正调用时启动 Python、校验源码版本和 JSON 参数、导入文件并返回 JSON 结果，普通 print 放进 stderr。失败向 CLI/API 报错，调用日志保留源码 hash、参数及结果。Python 函数可通过 `Client().call()` 嵌套调用其他能力，也可直接调用普通辅助函数；不另加全局串行队列。
+`list` 和 help 静态读取 AST，不运行 import 或顶层代码；能力目录的新增、改动和删除无需重启会话。执行方式按调用边界区分：
+
+- 直接 import 后调用是普通 Python 调用；模型对象、数组等可直接在函数间传递。
+- `Client.call("python/<路径.py>:<函数>", ...)` 在当前 Python 进程加载并调用，复用模块缓存；嵌套调用不再绕回宿主启动进程。修改已加载的代码后，按普通 Python 开发方式重跑程序。
+- `rsa controller python/... --args ...` 启动一次 Python 入口，校验源码版本和 JSON 参数、返回 JSON 结果，普通 print 放进 stderr。入口内部可以持续运行；独立的 CLI 调用不共享内存。
+- `Client.call("controller/...", ...)` 仍连接 RSA，由 Baseware 执行设备调用。
+
+装饰器为直接调用和本地 `Client.call()` 记录入口身份、实际加载的源码版本、耗时及终态，并将嵌套设备调用接入同一 trace。日志不要求模型对象或训练张量转换成 JSON；参数与返回值的 JSON 约束保留在跨进程入口。模型缓存和内部执行循环由工作区程序管理，不另加常驻服务或全局串行队列。
 
 `logs/`、`.git/`、依赖和虚拟环境目录不参与扫描。脚本可放在工作区根目录、`scripts/` 或技能目录，未标记的辅助函数保持普通 Python 用法。签名与语法诊断通过目录返回，供 Agent 自行修正。OMP 仍只暴露 `read/write/edit/exec/observe`，不会逐轮注入完整能力目录或各函数 schema；模型通过 CLI 按需发现。
 
-shell 与 Python 能力自动获得 RSA/Baseware CLI、Python 包路径及当前 `RSA_SOCKET` / `BASEWARE_SOCKET` / `BASEWARE_EPOCH` / `BASEWARE_TRACE`。Python API 连接同一 RSA 宿主，原始设备调用最终交给 Baseware，观测与调用 trace 保持连通。人工接管会取消在途调用和脚本进程组，并由 Baseware 释放设备；脚本不自行获取操作权。这里是可信本机 shell，不是 Python 沙箱。
+shell 与 Python 能力自动获得 RSA/Baseware CLI、Python 包路径及当前 `RSA_WORKSPACE` / `RSA_RUN_ID` / `RSA_SOCKET` / `BASEWARE_SOCKET` / `BASEWARE_EPOCH` / `BASEWARE_TRACE`。设备请求和调用日志连接同一 RSA 宿主，原始设备调用最终交给 Baseware，观测与调用 trace 保持连通。人工接管会取消宿主管理的在途调用和脚本进程组，并由 Baseware 释放设备；脚本不自行获取操作权。这里是可信本机 shell，不是 Python 沙箱。
 
 ### 工作区观察 hook
 
@@ -307,7 +316,7 @@ def observe() -> dict:
     return {"text": "...", "media": [{"path": "view.png", "mediaType": "image/png"}]}
 ```
 
-`text` 和 `media` 均可省略；媒体路径相对于 workspace，也可用绝对路径。函数负责采集与处理，不会预先强制截取默认画面。每个观察边界重新发现当前代码，新增、修改或移除标记从下一次观测生效；只允许一个有效的 observe hook。它仍可通过 `rsa controller` 单独调用，不添加新的 OMP 工具。
+`text` 和 `media` 均可省略；媒体路径相对于 workspace，也可用绝对路径。函数负责采集与处理，不会预先强制截取默认画面。每个自动观察边界重新发现当前代码并启动一次 Python 入口，新增、修改或移除标记从下一次观测生效；只允许一个有效的 observe hook，自动观测之间不共享 Python 内存。工作区程序也可直接调用这个函数，在自己的进程内连续采样和复用状态。它仍可通过 `rsa controller` 单独调用，不添加新的 OMP 工具。
 
 无 hook 时沿用默认观测；函数异常、多个 hook 或返回格式错误时，将诊断和默认观测一起交给模型，供它自行修复。取消会结束该次调用，不再追加默认采样。原有 `observe` 工具保留，用于按需读取原始设备。运行日志保存 hook 身份、源码 hash、采样结果和失败信息；源码与媒体分别归档到本次 run 的 `observer-sources/` 和 `observations/`，修改工作区文件不改变历史。
 

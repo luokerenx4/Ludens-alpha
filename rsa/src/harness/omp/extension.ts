@@ -65,6 +65,7 @@ export function createRsaExtension(options: {
       PATH: [options.binDir, resolve(import.meta.dir, "../../../../baseware/bin"), process.env.PATH ?? ""].join(delimiter),
       PYTHONPATH: [...pythonModulePaths(), ...(process.env.PYTHONPATH ? [process.env.PYTHONPATH] : [])].join(delimiter),
       RSA_SOCKET: options.rsaSocket,
+      RSA_WORKSPACE: workspace.path, RSA_RUN_ID: runtime.status().runId,
       BASEWARE_SOCKET: options.basewareSocket, BASEWARE_EPOCH: cycle.epoch, BASEWARE_TRACE: JSON.stringify(parent),
     };
     // A launching shell may still carry an obsolete RSA control context.

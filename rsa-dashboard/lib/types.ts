@@ -150,6 +150,7 @@ export interface TraceSpan {
     | "shiori"
     | "capability"
     | "python"
+    | "python-local"
     | "discovery"
     | "device"
     | "compaction"
@@ -189,7 +190,7 @@ export interface RunTelemetry {
   sources: { component: string; count: number }[];
   spans: TraceSpan[];
   shiori: { stats: SpanStats; nativeLoops: NativeLoop[] };
-  capabilities: { stats: SpanStats; python: SpanStats; discovery: SpanStats };
+  capabilities: { stats: SpanStats; python: SpanStats; localPython: SpanStats; discovery: SpanStats };
   devices: SpanStats;
 }
 export interface RunData {

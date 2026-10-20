@@ -120,6 +120,7 @@ async function main() {
     const binDir = resolve(import.meta.dir, "../../bin");
     runtime.controller = new WorkspaceController({ workspace, devices, record: log.record, env: {
       RSA_SOCKET: socket, BASEWARE_SOCKET: basewareSocket,
+      RSA_WORKSPACE: workspace, RSA_RUN_ID: runId,
       PATH: [binDir, resolve(import.meta.dir, "../../../baseware/bin"), process.env.PATH ?? ""].join(delimiter),
     } });
     devices.onHandback(reason => { void runtime!.stop(reason); });

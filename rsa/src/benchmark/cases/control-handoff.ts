@@ -17,6 +17,7 @@ export async function run(ctx: BenchmarkContext): Promise<CaseOutcome> {
   const record = ctx.log.recorder({ component: "benchmark" });
   const root = resolve(import.meta.dir, "../../..");
   const env = { ...process.env, RSA_SOCKET: rsaSocket, BASEWARE_SOCKET: basewareSocket,
+    RSA_WORKSPACE: ctx.workspace, RSA_RUN_ID: ctx.log.clock.id,
     PATH: [dirname(process.execPath), join(root, "bin"), process.env.PATH].join(":"),
     PYTHONPATH: join(root, "python") };
   await mkdir(ctx.workspace, { recursive: true });

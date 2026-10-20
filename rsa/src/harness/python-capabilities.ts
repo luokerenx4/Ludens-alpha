@@ -114,7 +114,7 @@ export class PythonCapabilities {
   private run(request: unknown, options: PythonInvocationOptions): Promise<{ exitCode: number; stdout: string; stderr: string }> {
     options.signal?.throwIfAborted();
     const input = JSON.stringify(request);
-    const env = { ...process.env, ...options.env };
+    const env: NodeJS.ProcessEnv = { ...process.env, ...options.env, RSA_WORKSPACE: this.workspace };
     for (const name of ["RSA_EPOCH", "RSA_TRACE"]) delete env[name];
     env.PYTHONPATH = [...pythonModulePaths(), ...(env.PYTHONPATH ? [env.PYTHONPATH] : [])].join(delimiter);
     env.PYTHONDONTWRITEBYTECODE = "1";

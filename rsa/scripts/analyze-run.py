@@ -74,6 +74,11 @@ def operation_spans(inside, events, start_type, end_type):
                       "codeSHA": start["data"].get("codeSHA"),
                       "outcome": result.get("outcome", "unknown") if finish else "pending",
                       "durationMs": result.get("durationMs"), "error": result.get("error")})
+        if start_type == "python_call_start":
+            spans[-1].update({"functionOrigin": start["data"].get("origin"),
+                              "pid": start["data"].get("pid"),
+                              "origin": start.get("origin"),
+                              "endOrigin": finish.get("origin") if finish else None})
     return spans
 
 
@@ -401,6 +406,7 @@ def analyze(run, epoch=None):
     successful_actions = sum(execution["status"] == "completed" and execution["requiresControl"] for execution in executions)
     capabilities = operation_spans(inside, events, "capability_start", "capability_end")
     python_calls = operation_spans(inside, events, "python_capability", "python_capability_result")
+    local_python_calls = operation_spans(inside, events, "python_call_start", "python_call_end")
     discovery = operation_spans(inside, events, "python_capabilities_start", "python_capabilities")
     shiori_spans = operation_spans(inside, events, "shiori_span_start", "shiori_span_end")
     # A native loop can end after control was handed back; attach its summary to the loop we actually started.
@@ -486,6 +492,7 @@ def analyze(run, epoch=None):
         "mediaEncodingMs": stats(event["data"].get("durationMs") for event in inside if event["type"] == "observation_media"),
         "sources": dict(Counter(event.get("source", {}).get("component", "unlabelled") for event in inside)),
         "capabilities": span_summary(capabilities), "pythonCapabilities": span_summary(python_calls),
+        "localPythonCalls": span_summary(local_python_calls),
         "capabilityDiscovery": span_summary(discovery),
         "shiori": {"spans": span_summary(shiori_spans), "nativeLoops": len(native_runs)}}
     return {"analysisVersion": 4, "runDir": str(run), "generatedAt": datetime.now(timezone.utc).isoformat(),
@@ -504,6 +511,7 @@ def analyze(run, epoch=None):
         "compactionRetries": compaction_retries,
         "compactionHttpAttempts": compaction_http,
         "capabilities": capabilities, "pythonCapabilities": python_calls, "capabilityDiscovery": discovery,
+        "localPythonCalls": local_python_calls,
         "shiori": {"spans": shiori_spans, "runs": native_runs},
         "notes": [
             "Offline snapshot of the selected takeover epoch; multiple takeovers require explicit selection. Control mode refers to that epoch and does not prove the host process is live. Pending requests and a partial final line may complete later.",
@@ -527,6 +535,7 @@ def analyze(run, epoch=None):
             "Capture intervals include waiting, GPU readback and file encoding. sourceSequence advance does not prove that the frame reflects the preceding action.",
             "P95 uses the nearest-rank percentile. Capability and Shiori spans pair only by explicit epoch/traceId/spanId; older untraced calls are not inferred.",
             "Native Shiori run summaries cover one agent loop, not a whole takeover. They overlap existing model/tool metrics and must not be added to token/cost totals. Python detail spans overlap their enclosing capability calls; durations are inclusive, not additive.",
+            "localPythonCalls measures decorated functions executing in the workspace Python process, separate from pythonCapabilities (external runner). Nested calls retain their own spans and overlap enclosing durations; neither counts as additional controller actions. Function origin/codeSHA identify loaded code, while origin/endOrigin retain the Python event clock.",
             "Event atMs belongs to the recording host; origin retains the source clock and identity. Do not subtract monotonic timestamps from different clocks. Macro execution success does not prove task success or learning."]}
 
 

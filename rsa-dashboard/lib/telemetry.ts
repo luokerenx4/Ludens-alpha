@@ -26,6 +26,12 @@ const operations: {
     operation: "invoke",
   },
   {
+    kind: "python-local",
+    start: "python_call_start",
+    ends: ["python_call_end"],
+    operation: "local_call",
+  },
+  {
     kind: "discovery",
     start: "python_capabilities_start",
     ends: ["python_capabilities"],
@@ -277,6 +283,7 @@ export function projectTelemetry(
     capabilities: {
       stats: stats(of("capability")),
       python: stats(of("python")),
+      localPython: stats(of("python-local")),
       discovery: stats(of("discovery")),
     },
     devices: stats(of("device")),

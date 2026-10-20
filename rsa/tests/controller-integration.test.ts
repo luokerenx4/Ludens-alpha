@@ -27,8 +27,8 @@ async function fixture() {
   const basewareSocket = `${prefix}-b.sock`, rsaSocket = `${prefix}-r.sock`;
   const source = join(workspace, "frame.json");
   await writeFile(source, '{"visible":true}');
-  const events: { type: string; data: any; trace: any }[] = [];
-  const record: RecordEvent = (type, data, trace) => events.push({ type, data, trace });
+  const events: { type: string; data: any; trace: any; metadata: any }[] = [];
+  const record: RecordEvent = (type, data, trace, metadata) => events.push({ type, data, trace, metadata });
   const actions: { argv: string[]; epoch?: string }[] = [];
   let held = false, cancelled = 0, released = 0;
   const core = new BasewareCore({ drivers: [{ id: "offline", version: "1" }], capabilities: {
@@ -52,7 +52,7 @@ async function fixture() {
   const closeBaseware = await listenBaseware(basewareSocket, core);
   const devices = await connectBaseware({socket: basewareSocket, seconds: 60, runDir, record});
   const runtime = new Runtime(devices, record, 60, "integration-run");
-  const env = { ...process.env, RSA_SOCKET: rsaSocket, BASEWARE_SOCKET: basewareSocket,
+  const env = { ...process.env, RSA_SOCKET: rsaSocket, RSA_WORKSPACE: workspace, RSA_RUN_ID: "integration-run", BASEWARE_SOCKET: basewareSocket,
     PATH: [dirname(process.execPath), join(import.meta.dir, "../bin"), process.env.PATH].join(":"),
     PYTHONPATH: join(import.meta.dir, "../python") };
   runtime.controller = new WorkspaceController({workspace, devices, env, record});
@@ -132,16 +132,19 @@ print(json.dumps(Client().call("python/scripts/actions.py:combined", {"label": "
     expect(combined.exitCode).toBe(0);
     expect(JSON.parse(combined.stdout)).toMatchObject({label: "v1:前进", motion: {status: "completed", stdout: '["echo","前进"]'}});
     expect(f.actions).toEqual([{argv: ["--args", "literal", "--help"], epoch}, {argv: ["echo", "前进"], epoch}]);
-    const nested = f.events.filter(event => event.type === "python_capability");
+    const nested = f.events.filter(event => event.type === "python_call_start");
     expect(nested).toHaveLength(2);
     expect(nested[0]!.trace).toMatchObject({traceId: f.parentTrace.traceId, parentSpanId: f.parentTrace.spanId});
     expect(nested[1]!.trace).toMatchObject({traceId: f.parentTrace.traceId, parentSpanId: nested[0]!.trace.spanId});
     expect(nested[1]!.trace.spanId).not.toBe(nested[0]!.trace.spanId);
+    expect(nested[0]!.data.pid).toBe(nested[1]!.data.pid);
     for (const event of nested) {
-      expect(f.events.filter(item => item.type === "capability_start" && item.trace.spanId === event.trace.spanId)).toHaveLength(1);
-      expect(f.events.filter(item => item.type === "python_capability_result" && item.trace.spanId === event.trace.spanId)).toHaveLength(1);
-      expect(f.events.find(item => item.type === "capability_end" && item.trace.spanId === event.trace.spanId)?.data).toMatchObject({outcome: "success"});
+      expect(event.metadata.source).toMatchObject({component: "workspace", implementation: "python"});
+      expect(event.metadata.origin.eventId).toBeString();
+      expect(f.events.filter(item => item.type === "python_call_end" && item.trace.spanId === event.trace.spanId)).toHaveLength(1);
+      expect(f.events.find(item => item.type === "python_call_end" && item.trace.spanId === event.trace.spanId)?.data).toMatchObject({outcome: "success"});
     }
+    expect(f.events.filter(event => event.type === "python_capability")).toHaveLength(0);
     const nestedDriver = f.events.find(event => event.type === "capability_start" && event.data.id === "controller/pad"
       && event.trace.parentSpanId === nested[0]!.trace.spanId)!;
     expect(nestedDriver).toBeDefined();

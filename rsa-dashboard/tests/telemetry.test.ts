@@ -100,6 +100,47 @@ test("trace projection preserves nested and concurrent capability identities wit
   );
 });
 
+test("workspace Python calls preserve their own nested spans, source clock and late endings", () => {
+  const e = fixture();
+  const local = (type: string, spanId: string, data: Record<string, unknown> = {}, trace: Record<string, string> = {}): Event => ({
+    ...e(type, spanId, { id: "python/actions.py:step", codeSHA: "loaded-code", pid: 42, ...data }, trace),
+    source: { component: "workspace", implementation: "python" },
+    origin: { clockId: "python-42", eventId: type + spanId, seq: 1, at: "2026-10-20T00:00:00.000Z", atMs: 100 },
+  });
+  const events = [
+    e("control", "", { mode: "auto" }),
+    e("python_capability", "runner", { capabilityId: "python/actions.py:step" }, { parentSpanId: "tool" }),
+    local("python_call_start", "outer", {}, { parentSpanId: "runner" }),
+    local("python_call_start", "inner", {}, { parentSpanId: "outer" }),
+    e("command", "device", { controllerId: "pad" }, { parentSpanId: "inner" }),
+    e("execution", "device", { outcome: "success", durationMs: 1 }),
+    local("python_call_end", "inner", { outcome: "success", durationMs: 5 }),
+    e("control", "", { mode: "manual" }),
+    e("control", "", { mode: "auto" }, { epoch: "new" }),
+    local("python_call_start", "outer", {}, { epoch: "new", parentSpanId: "runner" }),
+    local("python_call_end", "outer", { outcome: "cancelled", durationMs: 10, error: "cancelled" }),
+    e("python_capability_result", "runner", { outcome: "cancelled", durationMs: 12 }),
+  ];
+  const result = projectTelemetry(selectCycle(events, "old").events, events);
+  assert.equal(result.capabilities.python.started, 1);
+  assert.equal(result.capabilities.localPython.started, 2);
+  assert.equal(result.capabilities.localPython.outcomes.cancelled, 1);
+  assert.equal(result.capabilities.localPython.durationMs.median, 7.5);
+  assert.equal(result.devices.started, 1);
+  const outer = result.spans.find(span => span.kind === "python-local" && span.spanId === "outer")!;
+  assert.equal(outer.parentSpanId, "runner");
+  assert.equal(outer.codeSHA, "loaded-code");
+  assert.equal(outer.startedAt, "2026-10-20T00:00:00.000Z");
+  assert.equal(outer.endedAt, outer.startedAt);
+  assert.equal(outer.error, "cancelled");
+  assert.equal(outer.source?.component, "workspace");
+  assert.equal(result.spans.find(span => span.spanId === "inner")?.parentSpanId, "outer");
+  assert.equal(result.spans.find(span => span.spanId === "device")?.parentSpanId, "inner");
+  const next = projectTelemetry(selectCycle(events, "new").events, events);
+  assert.equal(next.capabilities.localPython.outcomes.pending, 1);
+  assert.equal(next.capabilities.localPython.durationMs.median, null);
+});
+
 test("epoch selection includes late terminals and native summaries only for the selected loop", () => {
   const e = fixture();
   const events = [

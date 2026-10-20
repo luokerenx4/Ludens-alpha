@@ -106,6 +106,18 @@ export function evaluateReuse(all: ReuseEvent[], epoch: string): CaseOutcome {
     const delivered = orders.filter(({ execution }) => isDescendant(execution, key));
     return delivered.length ? [{ event, id, key, route: "controller", evidence: [created.event.seq, event.seq, result.seq], orders: delivered }] : [];
   });
+  const localCalls = events.filter(event => event.type === "python_call_start" && event.source?.component === "workspace").flatMap(event => {
+    const key = spanKey(event), id = publicId(event.data.origin);
+    const result = events.find(result => result.type === "python_call_end" && spanKey(result) === key
+      && result.seq > event.seq && result.data.outcome === "success" && result.data.codeSHA === event.data.codeSHA);
+    const created = newCapabilities.find(item => item.id === id);
+    if (!key || !id || !created || !result || !event.data.codeSHA
+      || calls.some(call => isDescendant(event, call.key))) return [];
+    const delivered = orders.filter(({ execution }) => execution.seq > event.seq && execution.seq < result.seq
+      && isDescendant(execution, key));
+    return delivered.length ? [{ event, id, key, route: "local", evidence: [created.event.seq, event.seq, result.seq], orders: delivered }] : [];
+  });
+  calls.push(...localCalls);
   const directCalls = events.filter(event => event.type === "exec").flatMap(event => {
     const call = python.get(event.seq)?.call, key = spanKey(event);
     if (!call || !key) return [];
@@ -155,7 +167,7 @@ export function evaluateReuse(all: ReuseEvent[], epoch: string): CaseOutcome {
         expected: "空白基线之后创建可解析的 Python 函数，不要求装饰器", actual: `${distinctNew.size} 个新函数`,
         evidenceSeq: evidence([...newCapabilities.map(item => item.event.seq), ...writes.flatMap(write => [write.event.seq, write.end.seq])]) },
       { id: "capability-reused", label: "跨批有效复用自写函数", passed: reused.size > 0 ? true : null,
-        expected: "直接 import 或通过 controller 调用同一自写函数，在两批、不同模型轮次中成功执行并完成订单",
+        expected: "直接 import、本地 API 或通过 controller 调用同一自写函数，在两批、不同模型轮次中成功执行并完成订单",
         actual: reused.size ? `${reused.size} 个函数跨批复用，第二批 ${transferCalls.length} 次有效调用`
           : "未找到足以证明跨批复用的调用证据；复杂脚本未做执行追踪，结果待定",
         evidenceSeq: reused.size ? evidence(reusedCalls.flatMap(call => [...call.evidence,
@@ -168,6 +180,7 @@ export function evaluateReuse(all: ReuseEvent[], epoch: string): CaseOutcome {
       { id: "productive-reuse-calls", label: "第二批有效复用", value: transferCalls.length, unit: "calls", direction: "higher" },
       { id: "controller-discovered", label: "Controller 主动发现能力（诊断）", value: new Set(explicitlyDiscovered.map(item => item.id)).size, unit: "capabilities", direction: "none" },
       { id: "controller-productive-calls", label: "注册函数经 Controller 有效调用（诊断）", value: calls.filter(call => call.route === "controller").length, unit: "calls", direction: "none" },
+      { id: "local-productive-calls", label: "工作区进程内有效调用（诊断）", value: localCalls.length, unit: "calls", direction: "none" },
       { id: "import-productive-calls", label: "直接 import 有效调用（诊断）", value: directCalls.length, unit: "calls", direction: "none" },
       ...[1, 2].flatMap(phase => [
         { id: `phase-${phase}-requests`, label: `批次 ${phase} 模型请求`, value: phaseRequests(phase), unit: "requests", direction: "none" as const },
@@ -180,6 +193,7 @@ export function evaluateReuse(all: ReuseEvent[], epoch: string): CaseOutcome {
       "同一新会话内的短时探索与迁移；没有证明跨会话长期学习或泛化。",
       "脚本数量不是成绩；空函数、失败调用和未推动订单的调用不算能力复用。",
       "结束后的评测侧 AST 盘点仅证明能力已创建，不代表 Agent 主动发现或通过统一接口复用。",
+      "本地装饰器调用依据匹配源码版本的成功终态与后代设备订单归因；已计入外部 runner 的子调用不重复计数。",
       "直接 import 根据成功写入的源码、简单 Python exec 的 AST、成功退出及同一调用链的订单判定；不执行工作区代码。复杂脚本、动态导入等未覆盖时保留待定，不等于没有学会。",
       "两批难度相近但不是严格对照实验，请求/订单变化仅作诊断。",
       "这是合作式 Agent 的功能评测，workspace 没有对恶意篡改日志做安全隔离。",

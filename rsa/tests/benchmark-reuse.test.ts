@@ -48,7 +48,7 @@ test("the environment rejects wrong values and holds the next batch until the cu
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
-for (const route of ["controller", "import"] as const) test(`evaluator proves productive ${route} reuse across batches, and rejects look-alikes`, async () => {
+for (const route of ["controller", "local", "import"] as const) test(`evaluator proves productive ${route} reuse across batches, and rejects look-alikes`, async () => {
   const workspace = await mkdtemp(join(tmpdir(), "rsa-bench-eval-"));
   const runDir = join(workspace, "logs", "fixture");
   const log = new EventLog(runDir, { id: "reuse-fixture", now: () => performance.now() });
@@ -69,6 +69,7 @@ for (const route of ["controller", "import"] as const) test(`evaluator proves pr
   const devices = await connectBaseware({ socket: basewareSocket, runDir, seconds: 60, record });
   const runtime = new Runtime(devices, record, 60, "reuse-fixture");
   const env = { ...process.env, RSA_SOCKET: rsaSocket, BASEWARE_SOCKET: basewareSocket,
+    RSA_WORKSPACE: workspace, RSA_RUN_ID: runtime.status().runId,
     PYTHONPATH: pythonModulePaths().join(":"),
     PATH: [dirname(process.execPath), join(import.meta.dir, "../bin"), process.env.PATH ?? ""].join(":") };
   runtime.controller = new WorkspaceController({ workspace, devices, env, record });
@@ -93,7 +94,7 @@ for (const route of ["controller", "import"] as const) test(`evaluator proves pr
     // Test-only agent fixture. The live case never supplies this code or solves orders.
     await mkdir(join(workspace, "scripts"));
     const source = `from rsa_tools import Client, capability
-${route === "controller" ? "@capability\n" : ""}
+${route !== "import" ? "@capability\n" : ""}
 def configure(values: list[int]) -> dict:
     """Set all three dials and submit the assembled order."""
     client = Client()
@@ -113,19 +114,20 @@ def configure(values: list[int]) -> dict:
     for (let order = 0; order < 6; order++) {
       const values = [digit(), digit(), digit()];
       if (route === "controller") await cli("python/scripts/bench.py:configure", "--args", JSON.stringify({ values }));
+      else if (route === "local") await exec(["python3", "-c", `from rsa_tools import Client\nprint(Client().call("python/scripts/bench.py:configure", {"values": ${JSON.stringify(values)}}))`]);
       else await exec(["python3", "-c", `from scripts.bench import configure as build\nprint(build(${JSON.stringify(values)}))`]);
     }
     recordBenchmark("benchmark_reuse_finished", environment.summary(), { epoch });
     const events = (await readFile(join(runDir, "events.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line) as ReuseEvent);
     const outcome = evaluateReuse(events, epoch);
-    expect(outcome.checks.every(check => check.passed === true)).toBe(true);
+    expect(outcome.checks.filter(check => check.passed !== true)).toEqual([]);
     expect(outcome.metrics.find(metric => metric.id === "productive-capability-calls")?.value).toBe(6);
     expect(outcome.metrics.find(metric => metric.id === "productive-reuse-calls")?.value).toBe(3);
     expect(outcome.metrics.find(metric => metric.id === "phase-1-orders")?.value).toBe(3);
     expect(outcome.metrics.find(metric => metric.id === "phase-2-orders")?.value).toBe(3);
     expect(outcome.checks.find(check => check.id === "capability-reused")?.evidenceSeq.length).toBeGreaterThan(12);
     expect(outcome.metrics.find(metric => metric.id === `${route}-productive-calls`)?.value).toBe(6);
-    expect(outcome.metrics.find(metric => metric.id === "controller-discovered")?.value).toBe(route === "controller" ? 1 : 0);
+    expect(outcome.metrics.find(metric => metric.id === "controller-discovered")?.value).toBe(route !== "import" ? 1 : 0);
 
     if (route === "import") {
       for (const code of [
@@ -162,7 +164,7 @@ def configure(values: list[int]) -> dict:
     const inventory: ReuseEvent = { seq: Math.max(...events.map(event => event.seq)) + 1,
       type: "benchmark_reuse_inventory", source: { component: "benchmark" }, trace: { epoch },
       data: { stage: "post-run", ...audited } };
-    const inventoryOnly = [...events.filter(event => !event.type.startsWith("python_capabilit")), inventory];
+    const inventoryOnly = [...events.filter(event => !event.type.startsWith("python_capabilit") && !event.type.startsWith("python_call_")), inventory];
     expect(passed(inventoryOnly, epoch, "task-completed")).toBe(true);
     expect(passed(inventoryOnly, epoch, "capability-created")).toBe(true);
     expect(evaluateReuse(inventoryOnly, epoch).metrics.find(metric => metric.id === "controller-discovered")?.value).toBe(0);
@@ -195,8 +197,8 @@ def configure(values: list[int]) -> dict:
     for (const event of splitEpoch) if (event.seq >= transfer) event.trace.epoch = "other-epoch";
     expect(passed(splitEpoch, epoch, "capability-reused")).toBeNull();
     const failed = structuredClone(events);
-    for (const event of failed.filter(event => event.type === "python_capability_result")) event.data.outcome = "error";
-    if (route === "controller") expect(passed(failed, epoch, "capability-reused")).toBeNull();
+    for (const event of failed.filter(event => event.type === "python_capability_result" || event.type === "python_call_end")) event.data.outcome = "error";
+    if (route !== "import") expect(passed(failed, epoch, "capability-reused")).toBeNull();
     const prefilled = structuredClone(events);
     prefilled.find(event => event.type === "benchmark_reuse_workspace")!.data.pythonFiles = ["scripts/bench.py"];
     expect(passed(prefilled, epoch, "fresh-workspace")).toBe(false);
