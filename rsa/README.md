@@ -385,6 +385,8 @@ WS 临时传输故障（连接到期、关闭、握手/首事件超时等）需�
 
 Agent Loop 内核语义上称为 **Shiori**，当前实现 OMP 18.9.1。schema 2 事件新增 `source`（职责/实现/版本）、`origin`（原事实身份/时钟）与跨进程 span 关系；旧事件名与 payload/stream 存储方式继续使用。OMP 原生 telemetry 现在写入 `shiori_span_start/end` 和 `shiori_run_end`，使用局部 tracer、不配置远程 exporter。统一能力入口用 `capability_start/end` 记录完整终态，Python/设备细节沿同一调用树关联。完整字段及分析口径见 [日志契约](docs/logging.md)。
 
+`pi-agent-core` 补丁移除了工具意图说明 `i` 的 200 字符拒绝逻辑：2026-10-20 马造实跑中，201–216 字符的说明曾阻断有效工具调用。说明继续写入原生 telemetry，真实工具参数仍单独校验；不因日志说明偏长要求模型重试。
+
 每次启动默认记录到该次 run 的 `events.jsonl`。每行带 `schemaVersion: 2`、`runId`、递增 `seq`、UTC 时间 `at`、宿主单调时间 `atMs`、`type`、`trace` 和 `data`。`trace` 使用以下关联字段：
 
 - `epoch`：一次接管；`modelCallId`：一次主循环模型调用。

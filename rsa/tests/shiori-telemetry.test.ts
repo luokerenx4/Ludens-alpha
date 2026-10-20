@@ -15,10 +15,14 @@ test("native Shiori runs preserve tool errors, aborted chats and thrown provider
   const log = new EventLog(directory, {id: "native-fixture", now: () => performance.now()});
   const trace = new ModelTrace(log, () => ({epoch: "same-takeover"}));
   const model = getBundledModels("deepseek").find(m => m.id === "deepseek-flash")!;
+  // Real Mario Maker calls were rejected for 201–216 character intent labels.
+  const intent = "Inspect the current screen and use the workspace action helper to continue ".repeat(4).trim();
+  let executedArgs: unknown;
   const config: AgentLoopConfig = {model, sessionId: "same-session", telemetry: trace.shiori.config,
-    convertToLlm: messages => messages as Message[]};
-  const tool: AgentTool = {name: "probe", label: "Probe", description: "Offline failure fixture", parameters: z.object({}),
-    async execute(toolCallId) {
+    intentTracing: true, convertToLlm: messages => messages as Message[]};
+  const tool: AgentTool = {name: "probe", label: "Probe", description: "Offline failure fixture", parameters: z.object({value: z.string()}),
+    async execute(toolCallId, args) {
+      executedArgs = args;
       log.record("fixture_execute", {}, trace.current(toolCallId));
       throw new Error("fixture tool failed");
     }};
@@ -40,7 +44,7 @@ test("native Shiori runs preserve tool errors, aborted chats and thrown provider
   ).result();
   try {
     await run(async () => complete(++invocation === 1
-      ? message("toolUse", [{type: "toolCall", id: "probe-call", name: "probe", arguments: {}}])
+      ? message("toolUse", [{type: "toolCall", id: "probe-call", name: "probe", arguments: {value: "fixture payload", i: intent}}])
       : message("stop", [{type: "text", text: "done"}])));
     await run(async () => complete(message("aborted", [])));
     await expect(run(async () => { throw new Error("fixture provider failed"); })).rejects.toThrow("fixture provider failed");
@@ -56,6 +60,8 @@ test("native Shiori runs preserve tool errors, aborted chats and thrown provider
     expect(ends).toHaveLength(starts.length);
     expect(summaries[0].data.summary.tools).toMatchObject({total: 1, error: 1});
     const toolEnd = ends.find(e => e.data.operation === "execute_tool");
+    expect(executedArgs).toEqual({value: "fixture payload"});
+    expect(toolEnd.data.attributes["omp.gen_ai.tool.call.intent"]).toBe(intent);
     expect(toolEnd.data).toMatchObject({outcome: "error", status: {code: 2}, attributes: {"omp.gen_ai.tool.status": "error"}});
     expect(events.find(e => e.type === "fixture_execute").trace.spanId).toBe(toolEnd.trace.spanId);
     expect(ends.find(e => e.data.operation === "chat" && e.trace.traceId === roots[1].trace.traceId).data.outcome).toBe("cancelled");
