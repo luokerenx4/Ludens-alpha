@@ -1,6 +1,7 @@
 import { parseArgs } from "node:util";
 import type { Clock, Controller } from "../contracts.ts";
 import type { Bridge } from "./bridge.ts";
+import { noArguments } from "./schema.ts";
 
 /** A single native contact. Gesture composition and screen mapping belong to the caller. */
 export async function createTouchController(options: {
@@ -19,6 +20,17 @@ export async function createTouchController(options: {
   return {
     id: "touch", requiresControl: true,
     acquire: options.acquire, release: options.release,
+    commands: [
+      ...["down", "move"].map(name => ({ name,
+        description: name === "down" ? "Start a contact in native device coordinates; requires no existing contact." : "Move the existing contact in native device coordinates.",
+        parameters: { type: "object", properties: {
+          x: { type: "integer", minimum: minX, maximum: maxX },
+          y: { type: "integer", minimum: minY, maximum: maxY },
+        }, required: ["x", "y"], additionalProperties: false },
+        bindings: [{ parameter: "x", flag: "--x", encoding: "string" as const }, { parameter: "y", flag: "--y", encoding: "string" as const }],
+      })),
+      noArguments("up", "End the current contact."),
+    ],
     help: () => `Single-contact touchscreen, in native device coordinates.
 Coordinates are integers: x=${minX}..${maxX}, y=${minY}..${maxY}, inclusive.
 Origin is the top-left; +x points right and +y points down.

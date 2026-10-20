@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import type { Capabilities, Clock, Controller, ExecutionResult } from "../../contracts.ts";
 import { Bridge } from "../bridge.ts";
+import { noArguments, padCommands } from "../schema.ts";
 
 const KEYS = ["A", "B", "SELECT", "START", "RIGHT", "LEFT", "UP", "DOWN", "R", "L"];
 type Span = { state: Record<string, number>; durationMs: number };
@@ -57,6 +58,7 @@ export async function createGbaProvider(options: { port: number; artifactsDir: s
   const screen: Controller = {
     id: "screen", requiresControl: false,
     mediaTypes: ["image/png"],
+    commands: [noArguments("capture", "Capture a new native 240×160 PNG image.")],
     help: () => "capture\nCapture a new 240×160 PNG image. Returns immutable path, sample interval and source sequence.",
     async execute(argv, { signal }) {
       if (argv.length !== 1 || argv[0] !== "capture") throw new Error("Usage: controller screen capture");
@@ -77,6 +79,8 @@ export async function createGbaProvider(options: { port: number; artifactsDir: s
   const pad: Controller = {
     id: "pad", requiresControl: true,
     help: () => PAD_HELP,
+    commands: padCommands(KEYS, [], { type: "number", exclusiveMinimum: 0,
+      description: `Finite positive emulation milliseconds, rounded cumulatively at ${fps} frames per second. Each span must occupy at least one frame and the total frame count must be a safe integer.` }),
     async acquire(epoch) { await bridge.request("OWN", [epoch]); owner = epoch; },
     async release(epoch) {
       if (owner !== epoch) return;

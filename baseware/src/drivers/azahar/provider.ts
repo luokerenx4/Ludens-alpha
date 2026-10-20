@@ -4,6 +4,7 @@ import { parseArgs } from "node:util";
 import type { Capabilities, Clock, Controller, ExecutionResult } from "../../contracts.ts";
 import { Bridge } from "../bridge.ts";
 import { createTouchController } from "../touch.ts";
+import { MIN_POLL_DURATION_MS, noArguments, padCommands, polledDuration } from "../schema.ts";
 
 // Order matches the Azahar bridge's device channels, not game actions.
 export const BUTTONS = ["A", "B", "X", "Y", "L", "R", "START", "SELECT", "LEFT", "UP", "RIGHT", "DOWN", "ZL", "ZR"];
@@ -14,7 +15,7 @@ export function encodeSpans(spans: Span[]): string {
   if (!Array.isArray(spans) || !spans.length) throw new Error("Expected a non-empty state sequence");
   let elapsed = 0;
   return spans.map(({ state, durationMs }) => {
-    if (!Number.isSafeInteger(durationMs) || durationMs < 16) throw new Error("durationMs must be a safe integer >= 16");
+    if (!Number.isSafeInteger(durationMs) || durationMs < MIN_POLL_DURATION_MS) throw new Error(`durationMs must be a safe integer >= ${MIN_POLL_DURATION_MS}`);
     elapsed += durationMs;
     if (!Number.isSafeInteger(elapsed)) throw new Error("Sequence duration must be a safe integer");
     if (!state || Array.isArray(state) || typeof state !== "object") throw new Error("state must be an object");
@@ -72,6 +73,7 @@ export async function createAzaharProvider(options: { port: number; artifactsDir
       const dimensions = source === "top" ? "400×240" : "320×240";
       return {
         id: controllerId, requiresControl: false, mediaTypes: ["image/png"],
+        commands: [noArguments("capture", `Capture the independent native ${source} screen (${dimensions}) as PNG.`)],
         help: () => `capture\nCapture the native ${source} screen (${dimensions}) as one PNG. This is an independent hardware source; no combined layout, cropping, scaling or coordinate conversion. Returns an immutable path, sample interval and captureSequence; this sequence counts captures, not presented frames.`,
         async execute(argv, { signal }) {
           if (argv.length !== 1 || argv[0] !== "capture") throw new Error(`Usage: controller ${controllerId} capture`);
@@ -97,6 +99,7 @@ export async function createAzaharProvider(options: { port: number; artifactsDir
     });
     const pad: Controller = {
       id: "pad", requiresControl: true, help: () => PAD_HELP,
+      commands: padCommands(BUTTONS, AXES, polledDuration),
       acquire, release,
       async execute(argv, { epoch, signal }): Promise<ExecutionResult> {
         signal.throwIfAborted();

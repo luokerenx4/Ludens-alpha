@@ -54,6 +54,17 @@ export function cuaCapabilities(options: { tools: Tool[]; client: CuaClient; art
   const controllers: Controller[] = options.tools.map(tool => ({
     id: `cua.${tool.name}`,
     requiresControl: tool.annotations?.readOnlyHint !== true,
+    commands: [{
+      name: "",
+      description: "Pass upstream tool arguments as --args JSON; omitting --args sends an empty object.",
+      parameters: { type: "object", properties: { args: tool.inputSchema }, additionalProperties: false,
+        ...(tool.inputSchema.required?.length ? { required: ["args"] } : {}) },
+      bindings: [{ parameter: "args", flag: "--args", encoding: "json" }],
+    }],
+    ...(tool.outputSchema ? { stdoutSchema: {
+      type: "object", description: "Schema for JSON.parse(result.stdout); binary media is returned separately in observations.",
+      properties: { content: { type: "array" }, structuredContent: tool.outputSchema }, required: ["content"],
+    } } : {}),
     acquire, release,
     help: () => `${tool.description ?? tool.name}\n--args '<JSON object>' (omit for no arguments)\n${JSON.stringify(tool.inputSchema)}\nCalls the installed Cua Driver. Session state is retained across calls and ended when control is returned.`,
     async execute(argv, { signal }): Promise<ExecutionResult> {

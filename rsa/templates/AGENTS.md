@@ -4,6 +4,7 @@ This is a normal coding workspace. Write and run Python programs here; a program
 can collect data, train models, and continuously observe and act using the supplied capabilities.
 
 - `rsa.json`: launch configuration for this workspace.
+- `baseware.json`: generated device capabilities, parameter schemas, and invocation contracts; read as needed and refresh with `baseware export`.
 - `skills/`: reusable methods and supporting scripts learned in this workspace.
 - `memory/`: current goals, state, uncertainties, and next steps; replace outdated notes.
 - `logs/`: Harness-generated run records, observations, and diagnostics. Keep these separate from learned methods and working memory.

@@ -65,6 +65,10 @@ test("Azahar offers native pad, touch and two independent screens with a shared 
     expect(provider.version).toBe("2126.2-rsa.3");
     expect(provider.capabilities.controllers.map(c => c.id)).toEqual(["pad", "touch", "screen.top", "screen.bottom"]);
     const [pad, touch] = provider.capabilities.controllers;
+    expect(pad.commands?.find(c => c.name === "apply")?.parameters).toMatchObject({ properties: {
+      state: { properties: { ZL: { enum: [0, 1] }, RY: { minimum: -1, maximum: 1 } }, additionalProperties: false },
+      durationMs: { type: "integer", minimum: 16, maximum: Number.MAX_SAFE_INTEGER },
+    } });
     await pad.acquire!("epoch");
     await touch.acquire!("epoch");
     const context = { epoch: "epoch", signal: new AbortController().signal };
@@ -89,6 +93,7 @@ test("Azahar samples independent hardware screens without combining or inventing
     const paths: string[] = [];
     for (const source of ["top", "bottom"] as const) {
       const screen = provider.capabilities.controllers.find(c => c.id === `screen.${source}`)!;
+      expect(screen.commands).toMatchObject([{ name: "capture", parameters: { properties: {}, additionalProperties: false }, bindings: [] }]);
       const result = await screen.execute(["capture"], { signal });
       const observation = result.observations![0];
       expect(result.observations).toHaveLength(1);

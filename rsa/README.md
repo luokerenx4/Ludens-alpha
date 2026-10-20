@@ -158,7 +158,9 @@ rsa run --workspace /absolute/path/to/workspace \
 
 `workspace` 就是启动时的当前目录，保存模型自己的技能、记忆、代码、数据、权重和 `logs/` 运行记录。它是普通 Coding 工作区，模型通过 shell 编写和运行 Python 程序，自行组织采样、训练与动作闭环。Harness 源码、提示词和依赖留在 `rsa/`。进入工作区后直接 `rsa run`，宿主、OMP 和工具 shell 都在这个目录运行；这里不复制 runtime、不安装项目插件，也不初始化 Git。
 
-首次启动若缺少 `AGENTS.md`，写入一份简短目录说明；已有文件保留原样。OMP 使用原生 `contextFiles` 加载该工作区根目录的 `AGENTS.md`，配合 `customSystemPrompt` 保留 Harness 主提示；不隐式加载父目录或全局指令，也不把不断增长的日志目录树加入模型上下文。
+首次启动若缺少 `AGENTS.md`，写入一份简短目录说明；已有文件保留原文，仅在未提及 `baseware.json` 时追加一条读取与刷新说明。OMP 使用原生 `contextFiles` 加载该工作区根目录的 `AGENTS.md`，配合 `customSystemPrompt` 保留 Harness 主提示；不隐式加载父目录或全局指令，也不把不断增长的日志目录树加入模型上下文。
+
+Host 每次连接 Baseware 后、创建 OMP 前，将当前设备能力、参数 schema 和调用契约写入工作区根目录的 `baseware.json`，覆盖上次生成的快照。Agent 按需读取，也可在工作区执行 `baseware export` 刷新；不把全文注入提示词，不改动技能或记忆。该文件描述 Baseware 设备接口；工作区 Python 能力仍由 `rsa controller list` 发现。
 
 所有管理命令都可以通过 `--workspace` 或 `RSA_WORKSPACE` 选择工作区，显式参数优先：
 

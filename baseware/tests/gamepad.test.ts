@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { encodeSpans } from "../src/drivers/mgba/provider.ts";
+import { mkdtemp, rm } from "node:fs/promises";
+import { createServer, type AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createGbaProvider, encodeSpans } from "../src/drivers/mgba/provider.ts";
 
 test("state sequences replace omitted keys and round cumulative durations without per-span drift", () => {
   expect(encodeSpans([
@@ -23,4 +27,31 @@ test("GBA accepts long actions and sequences while rejecting invalid durations a
     { state: {}, durationMs: Number.MAX_SAFE_INTEGER },
     { state: {}, durationMs: Number.MAX_SAFE_INTEGER },
   ], 1000)).toThrow();
+});
+
+test("GBA catalog exposes digital states and emulation-time durations without an invented two-second bound", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "baseware-gba-catalog-"));
+  const server = createServer(socket => {
+    socket.once("data", data => {
+      const [id, operation] = data.toString().trim().split("\t");
+      expect(operation).toBe("HELLO");
+      socket.write(`${id}\tOK\t60\t1\n`);
+    });
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const provider = await createGbaProvider({ port: (server.address() as AddressInfo).port,
+    artifactsDir: directory, clock: { id: "test", now: () => performance.now() } });
+  try {
+    const [pad, screen] = provider.capabilities.controllers;
+    expect(pad.commands?.find(c => c.name === "apply")?.parameters).toMatchObject({ properties: {
+      state: { additionalProperties: false, properties: { A: { type: "integer", enum: [0, 1] }, SELECT: { enum: [0, 1] } } },
+      durationMs: { type: "number", exclusiveMinimum: 0, description: expect.stringContaining("60 frames per second") },
+    } });
+    expect(screen.commands).toMatchObject([{ name: "capture", parameters: { properties: {}, additionalProperties: false }, bindings: [] }]);
+    expect(encodeSpans([{ state: { A: 1 }, durationMs: 30_000 }], 60)).toBe("1:1800");
+  } finally {
+    provider.close();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    await rm(directory, { recursive: true });
+  }
 });

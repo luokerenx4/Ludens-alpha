@@ -66,7 +66,8 @@ export class BasewareCore {
   list(): Catalog {
     return { drivers: this.drivers,
       controllers: this.capabilities.controllers.map(c => ({ id: c.id, requiresControl: c.requiresControl,
-        ...(c.mediaTypes ? { mediaTypes: c.mediaTypes } : {}), help: c.help() })) };
+        ...(c.mediaTypes ? { mediaTypes: c.mediaTypes } : {}), help: c.help(),
+        ...(c.commands ? { commands: c.commands } : {}), ...(c.stdoutSchema ? { stdoutSchema: c.stdoutSchema } : {}) })) };
   }
 
   private controller(id: string) {

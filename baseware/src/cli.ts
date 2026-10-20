@@ -1,23 +1,33 @@
 import { BasewareClient } from "./client.ts";
-import type { Request } from "./protocol.ts";
+import { writeCapabilityDocument } from "./catalog.ts";
+import type { Catalog, Request } from "./protocol.ts";
+import { resolve } from "node:path";
+import { parseArgs } from "node:util";
 
 export const HELP = `baseware serve --driver mgba|ryubing|azahar|cua [--port <n>] [--cua-command <path>] [--socket <path>] [--data-dir <path>]
 baseware status
 baseware list
+baseware export [--output <path>]
 baseware driver list
 baseware controller list | <id> --help | <id> <arguments...>
 baseware revoke
 baseware mcp
 
 BASEWARE_SOCKET selects the service. Its default address is derived from the current directory.
+export writes the live capability and invocation contract to ./baseware.json by default.
 Controllers marked requiresControl require BASEWARE_EPOCH from an existing owner connection.
 The CLI never acquires a lease; use the client API to hold a persistent owner connection.`;
 
 export async function cli(argv: string[], socket: string) {
   const [kind, id, ...args] = argv;
   let request: Request;
+  let output: string | undefined;
   let select: "drivers" | "controllers" | undefined;
-  if (kind === "status" || kind === "revoke" || kind === "list") {
+  if (kind === "export") {
+    const { values } = parseArgs({ args: argv.slice(1), options: { output: { type: "string", default: "baseware.json" } } });
+    output = resolve(values.output!);
+    request = { kind: "list" };
+  } else if (kind === "status" || kind === "revoke" || kind === "list") {
     if (argv.length !== 1) throw new Error(`Usage: baseware ${kind}`);
     request = { kind };
   } else if (["driver", "controller"].includes(kind!)) {
@@ -35,6 +45,11 @@ export async function cli(argv: string[], socket: string) {
   const client = await BasewareClient.connect(socket);
   try {
     let value = await client.request(request);
+    if (output) {
+      await writeCapabilityDocument(value as Catalog, output);
+      console.log(output);
+      return output;
+    }
     if (select) value = (value as Record<string, unknown>)[select];
     console.log(typeof value === "string" ? value : JSON.stringify(value, null, 2));
     if (value && typeof value === "object" && "exitCode" in value) process.exitCode = Number(value.exitCode);

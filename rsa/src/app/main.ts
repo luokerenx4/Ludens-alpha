@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { mkdir, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve, join, delimiter } from "node:path";
 import { parseArgs } from "node:util";
 import { cli, HELP } from "../harness/cli.ts";
@@ -8,6 +8,7 @@ import { listen } from "../harness/transport.ts";
 import { connectBaseware } from "../harness/baseware.ts";
 import { WorkspaceController } from "../harness/controller.ts";
 import { defaultSocket } from "@playness/baseware/address";
+import { writeCapabilityDocument } from "@playness/baseware/catalog";
 import { EventLog, EVENT_SCHEMA_VERSION } from "../harness/events.ts";
 import { runProvenance } from "../harness/provenance.ts";
 import type { ControllerRequest } from "@playness/baseware/contracts";
@@ -107,8 +108,14 @@ async function main() {
     await mkdir(join(workspace, "skills"), { recursive: true });
     await mkdir(join(workspace, "memory"), { recursive: true });
     await mkdir(runDir, { recursive: true });
-    await writeFile(join(workspace, "AGENTS.md"), workspaceGuide, { flag: "wx" }).catch(error => {
+    const guidePath = join(workspace, "AGENTS.md");
+    await writeFile(guidePath, workspaceGuide, { flag: "wx" }).catch(async error => {
       if (error.code !== "EEXIST") throw error;
+      const existing = await readFile(guidePath, "utf8");
+      if (!existing.includes("baseware.json")) {
+        const catalogGuide = workspaceGuide.split("\n").find(line => line.startsWith("- `baseware.json`:"))!;
+        await appendFile(guidePath, `${existing.endsWith("\n") ? "" : "\n"}\n${catalogGuide}\n`);
+      }
     });
     // Let the dashboard locate logs even when this workspace is outside the checkout.
     await writeFile(join(state.dir, "workspace.json"), JSON.stringify({ workspace }, null, 2));
@@ -116,6 +123,7 @@ async function main() {
     log = new EventLog(runDir, clock);
     log.record("run_start", { workspace, workspaceId: state.id });
     devices = await connectBaseware({ socket: basewareSocket, seconds, runDir, record: log.record });
+    await writeCapabilityDocument(devices.catalog, join(workspace, "baseware.json"));
     runtime = new Runtime(devices, log.record, seconds, runId);
     const binDir = resolve(import.meta.dir, "../../bin");
     runtime.controller = new WorkspaceController({ workspace, devices, record: log.record, env: {

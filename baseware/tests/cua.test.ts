@@ -16,7 +16,14 @@ const tool = (name: string, readOnlyHint?: boolean): Tool => ({
 test("Cua exposes the complete upstream catalog and forwards literal JSON arguments", async () => {
   const calls: { name: string; arguments?: unknown }[] = [];
   const client = { async callTool(args) { calls.push(args); return { content: [] }; } } as CuaClient;
-  const tools = [tool("get_windows", true), tool("click", false), tool("unfamiliar_future_tool")];
+  const tools = [tool("get_windows", true), {
+    ...tool("click", false),
+    inputSchema: { type: "object" as const, properties: {
+      x: { type: "integer", minimum: 0 }, y: { type: "integer", minimum: 0 },
+      target: { oneOf: [{ type: "string" }, { type: "object", properties: { windowId: { type: "number" } } }] },
+    }, required: ["x", "y"], additionalProperties: false },
+    outputSchema: { type: "object" as const, properties: { clicked: { type: "boolean" } }, required: ["clicked"] },
+  }, tool("unfamiliar_future_tool")];
   const capabilities = cuaCapabilities({ tools, client, artifactsDir: "/unused", clock });
   const core = new BasewareCore({ capabilities, drivers: [{ id: "cua", version: "test" }] });
   const catalog = core.list().controllers;
@@ -25,6 +32,19 @@ test("Cua exposes the complete upstream catalog and forwards literal JSON argume
     { id: "cua.click", requiresControl: true },
     { id: "cua.unfamiliar_future_tool", requiresControl: true },
   ]);
+  expect(catalog[0]!.commands).toEqual([{
+    name: "", description: expect.any(String),
+    parameters: { type: "object", properties: { args: tools[0]!.inputSchema }, additionalProperties: false },
+    bindings: [{ parameter: "args", flag: "--args", encoding: "json" }],
+  }]);
+  expect(catalog[1]!.commands![0]!.parameters).toEqual({
+    type: "object", properties: { args: tools[1]!.inputSchema }, additionalProperties: false, required: ["args"],
+  });
+  expect(catalog[0]!.stdoutSchema).toBeUndefined();
+  expect(catalog[1]!.stdoutSchema).toEqual({
+    type: "object", description: expect.any(String),
+    properties: { content: { type: "array" }, structuredContent: tools[1]!.outputSchema }, required: ["content"],
+  });
   expect(catalog[2]!.help).toContain(JSON.stringify(tools[2]!.inputSchema));
   const args = { session: "one", selector: "[name='A B']", text: "$(touch untouched); --help", nested: [1, false] };
   await core.execute("cua.get_windows", ["--args", JSON.stringify(args)], undefined, new AbortController().signal);
@@ -32,6 +52,8 @@ test("Cua exposes the complete upstream catalog and forwards literal JSON argume
   await expect(core.execute("cua.get_windows", ["--args", "[]"], undefined, new AbortController().signal))
     .rejects.toThrow("JSON object");
   expect(calls).toHaveLength(2);
+  await core.execute("cua.get_windows", [], undefined, new AbortController().signal);
+  expect(calls.slice(-2)).toEqual([{ name: "start_session", arguments: {} }, { name: "get_windows", arguments: {} }]);
 });
 
 test("Cua persists binary media and preserves text, resources and structured output without duplicating payloads", async () => {

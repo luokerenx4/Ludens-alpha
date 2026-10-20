@@ -14,7 +14,9 @@ import type { Envelope } from "../src/protocol.ts";
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII=", "base64");
 const catalog = {
   drivers: [{ id: "fake-device", version: "1" }],
-  controllers: [{ id: "pad", requiresControl: true, help: "tap <button> [--frames <count>]" },
+  controllers: [{ id: "pad", requiresControl: true, help: "tap <button> [--frames <count>]",
+    commands: [{ name: "tap", parameters: { type: "object", properties: { button: { type: "string" } }, required: ["button"] },
+      bindings: [{ parameter: "button", encoding: "string" }] }], stdoutSchema: { type: "object" } },
     { id: "screen", requiresControl: false, mediaTypes: ["image/png"], help: "capture --label <literal label>" }],
 };
 
@@ -87,6 +89,9 @@ test("MCP discovers service capabilities, validates argument arrays, and routes 
       "baseware_list", "baseware_status", "baseware_help", "baseware_controller_pad", "baseware_controller_screen",
     ]);
     expect(tools.find(tool => tool.name === "baseware_controller_pad")?.description).toBe(catalog.controllers[0]!.help);
+    expect(tools.find(tool => tool.name === "baseware_controller_pad")?._meta).toEqual({
+      "baseware/commands": catalog.controllers[0]!.commands, "baseware/stdoutSchema": catalog.controllers[0]!.stdoutSchema,
+    });
     const discovered = await mcp.client.callTool({ name: "baseware_list", arguments: {} });
     expect(discovered.content).toEqual([{ type: "text", text: JSON.stringify(catalog) }]);
     const help = await mcp.client.callTool({ name: "baseware_help", arguments: { id: "pad" } });

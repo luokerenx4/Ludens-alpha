@@ -31,6 +31,15 @@ test("touch exposes native bounds and sends only down, move and up with unique r
   expect(controller.id).toBe("touch");
   expect(controller.requiresControl).toBe(true);
   expect(controller.help()).toContain("x=0..319, y=0..239");
+  expect(controller.commands).toMatchObject([
+    { name: "down", parameters: { properties: {
+      x: { type: "integer", minimum: 0, maximum: 319 }, y: { type: "integer", minimum: 0, maximum: 239 },
+    }, required: ["x", "y"] }, bindings: [
+      { parameter: "x", flag: "--x", encoding: "string" }, { parameter: "y", flag: "--y", encoding: "string" },
+    ] },
+    { name: "move", parameters: { properties: { x: { maximum: 319 }, y: { maximum: 239 } } } },
+    { name: "up", parameters: { properties: {}, additionalProperties: false }, bindings: [] },
+  ]);
   const down = await controller.execute(["down", "--x", "0", "--y", "239"], context);
   await controller.execute(["move", "--x", "319", "--y", "0"], context);
   await controller.execute(["up"], context);

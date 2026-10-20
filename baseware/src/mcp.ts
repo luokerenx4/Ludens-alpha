@@ -8,7 +8,10 @@ import type { Request } from "./protocol.ts";
 
 const catalogSchema = z.object({
   drivers: z.array(z.object({ id: z.string(), version: z.string() })),
-  controllers: z.array(z.object({ id: z.string(), requiresControl: z.boolean(), mediaTypes: z.array(z.string()).optional(), help: z.string() })),
+  controllers: z.array(z.object({ id: z.string(), requiresControl: z.boolean(), mediaTypes: z.array(z.string()).optional(), help: z.string(),
+    commands: z.array(z.object({ name: z.string(), description: z.string().optional(), parameters: z.record(z.string(), z.unknown()),
+      bindings: z.array(z.object({ parameter: z.string(), flag: z.string().optional(), encoding: z.enum(["string", "json"]), style: z.literal("joined").optional() })) })).optional(),
+    stdoutSchema: z.record(z.string(), z.unknown()).optional() })),
 });
 const invocationSchema = {
   argv: z.array(z.string()).describe("Literal argument tokens, as documented by the capability's help."),
@@ -64,6 +67,8 @@ export async function createMcpServer(client: Pick<BasewareClient, "request">, i
     server.registerTool(name, {
       description: capability.help,
       inputSchema: invocationSchema,
+      _meta: { ...(capability.commands ? { "baseware/commands": capability.commands } : {}),
+        ...(capability.stdoutSchema ? { "baseware/stdoutSchema": capability.stdoutSchema } : {}) },
       annotations: { readOnlyHint: !capability.requiresControl },
     }, async ({ argv, epoch }, { signal, requestId }) => invoke({
       kind: "controller", id: capability.id, argv, epoch: epoch ?? inheritedEpoch,

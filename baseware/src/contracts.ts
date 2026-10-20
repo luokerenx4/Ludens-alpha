@@ -22,10 +22,25 @@ export interface ExecutionResult {
   observations?: Observation[];
 }
 
+/** JSON Schema for named parameters or decoded JSON values; never inferred from help text. */
+export type JsonSchema = Record<string, unknown>;
+
+export interface CommandSchema {
+  /** First argv token; an empty name means no command prefix. */
+  name: string;
+  description?: string;
+  parameters: JsonSchema;
+  /** In order: optional flag, then encoded value; joined emits flag=value as one token. */
+  bindings: { parameter: string; flag?: string; encoding: "string" | "json"; style?: "joined" }[];
+}
+
 export interface Controller {
   id: string;
   requiresControl: boolean;
   mediaTypes?: readonly string[];
+  commands?: CommandSchema[];
+  /** Schema of JSON.parse(result.stdout), when the driver declares JSON output. */
+  stdoutSchema?: JsonSchema;
   help(): string;
   acquire?(epoch: string): Promise<void>;
   execute(argv: readonly string[], context: { epoch?: string; signal: AbortSignal }): Promise<ExecutionResult>;

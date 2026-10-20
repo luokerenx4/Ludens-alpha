@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSwitchProvider, encodeSpans } from "../src/drivers/ryubing/provider.ts";
+import { AXES, BUTTONS, createSwitchProvider, encodeSpans } from "../src/drivers/ryubing/provider.ts";
 
 test("Switch controls encode complete digital and analog states without game semantics", () => {
   expect(encodeSpans([
@@ -33,10 +33,11 @@ test("Switch accepts long actions and sequences while rejecting invalid or unsaf
 });
 
 async function withSwitchBridge(run: (provider: Awaited<ReturnType<typeof createSwitchProvider>>,
-  captures: { path: string; atMs: number }[], requests: string[]) => Promise<void>) {
+  captures: { path: string; atMs: number }[], requests: string[], typed: string[]) => Promise<void>) {
   const directory = await mkdtemp(join(tmpdir(), "rsa-switch-capture-"));
   const captures: { path: string; atMs: number }[] = [];
   const requests: string[] = [];
+  const typed: string[] = [];
   const server = createServer(socket => {
     let buffer = "";
     socket.setEncoding("utf8");
@@ -44,12 +45,16 @@ async function withSwitchBridge(run: (provider: Awaited<ReturnType<typeof create
       buffer += chunk;
       let end: number;
       while ((end = buffer.indexOf("\n")) >= 0) {
-        const [id, op, path] = buffer.slice(0, end).split("\t");
+        const [id, op, path, command, encoded] = buffer.slice(0, end).split("\t");
         buffer = buffer.slice(end + 1);
         requests.push(op);
         if (op === "HELLO") socket.write(`${id}\tOK\tryubing-rsa-3\n`);
         else if (op === "OWN" || op === "DISOWN") socket.write(`${id}\tOK\n`);
         else if (op === "TOUCH_INFO") socket.write(`${id}\tOK\t0\t0\t1279\t719\n`);
+        else if (op === "KEYBOARD" && command === "type") {
+          typed.push(Buffer.from(encoded, "base64").toString());
+          socket.write(`${id}\tOK\n`);
+        }
         else if (op === "CAPTURE") {
           captures.push({ path, atMs: performance.now() });
           socket.write(`${id}\tOK\t${captures.length}\n`);
@@ -60,7 +65,7 @@ async function withSwitchBridge(run: (provider: Awaited<ReturnType<typeof create
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const provider = await createSwitchProvider({ port: (server.address() as AddressInfo).port,
     artifactsDir: directory, clock: { id: "test", now: () => performance.now() } });
-  try { await run(provider, captures, requests); }
+  try { await run(provider, captures, requests, typed); }
   finally {
     provider.close();
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
@@ -71,6 +76,9 @@ async function withSwitchBridge(run: (provider: Awaited<ReturnType<typeof create
 test("Switch capture defaults to zero delay and includes a requested delay in its sampling interval", async () => {
   await withSwitchBridge(async (provider, captures) => {
     const screen = provider.capabilities.controllers.find(c => c.id === "screen")!;
+    expect(screen.commands).toMatchObject([{ name: "capture", parameters: {
+      properties: { delayMs: { type: "integer", minimum: 0, maximum: 2_147_483_647, default: 0 } },
+    }, bindings: [{ parameter: "delayMs", flag: "--delay-ms", encoding: "string" }] }]);
     const signal = new AbortController().signal;
     const first = (await screen.execute(["capture"], { signal })).observations![0];
     const second = (await screen.execute(["capture", "--delay-ms", "0"], { signal })).observations![0];
@@ -129,5 +137,37 @@ test("Switch touch and pad share one owner acquisition and release", async () =>
     expect(requests.filter(op => op === "OWN")).toHaveLength(1);
     expect(requests.filter(op => op === "DISOWN")).toHaveLength(1);
     expect(touch.help()).toContain("x=0..1279, y=0..719");
+    expect(touch.commands?.find(c => c.name === "down")?.parameters).toMatchObject({
+      properties: { x: { maximum: 1279 }, y: { maximum: 719 } },
+    });
+  });
+});
+
+test("Switch catalog describes actual pad channels, sequence file contents and keyboard keys", async () => {
+  await withSwitchBridge(async (provider, _captures, _requests, typed) => {
+    const pad = provider.capabilities.controllers.find(c => c.id === "pad")!;
+    const state = { type: "object", additionalProperties: false, properties: {
+      ...Object.fromEntries(BUTTONS.map(key => [key, { type: "integer", enum: [0, 1], default: 0 }])),
+      ...Object.fromEntries(AXES.map(key => [key, { type: "number", minimum: -1, maximum: 1, default: 0 }])),
+    } };
+    expect(pad.commands?.map(c => c.name)).toEqual(["state", "apply", "play", "release"]);
+    expect(pad.commands?.find(c => c.name === "apply")).toMatchObject({
+      parameters: { properties: { state, durationMs: { type: "integer", minimum: 16, maximum: Number.MAX_SAFE_INTEGER } }, required: ["state", "durationMs"] },
+      bindings: [{ parameter: "state", flag: "--state", encoding: "json" }, { parameter: "durationMs", flag: "--for-ms", encoding: "string" }],
+    });
+    expect(pad.commands?.find(c => c.name === "play")?.parameters).toMatchObject({ properties: {
+      file: { type: "string", "x-fileContentSchema": { type: "array", minItems: 1, items: { properties: { state, durationMs: { minimum: 16 } }, required: ["state", "durationMs"] } } },
+    } });
+    const keyboard = provider.capabilities.controllers.find(c => c.id === "keyboard")!;
+    expect(keyboard.commands).toMatchObject([
+      { name: "type", parameters: { properties: { text: { type: "string" } }, required: ["text"] } },
+      { name: "press", parameters: { properties: { key: { enum: ["ENTER", "ESCAPE", "BACKSPACE", "CTRL+A"] } }, required: ["key"] } },
+    ]);
+    const binding = keyboard.commands![0]!.bindings[0]!;
+    expect(binding.style).toBe("joined");
+    await keyboard.acquire!("epoch");
+    await keyboard.execute(["type", `${binding.flag}=--help 文本`], { epoch: "epoch", signal: new AbortController().signal });
+    expect(typed).toEqual(["--help 文本"]);
+    await keyboard.release!("epoch");
   });
 });

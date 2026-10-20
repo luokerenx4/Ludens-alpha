@@ -5,17 +5,19 @@ import { parseArgs } from "node:util";
 import type { Capabilities, Clock, Controller, ExecutionResult } from "../../contracts.ts";
 import { Bridge } from "../bridge.ts";
 import { createTouchController } from "../touch.ts";
+import { MAX_CAPTURE_DELAY_MS, MIN_POLL_DURATION_MS, padCommands, polledDuration } from "../schema.ts";
 
 // Order matches the physical bits in Ryubing's ControllerKeys, not game actions.
 export const BUTTONS = ["A", "B", "X", "Y", "LSTICK", "RSTICK", "L", "R", "ZL", "ZR", "PLUS", "MINUS", "LEFT", "UP", "RIGHT", "DOWN"];
 export const AXES = ["LX", "LY", "RX", "RY"];
+const KEYBOARD_KEYS = ["ENTER", "ESCAPE", "BACKSPACE", "CTRL+A"];
 type Span = { state: Record<string, number>; durationMs: number };
 
 export function encodeSpans(spans: Span[]): string {
   if (!Array.isArray(spans) || !spans.length) throw new Error("Expected a non-empty state sequence");
   let elapsed = 0;
   return spans.map(({ state, durationMs }) => {
-    if (!Number.isSafeInteger(durationMs) || durationMs < 16) throw new Error("durationMs must be a safe integer >= 16");
+    if (!Number.isSafeInteger(durationMs) || durationMs < MIN_POLL_DURATION_MS) throw new Error(`durationMs must be a safe integer >= ${MIN_POLL_DURATION_MS}`);
     elapsed += durationMs;
     if (!Number.isSafeInteger(elapsed)) throw new Error("Sequence duration must be a safe integer");
     if (!state || Array.isArray(state) || typeof state !== "object") throw new Error("state must be an object");
@@ -68,13 +70,17 @@ export async function createSwitchProvider(options: { port: number; artifactsDir
   }
   const screen: Controller = {
     id: "screen", requiresControl: false, mediaTypes: ["image/png"],
+    commands: [{ name: "capture", description: "Capture the next presented game frame or the visible system text-entry dialog as PNG after an optional fixed delay.",
+      parameters: { type: "object", properties: { delayMs: { type: "integer", minimum: 0, maximum: MAX_CAPTURE_DELAY_MS, default: 0,
+        description: "Fixed wait before requesting a frame; does not detect whether the scene has settled." } }, additionalProperties: false },
+      bindings: [{ parameter: "delayMs", flag: "--delay-ms", encoding: "string" }] }],
     help: () => "capture [--delay-ms <milliseconds>]\nWait a fixed delay before requesting the next presented game frame, or the visible system text-entry dialog when it is open, as a PNG. delay-ms defaults to 0 and accepts integer milliseconds from 0 to 2147483647. This delay does not detect whether the scene has settled. Returns an immutable path and sample interval including the delay. sourceSequence is a game presentation sequence, and is omitted for a dialog. No desktop content.",
     async execute(argv, { signal }) {
       const { values, positionals } = parseArgs({ args: [...argv], allowPositionals: true,
         options: { "delay-ms": { type: "string" } } });
       if (positionals.length !== 1 || positionals[0] !== "capture") throw new Error("Usage: controller screen capture [--delay-ms <milliseconds>]");
       const delayMs = Number(values["delay-ms"] ?? "0");
-      if (values["delay-ms"]?.trim() === "" || !Number.isInteger(delayMs) || delayMs < 0 || delayMs > 2_147_483_647) {
+      if (values["delay-ms"]?.trim() === "" || !Number.isInteger(delayMs) || delayMs < 0 || delayMs > MAX_CAPTURE_DELAY_MS) {
         throw new Error("delay-ms must be an integer from 0 to 2147483647");
       }
       signal.throwIfAborted();
@@ -92,6 +98,7 @@ export async function createSwitchProvider(options: { port: number; artifactsDir
   };
   const pad: Controller = {
     id: "pad", requiresControl: true, help: () => PAD_HELP,
+    commands: padCommands(BUTTONS, AXES, polledDuration),
     acquire, release,
     async execute(argv, { epoch, signal }): Promise<ExecutionResult> {
       signal.throwIfAborted();
@@ -135,6 +142,14 @@ export async function createSwitchProvider(options: { port: number; artifactsDir
   };
   const keyboard: Controller = {
     id: "keyboard", requiresControl: true, acquire, release,
+    commands: [
+      { name: "type", description: "Insert text at the caret in the visible system text-entry dialog, replacing selected text.",
+        parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"], additionalProperties: false },
+        bindings: [{ parameter: "text", flag: "--text", encoding: "string", style: "joined" }] },
+      { name: "press", description: "Press a key in the visible system text-entry dialog.",
+        parameters: { type: "object", properties: { key: { type: "string", enum: KEYBOARD_KEYS } }, required: ["key"], additionalProperties: false },
+        bindings: [{ parameter: "key", flag: "--key", encoding: "string" }] },
+    ],
     help: () => `Text-entry keyboard, available while a system text-entry dialog is visible.
 type --text <text>
 press --key ENTER|ESCAPE|BACKSPACE|CTRL+A
@@ -151,7 +166,7 @@ Observe screen capture to see the current dialog and its text. These commands do
       if (positionals.length !== 1 || (command !== "type" && command !== "press")) throw new Error("Expected type or press; see --help");
       const value = command === "type" ? values.text : values.key;
       if (value === undefined) throw new Error(`Missing --${command === "type" ? "text" : "key"}`);
-      if (command === "press" && !["ENTER", "ESCAPE", "BACKSPACE", "CTRL+A"].includes(value)) throw new Error("Unknown keyboard key");
+      if (command === "press" && !KEYBOARD_KEYS.includes(value)) throw new Error("Unknown keyboard key");
       const id = crypto.randomUUID();
       const requestedAtMs = clock.now();
       await bridge.request("KEYBOARD", [epoch, command, Buffer.from(value).toString("base64")], id);

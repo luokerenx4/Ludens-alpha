@@ -38,10 +38,12 @@ async function fixture() {
   await new Promise<void>(resolve => bridge.listen(0, "127.0.0.1", resolve));
   const preload = join(directory, "driver.ts");
   await writeFile(preload, `import { mock } from "bun:test";
-import { appendFile, writeFile } from "node:fs/promises";
+import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 mock.module(${JSON.stringify(join(rsaDirectory, "src/harness/omp/session.ts"))}, () => ({
   createOmpAgent: async ({ workspace, resume, runDir }) => {
+    // The interface snapshot is available before the agent starts.
+    await readFile(join(workspace, "baseware.json"), "utf8");
     await writeFile(join(runDir, "test-driver.json"), JSON.stringify({ workspace, resume, cwd: process.cwd() }));
     await appendFile(process.env.RSA_TEST_DRIVER_CALLS, JSON.stringify({ workspace, resume }) + "\\n");
     if (process.env.RSA_TEST_GATE) {
@@ -133,6 +135,7 @@ test("hosts route by workspace, resume only its selected session, and can start 
     }
     await writeFile(join(first.workspace, "notes.txt"), "Keep this learned material.\n");
     await writeFile(join(first.workspace, "AGENTS.md"), "Keep these task instructions.\n");
+    await writeFile(join(first.workspace, "baseware.json"), JSON.stringify({ stale: true }));
     const firstHost = testbed.launch(first.workspace, ["--seconds", "111"], {}, true);
     const secondHost = testbed.launch(second.workspace, ["--seconds", "222"]);
     const [one, two] = await Promise.all([ready(firstHost), ready(secondHost)]);
@@ -144,18 +147,33 @@ test("hosts route by workspace, resume only its selected session, and can start 
       expect(result.runDir).toBe(join(state.workspace, "logs", result.runId));
       expect(JSON.parse(await readFile(join(state.dir, "workspace.json"), "utf8"))).toEqual({ workspace: state.workspace });
       expect(await Bun.file(join(result.runDir, "events.jsonl")).exists()).toBe(true);
+      const catalog = JSON.parse(await readFile(join(state.workspace, "baseware.json"), "utf8"));
+      expect(catalog.schemaVersion).toBe(1);
+      expect(Number.isNaN(Date.parse(catalog.generatedAt))).toBe(false);
+      expect(catalog.controllers.map((item: { id: string }) => item.id)).toContain("pad");
+      expect(catalog.stale).toBeUndefined();
       expect(JSON.parse(await readFile(join(result.runDir, "test-driver.json"), "utf8"))).toEqual({
         workspace: state.workspace, resume: join(state.sessionsDir, "selected.jsonl"), cwd: state.workspace,
       });
       expect(await testbed.status(state.workspace, state === first)).toMatchObject({ runId: result.runId, mode: "manual",
         maxSeconds: state === first ? 111 : 222 });
     }
-    expect(await readFile(join(first.workspace, "AGENTS.md"), "utf8")).toBe("Keep these task instructions.\n");
+    const firstGuide = await readFile(join(first.workspace, "AGENTS.md"), "utf8");
+    expect(firstGuide).toStartWith("Keep these task instructions.\n");
+    expect(firstGuide.match(/baseware\.json/g)).toHaveLength(1);
+    expect(firstGuide).toContain("`baseware export`");
     expect(await readFile(join(second.workspace, "AGENTS.md"), "utf8")).toContain("`logs/`");
+    expect(await readFile(join(second.workspace, "AGENTS.md"), "utf8")).toContain("`baseware.json`");
     expect(testbed.operations).toEqual(["HELLO", "HELLO"]);
+    const secondCatalog = await readFile(join(second.workspace, "baseware.json"), "utf8");
     firstHost.child.kill("SIGTERM");
     expect(await firstHost.child.exited).toBe(143);
+    await writeFile(join(first.workspace, "baseware.json"), JSON.stringify({ stale: true }));
     const fresh = await ready(testbed.launch(first.workspace, ["--new-session"]));
+    expect(await readFile(join(first.workspace, "AGENTS.md"), "utf8")).toBe(firstGuide);
+    expect(JSON.parse(await readFile(join(first.workspace, "baseware.json"), "utf8")).stale).toBeUndefined();
+    expect(await readFile(join(second.workspace, "baseware.json"), "utf8")).toBe(secondCatalog);
+    expect(testbed.operations).toEqual(["HELLO", "HELLO"]);
     expect(JSON.parse(await readFile(join(fresh.runDir, "test-driver.json"), "utf8"))).toEqual({ workspace: first.workspace, cwd: first.workspace });
     expect(await readFile(join(first.workspace, "notes.txt"), "utf8")).toBe("Keep this learned material.\n");
     expect(await testbed.status(second.workspace)).toMatchObject({ runId: two.runId, mode: "manual" });

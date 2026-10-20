@@ -5,7 +5,7 @@
   "exports": {
     ".": "./src/client.ts", "./contracts": "./src/contracts.ts", "./client": "./src/client.ts",
     "./core": "./src/core.ts", "./server": "./src/server.ts", "./address": "./src/address.ts",
-    "./protocol": "./src/protocol.ts", "./drivers/*": "./src/drivers/*"
+    "./protocol": "./src/protocol.ts", "./catalog": "./src/catalog.ts", "./drivers/*": "./src/drivers/*"
   },
   "bin": { "baseware": "./bin/baseware" },
   "scripts": { "baseware": "bun src/main.ts", "test": "bun test", "check": "tsc --noEmit" },
