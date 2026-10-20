@@ -206,16 +206,21 @@ describe('RSA block speech', () => {
     expect(s.shows().filter(item => item.event.input.id === 'queued')).toHaveLength(1)
     s.controller.stop()
   })
-  it('serializes polling, aborts shutdown and ignores late old workspace results', async () => {
-    const s = setup(); let resolve!: (value: RsaActivitySnapshot) => void
+  it('serializes each source but immediately reads a new source and ignores late old workspace results', async () => {
+    const s = setup(); let resolve!: (value: RsaActivitySnapshot) => void, resolveNew!: (value: RsaActivitySnapshot) => void
     s.read.mockImplementationOnce((signal: AbortSignal) => {
       expect(signal).toBeInstanceOf(AbortSignal)
       return new Promise<RsaActivitySnapshot>(r => { resolve = r })
     })
     const pending = s.controller.poll(); await s.controller.poll(); expect(s.read).toHaveBeenCalledTimes(1)
-    s.switchSource(); await s.controller.poll(); resolve(state([block('stale', 'text', 'running')])); await pending
+    s.read.mockImplementationOnce(() => new Promise<RsaActivitySnapshot>(r => { resolveNew = r }))
+    s.switchSource(); const next = s.controller.poll()
+    expect(s.read).toHaveBeenCalledTimes(2)
+    resolve(state([block('stale', 'text', 'running')])); await pending
     expect(s.shows()).toHaveLength(0)
-    await s.poll(state([block('fresh', 'text', 'running')]))
+    await s.controller.poll()
+    expect(s.read).toHaveBeenCalledTimes(2)
+    resolveNew(state([block('fresh', 'text', 'running')])); await next
     expect(s.shows()).toHaveLength(1)
     s.controller.stop(); s.controller.transition(); await s.controller.poll()
     expect(s.read).toHaveBeenCalledTimes(2); expect(s.controller.snapshot()).toEqual([])

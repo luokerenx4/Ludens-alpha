@@ -10,6 +10,8 @@ import shutil
 import subprocess
 
 parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--label", help="Explicit launchd label for a shared application")
+parser.add_argument("--log-dir", type=Path, help="Explicit log and plist directory for a shared application")
 parser.add_argument("name", help="Job name, e.g. host or emulator")
 parser.add_argument("command", nargs=argparse.REMAINDER, help="Command and arguments to run in the current workspace")
 args = parser.parse_args()
@@ -17,7 +19,7 @@ if not args.command:
     parser.error("a command is required")
 workspace = Path.cwd().resolve()
 identity = hashlib.sha256(str(workspace).encode()).hexdigest()[:16]
-label = f"dev.playness.rsa.{identity}.{args.name}"
+label = args.label or f"dev.playness.rsa.{identity}.{args.name}"
 domain = f"gui/{os.getuid()}"
 target = f"{domain}/{label}"
 if subprocess.run(["launchctl", "print", target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
@@ -25,7 +27,7 @@ if subprocess.run(["launchctl", "print", target], stdout=subprocess.DEVNULL, std
 executable = shutil.which(args.command[0])
 if not executable:
     parser.error(f"command not found: {args.command[0]}")
-logs = workspace / "logs" / "background"
+logs = args.log_dir.resolve() if args.log_dir else workspace / "logs" / "background"
 logs.mkdir(parents=True, exist_ok=True)
 config = logs / f"{args.name}.plist"
 output = logs / f"{args.name}.log"

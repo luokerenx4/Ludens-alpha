@@ -15,21 +15,27 @@ pnpm install --frozen-lockfile
 pnpm build
 ```
 
-Start the RSA dashboard in the sibling `rsa-dashboard/` directory with `npm run dev`.
-From this directory, save the launcher's absolute path, then switch to the workspace
-you want to follow:
+Start the RSA dashboard in the sibling `rsa-dashboard/` directory with `npm run dev`,
+then open Alice from any directory:
 
 ```sh
-pet_launcher="$PWD/bin/rsa-companion"
-cd /path/to/your/workspace
-"$pet_launcher" --show-window
+/absolute/path/to/rsa-companion/bin/rsa-companion --show-window
 ```
 
-The launcher preserves cwd. `--workspace PATH` or `RSA_WORKSPACE` overrides it.
+Choose **让 Alice 跟随此工作区** in the Dashboard to change the pet's workspace
+without restarting it. This works in the browser and the desktop window.
+The selection is shared and saved by the Dashboard; browsing another workspace,
+historical run or epoch does not change it. Alice always follows the latest game
+run in the selected workspace, excluding benchmarks. With no selection Alice
+stays open and waits. Stopping following does not stop the Host or its agent.
+
+`--workspace PATH` or `RSA_WORKSPACE` supplies an initial selection only when no
+selection has ever been saved. The current directory does not select a workspace.
 `--dashboard http://127.0.0.1:3015` selects the local log server.
 `--profile PATH` uses a separate preferences directory / instance.
 The normal preferences live in macOS Application Support/RSA Alice Pet, independently
-of OpenAlice. No OpenAlice service, Guardian, model request or game input is started.
+of OpenAlice. Starting the normal instance again opens its existing window and exits
+successfully. No OpenAlice service, Guardian, model request or game input is started.
 
 The main window loads the same local Dashboard as the browser: live activity,
 Benchmark and Alice settings share one frontend. The old standalone Vite/React
@@ -41,8 +47,20 @@ the original click mute, volume, local audio import, preview and reset behavior.
 
 ## Log connection
 
-Electron main polls the existing dashboard's read-only `/api/catalog`, `/api/run`
-and `/api/activity` endpoints every 2.5 seconds, without overlapping requests.
+Electron main polls the Dashboard's `/api/alice` follow target every 2.5 seconds,
+independently of log reads, and reports a periodic consumer heartbeat there.
+This is a same-machine contract: the heartbeat includes the Electron main
+process PID so the Dashboard can check process liveness as well as heartbeat
+freshness, including immediately after Alice quits.
+A target change cancels the previous read, clears its bubble and queue, switches
+the consumer journal to the new workspace and immediately starts reading.
+Late results from the previous target cannot change the new display.
+The Dashboard can therefore show whether Alice is open and has loaded the requested
+target. Alice remains open if the Dashboard is temporarily offline and reconnects;
+an initial failed window load retries automatically.
+
+For the selected workspace, Electron polls the existing read-only `/api/catalog`,
+`/api/run` and `/api/activity` endpoints every 2.5 seconds, without overlapping requests.
 Images use `/api/media`. The activity endpoint projects both `events.jsonl` and
 model stream files into stable blocks: thinking, text, tools, system events and
 diagnostics. It reads the model's logged output, not input history or encrypted
@@ -99,6 +117,7 @@ the temporary directory printed by the test.
 a model or controls an emulator.
 
 During development a macOS background launch can use RSA's existing
-`rsa/scripts/launch-background.py` (relative to the repository root) from the target workspace. This keeps
-stdout in `workspace/logs/background`, with no automatic restart or login install.
+`rsa/scripts/launch-background.py` (relative to the repository root).
+The managed launcher uses a shared desktop instance; workspace service shutdown
+does not close Alice. This does not install an automatic restart or login service.
 This is a local development app, not a signed distributable installer.

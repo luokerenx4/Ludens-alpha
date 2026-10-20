@@ -166,8 +166,9 @@ export class RsaSource implements RsaActivitySource {
     let next: RsaActivitySnapshot
     let readError: string | undefined
     try {
-      const catalog = await this.json<{ id: string; runs: { id: string }[] }[]>('/api/catalog', requestSignal)
-      const runId = catalog.find(project => project.id === this.project)?.runs.map(run => run.id).sort().at(-1)
+      const catalog = await this.json<{ id: string; runs: { id: string; kind?: string; benchmark?: unknown }[] }[]>('/api/catalog', requestSignal)
+      const runId = catalog.find(project => project.id === this.project)?.runs
+        .filter(run => run.kind !== 'benchmark' && !run.benchmark).map(run => run.id).sort().at(-1)
       if (!runId) next = this.empty('工作区尚无运行记录', 'idle')
       else {
         const query = new URLSearchParams({ project: this.project, run: runId })

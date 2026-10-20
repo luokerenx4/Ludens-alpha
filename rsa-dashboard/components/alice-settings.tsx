@@ -7,6 +7,8 @@ import {
   usePetSound,
 } from "./alice-hooks";
 import type { BlockKind } from "../lib/desktop";
+import type { Project } from "../lib/types";
+import { AliceFollowSettings, type AliceFollow } from "./alice-follow";
 import "./alice-settings.css";
 
 const blockLabels: Record<BlockKind, string> = {
@@ -47,7 +49,7 @@ function Switch({
   );
 }
 
-export function AliceSettings() {
+export function AliceSettings({ follow, projects }: { follow: AliceFollow; projects: Project[] }) {
   const { bridge, ready } = useDesktopCompanion();
   const sound = usePetSound(bridge),
     prefs = useActivityPreferences(bridge);
@@ -113,12 +115,13 @@ export function AliceSettings() {
           {bridge ? "桌面端已连接" : "浏览器模式"}
         </span>
       </div>
+      <AliceFollowSettings follow={follow} projects={projects} />
       {ready && !bridge && (
         <div className="desktop-only-note">
-          <strong>在桌面端设置 Alice</strong>
+          <strong>关注工作区可在这里切换</strong>
           <p>
-            浏览器和桌面端共用这一个控制台。桌宠、托盘和声音设置需要从 Alice
-            的托盘打开桌面窗口；运行与 Benchmark 在这里仍可完整查看。
+            浏览器与桌面端共享 Alice 的关注目标。下方的外观、通知和声音偏好，需要从
+            Alice 托盘打开桌面窗口设置。
           </p>
         </div>
       )}
@@ -320,7 +323,7 @@ export function AliceSettings() {
         )}
       </section>
       <p className="setting-help">
-        偏好仅保存在这台电脑的 Alice profile 中，不会修改工作区或 Agent 的行为。
+        外观、通知与声音偏好保存在这台电脑的 Alice profile 中，不会修改工作区或 Agent 的行为。
       </p>
     </div>
   );

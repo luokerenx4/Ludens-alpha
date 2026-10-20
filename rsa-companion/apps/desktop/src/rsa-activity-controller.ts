@@ -22,7 +22,6 @@ export class RsaActivityController {
   private current: Displayed | null = null
   private serial = 0
   private timer: ReturnType<typeof setTimeout> | undefined
-  private busy = false
   private abort: AbortController | null = null
   private stopped = false
   constructor(private source: RsaActivitySource, private surface: Omit<ActivitySurface, 'open'> & { open(url: string): void }, private prefs: ActivityPreferences,
@@ -171,10 +170,10 @@ export class RsaActivityController {
     if (this.stopped) return
     const sourceId = this.source.identity()
     if (sourceId !== this.sourceId) {
-      this.abort?.abort(); this.sourceId = sourceId; this.runId = null; this.clear()
+      this.abort?.abort(); this.abort = null; this.sourceId = sourceId; this.runId = null; this.clear()
+      this.context = {}; this.throughSeq = 0; this.recordQueue()
     }
-    if (this.busy || !sourceId) return
-    this.busy = true
+    if (this.abort || !sourceId) return
     const abort = this.abort = new AbortController()
     try {
       const snapshot = await this.source.read(abort.signal)
@@ -182,6 +181,6 @@ export class RsaActivityController {
       this.accept(snapshot)
     } catch {
       if (!this.stopped && sourceId === this.source.identity()) { this.activity = 'offline'; this.flush() }
-    } finally { this.busy = false }
+    } finally { if (this.abort === abort) this.abort = null }
   }
 }

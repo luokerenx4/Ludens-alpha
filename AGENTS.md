@@ -11,4 +11,4 @@
 - 默认验证使用离线测试。真实设备测试、接管和进程重启会影响正在运行的游戏，按当前任务授权操作。
 - 架构边界清楚、实现简单；不要为目录整理引入额外兼容层或构建框架。
 - 独立改动完成并通过相关验证后及时提交；提交前检查文件范围与大小，保持运行数据、本机配置和凭据在仓库外。
-- 启动任务先进入目标 workspace：`rsa init` 生成 `rsa.json`，`rsa up --dry-run` 核对计划，`rsa up` 启动，`rsa services` 检查，再按授权 `rsa auto on`。`rsa auto off` 交还控制，`rsa down` 停止本工作区管理的服务；预算、模型或 Host 代码修改使用 `rsa down --keep-emulator` / `rsa up` 保留当前游戏后加载。详见 `rsa/README.md`，不要把开发者运维说明写入游戏 agent 的工作区指令。
+- 启动任务先进入目标 workspace：`rsa init` 生成 `rsa.json`，`rsa up --dry-run` 核对计划，`rsa up` 启动，`rsa services` 检查，再按授权 `rsa auto on`。`rsa auto off` 交还控制，`rsa down` 停止本工作区管理的服务，保留共享 Dashboard / Alice Pet；`--pet` 显式退出共享 Pet。预算、模型或 Host 代码修改使用 `rsa down --keep-emulator` / `rsa up` 保留当前游戏后加载。详见 `rsa/README.md`，不要把开发者运维说明写入游戏 agent 的工作区指令。

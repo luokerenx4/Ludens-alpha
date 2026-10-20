@@ -6,6 +6,7 @@ import { initialSelection, latestGameRun } from "@/lib/initial-selection";
 import { medianRequestWaits } from "@/lib/transport";
 import { ActivityFeed } from "@/components/activity-feed";
 import { AliceSettings } from "@/components/alice-settings";
+import { AliceFollowCard, useAliceFollow } from "@/components/alice-follow";
 import { DesktopBridge } from "@/components/desktop-bridge";
 import { BenchmarkCases } from "@/components/benchmark-cases";
 import {
@@ -124,7 +125,7 @@ export default function Dashboard() {
   const [error, setError] = useState("");
   const [activityError, setActivityError] = useState("");
   const [refresh, setRefresh] = useState(true);
-  const [desktop, setDesktop] = useState(false);
+  const alice = useAliceFollow();
   const [stopping, setStopping] = useState(false);
   const [panel, setPanel] = useState("trace");
   const [requestLimit, setRequestLimit] = useState(100);
@@ -162,9 +163,6 @@ export default function Dashboard() {
   };
   const selectCall = (id: string) =>
     navigate({ ...pinned, call: id, image: null, block: null });
-  useEffect(() => {
-    setDesktop(!!window.openAlice?.companion);
-  }, []);
   useEffect(() => {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
@@ -374,19 +372,8 @@ export default function Dashboard() {
             </a>
           ))}
         </nav>
-        <div className="sidebar-bottom">
-          <NavIcon kind="alice" />
-          <div>
-            <span>{desktop ? "Alice 桌面版" : "浏览器模式"}</span>
-            <small>
-              <i
-                className={"status-dot " + (live?.connected ? "online" : "")}
-              />
-              {live?.connected ? "宿主已连接" : "本地日志"}
-            </small>
-          </div>
-          <span className="sidebar-arrow">↗</span>
-        </div>
+        <AliceFollowCard follow={alice} project={benchmarkCases ? undefined : project}
+          onSettings={() => navigate({ view: "alice" })} />
       </aside>
       <div className="console-main">
         <header className="context-bar">
@@ -514,7 +501,7 @@ export default function Dashboard() {
             </div>
           )}
           {view === "alice" ? (
-            <AliceSettings />
+            <AliceSettings follow={alice} projects={projects} />
           ) : benchmarkCases ? (
             <BenchmarkCases
               search={search}

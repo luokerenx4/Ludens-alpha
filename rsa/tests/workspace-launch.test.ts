@@ -14,6 +14,8 @@ class FakeServices implements LaunchIO {
   externalEmulator = false;
   externalBaseware = false;
   externalHost = false;
+  externalAlice = false;
+  aliceReadyAfter = 0;
   basewareConnected = true;
   basewareMode = "manual";
   preparedBridgePid: number | null = null;
@@ -27,15 +29,17 @@ class FakeServices implements LaunchIO {
   constructor(readonly plan: LaunchPlan) { this.bridgePort = plan.config.port; }
   target(name: string) {
     const hash = createHash("sha256").update(this.plan.workspace).digest("hex").slice(0, 16);
-    return `gui/${process.getuid!()}/dev.playness.rsa.${hash}.${name}`;
+    return `gui/${process.getuid!()}/${name === "pet" ? "dev.playness.alice.pet" : `dev.playness.rsa.${hash}.${name}`}`;
   }
   seed(name: string) { this.jobs.set(this.target(name), 100 + this.jobs.size); }
   dashboardReady = async () => this.dashboard;
+  aliceReady = async () => this.externalAlice || (this.jobs.has(this.target("pet")) && this.clock >= this.aliceReadyAfter);
   sleep = async () => { this.clock += 500; };
   now = () => this.clock;
   note = () => {};
   async run(argv: string[], cwd: string) {
-    expect(cwd).toBe(this.plan.workspace);
+    const sharedPetLaunch = argv[0] === "python3" && argv[2] === "--label";
+    expect(cwd).toBe(sharedPetLaunch ? this.plan.sharedPet.cwd : this.plan.workspace);
     this.calls.push([...argv]);
     const result = (stdout = "", code = 0, stderr = "") => ({ code, stdout, stderr });
     if (argv[0] === "env" && argv[2] === this.plan.baseware && argv[3] === "status") {
@@ -69,9 +73,11 @@ class FakeServices implements LaunchIO {
       return result();
     }
     if (argv[0] === "python3" && argv[1] === this.plan.launcher) {
-      const name = argv[2]!;
+      const nameIndex = sharedPetLaunch ? 6 : 2;
+      const name = argv[nameIndex]!;
       this.starts.push(name);
-      expect(argv.slice(3)).toEqual(this.plan.commands[name as keyof typeof this.plan.commands]!);
+      if (sharedPetLaunch) expect(argv.slice(2, 6)).toEqual(["--label", "dev.playness.alice.pet", "--log-dir", this.plan.sharedPet.background]);
+      expect(argv.slice(nameIndex + 1)).toEqual(this.plan.commands[name as keyof typeof this.plan.commands]!);
       if (name === this.failStart) return result("", 1, `${name} unavailable`);
       if (name === "host") expect(this.events).toContain("baseware:manual:true");
       this.seed(name);
@@ -112,6 +118,8 @@ test("launch config keeps limits explicit and paths as literal argv entries", as
   expect(value.commands.host).not.toContain("--driver");
   expect(value.commands.host).not.toContain("--port");
   expect(value.commands.pet).toContain("/tmp/Workspace with spaces");
+  expect(value.commands.pet).not.toContain("--profile");
+  expect(value.sharedPet).toEqual({ cwd: "/tmp/Source with spaces", background: "/tmp/artifacts/rsa/alice/background" });
 });
 
 test("Cua launch config uses its native service and desktop observation without an emulator port", async () => {
@@ -226,7 +234,7 @@ test("failed startup preserves ready services and repeated up resumes without du
   expect(io.calls.some(argv => argv[1] === "bootout")).toBe(false);
 });
 
-test("down waits for takeover cleanup, stops only owned jobs, and keeps the shared Dashboard", async () => {
+test("down waits for takeover cleanup, stops only owned jobs, and keeps the shared Dashboard and Pet", async () => {
   const value = await plan();
   const io = new FakeServices(value);
   for (const name of ["host", "baseware", "emulator", "pet", "dashboard"]) io.seed(name);
@@ -241,16 +249,97 @@ test("down waits for takeover cleanup, stops only owned jobs, and keeps the shar
   expect(io.events.indexOf("host:manual:false")).toBeGreaterThan(io.events.indexOf("auto off"));
   expect(io.events.indexOf("host:manual:false")).toBeLessThan(stopHost);
   expect(io.calls.filter(argv => argv[1] === "bootout").map(argv => argv[2])).toEqual(
-    ["host", "pet", "baseware", "emulator"].map(name => io.target(name)));
-  expect([...io.jobs.keys()]).toEqual([io.target("dashboard"), foreign]);
+    ["host", "baseware", "emulator"].map(name => io.target(name)));
+  expect([...io.jobs.keys()]).toEqual([io.target("pet"), io.target("dashboard"), foreign]);
 
   const keep = new FakeServices(value);
   for (const name of ["host", "baseware", "emulator", "pet", "dashboard"]) keep.seed(name);
   keep.dashboard = true;
   await new WorkspaceLauncher(value, keep).down(false, true);
   expect(keep.calls.filter(argv => argv[1] === "bootout").map(argv => argv[2])).toEqual(
-    ["host", "pet", "baseware"].map(name => keep.target(name)));
-  expect([...keep.jobs.keys()]).toEqual([keep.target("emulator"), keep.target("dashboard")]);
+    ["host", "baseware"].map(name => keep.target(name)));
+  expect([...keep.jobs.keys()]).toEqual([keep.target("emulator"), keep.target("pet"), keep.target("dashboard")]);
+});
+
+test("two workspaces reuse one Alice process and either workspace can explicitly stop it", async () => {
+  const first = await launchPlan(parseConfig({ driver: "cua" }), "/tmp/First workspace", "/tmp/Source", "/tmp/first-baseware.sock");
+  const second = await launchPlan(parseConfig({ driver: "cua" }), "/tmp/Second workspace", "/tmp/Source", "/tmp/second-baseware.sock");
+  const firstIO = new FakeServices(first);
+  const firstStatus = await new WorkspaceLauncher(first, firstIO).up();
+  const firstPet = firstStatus.jobs.find(job => job.name === "pet")!;
+  expect(firstPet).toMatchObject({ scope: "shared", log: "/tmp/artifacts/rsa/alice/background/pet.log" });
+
+  const secondIO = new FakeServices(second);
+  secondIO.jobs = firstIO.jobs;
+  secondIO.dashboard = true;
+  const secondLauncher = new WorkspaceLauncher(second, secondIO);
+  const secondStatus = await secondLauncher.up();
+  expect(secondIO.starts).toEqual(["baseware", "host"]);
+  expect(secondStatus.jobs.find(job => job.name === "pet")).toEqual(firstPet);
+  expect(secondIO.calls.some(argv => argv.includes("--workspace"))).toBe(false);
+
+  await secondLauncher.down(false);
+  expect(secondIO.jobs.get(secondIO.target("pet"))).toBe(firstPet.pid!);
+  await secondLauncher.down(false, true, true);
+  expect(secondIO.jobs.has(secondIO.target("pet"))).toBe(false);
+  expect(secondIO.jobs.has(firstIO.target("host"))).toBe(true);
+});
+
+test("up reuses an independently opened Alice and down never closes that app", async () => {
+  const value = await plan();
+  const io = new FakeServices(value);
+  io.externalAlice = true;
+  const launcher = new WorkspaceLauncher(value, io);
+  const status = await launcher.up();
+  expect(status.pet.connected).toBe(true);
+  expect(status.jobs.find(job => job.name === "pet")).toMatchObject({ registered: false, pid: null });
+  expect(io.starts).not.toContain("pet");
+  await launcher.down(false, true, true);
+  expect(io.calls.some(argv => argv[1] === "bootout" && argv[2] === io.target("pet"))).toBe(false);
+  expect((await launcher.status()).pet.connected).toBe(true);
+});
+
+test("managed Alice startup waits for its activity connection after the process appears", async () => {
+  const value = await plan();
+  const io = new FakeServices(value);
+  io.aliceReadyAfter = 1500;
+  const status = await new WorkspaceLauncher(value, io).up();
+  expect(io.clock).toBe(1500);
+  expect(status.pet.connected).toBe(true);
+  expect(io.starts.filter(name => name === "pet")).toEqual(["pet"]);
+});
+
+test("shared launchd options write the chosen label and logs while preserving a stable working directory", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "rsa-shared-launch-"));
+  try {
+    const bin = join(directory, "bin");
+    const stableCwd = join(directory, "source");
+    const logs = join(directory, "shared", "alice", "background");
+    await mkdir(bin);
+    await mkdir(stableCwd);
+    const launchctl = join(bin, "launchctl");
+    await writeFile(launchctl, '#!/bin/sh\nif [ "$1" = print ]; then exit 1; fi\nexit 0\n');
+    await chmod(launchctl, 0o755);
+    const script = resolve(import.meta.dir, "../scripts/launch-background.py");
+    const child = Bun.spawn(["/usr/bin/python3", script, "--label", "dev.playness.alice.pet", "--log-dir", logs, "pet", "/bin/echo", "--workspace", "/tmp/seed workspace"], {
+      cwd: stableCwd, env: { ...process.env, PATH: bin, RSA_WORKSPACE: "/tmp/stale" }, stdout: "pipe", stderr: "pipe",
+    });
+    const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+    const canonicalCwd = await realpath(stableCwd);
+    const canonicalLogs = await realpath(logs);
+    expect(JSON.parse(stdout)).toMatchObject({
+      target: `gui/${process.getuid!()}/dev.playness.alice.pet`, workspace: canonicalCwd,
+      log: join(canonicalLogs, "pet.log"), plist: join(canonicalLogs, "pet.plist"),
+    });
+    const plist = await readFile(join(logs, "pet.plist"), "utf8");
+    expect(plist).toContain("<string>dev.playness.alice.pet</string>");
+    expect(plist).toContain(`<key>WorkingDirectory</key>\n\t<string>${canonicalCwd}</string>`);
+    expect(plist).toContain(`<string>${join(canonicalLogs, "pet.log")}</string>`);
+    expect(plist).not.toContain("RSA_WORKSPACE");
+    expect(await readdir(stableCwd)).toEqual([]);
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 test("an external Ryubing process blocks startup before spawning or stopping anything", async () => {

@@ -25,7 +25,7 @@ rsa services
 rsa auto on
 ```
 
-`rsa init` 在当前工作区生成 `rsa.json`，已有配置不会覆盖。`rsa up --dry-run` 只输出启动命令和路径，不启动进程。确认计划后，`rsa up` 连接设备并启动所需的 Baseware、Host、Dashboard 与 Pet；`rsa services` 汇总本工作区的后台进程、Host 状态和共享 Dashboard。新 Host 启动后保持手动，执行 `auto on` 后才发送模型请求并操作游戏；设备目录与 help 在启动时就已可用。复用已在接管中的 Host 时，`up` 保留当前状态，不打断运行。
+`rsa init` 在当前工作区生成 `rsa.json`，已有配置不会覆盖。`rsa up --dry-run` 只输出启动命令和路径，不启动进程。确认计划后，`rsa up` 连接设备并启动所需的 Baseware、Host、Dashboard 与 Pet；`rsa services` 汇总本工作区的后台进程、Host 状态和共享 Dashboard / Alice Pet，Pet 标记为 `scope: shared` 并给出实际日志位置。新 Host 启动后保持手动，执行 `auto on` 后才发送模型请求并操作游戏；设备目录与 help 在启动时就已可用。复用已在接管中的 Host 时，`up` 保留当前状态，不打断运行。
 
 接管时可附带一次用户提醒，例如 `rsa auto on --message '稍后要关闭模拟器，请先保存进度。'`。附言作为本轮第一条用户消息进入原会话，后续续轮不重复注入，也不修改技能、记忆或系统提示。
 
@@ -51,11 +51,11 @@ rsa auto on
 生命周期约定：
 
 - 重复 `up` 复用本工作区已就绪的 Host 和受管理的进程，不清空会话、不重启，也不改变已有接管状态。配置修改需重启对应进程加载；原 OMP 历史和工作区文件继续保留。
-- Dashboard 使用 `http://127.0.0.1:3015`，已有服务可共用。新启动的 Pet 使用 `logs/background/pet-profile/` 保存独立设置；本工作区已经受管理的 Pet 保持原进程及设置。
+- Dashboard 使用 `http://127.0.0.1:3015`，已有服务可共用。Alice Pet 是用户级共享应用，使用默认用户 profile 保存外观和设置；不同工作区的 `up` 复用同一个 Pet，也会复用单独打开的 Alice。启动以桌宠的日志消费心跳上线为就绪标准，`rsa services` 的 `pet.connected` 表示该连接是否在线。在看板选择 Alice 关注的工作区，启动新工作区不会抢走已有选择；首次启动时以当前工作区作为初始目标。
 - `rsa auto off` 立即交还控制并取消在途模型与 shell，模拟器继续运行。再次接管须等本周期清理结束。
-- `rsa down` 先交还控制并等待清理，再停止本工作区管理的 Host、Pet、Baseware 和模拟器；关闭模拟器会丢失未保存的游戏进度。它不关闭外部手动启动的进程，也不删除工作区或历史。
-- `rsa down --keep-emulator` 停止 Host、Pet、Baseware，保留模拟器及当前游戏状态，适合更换预算、模型或加载 Host 代码改动。更换游戏或模拟器启动配置时使用普通 `down` / `up`。
-- `down` 默认保留共享 Dashboard。确需关闭时，`rsa down --dashboard` 只关闭本工作区启动的 Dashboard；其他工作区的看板和 Pet 连接可能因此中断。`--dashboard` 与 `--keep-emulator` 可以组合使用。
+- `rsa down` 先交还控制并等待清理，再停止本工作区管理的 Host、Baseware 和模拟器；关闭模拟器会丢失未保存的游戏进度。它不关闭外部手动启动的进程，也不删除工作区或历史。
+- `rsa down --keep-emulator` 停止 Host、Baseware，保留模拟器及当前游戏状态，适合更换预算、模型或加载 Host 代码改动。更换游戏或模拟器启动配置时使用普通 `down` / `up`。
+- `down` 默认保留共享 Dashboard 和 Alice Pet。需要一起退出受管理的后台 Alice 时使用 `rsa down --pet`，单独打开的 Alice 仍由应用自身退出；需要关闭看板时，`rsa down --dashboard` 只关闭本工作区启动的 Dashboard，其他工作区的看板和 Pet 连接可能因此中断。这些选项可与 `--keep-emulator` 组合。
 
 例如修改 `rsa.json` 中的接管预算后，保留当前游戏并加载新预算：
 
@@ -66,7 +66,7 @@ rsa services
 rsa auto on
 ```
 
-后台进程继续复用 `scripts/launch-background.py`，工作目录是当前 workspace，日志与 job 描述写入 `logs/background/`。它们独立于交互式终端，不自动重启、不注册开机启动。启动失败时先运行 `rsa services` 查看现有服务及退出状态，再检查对应日志；避免另外手动启动一组重复进程。
+后台进程继续复用 `scripts/launch-background.py`。工作区服务以当前 workspace 为工作目录，日志与 job 描述写入 `logs/background/`；共享 Alice 的工作目录为仓库目录，日志与 job 描述位于 `artifacts/rsa/alice/background/`，launchd label 为 `dev.playness.alice.pet`。它们独立于交互式终端，不自动重启、不注册开机启动。启动失败时先运行 `rsa services` 查看现有服务及退出状态，再检查对应日志；避免另外手动启动一组重复进程。
 
 ### Cua 桌面
 

@@ -9,14 +9,17 @@ export const WORKSPACE_HELP = `Workspace startup (macOS):
 rsa init --driver ryubing|mgba|azahar|cua [--game <path>] [--cua-command <path>] [--seconds <n>]
 rsa up [--dry-run]
 rsa services
-rsa down [--keep-emulator] [--dashboard]
+rsa down [--keep-emulator] [--dashboard] [--pet]
 
 These commands use <workspace>/rsa.json. Paths are relative to that workspace.
 up starts services in manual mode; use rsa auto on to let the agent act.
 Repeated up reuses running services; down then up applies configuration changes.
-down stops this workspace's managed host, Pet, Baseware and emulator (save your game first).
+down stops this workspace's managed host, Baseware and emulator (save your game first).
 Use down --keep-emulator before changing host settings to preserve the current game.
 The shared Dashboard stays up unless --dashboard is given by its owning workspace.
+Alice Pet is shared across workspaces; --pet stops its managed background job.
+An Alice app opened separately is reused and stays open after down.
+Choose which workspace Alice follows in the Dashboard; up preserves that selection.
 Without game, prepare the emulator bridge yourself. mGBA always uses this mode.
 cua starts the installed Cua Driver (cua-driver by default); it needs no emulator or bridge port.
 azahar provides native gamepad, touch and screen capture through its emulator bridge.`;
@@ -63,6 +66,7 @@ export interface LaunchPlan {
   config: LaunchConfig;
   dashboardUrl: string;
   background: string;
+  sharedPet: { cwd: string; background: string };
   launcher: string;
   rsa: string;
   baseware: string;
@@ -75,8 +79,9 @@ export async function launchPlan(config: LaunchConfig, workspace: string, repo =
   const baseware = join(repo, "baseware/bin/baseware");
   const basewareSocket = socket ?? await defaultSocket(workspace);
   const background = join(workspace, "logs/background");
+  const sharedPet = { cwd: repo, background: resolve(repo, "../artifacts/rsa/alice/background") };
   return {
-    workspace, config, dashboardUrl: "http://127.0.0.1:3015", background,
+    workspace, config, dashboardUrl: "http://127.0.0.1:3015", background, sharedPet,
     launcher: join(repo, "rsa/scripts/launch-background.py"), rsa, baseware, basewareSocket,
     commands: {
       ...(config.game ? { emulator: ["env", `RSA_BRIDGE_PORT=${config.port}`,
@@ -93,8 +98,7 @@ export async function launchPlan(config: LaunchConfig, workspace: string, repo =
             { controllerId: "screen.bottom", argv: ["capture"] },
           ])] : [])],
       ...(config.dashboard ? { dashboard: ["npm", "--prefix", join(repo, "rsa-dashboard"), "run", "dev"] } : {}),
-      ...(config.pet ? { pet: [join(repo, "rsa-companion/bin/rsa-companion"), "--workspace", workspace,
-        "--profile", join(background, "pet-profile"), "--show-window"] } : {}),
+      ...(config.pet ? { pet: [join(repo, "rsa-companion/bin/rsa-companion"), "--workspace", workspace, "--show-window"] } : {}),
     },
   };
 }
@@ -106,6 +110,7 @@ type Job = { target: string; registered: boolean; pid: number | null; state: str
 export interface LaunchIO {
   run(argv: string[], cwd: string): Promise<CommandResult>;
   dashboardReady(url: string): Promise<boolean>;
+  aliceReady(url: string): Promise<boolean>;
   sleep(): Promise<void>;
   now(): number;
   note(message: string): void;
@@ -131,6 +136,12 @@ const systemIO: LaunchIO = {
       return response.ok && Array.isArray(await response.json());
     } catch { return false; }
   },
+  async aliceReady(url) {
+    try {
+      const response = await fetch(`${url}/api/alice`, { signal: AbortSignal.timeout(10_000) });
+      return response.ok && (await response.json()).connected === true;
+    } catch { return false; }
+  },
   sleep: () => Bun.sleep(500), now: Date.now, note: message => console.error(message),
 };
 
@@ -138,15 +149,16 @@ const systemIO: LaunchIO = {
 export class WorkspaceLauncher {
   constructor(readonly plan: LaunchPlan, private io: LaunchIO = systemIO) {}
 
-  private run(argv: string[]) { return this.io.run(argv, this.plan.workspace); }
-  private async checked(argv: string[]) {
-    const result = await this.run(argv);
+  private run(argv: string[], cwd = this.plan.workspace) { return this.io.run(argv, cwd); }
+  private async checked(argv: string[], cwd = this.plan.workspace) {
+    const result = await this.run(argv, cwd);
     if (result.code !== 0) throw new Error(result.stderr.trim() || result.stdout.trim() || `${argv[0]} exited ${result.code}`);
     return result;
   }
   async job(name: ServiceName): Promise<Job> {
     const hash = createHash("sha256").update(this.plan.workspace).digest("hex").slice(0, 16);
-    const target = `gui/${process.getuid!()}/dev.playness.rsa.${hash}.${name}`;
+    const label = name === "pet" ? "dev.playness.alice.pet" : `dev.playness.rsa.${hash}.${name}`;
+    const target = `gui/${process.getuid!()}/${label}`;
     const result = await this.run(["launchctl", "print", target]);
     return { target, registered: result.code === 0,
       pid: Number(result.stdout.match(/^\s*pid = (\d+)$/m)?.[1]) || null,
@@ -162,9 +174,14 @@ export class WorkspaceLauncher {
     return result.code === 0 ? JSON.parse(result.stdout) : null;
   }
   async status() {
-    const [host, baseware, dashboard, ...jobs] = await Promise.all([this.host(), this.baseware(), this.io.dashboardReady(this.plan.dashboardUrl),
-      ...(["emulator", "baseware", "host", "dashboard", "pet"] as const).map(async name => ({ name, ...await this.job(name), log: join(this.plan.background, `${name}.log`) }))]);
-    return { workspace: this.plan.workspace, host, baseware, dashboard: { url: this.plan.dashboardUrl, ready: dashboard }, jobs };
+    const [host, baseware, dashboard, alice, ...jobs] = await Promise.all([this.host(), this.baseware(), this.io.dashboardReady(this.plan.dashboardUrl), this.io.aliceReady(this.plan.dashboardUrl),
+      ...(["emulator", "baseware", "host", "dashboard", "pet"] as const).map(async name => ({
+        name, scope: name === "pet" ? "shared" : "workspace", ...await this.job(name), log: this.log(name),
+      }))]);
+    return { workspace: this.plan.workspace, host, baseware, dashboard: { url: this.plan.dashboardUrl, ready: dashboard }, pet: { connected: alice }, jobs };
+  }
+  private log(name: ServiceName) {
+    return join(name === "pet" ? this.plan.sharedPet.background : this.plan.background, `${name}.log`);
   }
   private async waitFor<T>(description: string, probe: () => Promise<T | null | false>): Promise<T> {
     const deadline = this.io.now() + 120_000;
@@ -178,14 +195,16 @@ export class WorkspaceLauncher {
   private async ensure(name: ServiceName) {
     const job = await this.job(name);
     if (job.pid) { this.io.note(`Reusing ${name} (PID ${job.pid}).`); return; }
-    // launchd retains completed jobs. Remove only this workspace's stopped registration.
+    // launchd retains completed jobs. Remove only this managed service's stopped registration.
     if (job.registered) await this.checked(["launchctl", "bootout", job.target]);
-    this.io.note(`Starting ${name}; log: ${join(this.plan.background, `${name}.log`)}`);
-    await this.checked(["python3", this.plan.launcher, name, ...this.plan.commands[name]!]);
+    this.io.note(`Starting ${name}; log: ${this.log(name)}`);
+    await this.checked(["python3", this.plan.launcher,
+      ...(name === "pet" ? ["--label", "dev.playness.alice.pet", "--log-dir", this.plan.sharedPet.background] : []),
+      name, ...this.plan.commands[name]!], name === "pet" ? this.plan.sharedPet.cwd : this.plan.workspace);
   }
   private async alive(name: ServiceName) {
     const job = await this.job(name);
-    if (!job.registered || (!job.pid && job.lastExitCode !== null)) throw new Error(`${name} exited; see ${join(this.plan.background, `${name}.log`)}`);
+    if (!job.registered || (!job.pid && job.lastExitCode !== null)) throw new Error(`${name} exited; see ${this.log(name)}`);
     return job.pid;
   }
   private async listeningPids(port: number) {
@@ -260,15 +279,23 @@ export class WorkspaceLauncher {
     }
     if (this.plan.config.pet) {
       if (!dashboard) throw new Error("Pet needs the Dashboard. Enable dashboard in rsa.json or start it separately.");
-      await this.ensure("pet");
-      // Surface immediate Electron failures (missing build / profile already in use).
-      await this.io.sleep();
-      await this.waitFor("Pet process", () => this.alive("pet"));
+      if (await this.io.aliceReady(this.plan.dashboardUrl)) this.io.note("Reusing Alice's connected desktop instance.");
+      else {
+        await this.ensure("pet");
+        await this.waitFor(`Alice activity connection (${this.log("pet")})`, async () => {
+          if (await this.io.aliceReady(this.plan.dashboardUrl)) return true;
+          const job = await this.job("pet");
+          // Electron's single-instance lock can exit successfully while an existing app connects.
+          if (!job.registered || (!job.pid && job.lastExitCode !== null && job.lastExitCode !== 0))
+            throw new Error(`pet exited; see ${this.log("pet")}`);
+          return false;
+        });
+      }
     }
     this.io.note(host.mode === "auto" ? "Existing takeover is still running." : "Ready in manual mode. Run rsa auto on to start acting.");
     return this.status();
   }
-  async down(includeDashboard: boolean, keepEmulator = false) {
+  async down(includeDashboard: boolean, keepEmulator = false, includePet = false) {
     const managedHost = await this.job("host");
     if (managedHost.pid) {
       const host = await this.host();
@@ -278,7 +305,7 @@ export class WorkspaceLauncher {
         return !status || (!status.thinking && !status.consolidating);
       });
     }
-    for (const name of ["host", "pet", "baseware", ...(!keepEmulator ? ["emulator"] : []), ...(includeDashboard ? ["dashboard"] : [])] as ServiceName[]) {
+    for (const name of ["host", "baseware", ...(!keepEmulator ? ["emulator"] : []), ...(includePet ? ["pet"] : []), ...(includeDashboard ? ["dashboard"] : [])] as ServiceName[]) {
       const job = await this.job(name);
       if (!job.registered) continue;
       // A manually launched host or another lease holder may still own the device.
@@ -307,7 +334,7 @@ export async function workspaceCommand(command: string, args: string[], selected
   const { values } = parseArgs({ args, options: command === "init" ? {
     driver: { type: "string" }, game: { type: "string" }, "cua-command": { type: "string" }, seconds: { type: "string" },
   } : command === "up" ? { "dry-run": { type: "boolean" } }
-    : command === "down" ? { dashboard: { type: "boolean" }, "keep-emulator": { type: "boolean" } } : {} });
+    : command === "down" ? { dashboard: { type: "boolean" }, pet: { type: "boolean" }, "keep-emulator": { type: "boolean" } } : {} });
   if (command === "init") {
     const config = parseConfig({ driver: values.driver,
       ...(values.game ? { game: values.game } : {}), ...(values["cua-command"] ? { cuaCommand: values["cua-command"] } : {}),
@@ -336,6 +363,6 @@ export async function workspaceCommand(command: string, args: string[], selected
   }
   const launcher = new WorkspaceLauncher(plan);
   const result = command === "up" ? await launcher.up() : command === "down"
-    ? await launcher.down(Boolean(values.dashboard), Boolean(values["keep-emulator"])) : await launcher.status();
+    ? await launcher.down(Boolean(values.dashboard), Boolean(values["keep-emulator"]), Boolean(values.pet)) : await launcher.status();
   console.log(JSON.stringify(result, null, 2));
 }

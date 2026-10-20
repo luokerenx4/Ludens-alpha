@@ -4,7 +4,6 @@ import { useEffect, useRef, useState } from "react";
 import {
   localDashboardLink,
   type ActivityDisplay,
-  type DesktopSnapshot,
 } from "../lib/desktop";
 import "./alice-settings.css";
 
@@ -23,8 +22,7 @@ export function DesktopBridge({
     navigate.current = onNavigate;
   }, [onNavigate]);
   useEffect(() => {
-    const companion = window.openAlice?.companion,
-      source = window.rsaPet;
+    const companion = window.openAlice?.companion;
     if (!companion) return;
     const open = (input: string) => {
       const url = localDashboardLink(input, window.location.href);
@@ -39,30 +37,9 @@ export function DesktopBridge({
       }),
     );
     const offOpen = companion.activity.onOpen(open);
-    let active = true;
-    const followInitialWorkspace = (snapshot: DesktopSnapshot) => {
-      if (!active || !snapshot.runId) return;
-      const current = new URL(window.location.href);
-      if (current.searchParams.has("project")) return;
-      const url = localDashboardLink(snapshot.dashboardUrl, current.href);
-      if (!url) return;
-      const selected = new URL(url);
-      selected.searchParams.set(
-        "view",
-        current.searchParams.get("view") ?? "live",
-      );
-      open(selected.href);
-    };
-    const offSnapshot = source?.onSnapshot(followInitialWorkspace);
-    void source
-      ?.getSnapshot()
-      .then(followInitialWorkspace)
-      .catch(() => {});
     return () => {
-      active = false;
       offDisplay();
       offOpen();
-      offSnapshot?.();
     };
   }, []);
   const action = async (name: "open" | "dismiss", id: string) => {

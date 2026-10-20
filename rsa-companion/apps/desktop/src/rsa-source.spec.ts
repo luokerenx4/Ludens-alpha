@@ -62,7 +62,10 @@ describe('RSA dashboard block source', () => {
     const onSnapshot = vi.fn()
     const source = new RsaSource({ workspace: link, dashboardUrl: 'http://127.0.0.1:3015/', onSnapshot })
     const project = rsaProjectId(directory)
-    const fetch = vi.fn().mockResolvedValueOnce(Response.json([{ id: 'other', runs: [{ id: 'newest-other' }] }, { id: project, runs: [{ id: '2026-10-17T12-00-00.000Z' }, { id: '2026-10-17T13-38-12.609Z' }] }]))
+    const fetch = vi.fn().mockResolvedValueOnce(Response.json([{ id: 'other', runs: [{ id: 'newest-other' }] }, { id: project, runs: [
+      { id: '2026-10-17T12-00-00.000Z' }, { id: '2026-10-17T13-38-12.609Z' },
+      { id: '2026-10-18T00-00-00.000Z', kind: 'benchmark' }, { id: '2026-10-19T00-00-00.000Z', benchmark: { id: 'legacy-benchmark' } },
+    ] }]))
       .mockResolvedValueOnce(Response.json(run({ manifest: { workspace: directory } })))
       .mockResolvedValueOnce(Response.json({ blocks }))
     vi.stubGlobal('fetch', fetch)

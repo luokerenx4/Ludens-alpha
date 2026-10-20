@@ -20,15 +20,27 @@ npm run dev
 /absolute/path/to/repo/rsa-companion/bin/rsa-companion --show-window
 ```
 
-`--workspace PATH` 可显式选择工作区，`--dashboard http://127.0.0.1:3015` 选择本地服务。启动桌面壳只消费已有日志，不发模型请求或游戏操作；常规整套服务启动仍可使用 `rsa up`。
+`--workspace PATH` 只提供首次启动的默认关注目标，`--dashboard http://127.0.0.1:3015` 选择本地服务。之后在浏览器或桌面控制台切换 Alice 关注的工作区，无需重启。启动桌面壳只消费已有日志，不发模型请求或游戏操作；常规整套服务启动仍可使用 `rsa up`。
 
 ## 三个共享视图
 
 - **运行**：输入画面、当前执行状态与完整活动流；thinking、text、tool、system 和诊断内容使用不同排版，可筛选和查看详情。Pet 点击详情带上原始 project / run / epoch / block，定位到同一活动流。
 - **Benchmark**：“运行剖析”保留请求、缓存、传输、压缩和观测统计，以及 Shiori、能力调用和 Baseware 的关联记录；“基准用例”展示四个固定 case 的真实结果、检查证据、执行条件和历史基线差值。用例由 `rsa bench` 显式运行，页面只读，不调度在线模型。见 [用例说明](../rsa/benchmarks/README.md) 与 [PRD](../docs/benchmarks/prd.html)。
-- **Alice**：桌宠可见性、日志展示梯度、通知暂停、声音开关 / 音量 / 文件导入 / 试听。浏览器显示桌面能力说明并禁用原生设置；偏好保存在本机 Alice profile，不写入工作区。
+- **Alice**：关注工作区、桌宠可见性、日志展示梯度、通知暂停、声音开关 / 音量 / 文件导入 / 试听。浏览器和 Electron 均可切换关注目标；原生设置仍在桌面端操作，偏好保存在本机 Alice profile。
 
 运行剖析共用工作区、run 和 epoch 选择，URL 使用 `view=live|benchmark|alice`，详情可带 `block`。基准用例是跨工作区视图，使用 `view=benchmark&bench=cases`，URL 保存 case / result / baseline。没有真实接管周期的离线基准可回放完整 run，保留原 trace，不伪造 control。Alice 隐藏时，已启用的窗口内通知仍会在桌面控制台显示。
+
+## Alice 热切换
+
+侧栏的“让 Alice 跟随此工作区”设置关注目标；Alice 页面可选择其他工作区或停止跟随。关注最新非 Benchmark 运行及其最新周期，页面导航和历史回放不会改变目标，也不会接管或停止 Agent。
+
+`/api/alice` 是网页与桌面共享的本地状态接口：
+
+- `GET` 返回 `{ target, consumer, connected }`。目标包含已登记的 `project`、canonical `workspace`、`revision`、`updatedAt`；桌面心跳包含 Electron 的实际 pid、正在读取的 revision/workspace/runId、phase、error 和服务器生成的 seenAt。仅同机进程仍存活且 15 秒内有心跳时显示已连接；目标已保存但桌面尚未应用时显示切换中。
+- `PUT { project: string | null }` 设置或停止跟随。只允许 catalog 中已登记的工作区，同一目标保持 revision；`ifUnset: true` 只在从未保存选择时提供启动默认值，不覆盖用户主动停止。
+- `POST { instanceId, pid, revision, workspace, runId, phase, error }` 由桌面端报告消费状态，pid 必须为正安全整数。phase 为 `idle | switching | following | error`。两种写请求复用同源检查。
+
+选择持久化在 `artifacts/rsa/.alice-target.json`，心跳在 `.alice-consumer.json`，不进入 Git。桌面未启动也可以保存目标，重开后自动应用；桌面切换时取消旧日志读取并清空旧队列。控制台使用单个共享轮询，不因同时显示侧栏和设置页重复读取。
 
 ## 日志与指标
 
