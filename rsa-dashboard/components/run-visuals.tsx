@@ -1,6 +1,8 @@
 "use client";
+import { useEffect, useState } from "react";
 import type { Call, Observation, RunData, TraceSpan } from "@/lib/types";
 import { requestWait, sseFallbackReason } from "@/lib/transport";
+import { selectObservations } from "./observation-model";
 
 export const seconds = (ms: number | null | undefined) =>
   ms == null ? "—" : (ms / 1000).toFixed(1) + " s";
@@ -34,6 +36,7 @@ export const observationOrigin: Record<string, string> = {
   tool_batch: "自动观测",
   explicit: "主动观测",
   cli: "CLI 采样",
+  observe_hook: "工作区 observe",
 };
 
 export function Metric({
@@ -193,6 +196,24 @@ export function RequestChart({
   );
 }
 
+function TextObservation({ url }: { url: string }) {
+  const [text, setText] = useState("载入文字观测…");
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch(url, { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("无法读取文字观测");
+        const value = await response.text();
+        if (!controller.signal.aborted) setText(value);
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted) setText(String(error));
+      });
+    return () => controller.abort();
+  }, [url]);
+  return <pre className="observation-text">{text}</pre>;
+}
+
 export function ObservationPanel({
   data,
   call,
@@ -206,30 +227,41 @@ export function ObservationPanel({
   onImage(id: string): void;
   compact?: boolean;
 }) {
-  const samples = call
-    ? [...new Set([...call.inputObservations, ...call.observations])].flatMap(
-        (id) => data.observations.filter((o) => o.id === id),
-      )
-    : data.observations.slice(-4);
-  const explicit = data.observations.find((o) => o.id === selectedImage);
-  const input = call?.inputObservations
-    .flatMap((id) => data.observations.filter((o) => o.id === id))
-    .at(-1);
-  const observation =
-    explicit ?? input ?? samples.at(-1) ?? data.observations.at(-1);
-  const isInput =
-    observation && call?.inputObservations.includes(observation.id);
+  const { inputs, others, observation, showingInput } = selectObservations(
+    data.observations, call, selectedImage,
+  );
+  const text = showingInput ? call?.inputText : observation?.text;
   const media = (o: Observation) =>
     "/api/media?" +
     new URLSearchParams({ project: data.project, run: data.run, id: o.id });
+  const samples = (items: Observation[], label: string) => (
+    <div className="sample-strip">
+      {items.map((o) => (
+        <button
+          key={o.id}
+          className={"sample" + (o.id === observation?.id ? " selected" : "")}
+          onClick={() => onImage(o.id)}
+          aria-pressed={o.id === observation?.id}
+          title={o.controller}
+        >
+          {o.mediaType.startsWith("image/") ? (
+            <img src={media(o)} alt="" />
+          ) : (
+            <span>{o.mediaType.startsWith("audio/") ? "音频" : "文字"}</span>
+          )}
+          <small>{label}</small>
+        </button>
+      ))}
+    </div>
+  );
   return (
     <section
       className={"surface observation-panel" + (compact ? " compact" : "")}
     >
       <div className="surface-heading">
-        <h2>{isInput ? "模型看到的画面" : "保存的观测"}</h2>
+        <h2>{showingInput ? "模型输入的观测" : "采样与中间产物"}</h2>
         <span>
-          {call ? "请求 #" + String(call.index).padStart(3, "0") : "传感器"}
+          {call ? "请求 #" + String(call.index).padStart(3, "0") : "等待模型请求"}
         </span>
       </div>
       <div className="screen">
@@ -239,21 +271,25 @@ export function ObservationPanel({
               key={observation.id}
               src={media(observation)}
               alt={
-                (isInput ? "模型输入" : "保存观测") +
+                (showingInput ? "模型输入" : "保存观测") +
                 " · " +
                 observation.controller +
                 " · " +
                 clockTime(observation.at)
               }
             />
-          ) : (
+          ) : observation.mediaType.startsWith("audio/") ? (
             <audio controls src={media(observation)} />
+          ) : (
+            <TextObservation key={observation.id} url={media(observation)} />
           )
+        ) : text ? (
+          <pre className="observation-text">{text}</pre>
         ) : (
           <div className="empty-state">
             <span className="empty-symbol">◫</span>
-            <h3>还没有画面</h3>
-            <p>传感器保存观测后，会出现在这里。</p>
+            <h3>{call ? "本次请求没有可展示的输入画面" : "等待模型观测"}</h3>
+            <p>这里按模型请求展示实际输入的观测。</p>
           </div>
         )}
       </div>
@@ -263,36 +299,30 @@ export function ObservationPanel({
             ? (observationOrigin[observation.origin] ?? observation.origin) +
               " · " +
               clockTime(observation.at)
-            : "等待传感器"}
+            : text ? "文字观测" : "暂无输入媒体"}
         </span>
         {observation?.sourceSequence != null && (
           <span>源帧 {observation.sourceSequence}</span>
         )}
+        {!showingInput && (
+          <button className="text-button" onClick={() => onImage("")}>
+            返回模型输入
+          </button>
+        )}
       </div>
-      {!!samples.length && (
-        <div className="sample-strip">
-          {samples.map((o) => (
-            <button
-              key={o.id}
-              className={
-                "sample" + (o.id === observation?.id ? " selected" : "")
-              }
-              onClick={() => onImage(o.id)}
-              aria-pressed={o.id === observation?.id}
-            >
-              {o.mediaType.startsWith("image/") ? (
-                <img src={media(o)} alt="" />
-              ) : (
-                <span>音频</span>
-              )}
-              <small>
-                {call?.inputObservations.includes(o.id)
-                  ? "输入画面"
-                  : "后续观测"}
-              </small>
-            </button>
-          ))}
-        </div>
+      {!!inputs.length && samples(inputs, "模型输入")}
+      {observation && text && (
+        <details className="observation-metadata">
+          <summary>{showingInput ? "随观测发送的文字" : "观测文字"}</summary>
+          <pre className="observation-text">{text}</pre>
+        </details>
+      )}
+      {!!others.length && (
+        <details className="observation-metadata">
+          <summary>其他采样与产物 · {others.length}</summary>
+          <p>保留采集和处理过程，默认展示上方的模型输入。</p>
+          {samples(others, "保存的观测")}
+        </details>
       )}
       {observation && (
         <details className="observation-metadata">
@@ -300,6 +330,12 @@ export function ObservationPanel({
             观测详情 <span>{observation.controller}</span>
           </summary>
           <dl className="fact-grid">
+            {observation.hook && (
+              <div>
+                <dt>Observe 版本</dt>
+                <dd title={observation.hook.codeSHA}>{observation.hook.codeSHA.slice(0, 12)}</dd>
+              </div>
+            )}
             <div>
               <dt>采集</dt>
               <dd>{seconds(observation.captureMs)}</dd>

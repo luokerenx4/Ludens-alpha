@@ -1,5 +1,6 @@
 import type { Event, Call, Observation, Notice, SkillEvidence } from "./types";
 import { p95 } from "./telemetry";
+import { eventObservations, successfulObserveHook } from "./observation-events";
 export function parseEvents(text: string): Event[] {
   const lines = text.split("\n");
   if (!text.endsWith("\n")) lines.pop(); // An append in progress is not a malformed event.
@@ -39,6 +40,8 @@ export function aggregate(events: Event[], now = Date.now()) {
   const observations: Observation[] = [];
   const observationMap = new Map<string, Observation>();
   const observationRequests = new Map<string, Observation["request"]>();
+  const hookText = new Map<string, string>();
+  const contexts = new Map<string, { observations: string[]; executions: string[] }>();
   const notices: Notice[] = [];
   const skills: SkillEvidence[] = [];
   const toolMap = new Map<
@@ -60,6 +63,10 @@ export function aggregate(events: Event[], now = Date.now()) {
     const t = event.trace;
     const toolKey = JSON.stringify([t.epoch, t.modelCallId, t.toolCallId]);
     const observationKey = JSON.stringify([t.epoch, t.operationId]);
+    const hook = successfulObserveHook(event);
+    if (hook) hookText.set(JSON.stringify([t.epoch, hook.result.id]), hook.result.stdout);
+    if (event.type === "context")
+      contexts.set(t.epoch, { observations: d.observations ?? [], executions: d.executions ?? [] });
     if (event.type === "observation_start" && t.operationId)
       observationRequests.set(observationKey, { controllerId: d.controllerId ?? d.sensorId, argv: d.argv });
     if (event.type === "auto_compaction_start") {
@@ -72,6 +79,11 @@ export function aggregate(events: Event[], now = Date.now()) {
     if (event.type === "auto_compaction_end") compaction = null;
     let call = byId.get(t.modelCallId);
     if (event.type === "model_start") {
+      const context = contexts.get(t.epoch);
+      const inputText = context && JSON.stringify(context.observations) === JSON.stringify(d.observations ?? [])
+        ? context.executions.map(id => hookText.get(JSON.stringify([t.epoch, id])))
+          .filter((text): text is string => !!text).join("\n\n")
+        : "";
       call = {
         id: t.modelCallId,
         index: calls.length + 1,
@@ -94,6 +106,7 @@ export function aggregate(events: Event[], now = Date.now()) {
         tools: [],
         observations: [],
         inputObservations: d.observations ?? [],
+        ...(inputText ? { inputText } : {}),
         actions: 0,
         phases: {},
       };
@@ -240,25 +253,32 @@ export function aggregate(events: Event[], now = Date.now()) {
       d.exitCode === 0
     )
       call.actions++;
-    if (event.type === "observation") {
+    for (const observation of eventObservations(event)) {
       const o: Observation = {
-        id: d.id,
+        id: observation.id,
         at: event.at,
-        controller: d.controllerId ?? d.sensorId,
-        mediaType: d.mediaType,
-        origin: d.origin ?? "unknown",
-        sourceSequence: d.sourceSequence,
-        sourceSequenceDelta: d.sourceSequenceDelta,
-        afterExecutionMs: d.afterExecution?.captureRequestedAfterMs,
-        captureMs: d.timing
-          ? d.timing.receivedAtMs - d.timing.requestedAtMs
+        controller: observation.controllerId ?? observation.sensorId ?? "",
+        mediaType: observation.mediaType,
+        origin: observation.origin ?? "unknown",
+        text: observation.text,
+        hook: observation.hook,
+        sourceSequence: observation.sourceSequence,
+        sourceSequenceDelta: observation.sourceSequenceDelta,
+        afterExecutionMs: observation.afterExecution?.captureRequestedAfterMs,
+        captureMs: observation.timing
+          ? observation.timing.receivedAtMs - observation.timing.requestedAtMs
           : undefined,
         modelCallId: t.modelCallId,
         request: t.operationId ? observationRequests.get(observationKey) : undefined,
       };
-      observations.push(o);
-      observationMap.set(o.id, o);
-      call?.observations.push(o.id);
+      const existing = observationMap.get(o.id);
+      if (!existing) {
+        observations.push(o);
+        observationMap.set(o.id, o);
+      } else if (o.hook) {
+        Object.assign(existing, { hook: o.hook, text: o.text, origin: o.origin });
+      }
+      if (call && !call.observations.includes(o.id)) call.observations.push(o.id);
     }
     if (event.type === "observation_media") {
       const o = observationMap.get(d.observationId);

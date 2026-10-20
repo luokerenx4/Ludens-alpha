@@ -51,6 +51,8 @@ export interface Observation {
   controller: string;
   origin: string;
   mediaType: string;
+  text?: string;
+  hook?: { id: string; codeSHA: string; path: string };
   sourceSequence?: number;
   sourceSequenceDelta?: number;
   afterExecutionMs?: number;
@@ -96,6 +98,7 @@ export interface Call {
   tools: Tool[];
   observations: string[];
   inputObservations: string[];
+  inputText?: string;
   actions: number;
   phases: Record<string, number | null>;
 }

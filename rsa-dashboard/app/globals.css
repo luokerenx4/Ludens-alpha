@@ -415,6 +415,19 @@ h3 {
 .screen audio {
   max-width: 90%;
 }
+.observation-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 280px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.screen > .observation-text {
+  width: 100%;
+  max-height: 100%;
+  padding: 16px;
+}
 .screen-meta {
   padding: 12px 13px;
   display: flex;
@@ -468,6 +481,7 @@ h3 {
 .observation-metadata summary span {
   float: right;
   font-family: monospace;
+  overflow-wrap: anywhere;
 }
 .run-context {
   display: flex;

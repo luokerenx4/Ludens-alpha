@@ -6,6 +6,7 @@ import { getLivePhase } from "./live-phase";
 import { projectTelemetry } from "./telemetry";
 import { latestGameRun } from "./initial-selection";
 import type { Event, Manifest, Project, RunData, LiveStatus } from "./types";
+import { eventObservations } from "./observation-events";
 // Runtime state lives in artifacts beside the monorepo, outside its Git tree.
 export const artifactRoot = resolve(process.cwd(), "../../artifacts/rsa");
 const safePart = (value: string) =>
@@ -107,8 +108,8 @@ const eventCache = new Map<
   string,
   { mtime: number; size: number; events: Event[] }
 >();
-export async function loadRun(project: string, run: string) {
-  const path = await resolveRun(project, run);
+export async function loadRun(project: string, run: string, root = artifactRoot) {
+  const path = await resolveRun(project, run, root);
   const [manifest, s] = await Promise.all([
     readFile(join(path, "manifest.json"), "utf8").then(
       (s) => JSON.parse(s) as Manifest,
@@ -256,24 +257,24 @@ export async function stopRun(
     expectedEpoch,
   });
 }
-export async function mediaFile(project: string, run: string, id: string) {
-  const { path, events } = await loadRun(project, run);
-  const event = events.find(
-    (e) => e.type === "observation" && e.data.id === id,
-  );
+export async function mediaFile(project: string, run: string, id: string, root = artifactRoot) {
+  const { path, events } = await loadRun(project, run, root);
+  const observation = events.flatMap(eventObservations).find((item) => item.id === id);
+  const textMedia = observation?.mediaType.startsWith("text/") || observation?.mediaType === "application/json";
   if (
-    !event ||
-    !["image/png", "image/jpeg", "image/webp", "audio/wav"].includes(
-      event.data.mediaType,
-    )
+    !observation || typeof observation.path !== "string" ||
+    (!textMedia && !["image/png", "image/jpeg", "image/webp", "audio/wav"].includes(
+      observation.mediaType,
+    ))
   )
     throw new Error("未找到可展示的观测");
-  const file = await realpath(event.data.path);
+  const file = await realpath(observation.path);
   if (file !== join(path, "observations", basename(file)))
     throw new Error("观测文件必须位于当前运行目录");
   return {
     bytes: await readFile(file),
-    mediaType: event.data.mediaType as string,
+    // Text media (including HTML source) is model input, never executable page content.
+    mediaType: textMedia ? "text/plain; charset=utf-8" : observation.mediaType,
   };
 }
 export function localRequest(request: Request, mutation = false) {
