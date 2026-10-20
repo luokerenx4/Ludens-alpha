@@ -122,7 +122,7 @@ test("launch config keeps limits explicit and paths as literal argv entries", as
   expect(value.sharedPet).toEqual({ cwd: "/tmp/Source with spaces", background: "/tmp/artifacts/rsa/alice/background" });
 });
 
-test("Cua launch config uses its native service and desktop observation without an emulator port", async () => {
+test("Cua launch config uses its native service without choosing a workspace observation", async () => {
   const config = parseConfig({ driver: "cua", cuaCommand: "/Applications/Cua Driver/cua-driver", dashboard: false, pet: false });
   const value = await launchPlan(config, "/tmp/Desktop workspace", "/tmp/Source", "/tmp/cua-baseware.sock");
   expect(config.port).toBeUndefined();
@@ -130,8 +130,7 @@ test("Cua launch config uses its native service and desktop observation without 
   expect(value.commands.baseware).toEqual(["/tmp/Source/baseware/bin/baseware", "serve", "--driver", "cua",
     "--cua-command", "/Applications/Cua Driver/cua-driver", "--socket", "/tmp/cua-baseware.sock",
     "--data-dir", "/tmp/Desktop workspace/logs/baseware"]);
-  const observeIndex = value.commands.host!.indexOf("--auto-observe");
-  expect(JSON.parse(value.commands.host![observeIndex + 1]!)).toEqual([{ controllerId: "cua.get_desktop_state", argv: [] }]);
+  expect(value.commands.host).not.toContain("--auto-observe");
   const defaults = await launchPlan(parseConfig({ driver: "cua" }), "/tmp/Desktop workspace", "/tmp/Source", "/tmp/cua-baseware.sock");
   expect(defaults.commands.baseware).not.toContain("--cua-command");
   expect(defaults.commands.baseware).not.toContain("--port");
@@ -164,10 +163,7 @@ test("Azahar launches its own native device without desktop dependencies", async
   expect(value.commands.baseware).toContain("azahar");
   expect(value.commands.baseware).toContain("47673");
   expect(value.commands.baseware).not.toContain("--cua-command");
-  expect(value.commands.host![value.commands.host!.indexOf("--auto-observe") + 1]).toBe(JSON.stringify([
-    { controllerId: "screen.top", argv: ["capture"] },
-    { controllerId: "screen.bottom", argv: ["capture"] },
-  ]));
+  expect(value.commands.host).not.toContain("--auto-observe");
   expect(() => parseConfig({ driver: "azahar", cuaCommand: "/tools/cua-driver" })).toThrow("cua driver");
   const io = new FakeServices(value);
   io.bridgePort = 47673;
@@ -205,7 +201,8 @@ test("init and dry-run preserve existing workspace files and never invoke servic
     expect((await run("init", "--driver", "mgba")).code).not.toBe(0);
     expect(await readFile(join(workspace, "rsa.json"), "utf8")).toBe(configBefore);
     expect(await readFile(join(workspace, "AGENTS.md"), "utf8")).toBe("My existing workspace instructions\n");
-    expect((await readdir(workspace)).sort()).toEqual(["AGENTS.md", "rsa.json"]);
+    expect((await readdir(workspace)).sort()).toEqual(["AGENTS.md", "perception.py", "rsa.json"]);
+    expect(await readFile(join(workspace, "perception.py"), "utf8")).toContain("NotImplementedError");
     const desktop = join(directory, "Desktop workspace");
     expect((await run("--workspace", desktop, "init", "--driver", "cua", "--cua-command", "./tools/cua-driver")).code).toBe(0);
     const desktopPreview = await run("--workspace", desktop, "up", "--dry-run");

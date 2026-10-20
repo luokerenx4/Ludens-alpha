@@ -33,8 +33,7 @@ export class WorkspaceController {
       capabilities: [
         ...controllers.map(item => ({ id: `controller/${item.id}`, description: summary(item.help),
           requiresControl: item.requiresControl, ...(item.mediaTypes?.length ? { mediaTypes: item.mediaTypes } : {}) })),
-        ...discovered.capabilities.map(item => ({ id: pythonId(item), description: summary(item.description),
-          ...(item.hook ? { hook: item.hook } : {}) })),
+        ...discovered.capabilities.map(item => ({ id: pythonId(item), description: summary(item.description) })),
       ],
       diagnostics: discovered.diagnostics,
     };
@@ -50,7 +49,7 @@ export class WorkspaceController {
     const capability = await this.pythonCapability(id, signal, trace);
     return JSON.stringify({ id, usage: `rsa controller ${id} --args '<JSON object>'`,
       description: capability.description, parameters: capability.parameters,
-      ...(capability.hook ? { hook: capability.hook, returns: { text: "optional string", media: [{ path: "local file path", mediaType: "MIME type" }] } } : {}) }, null, 2);
+    }, null, 2);
   }
 
   async call(id: string, args: unknown, context: CapabilityContext): Promise<unknown> {

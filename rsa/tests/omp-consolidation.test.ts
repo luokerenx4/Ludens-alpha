@@ -7,7 +7,7 @@ import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream"
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { createRsaExtension, type Cycle } from "../src/harness/omp/extension.ts";
 import { consolidateOmpSession, createOmpSession } from "../src/harness/omp/session.ts";
-import { captureResult, createTestRuntime } from "./runtime-fixture.ts";
+import { captureResult, readTestController, createTestRuntime, installTestPerception } from "./runtime-fixture.ts";
 import { Workspace } from "../src/harness/workspace.ts";
 
 test("consolidation uses the same session with file tools, records memory reads, and skips sensors", async () => {
@@ -27,10 +27,12 @@ test("consolidation uses the same session with file tools, records memory reads,
         timing: { clock: "test", requestedAtMs: captures, receivedAtMs: captures } }]);
     },
   }] }, (type, data, trace) => events.push({ type, data, epoch: trace?.epoch }));
+  installTestPerception(runtime, workspace, directory, (signal, trace) =>
+    readTestController(runtime, "camera", [], signal, trace));
   const control = new AbortController();
   let cycle: Cycle = { epoch: "play-before", signal: control.signal };
   const extension = createRsaExtension({ runtime, workspace: new Workspace(workspace, join(directory, "skill-versions")),
-    basewareSocket: "/tmp/unused.sock", binDir: "/tmp", autoObserve: [{ controllerId: "camera", argv: [] }],
+    basewareSocket: "/tmp/unused.sock", binDir: "/tmp",
     maxRequests: 5, cycle: () => cycle,
   });
   const settings = Settings.isolated({ "memory.backend": "off", "autolearn.enabled": false,
@@ -88,6 +90,7 @@ test("consolidation uses the same session with file tools, records memory reads,
     expect(surfaces).toEqual(Array.from({ length: 3 }, () => ["edit", "read", "write"]));
     expect(await readFile(note, "utf8")).toBe("Consolidated observation.\n");
     expect(events.filter(event => event.epoch === "consolidate" && event.type === "observation")).toHaveLength(0);
+    expect(events.filter(event => event.epoch === "consolidate" && event.type === "perception_observe_start")).toHaveLength(0);
     expect(events.find(event => event.epoch === "consolidate" && event.type === "read")?.data)
       .toMatchObject({ path: note, hash: expect.any(String), isError: false });
     const contexts = events.filter(event => event.epoch === "consolidate" && event.type === "observation_context");

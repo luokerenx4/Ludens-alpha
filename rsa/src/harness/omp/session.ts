@@ -4,7 +4,6 @@ import { createAgentSession, discoverAuthStorage, ModelRegistry, SessionManager,
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { PROVIDER_IMAGE_BUDGETS } from "@oh-my-pi/snapcompact";
-import type { ControllerRequest } from "@playness/baseware/contracts";
 import type { AgentRunner, Runtime } from "../runtime.ts";
 import { Workspace } from "../workspace.ts";
 import type { WorkspaceState } from "../workspace-state.ts";
@@ -57,7 +56,7 @@ export async function createOmpSession(options: Parameters<typeof createAgentSes
 export async function createOmpAgent(options: {
   runtime: Runtime; workspace: string; runDir: string; basewareSocket: string; rsaSocket: string;
   state: WorkspaceState;
-  binDir: string; model: string; autoObserve: ControllerRequest[]; maxRequests: number;
+  binDir: string; model: string; maxRequests: number;
   resume?: string;
   compactionThreshold?: number;
   log: EventLog;

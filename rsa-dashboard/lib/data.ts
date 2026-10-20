@@ -6,7 +6,7 @@ import { getLivePhase } from "./live-phase";
 import { projectTelemetry } from "./telemetry";
 import { latestGameRun } from "./initial-selection";
 import type { Event, Manifest, Project, RunData, LiveStatus } from "./types";
-import { eventObservations } from "./observation-events";
+import { eventObservations, perceptionStatus } from "./observation-events";
 // Runtime state lives in artifacts beside the monorepo, outside its Git tree.
 export const artifactRoot = resolve(process.cwd(), "../../artifacts/rsa");
 const safePart = (value: string) =>
@@ -214,6 +214,8 @@ export async function getRun(
     cycles: cycle.cycles,
     selectedEpoch: cycle.selectedEpoch,
     ...aggregate(cycle.events),
+    // Process lifecycle is independent of takeover epochs.
+    perception: perceptionStatus(events, cycle.selectedEpoch),
     telemetry: projectTelemetry(cycle.events, events),
     live: matched ? live : null,
     livePhase: getLivePhase(cycle.events, run, cycle.selectedEpoch, live),

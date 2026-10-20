@@ -29,7 +29,7 @@ def accuracy(value: int = 5):
   try {
     const listing = await command(["list"]);
     const definition = listing.benchmarks.find((item: any) => item.source === "workspace");
-    expect(listing.benchmarks).toHaveLength(5);
+    expect(listing.benchmarks).toHaveLength(6);
     expect((await command(["help", definition.id])).parameters.properties.value.default).toBe(5);
     const first = await command(["run", definition.id]);
     const second = await command(["run", definition.id, "--args", '{"value":8}']);

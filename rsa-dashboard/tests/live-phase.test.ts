@@ -83,6 +83,20 @@ test("commands, captures and observation processing are nested and joined by the
   assert.equal(phase(events)?.kind, "idle");
 });
 
+test("perception reads retain their own wait across unrelated late completions", () => {
+  const first = { traceId: "perception", spanId: "one" };
+  const second = { traceId: "perception", spanId: "two" };
+  const events = [
+    event("perception_observe_start", 100, first),
+    event("perception_observe_start", 200, second),
+    event("perception_observe_end", 300, first),
+  ];
+  assert.equal(phase(events)?.kind, "perception");
+  assert.equal(phase(events)?.sourceSeq, 200);
+  events.push(event("perception_observe_end", 400, second));
+  assert.equal(phase(events)?.kind, "idle");
+});
+
 test("reused tool IDs and old epoch cleanup do not finish the current command", () => {
   const older = { modelCallId: "older", toolCallId: "same" };
   const current = { modelCallId: "current", toolCallId: "same" };

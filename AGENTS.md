@@ -3,9 +3,9 @@
 - `baseware/` 是独立设备服务、driver、CLI/API/MCP；`rsa/` 是 Harness、Shiori 和工作区能力；`rsa-dashboard/` 是日志 API 与统一运行 / Benchmark / Alice 界面；`rsa-companion/` 是加载同一界面的 Electron 壳与原生 Pet。不要另建一套桌面主 UI。Shiori 是 Agent Loop 内核的语义名称，当前实现为 OMP，代码仍在 `rsa/src/harness/omp/`。
 - 日志来源按职责标注 source.component，实现/版本独立标注；转发保留 origin，跨进程调用传 traceId/spanId/parentSpanId。Shiori 复用 OMP 原生 telemetry，分析与 UI 消费已有事实；不要把调用成功当任务成功。契约见 `rsa/docs/logging.md`。
 - Harness 通过 Baseware 客户端发现和调用统一 Controller（包括返回信息或媒体的采样能力），不导入具体 driver。设备协议与输入仲裁留在 Baseware；RSA 用 `rsa controller` / `rsa_tools.Client` 统一访问原始设备和工作区 Python 装饰器能力，按需查询，不自动注册为 OMP 工具。MCP 不默认注入。
-- Workspace 是普通 Coding 工作区：Python 程序自行组织采样、训练和动作闭环；直接 import 和 `Client.call("python/...")` 在当前进程执行并复用模块，设备调用仍走 RSA/Baseware。装饰器声明入口并记录调用，不要求装饰辅助函数。CLI 和自动 observe 各启动一次 Python 入口，不跨调用共享内存；不另建沙盒、常驻执行服务或训练平台。
+- Workspace 是普通 Coding 工作区：Python 程序自行组织采样、训练和动作闭环；直接 import 和 `Client.call("python/...")` 在当前进程执行并复用模块，设备调用仍走 RSA/Baseware。装饰器声明普通能力入口并记录调用，不要求装饰辅助函数；独立 CLI 调用不共享内存。感知用专门的 workspace 常驻进程保留模型，不另建通用执行服务、沙盒或训练平台。
 - Benchmark 是 RSA 的统一子系统：内置工况与 workspace 的 `@benchmark` 共用定义、结果、日志、比较和看板。直接 import 评测仍在原 Python 进程执行；评测不注册为 Controller 或 OMP 工具。执行状态与可选通过判定分开，指标不等于任务成功，见 `rsa/benchmarks/README.md`。
-- 工作区可用单个无参数 `@capability(hook="observe")` 替换自动观测，自行采集和处理后返回文字及媒体路径；下一次观察边界加载改动，异常反馈并回退默认观测。不要把屏幕布局或任务特有的处理写进 Harness/driver。
+- 自动观测只读取 `perception.py:Perception` 的结果；`start(context)/observe()/close()` 管生命周期，workspace 决定采样、融合、模型和后台循环。显式 `rsa perception reload` 加载代码/权重修改；缺失、未实现或失败只反馈文字，不回退默认截图。日志保留 generation、结果序号、来源时间和实际模型输入；不把复用结果当新样本。感知不继承控制 epoch；不要把屏幕布局或任务处理写进 Harness/driver。
 - 各组件独立安装和验证，使用各自锁文件。运行数据和任务 workspace 不进仓库。
 - 工作区由模型生成的 skill / memory 不手工整理，不注入游戏攻略。
 - 默认验证使用离线测试。真实设备测试、接管和进程重启会影响正在运行的游戏，按当前任务授权操作。

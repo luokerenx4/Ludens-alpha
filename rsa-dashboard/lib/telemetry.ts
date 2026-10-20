@@ -17,6 +17,7 @@ const operations: {
   name?: string;
   operation?: string;
 }[] = [
+  { kind: "perception", start: "perception_observe_start", ends: ["perception_observe_end"], name: "读取感知状态", operation: "observe" },
   { kind: "shiori", start: "shiori_span_start", ends: ["shiori_span_end"] },
   { kind: "capability", start: "capability_start", ends: ["capability_end"] },
   {
@@ -172,6 +173,8 @@ export function projectTelemetry(
           ? result!.outcome
           : "unknown";
       if (finish && outcome === "unknown") {
+        if (definition.kind === "perception")
+          outcome = result?.error || result?.status?.state === "error" ? "error" : "success";
         if (definition.kind === "compaction") {
           if (definition.operation === "maintenance")
             outcome = result?.aborted
@@ -240,7 +243,7 @@ export function projectTelemetry(
         endSeq: finish?.seq ?? null,
         outcome,
         durationMs,
-        codeSHA: start.data.codeSHA,
+        codeSHA: start.data.codeSHA ?? result?.status?.codeSHA,
         error: errorText(result?.errorMessage ?? result?.error),
       });
     }
@@ -287,5 +290,6 @@ export function projectTelemetry(
       discovery: stats(of("discovery")),
     },
     devices: stats(of("device")),
+    perception: stats(of("perception")),
   };
 }

@@ -53,6 +53,7 @@ export interface Observation {
   mediaType: string;
   text?: string;
   hook?: { id: string; codeSHA: string; path: string };
+  perception?: PerceptionRead;
   sourceSequence?: number;
   sourceSequenceDelta?: number;
   afterExecutionMs?: number;
@@ -60,6 +61,26 @@ export interface Observation {
   encodeMs?: number;
   modelCallId?: string;
   request?: { controllerId: string; argv: string[] };
+}
+export interface PerceptionStatus {
+  state: "unimplemented" | "loading" | "ready" | "stopped" | "error";
+  generation: string | null;
+  pid?: number;
+  codeSHA?: string;
+  error?: string;
+}
+export interface PerceptionRead {
+  at: string;
+  status: PerceptionStatus;
+  snapshot?: {
+    id: string;
+    sequence: string | number;
+    sampledAt?: string;
+    sources?: unknown[];
+  };
+  reused?: boolean;
+  durationMs?: number;
+  error?: string;
 }
 export interface Tool {
   id: string;
@@ -99,6 +120,7 @@ export interface Call {
   observations: string[];
   inputObservations: string[];
   inputText?: string;
+  perception?: PerceptionRead;
   actions: number;
   phases: Record<string, number | null>;
 }
@@ -141,6 +163,7 @@ export interface LivePhase {
     | "tool"
     | "capture"
     | "observation"
+    | "perception"
     | "compaction"
     | "idle";
   label: string;
@@ -159,6 +182,7 @@ export interface TraceSpan {
     | "python-local"
     | "discovery"
     | "device"
+    | "perception"
     | "compaction"
     | "compaction-http";
   traceId: string;
@@ -198,6 +222,7 @@ export interface RunTelemetry {
   shiori: { stats: SpanStats; nativeLoops: NativeLoop[] };
   capabilities: { stats: SpanStats; python: SpanStats; localPython: SpanStats; discovery: SpanStats };
   devices: SpanStats;
+  perception: SpanStats;
 }
 export interface RunData {
   project: string;
@@ -207,6 +232,7 @@ export interface RunData {
   selectedEpoch: string | null;
   calls: Call[];
   observations: Observation[];
+  perception: PerceptionStatus | null;
   notices: Notice[];
   skills: SkillEvidence[];
   telemetry: RunTelemetry;

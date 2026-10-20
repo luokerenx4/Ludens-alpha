@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { customToolToDefinition, type ExtensionAPI, type ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { resizeImage } from "@oh-my-pi/pi-coding-agent/utils/image-resize";
 import { createRsaExtension, type Cycle } from "../src/harness/omp/extension.ts";
+import { PerceptionRuntime, type PerceptionRead } from "../src/harness/perception.ts";
 import { captureResult, createTestRuntime } from "./runtime-fixture.ts";
 import { Workspace } from "../src/harness/workspace.ts";
 
@@ -27,7 +28,7 @@ test("request budgets reset on a new takeover while repeated prompts share the s
     async close() {},
   };
   const extension = createRsaExtension({runtime, workspace: new Workspace(workspace, join(directory, "skill-versions")),
-    basewareSocket: "/tmp/unused.sock", binDir: "/tmp", autoObserve: [], maxRequests: 2,
+    basewareSocket: "/tmp/unused.sock", binDir: "/tmp", maxRequests: 2,
     cycle: () => cycle,
   });
   const handlers: Record<string, (event: any) => any> = {};
@@ -69,9 +70,20 @@ test("OMP's SDK adapter delivers the abort signal correctly and returns real ima
           timing: { clock: "test", requestedAtMs: 0, receivedAtMs: 1 } }]), stdout: "active-window:Document" };
     },
   }] }, () => {});
+  const work = join(directory, "workspace");
+  if (await Bun.file(join(directory, "sample.png")).exists()) {
+    await Bun.write(join(work, "perception.py"), `class Perception:
+    def start(self, context): pass
+    def close(self): pass
+    def observe(self):
+        return {"sequence": 1, "text": "active-window:Document", "media": [{"path": "../sample.png", "mediaType": "image/png"}, {"path": "../tree.json", "mediaType": "application/json"}]}
+`);
+    runtime.perception = new PerceptionRuntime({ workspace: work, runDir: join(directory, "run"), record: runtime.record });
+    await runtime.perception.reload();
+  }
   const control = new AbortController();
   const extension = createRsaExtension({ runtime, workspace: new Workspace(join(directory, "workspace"), join(directory, "skill-versions")),
-    basewareSocket: "/tmp/unused.sock", binDir: "/tmp", autoObserve: [], maxRequests: 1,
+    basewareSocket: "/tmp/unused.sock", binDir: "/tmp", maxRequests: 1,
     cycle: () => ({ epoch: "test-epoch", signal: control.signal }),
   });
   // This is the same conversion createAgentSession applies to SDK customTools.
@@ -79,10 +91,10 @@ test("OMP's SDK adapter delivers the abort signal correctly and returns real ima
   const exec = customToolToDefinition(extension.tools[1]);
   const ctx = {} as ExtensionContext;
   try {
-    const result = await observe.execute("capture", { controllerId: "camera-q", argv: ["sample"] }, control.signal, () => {}, ctx);
+    const result = await observe.execute("capture", {}, control.signal, () => {}, ctx);
     const resized = await resizeImage({ bytes: Buffer.from(png, "base64"), mimeType: "image/png" });
     expect(result.content.find((p) => p.type === "image")).toMatchObject({ type: "image", data: resized.data, mimeType: resized.mimeType });
-    expect(result.details).toMatchObject({ stdout: "active-window:Document" });
+    expect(result.details).toMatchObject({ result: { stdout: "active-window:Document" } });
     expect(result.content).toContainEqual({ type: "text", text: '{"role":"window","title":"Document"}' });
     expect(resized.width).toBe(200);
     expect(resized.decodeFailed).toBeUndefined();
@@ -94,7 +106,7 @@ test("OMP's SDK adapter delivers the abort signal correctly and returns real ima
   } finally { await runtime.close(); await rm(directory, { recursive: true }); }
 });
 
-test("text-only controllers reach automatic context and explicit samples are not duplicated", async () => {
+test("text-only perception reaches automatic context and explicit reads are not duplicated", async () => {
   const directory = await mkdtemp(join(tmpdir(), "rsa-text-observation-"));
   const workspace = join(directory, "workspace");
   await mkdir(join(workspace, "skills"), { recursive: true });
@@ -105,10 +117,18 @@ test("text-only controllers reach automatic context and explicit samples are not
       return { ...captureResult([]), id: `windows-${++calls}`, stdout: JSON.stringify({ title: `Window ${calls}` }) };
     },
   }] }, () => {});
+  await Bun.write(join(workspace, "perception.py"), `class Perception:
+    def start(self, context): self.count = 0
+    def close(self): pass
+    def observe(self):
+        self.count += 1
+        return {"sequence": self.count, "text": "Window " + str(self.count)}
+`);
+  runtime.perception = new PerceptionRuntime({ workspace, runDir: join(directory, "run"), record: runtime.record });
+  await runtime.perception.reload();
   const control = new AbortController();
   const extension = createRsaExtension({ runtime, workspace: new Workspace(workspace, join(directory, "versions")),
     basewareSocket: "/tmp/unused.sock", binDir: "/tmp", maxRequests: 3,
-    autoObserve: [{ controllerId: "desktop", argv: ["windows"] }],
     cycle: () => ({ epoch: "test", signal: control.signal }),
   });
   const handlers: Record<string, (event: any) => any> = {};
@@ -116,98 +136,16 @@ test("text-only controllers reach automatic context and explicit samples are not
   try {
     const first = await handlers.before_agent_start({});
     const persisted = JSON.stringify(first);
-    expect(JSON.parse(first.message.content[0].text).controllerOutputs).toEqual([
-      { controllerId: "desktop", executionId: "windows-1", stdout: '{"title":"Window 1"}', stderr: "" },
-    ]);
+    expect(persisted).toContain("Window 1");
     await handlers.assistant_message({});
     await handlers.tool_call({ toolCallId: "explicit" });
     const observe = customToolToDefinition(extension.tools[0]);
-    const result = await observe.execute("explicit", { controllerId: "desktop", argv: ["windows"] }, control.signal, () => {}, {} as ExtensionContext);
+    const result = await observe.execute("explicit", {}, control.signal, () => {}, {} as ExtensionContext);
     const enriched = await handlers.tool_result({ toolCallId: "explicit", toolName: "observe", input: {}, ...result });
-    expect(calls).toBe(2);
+    expect(calls).toBe(0);
     expect(JSON.stringify(enriched).match(/Window 2/g)).toHaveLength(1);
     expect(JSON.parse(enriched.content.at(-1).text).controllerOutputs).toBeUndefined();
-    expect(extension.context().executions).toEqual(["windows-2"]);
+    expect(extension.context().executions).toEqual([(result.details as PerceptionRead).result.id]);
     expect(JSON.stringify(first)).toBe(persisted);
   } finally { await runtime.close(); await rm(directory, { recursive: true }); }
-});
-
-test("tool batches reuse the latest explicit sample per controller and invalidate all samples after failed exec", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "rsa-observe-reuse-"));
-  const workspace = join(directory, "workspace");
-  await mkdir(join(workspace, "skills"), {recursive: true});
-  const image = join(directory, "sample.png");
-  await Bun.write(image, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg==", "base64"));
-  const reads: {controllerId: string; argv: readonly string[]}[] = [];
-  const contexts: {observations: string[]; reusedObservations: string[]; freshObservations: string[]}[] = [];
-  let sequence = 0;
-  const runtime = createTestRuntime({controllers: ["camera", "second-camera"].map(controllerId => ({
-    id: controllerId, requiresControl: false, mediaTypes: ["image/png"], help: () => "sample",
-    async execute(argv: readonly string[]) {
-      reads.push({controllerId, argv});
-      if (argv[0] === "fail") throw new Error("offline sensor failure");
-      return captureResult([{id: `${controllerId}-${++sequence}`, controllerId, mediaType: "image/png", path: image,
-        timing: {clock: "test", requestedAtMs: sequence, receivedAtMs: sequence}}]);
-    },
-  }))}, (type, data) => { if (type === "observation_context") contexts.push(data as typeof contexts[number]); });
-  const control = new AbortController();
-  const extension = createRsaExtension({runtime, workspace: new Workspace(workspace, join(directory, "skill-versions")),
-    basewareSocket: "/tmp/unused.sock", binDir: "/tmp", maxRequests: 3,
-    autoObserve: ["camera", "second-camera"].map(controllerId => ({controllerId, argv: ["default"]})),
-    cycle: () => ({epoch: "test", signal: control.signal}),
-  });
-  const handlers: Record<string, (event: any) => any> = {};
-  await extension.factory({on(name: string, handler: (event: any) => any) { handlers[name] = handler; }} as ExtensionAPI);
-  const observe = customToolToDefinition(extension.tools[0]);
-  const exec = customToolToDefinition(extension.tools[1]);
-  const ctx = {} as ExtensionContext;
-  const begin = async (ids: string[]) => {
-    await handlers.assistant_message({});
-    for (const toolCallId of ids) await handlers.tool_call({toolCallId});
-  };
-  const result = (toolCallId: string, toolName: string, value: Awaited<ReturnType<typeof observe.execute>>) =>
-    handlers.tool_result({toolCallId, toolName, input: {}, ...value});
-  try {
-    await begin(["wide", "detail"]);
-    const wide = await observe.execute("wide", {controllerId: "camera", argv: ["wide"]}, control.signal, () => {}, ctx);
-    expect(await result("wide", "observe", wide)).toBeUndefined();
-    const detail = await observe.execute("detail", {controllerId: "camera", argv: ["detail"]}, control.signal, () => {}, ctx);
-    const enriched = await result("detail", "observe", detail);
-    expect(reads).toEqual([
-      {controllerId: "camera", argv: ["wide"]}, {controllerId: "camera", argv: ["detail"]},
-      {controllerId: "second-camera", argv: ["default"]},
-    ]);
-    expect(contexts[0]).toMatchObject({observations: ["camera-2", "second-camera-3"],
-      reusedObservations: ["camera-2"], freshObservations: ["second-camera-3"]});
-    expect(extension.context().observations).toEqual(["camera-2", "second-camera-3"]);
-    // The explicit result already has its image; only the unobserved sensor adds one.
-    expect(enriched.content.filter((part: {type: string}) => part.type === "image")).toHaveLength(2);
-
-    await begin(["before-a", "before-b", "failed-exec"]);
-    for (const [id, controllerId] of [["before-a", "camera"], ["before-b", "second-camera"]]) {
-      const sample = await observe.execute(id, {controllerId, argv: ["detail"]}, control.signal, () => {}, ctx);
-      await result(id, "observe", sample);
-    }
-    const failed = await exec.execute("failed-exec", {command: "exit 7"}, control.signal, () => {}, ctx);
-    expect(failed.isError).toBe(true);
-    await result("failed-exec", "exec", failed);
-    expect(reads.slice(3)).toEqual([
-      {controllerId: "camera", argv: ["detail"]}, {controllerId: "second-camera", argv: ["detail"]},
-      {controllerId: "camera", argv: ["default"]}, {controllerId: "second-camera", argv: ["default"]},
-    ]);
-    expect(contexts[1]).toMatchObject({observations: ["camera-6", "second-camera-7"],
-      reusedObservations: [], freshObservations: ["camera-6", "second-camera-7"]});
-
-    await begin(["failed-observe"]);
-    await expect(observe.execute("failed-observe", {controllerId: "camera", argv: ["fail"]},
-      control.signal, () => {}, ctx)).rejects.toThrow("offline sensor failure");
-    // OMP converts a thrown tool error to this result before calling the hook.
-    await result("failed-observe", "observe", {content: [{type: "text", text: "offline sensor failure"}], details: {}, isError: true});
-    expect(reads.slice(7)).toEqual([
-      {controllerId: "camera", argv: ["fail"]},
-      {controllerId: "camera", argv: ["default"]}, {controllerId: "second-camera", argv: ["default"]},
-    ]);
-    expect(contexts[2]).toMatchObject({observations: ["camera-8", "second-camera-9"],
-      reusedObservations: [], freshObservations: ["camera-8", "second-camera-9"]});
-  } finally { await runtime.close(); await rm(directory, {recursive: true}); }
 });

@@ -51,7 +51,7 @@ interface Controller {
 
 契约只约定发现、help、读取/执行、媒体与时序、取消和交接。help 说明真实设备通道、参数与效果，不说明某个按键在游戏中做什么。`screen`、`pad`、`keyboard`、`touch` 是已有 driver 选择的 ID，Harness 不解析它们。能力 ID 在同类集合内唯一；当前 CLI 每个 Baseware 进程选择一个 driver；游戏模拟器 driver 独立提供该设备的能力，不混入 Cua 桌面操作。不增加热插拔或插件管理器。
 
-Ryubing 与 Azahar 原生触屏使用同一个单触点 `touch` Controller，只公开 `down / move / up` 和原生整数坐标范围：Switch 为 x=0..1279、y=0..719，3DS 为 x=0..319、y=0..239，左上为原点，x 向右、y 向下。触点状态跨调用保留，转换在设备输入采样后完成；取消和交还释放触点。点按、拖拽、时序和画面坐标转换由 Agent 在 workspace 中组合，设备层不处理屏幕布局。Azahar 的 `screen.top`、`screen.bottom` 分别返回独立硬件图像，不输出预先拼好的画面。应用装配层把两路原始观察作为默认输入；Agent 在 workspace 的 observe hook 中决定如何融合、取舍和加工。Harness 不识别屏幕名字或预设融合算法，仍通过同一 Controller 调用并归档原始和派生观测。
+Ryubing 与 Azahar 原生触屏使用同一个单触点 `touch` Controller，只公开 `down / move / up` 和原生整数坐标范围：Switch 为 x=0..1279、y=0..719，3DS 为 x=0..319、y=0..239，左上为原点，x 向右、y 向下。触点状态跨调用保留，转换在设备输入采样后完成；取消和交还释放触点。点按、拖拽、时序和画面坐标转换由 Agent 在 workspace 中组合，设备层不处理屏幕布局。Azahar 的 `screen.top`、`screen.bottom` 分别返回独立硬件图像，不输出预先拼好的画面。Agent 在 workspace 的 `perception.py` 中决定如何采样、融合、取舍和加工；空实现不提供预填截图。Harness 不识别屏幕名字或预设融合算法，仍通过同一 Controller 调用并归档原始和派生观测。
 
 观测包含媒体类型、不可变文件路径、时钟 ID、请求和返回时刻，可带源帧序号。执行结果包含状态、退出码、stdout/stderr、时序和可选 observations；只读 Controller 可以只返回文字，也可同时返回文字与媒体。同一设备时钟下可以关联动作后的观测；帧号前进不等于动画完成，也不等于游戏推进。
 
@@ -89,6 +89,7 @@ workspace 是普通 coding task 目录：
 workspace/
   AGENTS.md               # 简短目录约定
   rsa.json                # 本机启动配置
+  perception.py           # 常驻感知类，模型自行实现
   skills/<name>/SKILL.md   # 可复用的方法；可带辅助脚本
   memory/current.md       # 当前目标、状态、疑问和下一步
   scripts/*.py            # 可选；不要求固定脚本目录
@@ -126,9 +127,9 @@ Shiori 定义职责，不要求独立进程或新包。当前适配代码仍在 
 
 在一次宿主生命周期内复用同一 OMP 会话；再次接管只重置预算与 epoch。重启宿主默认续接该 workspace 的当前会话。新 workspace 从空文件和空会话开始，显式复制的文件属于其初始内容。
 
-OMP 固定暴露 `read/write/edit/exec/observe`；能力通过 `exec` 中的 CLI 按需调用，不追加每个装饰器函数的模型工具定义。循环在初始 prompt 和每批工具完成后提供观测及 skill/memory 索引。模型默认使用这些观测，`observe` 用于按需额外采样。主动采样之后若又执行动作，该观测不能代表批次结束状态；没有后续动作时可复用，避免重复图片。环境在模型思考期间继续运行。
+OMP 固定暴露 `read/write/edit/exec/observe`；能力通过 `exec` 中的 CLI 按需调用，不追加每个装饰器函数的模型工具定义。循环在初始 prompt 和每批工具完成后提供观测及 skill/memory 索引。模型默认使用这些观测，`observe` 用于按需额外采样。自动观测读取 workspace 常驻感知结果，显式采样独立留在工具返回中；结果序号与来源时间用于辨别复用和新采样。环境在模型思考期间继续运行。
 
-工作区的单个无参数 `@capability(hook="observe")` 函数可替换自动观测，负责自行采集、处理并返回文字与媒体路径。观察边界重新静态发现并执行当前版本；没有 hook 就用装配层的默认采样。错误以诊断加默认观测返回，取消则结束调用。显式 `observe` 工具仍读取原始设备。源码按 hash、媒体按独立文件归档，旧上下文不随工作区代码或输出文件变化。该机制不预设屏幕数量、裁剪策略或环境含义，也不允许修改 Harness 本身。
+工作区的 `perception.py:Perception` 是常驻感知入口，生命周期为 `start(context)/observe()/close()`。实例及普通 import 的模块跨轮保留，模型和后台循环由 workspace 自行组织；`rsa perception reload` 显式关闭旧进程并加载代码、helper 与权重修改。返回 `sequence` 及可选文字、媒体、实际采样时间和来源，RSA 归档被采用的结果。感知进程不继承控制 epoch，只读采样无需接管；单次读取取消不销毁模型缓存。空实现、无结果或错误以文字交给 OMP，允许它自行实现或修复，没有默认截图回退。显式 `observe` 工具也读取这份感知结果；原始设备通过 `rsa controller` 或 Python API 按需访问。该机制不预设屏幕数量、融合算法或游戏语义，不允许修改 Harness 本身。
 
 模型自行选目标、探索按键、编写脚本并形成经验。`skills/` 保存影响未来决策或行动的可复用方法；`memory/current.md` 覆盖当前状态，历史留在日志。Harness 不注入游戏攻略，不手工改模型生成的经验。`consolidate` 是用户显式触发的一次原会话整理，只开放 read/write/edit，不采样或控制设备。
 

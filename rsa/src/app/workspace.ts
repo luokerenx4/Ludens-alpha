@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { defaultSocket } from "@playness/baseware/address";
 import workspaceGuide from "../../templates/AGENTS.md" with { type: "text" };
+import perceptionTemplate from "../../templates/perception.py" with { type: "text" };
 
 export const WORKSPACE_HELP = `Workspace startup (macOS):
 rsa init --driver ryubing|mgba|azahar|cua [--game <path>] [--cua-command <path>] [--seconds <n>]
@@ -92,11 +93,7 @@ export async function launchPlan(config: LaunchConfig, workspace: string, repo =
         "--data-dir", join(workspace, "logs/baseware")],
       host: [rsa, "run", "--baseware-socket", basewareSocket, "--model", config.model,
         "--seconds", String(config.seconds), "--requests", String(config.requests), "--compaction-threshold", String(config.compactionThreshold),
-        ...(config.driver === "cua" ? ["--auto-observe", JSON.stringify([{ controllerId: "cua.get_desktop_state", argv: [] }])]
-          : config.driver === "azahar" ? ["--auto-observe", JSON.stringify([
-            { controllerId: "screen.top", argv: ["capture"] },
-            { controllerId: "screen.bottom", argv: ["capture"] },
-          ])] : [])],
+      ],
       ...(config.dashboard ? { dashboard: ["npm", "--prefix", join(repo, "rsa-dashboard"), "run", "dev"] } : {}),
       ...(config.pet ? { pet: [join(repo, "rsa-companion/bin/rsa-companion"), "--workspace", workspace, "--show-window"] } : {}),
     },
@@ -343,6 +340,7 @@ export async function workspaceCommand(command: string, args: string[], selected
     const workspace = await realpath(selectedWorkspace);
     await writeFile(join(workspace, "rsa.json"), `${JSON.stringify(config, null, 2)}\n`, { flag: "wx" });
     await writeFile(join(workspace, "AGENTS.md"), workspaceGuide, { flag: "wx" }).catch(error => { if (error.code !== "EEXIST") throw error; });
+    await writeFile(join(workspace, "perception.py"), perceptionTemplate, { flag: "wx" }).catch(error => { if (error.code !== "EEXIST") throw error; });
     console.log(`Created ${join(workspace, "rsa.json")}\nReview with rsa up --dry-run, then run rsa up.`);
     return;
   }

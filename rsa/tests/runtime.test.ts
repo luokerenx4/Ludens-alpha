@@ -2,8 +2,9 @@ import { expect, spyOn, test } from "bun:test";
 import { rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { Capabilities, Controller } from "@playness/baseware/contracts";
-import { captureResult, createTestRuntime, createTestDeviceSession } from "./runtime-fixture.ts";
+import { captureResult, createTestRuntime, createTestDeviceSession, readTestController } from "./runtime-fixture.ts";
 import { Runtime } from "../src/harness/runtime.ts";
+import { WorkspaceController } from "../src/harness/controller.ts";
 import { dispatch, listen, send } from "../src/harness/transport.ts";
 
 function fixture() {
@@ -30,7 +31,9 @@ function fixture() {
     }],
   };
   const { core, devices } = createTestDeviceSession(capabilities);
-  return { controller, capabilities, core, devices, runtime: new Runtime(devices, () => {}), angle: () => angle, owner: () => owner };
+  const runtime = new Runtime(devices, () => {});
+  runtime.controller = new WorkspaceController({ workspace: process.cwd(), devices, record: () => {}, env: {} });
+  return { controller, capabilities, core, devices, runtime, angle: () => angle, owner: () => owner };
 }
 
 test("takeover time remaining ignores host age and resets on each epoch", async () => {
@@ -82,7 +85,7 @@ test("Runtime discovers non-game catalog entries and reads through its device se
       { id: "joint-7", requiresControl: true, help: "rotate <degrees>" },
       { id: "thermal-9", requiresControl: false, mediaTypes: ["text/plain"], help: "sample" },
     ] });
-    const result = await runtime.observe({ controllerId: "thermal-9", argv: ["sample"] }, new AbortController().signal);
+    const result = await readTestController(runtime, "thermal-9", ["sample"], new AbortController().signal);
     expect(result).toMatchObject({ status: "completed", observations: [{ controllerId: "thermal-9", mediaType: "text/plain" }] });
     expect(acquire).not.toHaveBeenCalled();
     const { epoch } = await runtime.start();
@@ -105,8 +108,8 @@ test("catalog help is inert and device execution receives literal argument value
     expect(owner()).toBeUndefined();
     expect(execute).not.toHaveBeenCalled();
     expect(capture).not.toHaveBeenCalled();
-    await expect(runtime.observe({ controllerId: "joint-7", argv: ["rotate", "15"] }, new AbortController().signal))
-      .rejects.toThrow("does not require control");
+    await expect(readTestController(runtime, "joint-7", ["rotate", "15"], new AbortController().signal))
+      .rejects.toThrow("STALE_EPOCH");
     expect(execute).not.toHaveBeenCalled();
     const { epoch } = await runtime.start();
     await expect(core.execute("joint-7", ["type", "--text", "--help"], epoch!, new AbortController().signal)).rejects.toThrow("unknown operation");
@@ -116,6 +119,7 @@ test("catalog help is inert and device execution receives literal argument value
 
 test("RSA IPC requires a workspace controller and an agent environment cannot enable control through the CLI", async () => {
   const { runtime, devices } = fixture();
+  runtime.controller = undefined;
   const acquire = spyOn(devices, "acquire");
   const path = `/tmp/rsa-management-${crypto.randomUUID()}.sock`;
   const close = await listen(path, runtime);
@@ -131,6 +135,33 @@ test("RSA IPC requires a workspace controller and an agent environment cannot en
     expect(acquire).not.toHaveBeenCalled();
     expect(runtime.status().mode).toBe("manual");
   } finally { await runtime.close(); await close(); await rm(path, { force: true }); acquire.mockRestore(); }
+});
+
+test("a blocked background read does not delay handback, the next epoch, or host close", async () => {
+  const { runtime, capabilities, owner } = fixture();
+  const entered = Promise.withResolvers<void>(), finishRead = Promise.withResolvers<void>();
+  let finished = false, readSignal: AbortSignal | undefined;
+  capabilities.controllers[1]!.execute = async (_argv, { signal }) => {
+    readSignal = signal;
+    entered.resolve();
+    await finishRead.promise;
+    finished = true;
+    return captureResult([]);
+  };
+  const first = await runtime.start();
+  const reading = readTestController(runtime, "thermal-9", ["sample"], new AbortController().signal);
+  try {
+    await entered.promise;
+    const handedBack = await Promise.race([runtime.stop().then(() => true), Bun.sleep(100).then(() => false)]);
+    expect(handedBack).toBe(true);
+    expect(owner()).toBeUndefined();
+    expect(finished).toBe(false);
+    expect(readSignal?.aborted).toBe(false);
+    const second = await runtime.start();
+    expect(second.epoch).not.toBe(first.epoch);
+    await runtime.close();
+    expect(finished).toBe(false);
+  } finally { finishRead.resolve(); await reading; await runtime.close(); }
 });
 
 test("parallel hosts route to independent devices and reject each other's epochs", async () => {

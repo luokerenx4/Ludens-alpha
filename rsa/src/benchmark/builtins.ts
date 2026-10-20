@@ -5,7 +5,7 @@ import type { BenchmarkDefinition } from "./contract.ts";
 export const builtinDefinitions: BenchmarkDefinition[] = cases.map(item => ({
   id: item.id, title: item.title, description: item.description, scope: item.scope,
   revision: String(item.version), source: "builtin", mode: item.mode as "offline" | "live",
-  targets: [item.id === "control-handoff" ? "baseware/control" : "shiori/omp"],
+  targets: [item.id === "control-handoff" ? "baseware/control" : item.id === "perception-lifecycle" ? "rsa/perception" : "shiori/omp"],
   parameters: { type: "object", additionalProperties: false, properties: {
     model: { type: "string", default: "openai-codex/gpt-6.1-sol" },
     seconds: { type: "integer", minimum: 1, default: 180 },

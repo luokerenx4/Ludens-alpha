@@ -1,4 +1,20 @@
-import type { Call, Observation } from "../lib/types";
+import type { Call, Observation, PerceptionRead, PerceptionStatus } from "../lib/types";
+
+export const perceptionStateLabel: Record<PerceptionStatus["state"], string> = {
+  unimplemented: "尚未实现",
+  loading: "加载中",
+  ready: "就绪",
+  stopped: "已停止",
+  error: "异常",
+};
+
+/** Age at the actual read, not page viewing time or media archival time. */
+export function perceptionAgeMs(read?: PerceptionRead): number | null {
+  if (!read?.snapshot?.sampledAt) return null;
+  if (![read.at, read.snapshot.sampledAt].every(time => /(?:Z|[+-]\d{2}:?\d{2})$/i.test(time))) return null;
+  const age = Date.parse(read.at) - Date.parse(read.snapshot.sampledAt);
+  return Number.isFinite(age) && age >= 0 ? age : null;
+}
 
 export function selectObservations(
   observations: Observation[],

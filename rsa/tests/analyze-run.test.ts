@@ -46,6 +46,65 @@ test("analysis without speculation events has zero lifecycle counts and no model
   expect(report.firstRequest).toBeNull();
 });
 
+test("perception analysis separates cached reads, unknown ages and late cancellation without inventing actions", async () => {
+  const event = fixture();
+  const trace = (spanId: string) => ({ traceId: "perception", spanId });
+  const ready = { state: "ready", generation: "generation" };
+  const snapshot = { id: "sample-1", sequence: 7, sampledAt: "1970-01-01T00:00:02.500Z" };
+  const output = (id: string) => ({ id, observations: [{ id: "image" }] });
+  const report = await analyze([
+    event("control", "one", { mode: "auto", epoch: "one" }),
+    event("perception_status", "one", ready, { epoch: null }), // Background is not assigned by proximity.
+    event("perception_status", "one", { state: "loading", generation: "generation" }),
+    event("perception_observe_start", "one", { status: ready }, trace("first")),
+    event("perception_observe_end", "one", { status: ready, snapshot, reused: false,
+      result: output("first-result"), outcome: "success", durationMs: 20 }, trace("first")),
+    event("perception_observe_start", "one", { status: ready }, trace("cached")),
+    event("perception_observe_end", "one", { status: ready, snapshot, reused: true,
+      result: output("cached-result"), outcome: "success", durationMs: 10 }, trace("cached")),
+    event("perception_observe_start", "one", { status: ready }, trace("unknown")),
+    event("perception_observe_end", "one", { status: ready, snapshot: { id: "sample-2", sequence: 8 },
+      reused: false, outcome: "success", durationMs: 8 }, trace("unknown")),
+    event("perception_observe_start", "one", { status: ready }, trace("future")),
+    event("perception_observe_end", "one", { status: ready,
+      snapshot: { id: "sample-3", sequence: 9, sampledAt: "2099-01-01T00:00:00Z" },
+      reused: false, outcome: "success", durationMs: 8 }, trace("future")),
+    event("perception_observe_start", "one", { status: ready }, trace("failed")),
+    event("perception_status", "one", { state: "error", generation: "generation", error: "camera unavailable" }),
+    event("perception_observe_end", "one", { status: { state: "error", generation: "generation" },
+      outcome: "error", error: "camera unavailable", durationMs: 3 }, trace("failed")),
+    event("perception_observe_start", "one", { status: ready }, trace("late")),
+    event("perception_observe_start", "one", { status: ready }, trace("pending")),
+    event("control", "one", { mode: "manual", reason: "human" }),
+    event("control", "two", { mode: "auto", epoch: "two" }),
+    event("perception_observe_end", "two", { status: ready, outcome: "success", durationMs: 99999 }, trace("late")),
+    event("perception_observe_end", "one", { status: { state: "stopped", generation: "generation" },
+      outcome: "cancelled", durationMs: 4 }, trace("late")),
+    event("perception_status", "two", ready),
+    event("control", "two", { mode: "manual" }),
+    event("perception_input_error", "two", { error: "wrong epoch", result: output("cached-result") }),
+    event("perception_input_error", "one", { status: { ...ready, state: "error" },
+      error: "unsupported image", result: { id: "cached-result", observations: [] } }),
+  ], "one");
+  expect(report.summary.perception).toEqual({
+    started: 7, ended: 6, outcomes: { success: 4, error: 1, cancelled: 1, pending: 1 },
+    durationMs: { count: 6, min: 3, median: 8, p95: 20, max: 20, sum: 53 },
+    readStates: { ready: 4, error: 1, stopped: 1 }, statusEvents: { loading: 1, error: 1 },
+    newResults: 3, reusedResults: 1, unknownReuseResults: 0, uniqueSnapshots: 3,
+    sampleAgeMs: { count: 2, min: 2500, median: 3500, p95: 4500, max: 4500, sum: 7000 },
+    unknownSampleAge: 2, errorReasons: { "camera unavailable": 1 }, inputErrors: 1,
+  });
+  expect(report.perception.reads[0]).toMatchObject({ startSeq: 4, endSeq: 5,
+    executionId: "first-result", observationIds: ["image"], sampleAgeMs: 2500 });
+  expect(report.perception.reads[5]).toMatchObject({ outcome: "cancelled", durationMs: 4, endSeq: 20 });
+  expect(report.perception.reads[6]).toMatchObject({ outcome: "pending", endSeq: null, durationMs: null });
+  expect(report.perception.inputErrors).toEqual([{ seq: 24, at: new Date(24000).toISOString(),
+    trace: { epoch: "one" }, executionId: "cached-result", error: "unsupported image",
+    status: { ...ready, state: "error" }, readStartSeq: 6, readEndSeq: 7 }]);
+  expect(report.summary).toMatchObject({ controllerActions: 0, startedRequests: 0, observeToolCalls: 0 });
+  expect(report.window.observedElapsedMs).toBe(16000);
+});
+
 test("analysis pairs concurrent capabilities by span, keeps late cancellation, and separates native loop summaries", async () => {
   const event = fixture();
   const trace = (spanId: string, parentSpanId?: string) => ({ traceId: "trace", spanId, parentSpanId });

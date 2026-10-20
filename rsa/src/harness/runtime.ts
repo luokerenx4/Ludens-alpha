@@ -1,6 +1,7 @@
-import type { ControllerRequest, ExecutionResult } from "@playness/baseware/contracts";
+import type { ExecutionResult } from "@playness/baseware/contracts";
 import type { Catalog } from "@playness/baseware/protocol";
 import type { EventTrace, RecordEvent } from "./events.ts";
+import type { PerceptionRuntime } from "./perception.ts";
 import type { WorkspaceController } from "./controller.ts";
 
 export interface AgentRunner {
@@ -35,13 +36,14 @@ export class Runtime {
   private calls = new Set<Promise<unknown>>();
   agent?: AgentRunner;
   controller?: WorkspaceController;
+  perception?: PerceptionRuntime;
 
   constructor(private devices: DeviceSession, readonly record: RecordEvent, private maxSeconds = 300, private runId: string = crypto.randomUUID()) {}
 
   status() {
     // The host can outlive many takeovers; its log clock is not this cycle's budget.
     const remainingSeconds = this.mode === "auto" ? Math.max(0, Math.ceil((this.takeoverDeadlineMs - performance.now()) / 1000)) : null;
-    return { runId: this.runId, maxSeconds: this.maxSeconds, remainingSeconds, mode: this.mode, epoch: this.mode === "auto" ? this.epoch : null, connected: this.connected, reason: this.reason, agent: !!this.agent, thinking: !!this.running, consolidating: this.consolidating };
+    return { runId: this.runId, maxSeconds: this.maxSeconds, remainingSeconds, mode: this.mode, epoch: this.mode === "auto" ? this.epoch : null, connected: this.connected, reason: this.reason, agent: !!this.agent, thinking: !!this.running, consolidating: this.consolidating, perception: this.perception?.status() };
   }
 
   list() { return this.devices.catalog; }
@@ -54,7 +56,9 @@ export class Runtime {
     const combined = epoch ? AbortSignal.any([signal, this.control!.signal]) : signal;
     combined.throwIfAborted();
     const call = this.controller.call(id, args, { epoch, signal: combined, trace: { ...trace, epoch } });
-    this.calls.add(call);
+    // Background perception reads have no lease and outlive control cycles.
+    // Only calls owned by this epoch need draining before another takeover.
+    if (epoch !== undefined) this.calls.add(call);
     try { return await call; }
     finally { this.calls.delete(call); }
   }
@@ -158,20 +162,11 @@ export class Runtime {
     this.record("disconnected", error.message);
   }
 
-  async observe(request: ControllerRequest, signal: AbortSignal, parent: EventTrace = {}, origin: ObservationOrigin = "cli"): Promise<ExecutionResult> {
-    // The read-only model tool and automatic sampling use the same controller
-    // protocol, but must not turn an observation request into an input action.
-    const controller = this.devices.catalog.controllers.find(item => item.id === request.controllerId);
-    if (controller?.requiresControl) throw new Error("Observe requires a controller that does not require control");
-    const result = await this.devices.execute(request.controllerId, request.argv,
-      this.mode === "auto" ? this.epoch : undefined, signal, parent, origin);
-    if (result.status !== "completed" || result.exitCode !== 0) throw new Error(`Observation failed: ${result.stderr || result.status}`);
-    return result;
-  }
-
   async close() {
-    await this.stop("shutdown");
-    await this.running;
-    await this.agent?.close();
+    try {
+      await this.stop("shutdown");
+      await this.running;
+      await this.agent?.close();
+    } finally { await this.perception?.stop(); }
   }
 }

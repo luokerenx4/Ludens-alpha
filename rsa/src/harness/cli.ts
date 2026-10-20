@@ -4,6 +4,7 @@ export const HELP = `rsa status
 rsa auto on [--message <text>]
 rsa auto off
 rsa consolidate [--seconds <n>]
+rsa perception status | reload | stop | observe
 rsa controller list | <id> --help | <id> <arguments...>
 
 Control management is unavailable inside agent cycles carrying BASEWARE_EPOCH.
@@ -51,7 +52,11 @@ export async function cli(argv: string[], socket: string) {
   const [kind, ...rest] = argv;
   if (!kind || kind === "--help") { console.log(HELP); return; }
   if (kind === "controller") return controller(rest, socket);
-  if (!["status", "auto", "consolidate"].includes(kind)) throw new Error("Unknown command; see rsa --help");
+  if (kind === "perception" && (!rest.length || rest[0] === "--help")) {
+    console.log("rsa perception status | reload | stop | observe\nLoads workspace/perception.py:Perception in a resident process. Reload after editing code or weights. Empty or failed perception supplies no images.");
+    return;
+  }
+  if (!["status", "auto", "consolidate", "perception"].includes(kind)) throw new Error("Unknown command; see rsa --help");
   const control = kind === "auto" || kind === "consolidate" ? await send(socket, { kind: "status", argv: [] }) as { runId: string; epoch: string | null } : undefined;
   const value = await send(socket, {
     kind, argv: rest, epoch: process.env.BASEWARE_EPOCH,

@@ -9,7 +9,8 @@ import type { Capabilities, ExecutionResult } from "@playness/baseware/contracts
 import type { EventMetadata } from "@playness/baseware/protocol";
 import { connectBaseware } from "../src/harness/baseware.ts";
 import { Runtime } from "../src/harness/runtime.ts";
-import { captureResult } from "./runtime-fixture.ts";
+import { WorkspaceController } from "../src/harness/controller.ts";
+import { captureResult, readTestController } from "./runtime-fixture.ts";
 
 async function until(check: () => boolean) {
   const deadline = performance.now() + 2000;
@@ -62,6 +63,7 @@ async function fixture(seconds = 60, acquisition?: Promise<void>, releaseFailure
   const closeServer = await listen(socket, core);
   const adapter = await connectBaseware({ socket, seconds, runDir, record: (type, data, trace, metadata) => events.push({ type, data, trace, ...metadata }) });
   const runtime = new Runtime(adapter, () => {}, seconds);
+  runtime.controller = new WorkspaceController({ workspace: directory, devices: adapter, record: () => {}, env: {} });
   adapter.onHandback(reason => { void runtime.stop(reason); });
   adapter.onDisconnect(error => { void runtime.disconnected(error); });
   runtime.agent = {
@@ -150,8 +152,8 @@ test("owner connection loss revokes a separate caller and disconnects RSA", asyn
 test("remote observations and event paths keep distinct durable files inside the RSA run", async () => {
   const f = await fixture();
   try {
-    const result = await f.runtime.observe({ controllerId: "screen", argv: ["capture"] }, new AbortController().signal,
-      { toolCallId: "capture-call" }, "explicit");
+    const result = await readTestController(f.runtime, "screen", ["capture"], new AbortController().signal,
+      { toolCallId: "capture-call" });
     const observations = result.observations!;
     expect(new Set(observations.map(observation => observation.path)).size).toBe(2);
     const recorded = f.events.filter(event => event.type === "observation");

@@ -159,13 +159,11 @@ test("hosts route by workspace, resume only its selected session, and can start 
         maxSeconds: state === first ? 111 : 222 });
     }
     const firstGuide = await readFile(join(first.workspace, "AGENTS.md"), "utf8");
-    expect(firstGuide).toStartWith("Keep these task instructions.\n");
-    expect(firstGuide.match(/baseware\.json/g)).toHaveLength(1);
-    expect(firstGuide).toContain("`baseware export`");
-    expect(firstGuide.match(/@benchmark/g)).toHaveLength(1);
+    expect(firstGuide).toBe("Keep these task instructions.\n");
     expect(await readFile(join(second.workspace, "AGENTS.md"), "utf8")).toContain("`logs/`");
     expect(await readFile(join(second.workspace, "AGENTS.md"), "utf8")).toContain("`baseware.json`");
     expect(await readFile(join(second.workspace, "AGENTS.md"), "utf8")).toContain("`@benchmark`");
+    expect(await readFile(join(second.workspace, "perception.py"), "utf8")).toContain("raise NotImplementedError");
     expect(testbed.operations).toEqual(["HELLO", "HELLO"]);
     const secondCatalog = await readFile(join(second.workspace, "baseware.json"), "utf8");
     firstHost.child.kill("SIGTERM");

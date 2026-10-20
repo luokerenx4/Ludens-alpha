@@ -55,21 +55,21 @@ def dynamic_default(value: int = int("2")):
   } finally { await rm(directory, {recursive: true, force: true}); }
 });
 
-test("observe hook metadata is discovered without import and invoked as an ordinary capability", async () => {
+test("aliased capability decorators discover ordinary functions without importing them", async () => {
   const directory = await workspace();
   try {
     await writeFile(join(directory, "observe.py"), `from rsa_tools import capability as cap
 import rsa_tools as rsa
 from pathlib import Path
 Path("imported").touch()
-@cap(hook="observe")
+@cap
 def inspect() -> dict:
     """Provide this workspace's current observation."""
-    return {"text": "view", "media": [], "hook": inspect.__rsa_hook__}
+    return {"text": "view", "media": []}
 @rsa.capability
 def plain():
     """An ordinary callable capability."""
-    return plain.__rsa_hook__
+    return True
 @cap()
 def empty():
     """A capability with empty decorator arguments."""
@@ -79,44 +79,31 @@ def empty():
     const found = await registry.discover();
     expect(found.diagnostics).toEqual([]);
     const observer = found.capabilities.find(item => item.origin.function === "inspect")!;
-    expect(observer).toMatchObject({hook: "observe", parameters: {properties: {}, required: []}});
-    expect(found.capabilities.filter(item => item.origin.function !== "inspect").every(item => item.hook === undefined)).toBe(true);
+    expect(observer).toMatchObject({parameters: {properties: {}, required: []}});
+    expect(found.capabilities).toHaveLength(3);
     expect(await Bun.file(join(directory, "imported")).exists()).toBe(false);
     const result = await registry.invoke(observer.id, {});
-    expect(result).toMatchObject({isError: false, details: {codeSHA: observer.codeSHA, result: {text: "view", media: [], hook: "observe"}}});
+    expect(result).toMatchObject({isError: false, details: {codeSHA: observer.codeSHA, result: {text: "view", media: []}}});
     expect(await Bun.file(join(directory, "imported")).exists()).toBe(true);
   } finally { await rm(directory, {recursive: true, force: true}); }
 });
 
-test("invalid hooks retain their declaration in discovery diagnostics", async () => {
+test("capability decorator arguments are rejected without executing them", async () => {
   const directory = await workspace();
   try {
     await writeFile(join(directory, "invalid.py"), `from rsa_tools import capability
 raise RuntimeError("discovery must not evaluate this module")
-@capability(hook="observe")
-def optional(value: str = "default"):
-    """Even optional parameters are unsupported for the automatic entry point."""
-@capability(hook="observe")
-def missing_doc():
-    pass
-@capability(hook="act")
+@capability(extra=True)
 def unsupported():
-    """Unknown hook name."""
-@capability(hook=select_hook())
+    """Unknown decorator argument."""
+@capability(select_option())
 def dynamic():
     """Do not evaluate decorator arguments during discovery."""
-@capability(hook="observe", extra=True)
-def extra_keyword():
-    """Unsupported decorator arguments."""
 `);
     const found = await new PythonCapabilities(directory).discover();
     expect(found.capabilities).toEqual([]);
-    expect(found.diagnostics.map(item => [item.function, item.hook])).toEqual([
-      ["optional", "observe"], ["missing_doc", "observe"], ["unsupported", "act"],
-      ["dynamic", "<dynamic>"], ["extra_keyword", "observe"],
-    ]);
-    expect(found.diagnostics[0]!.message).toContain("no parameters");
-    expect(found.diagnostics[1]!.message).toContain("docstring");
+    expect(found.diagnostics.map(item => item.function)).toEqual(["unsupported", "dynamic"]);
+    expect(found.diagnostics.every(item => item.message.includes("without decorator arguments"))).toBe(true);
   } finally { await rm(directory, {recursive: true, force: true}); }
 });
 

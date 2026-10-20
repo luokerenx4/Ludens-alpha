@@ -10,6 +10,7 @@ Benchmark 是 RSA 的统一评测接口。内置 Harness 工况和 workspace 的
 rsa bench list
 rsa bench help ws-recovery
 rsa bench run ws-recovery
+rsa bench run perception-lifecycle
 rsa bench run all --repeat 2
 rsa bench run capability-reuse --live --seconds 180 --requests 30
 rsa bench help python/benchmarks/clamp.py:evaluate
@@ -93,16 +94,19 @@ Dashboard 的 **Benchmark → 评测目录** 动态列出内置和 workspace 评
 
 ## 内置 Harness 工况
 
-这四个工况用于重复核查系统路径。前三个在真实实现上注入本地故障，第四个使用真实模型探索独立图像环境。
+这些工况用于重复核查系统路径。离线工况在真实实现上注入本地条件；能力复用工况使用真实模型探索独立图像环境。
 
 | Case | 检查 | 范围与限制 |
 | --- | --- | --- |
+| `perception-lifecycle` | 空实现自举、进程内缓存、helper/权重显式 reload、失败修复和不可变结果归档 | 真实 Python 感知进程，合成模型文件与媒体；不运行 PyTorch、设备或在线模型 |
 | `control-handoff` | 原始 driver / 嵌套 Python 长动作中断，输入释放，旧 epoch 拒绝 | 真实 Runtime、socket、Baseware 和 Python；模拟可中断设备，释放延迟不是模拟器性能 |
 | `ws-recovery` v2 | Besiege 6h 连接到期与 Mario Maker 8h 响应中关闭 1012，分别验证 SSE 冷却 → WS 全历史恢复 → delta、已交付工具不重放 | 生产故障驱动的 TDD 特例；真实 OMP provider，模拟 WS/HTTP，虚拟推进冷却时间；只测本地处理开销 |
 | `background-compaction` | 后台候选复用、尾部保留、晚到归属、取消后不提交 | 真实 OMP maintenance / V2；注入接近阈值的 token 计数和受控 SSE，不下调生产阈值 |
-| `capability-reuse` v2 | 两批订单完成、自主创建 Python 函数、跨批次实际复用 | 真实模型与 PNG 传感器；允许直接 import 或统一接口调用，不代表长期泛化 |
+| `capability-reuse` v3 | 两批订单完成、自主创建 Python 函数、跨批次实际复用 | 真实模型、空感知入口与 PNG 传感器；允许直接 import 或统一接口调用，不代表长期泛化 |
 
 模型工况沿用标准 RSA prompt、Low、WS auto、Infinity 图片预算和 256000 原生压缩阈值；每次新建 OMP session，skills、memory 为空，不携带游戏经验或预填解法。
+
+v3 从空的感知实现开始，Agent 自行用设备采样，并可实现 `perception.py`；不预填默认截图。此前 v2 使用预填采样，两版成绩不视为相同条件。
 
 装配台只有 `set` 与 `submit` 两种最小操作。Agent 自己观察目标、发现接口、决定是否写 Python。复用要求同一个自主创建的函数在不同批次、不同模型轮次中成功使用，并有设备调用完成订单的证据。普通函数即可，不要求装饰器或事先查询目录。接口选择只作诊断，不决定是否学会。
 

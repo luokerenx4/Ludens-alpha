@@ -22,7 +22,7 @@ test("workspace Python capabilities do not grow OMP's tool list across writes, r
   const rsaSocket = "/tmp/unused-rsa.sock";
   const extension = createRsaExtension({runtime, workspace: new Workspace(workspace, join(directory, "versions")),
     basewareSocket: "/tmp/unused-baseware.sock", rsaSocket, binDir: join(import.meta.dir, "../bin"),
-    maxRequests: 20, autoObserve: [], cycle: () => cycle,
+    maxRequests: 20, cycle: () => cycle,
   });
   const settings = Settings.isolated({"memory.backend": "off", "autolearn.enabled": false, "retry.enabled": false,
     "retry.modelFallback": false, "title.refreshOnReplan": false});

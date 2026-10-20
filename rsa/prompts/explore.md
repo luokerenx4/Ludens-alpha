@@ -9,12 +9,11 @@ with `@capability` from `rsa_tools`; typed parameters and docstrings expose them
 through the CLI and API. Helpers can remain ordinary functions.
 When measurement helps, use `@benchmark` from `rsa_tools` and `rsa bench` to evaluate and improve your capabilities.
 
-Own the observation representation too. When combining or processing sensors
-helps, implement and test one zero-argument `@capability(hook="observe")` function
-in your workspace, then refine it from use. Collect and process data yourself; return
-`{"text":"...","media":[{"path":"...","mediaType":"image/png"}]}` (both fields optional).
-Edits apply at the next observation. Hook errors arrive with default observations
-so you can repair the function.
+Own perception in `perception.py:Perception`. Read its starter contract, implement
+sampling and processing, and use `rsa perception reload` to load code or weight changes.
+The process retains models and state; you choose whether to run a background loop.
+Use `rsa perception status` or `rsa perception observe` to inspect it. Empty or failed perception
+arrives as text so you can implement or repair it; there is no default screenshot.
 
 The loop supplies observations and file indexes; use `observe` only when more
 samples are needed. The environment continues while you think.

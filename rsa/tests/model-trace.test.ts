@@ -20,7 +20,8 @@ import { Runtime } from "../src/harness/runtime.ts";
 import { Workspace } from "../src/harness/workspace.ts";
 import { createRsaExtension } from "../src/harness/omp/extension.ts";
 import { createOmpSession } from "../src/harness/omp/session.ts";
-import { captureResult } from "./runtime-fixture.ts";
+import { WorkspaceController } from "../src/harness/controller.ts";
+import { captureResult, readTestController, installTestPerception } from "./runtime-fixture.ts";
 
 const speculation = channel("omp.compaction.speculation");
 const png = "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg==";
@@ -338,12 +339,15 @@ test("real OMP HTTP bodies retain DeepSeek image prefixes beyond five images and
   const closeSocket = await listenBaseware(basewareSocket, core);
   const devices = await connectBaseware({socket: basewareSocket, seconds: 300, runDir: directory, record: log.record});
   const runtime = new Runtime(devices, log.record);
+  runtime.controller = new WorkspaceController({ workspace, devices, record: log.record, env: {} });
+  installTestPerception(runtime, workspace, directory, (signal, trace) =>
+    readTestController(runtime, "camera-q", ["sample"], signal, trace));
   devices.onHandback(reason => { void runtime.stop(reason); });
   devices.onDisconnect(error => { void runtime.disconnected(error); });
   const {epoch} = await runtime.start();
   const trace = new ModelTrace(log, () => ({epoch: epoch!, ...extension.context()}));
   const extension = createRsaExtension({runtime, workspace: new Workspace(workspace, join(directory, "skill-versions")), basewareSocket,
-    binDir: resolve(import.meta.dir, "../bin"), autoObserve: [{controllerId: "camera-q", argv: ["sample"]}],
+    binDir: resolve(import.meta.dir, "../bin"),
     cycle: () => ({epoch: epoch!, signal: new AbortController().signal}), maxRequests: 7, trace: trace.current});
   const received: string[] = [];
   const server = Bun.serve({hostname: "127.0.0.1", port: 0, async fetch(request) {
@@ -462,10 +466,14 @@ test("real OMP HTTP bodies retain DeepSeek image prefixes beyond five images and
     expect(events.filter(e => e.type === "observation" && e.trace.modelCallId === firstCall)
       .map(e => e.trace.toolCallId)).toEqual(["tool-2"]);
     const observations = events.filter(e => e.type === "observation");
-    expect(observations[0].data.origin).toBe("prompt_start");
-    expect(observations[1].data).toMatchObject({origin: "tool_batch", sourceSequenceDelta: 100,
-      previousObservationId: "observation-1", afterExecution: {toolCallId: "tool-2"}});
-    expect(observations[1].data.afterExecution.captureRequestedAfterMs).toBeGreaterThanOrEqual(0);
+    expect(observations[0].data.origin).toBe("cli");
+    expect(observations[1].data).toMatchObject({origin: "cli", sourceSequenceDelta: 100,
+      previousObservationId: "observation-1"});
+    const perceptionReads = events.filter(e => e.type === "perception_observe_end");
+    expect(perceptionReads).toHaveLength(7);
+    expect(perceptionReads[1].trace).toMatchObject({epoch, modelCallId: firstCall, toolCallId: "tool-2"});
+    expect(perceptionReads[1].data.result.observations.map((value: {id: string}) => value.id)).toEqual(["observation-2"]);
+    expect(perceptionReads[1].data.durationMs).toBeGreaterThanOrEqual(0);
     expect(events.filter(e => e.type === "observation_media")).toHaveLength(7);
     expect(events.find(e => e.type === "read").data).toMatchObject({
       requestedPath: "skills/notes.md:2-3", path: notes, isError: false,
@@ -483,7 +491,10 @@ test("real OMP HTTP bodies retain DeepSeek image prefixes beyond five images and
     expect(events.filter(e => e.type === "execution").map(e => e.trace.operationId))
       .toEqual(events.filter(e => e.type === "command").map(e => e.trace.operationId));
     const starts = events.filter(e => e.type === "model_start");
-    expect(starts[1].data.observations.length).toBeGreaterThan(0);
+    expect(starts[1].data.observations).toEqual(["observation-2"]);
+    const contexts = events.filter(e => e.type === "context");
+    expect(contexts[1].data.observations).toEqual(starts[1].data.observations);
+    expect(contexts[1].data.executions).toEqual([perceptionReads[1].data.result.id]);
     const raw = await readFile(join(directory, starts[0].data.streamPath), "utf8");
     expect(raw).toContain("kept-raw");
     const eventText = JSON.stringify(events);

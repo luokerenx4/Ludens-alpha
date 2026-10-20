@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import type { Call, Observation, RunData, TraceSpan } from "@/lib/types";
 import { requestWait, sseFallbackReason } from "@/lib/transport";
-import { selectObservations } from "./observation-model";
+import { perceptionAgeMs, perceptionStateLabel, selectObservations } from "./observation-model";
 
 export const seconds = (ms: number | null | undefined) =>
   ms == null ? "—" : (ms / 1000).toFixed(1) + " s";
@@ -37,6 +37,7 @@ export const observationOrigin: Record<string, string> = {
   explicit: "主动观测",
   cli: "CLI 采样",
   observe_hook: "工作区 observe",
+  perception: "工作区感知",
 };
 
 export function Metric({
@@ -231,6 +232,8 @@ export function ObservationPanel({
     data.observations, call, selectedImage,
   );
   const text = showingInput ? call?.inputText : observation?.text;
+  const perception = showingInput ? call?.perception : observation?.perception;
+  const age = perceptionAgeMs(perception);
   const media = (o: Observation) =>
     "/api/media?" +
     new URLSearchParams({ project: data.project, run: data.run, id: o.id });
@@ -264,6 +267,39 @@ export function ObservationPanel({
           {call ? "请求 #" + String(call.index).padStart(3, "0") : "等待模型请求"}
         </span>
       </div>
+      {data.perception && (
+        <div className="screen-meta">
+          <span>感知进程 · {perceptionStateLabel[data.perception.state]}</span>
+          {data.perception.pid && <span>PID {data.perception.pid}</span>}
+          {data.perception.generation && <span title={data.perception.generation}>代次 {data.perception.generation.slice(0, 8)}</span>}
+          {data.perception.codeSHA && <span title={data.perception.codeSHA}>版本 {data.perception.codeSHA.slice(0, 8)}</span>}
+        </div>
+      )}
+      {perception && (
+        <details className="observation-metadata" open={perception.status.state !== "ready"}>
+          <summary>
+            本次感知 · {perceptionStateLabel[perception.status.state]}
+            {perception.reused === true ? " · 复用已有结果" : ""}
+          </summary>
+          <dl className="fact-grid">
+            <div><dt>读取耗时</dt><dd>{perception.durationMs != null && perception.durationMs < 1000
+              ? perception.durationMs.toFixed(1) + " ms" : seconds(perception.durationMs)}</dd></div>
+            <div><dt>读取时结果年龄</dt><dd>{age === null ? "未知" : seconds(age)}</dd></div>
+            <div><dt>进程代次</dt><dd title={perception.status.generation ?? ""}>{perception.status.generation?.slice(0, 12) ?? "—"}</dd></div>
+            <div><dt>代码版本</dt><dd title={perception.status.codeSHA}>{perception.status.codeSHA?.slice(0, 12) ?? "—"}</dd></div>
+            {perception.snapshot && <div><dt>结果序号</dt><dd>{perception.snapshot.sequence}</dd></div>}
+          </dl>
+          {(perception.error || perception.status.error) && (
+            <pre className="observation-text">{perception.error || perception.status.error}</pre>
+          )}
+          {perception.snapshot?.sources && (
+            <details>
+              <summary>采样来源</summary>
+              <pre className="observation-text">{JSON.stringify(perception.snapshot.sources, null, 2)}</pre>
+            </details>
+          )}
+        </details>
+      )}
       <div className="screen">
         {observation ? (
           observation.mediaType.startsWith("image/") ? (
@@ -289,7 +325,9 @@ export function ObservationPanel({
           <div className="empty-state">
             <span className="empty-symbol">◫</span>
             <h3>{call ? "本次请求没有可展示的输入画面" : "等待模型观测"}</h3>
-            <p>这里按模型请求展示实际输入的观测。</p>
+            <p>{perception?.status.state === "unimplemented"
+              ? "工作区尚未实现感知，当前循环没有环境观测。"
+              : "这里按模型请求展示实际输入的观测。"}</p>
           </div>
         )}
       </div>

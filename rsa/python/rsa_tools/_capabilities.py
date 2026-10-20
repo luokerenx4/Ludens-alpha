@@ -128,26 +128,6 @@ def marked_functions(tree, marker_name="capability"):
             and any(is_marker(item) for item in node.decorator_list)]
 
 
-def declared_hook(markers):
-    for marker in markers:
-        if isinstance(marker, ast.Call):
-            for keyword in marker.keywords:
-                if keyword.arg == "hook":
-                    return keyword.value.value if isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, str) else "<dynamic>"
-    return None
-
-
-def marker_hook(marker):
-    if not isinstance(marker, ast.Call):
-        return None
-    if marker.args or len(marker.keywords) > 1 or any(keyword.arg != "hook" for keyword in marker.keywords):
-        raise ValueError('Use @capability, @capability(), or @capability(hook="observe")')
-    hook = declared_hook([marker])
-    if marker.keywords and hook != "observe":
-        raise ValueError('The only supported capability hook is the literal "observe"')
-    return hook
-
-
 def workspace_sources(workspace, diagnostics):
     """Read ordinary workspace sources without importing or following links."""
     workspace = Path(workspace).resolve()
@@ -175,16 +155,14 @@ def discover(workspace):
     capabilities, diagnostics = [], []
     for relative, raw, tree in workspace_sources(workspace, diagnostics):
         for node, markers in marked_functions(tree):
-            hook = declared_hook(markers)
             try:
                 if node not in tree.body:
                     raise ValueError("Capabilities must be top-level functions, not methods or nested functions")
                 if len(markers) != 1 or len(node.decorator_list) != 1:
                     raise ValueError("A capability function must use only one @capability decorator")
                 marker = markers[0]
-                hook = marker_hook(marker)
-                if hook == "observe" and (node.args.posonlyargs or node.args.args or node.args.kwonlyargs or node.args.vararg or node.args.kwarg):
-                    raise ValueError("An observe hook must have no parameters")
+                if isinstance(marker, ast.Call) and (marker.args or marker.keywords):
+                    raise ValueError("Use @capability or @capability() without decorator arguments")
                 if sum(isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and item.name == node.name for item in tree.body) != 1:
                     raise ValueError("A capability function name must be unique within its source file")
                 description, parameters = function_schema(node)
@@ -192,11 +170,9 @@ def discover(workspace):
                 name = re.sub(r"[^a-zA-Z0-9_]", "_", "python_" + relative[:-3] + "_" + node.name)[:53]
                 name += "_" + hashlib.sha256(identity.encode()).hexdigest()[:10]
                 capabilities.append({"id": name, "name": name, "description": description, "parameters": parameters,
-                    "origin": {"path": relative, "function": node.name, "line": node.lineno}, "codeSHA": hashlib.sha256(raw).hexdigest(),
-                    **({"hook": hook} if hook is not None else {})})
+                    "origin": {"path": relative, "function": node.name, "line": node.lineno}, "codeSHA": hashlib.sha256(raw).hexdigest()})
             except (ValueError, SyntaxError) as error:
-                diagnostics.append({"path": relative, "function": node.name, "line": node.lineno, "message": str(error),
-                    **({"hook": hook} if hook is not None else {})})
+                diagnostics.append({"path": relative, "function": node.name, "line": node.lineno, "message": str(error)})
     return {"capabilities": capabilities, "diagnostics": diagnostics}
 
 

@@ -54,6 +54,18 @@ export async function listen(path: string, runtime: Runtime | (() => Runtime)) {
 export async function dispatch(runtime: Runtime, request: Request, signal = new AbortController().signal): Promise<unknown> {
   const { kind, argv, epoch } = request;
   if (kind === "status") return runtime.status();
+  if (kind === "perception") {
+    if (!runtime.perception) throw new Error("Perception is not configured");
+    if (epoch !== undefined && (runtime.status().mode !== "auto" || runtime.status().epoch !== epoch))
+      throw new Error("STALE_EPOCH: use the current control epoch");
+    const trace = childTrace({ ...request.trace, ...(epoch ? { epoch } : {}) });
+    if (argv.length !== 1) throw new Error("Usage: rsa perception status|reload|stop|observe");
+    if (argv[0] === "status") return runtime.perception.status();
+    if (argv[0] === "reload") return runtime.perception.reload(trace);
+    if (argv[0] === "stop") { await runtime.perception.stop(); return runtime.perception.status(); }
+    if (argv[0] === "observe") return runtime.perception.observe(signal, trace);
+    throw new Error("Usage: rsa perception status|reload|stop|observe");
+  }
   if (kind === "workspace_event") {
     if (request.runId !== runtime.status().runId) throw new Error("STALE_RUN: Python log belongs to a different run");
     const event = request.event;

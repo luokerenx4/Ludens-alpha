@@ -1,6 +1,6 @@
-import type { Event, Call, Observation, Notice, SkillEvidence } from "./types";
+import type { Event, Call, Observation, Notice, SkillEvidence, PerceptionRead } from "./types";
 import { p95 } from "./telemetry";
-import { eventObservations, successfulObserveHook } from "./observation-events";
+import { eventObservations, observationExecution, perceptionStatus } from "./observation-events";
 export function parseEvents(text: string): Event[] {
   const lines = text.split("\n");
   if (!text.endsWith("\n")) lines.pop(); // An append in progress is not a malformed event.
@@ -40,7 +40,7 @@ export function aggregate(events: Event[], now = Date.now()) {
   const observations: Observation[] = [];
   const observationMap = new Map<string, Observation>();
   const observationRequests = new Map<string, Observation["request"]>();
-  const hookText = new Map<string, string>();
+  const observationResults = new Map<string, { text: string; perception?: PerceptionRead }>();
   const contexts = new Map<string, { observations: string[]; executions: string[] }>();
   const notices: Notice[] = [];
   const skills: SkillEvidence[] = [];
@@ -63,8 +63,10 @@ export function aggregate(events: Event[], now = Date.now()) {
     const t = event.trace;
     const toolKey = JSON.stringify([t.epoch, t.modelCallId, t.toolCallId]);
     const observationKey = JSON.stringify([t.epoch, t.operationId]);
-    const hook = successfulObserveHook(event);
-    if (hook) hookText.set(JSON.stringify([t.epoch, hook.result.id]), hook.result.stdout);
+    const observed = observationExecution(event);
+    if (observed?.result) observationResults.set(JSON.stringify([t.epoch, observed.result.id]), {
+      text: observed.result.stdout, perception: observed.perception,
+    });
     if (event.type === "context")
       contexts.set(t.epoch, { observations: d.observations ?? [], executions: d.executions ?? [] });
     if (event.type === "observation_start" && t.operationId)
@@ -80,10 +82,13 @@ export function aggregate(events: Event[], now = Date.now()) {
     let call = byId.get(t.modelCallId);
     if (event.type === "model_start") {
       const context = contexts.get(t.epoch);
-      const inputText = context && JSON.stringify(context.observations) === JSON.stringify(d.observations ?? [])
-        ? context.executions.map(id => hookText.get(JSON.stringify([t.epoch, id])))
-          .filter((text): text is string => !!text).join("\n\n")
-        : "";
+      const inputResults = context && JSON.stringify(context.observations) === JSON.stringify(d.observations ?? [])
+        ? context.executions.flatMap(id => {
+          const result = observationResults.get(JSON.stringify([t.epoch, id]));
+          return result ? [result] : [];
+        }) : [];
+      const inputText = inputResults.map(result => result.text).filter(Boolean).join("\n\n");
+      const perception = inputResults.findLast(result => result.perception)?.perception;
       call = {
         id: t.modelCallId,
         index: calls.length + 1,
@@ -107,6 +112,7 @@ export function aggregate(events: Event[], now = Date.now()) {
         observations: [],
         inputObservations: d.observations ?? [],
         ...(inputText ? { inputText } : {}),
+        ...(perception ? { perception } : {}),
         actions: 0,
         phases: {},
       };
@@ -262,10 +268,11 @@ export function aggregate(events: Event[], now = Date.now()) {
         origin: observation.origin ?? "unknown",
         text: observation.text,
         hook: observation.hook,
+        perception: observation.perception,
         sourceSequence: observation.sourceSequence,
         sourceSequenceDelta: observation.sourceSequenceDelta,
         afterExecutionMs: observation.afterExecution?.captureRequestedAfterMs,
-        captureMs: observation.timing
+        captureMs: observation.timing && !observation.perception
           ? observation.timing.receivedAtMs - observation.timing.requestedAtMs
           : undefined,
         modelCallId: t.modelCallId,
@@ -275,8 +282,8 @@ export function aggregate(events: Event[], now = Date.now()) {
       if (!existing) {
         observations.push(o);
         observationMap.set(o.id, o);
-      } else if (o.hook) {
-        Object.assign(existing, { hook: o.hook, text: o.text, origin: o.origin });
+      } else if (o.hook || o.perception) {
+        Object.assign(existing, { hook: o.hook, perception: o.perception, text: o.text, origin: o.origin });
       }
       if (call && !call.observations.includes(o.id)) call.observations.push(o.id);
     }
@@ -290,6 +297,7 @@ export function aggregate(events: Event[], now = Date.now()) {
       ))) ||
       event.type.startsWith("auto_compaction") ||
       event.type.startsWith("compaction_http_") ||
+      (event.type === "perception_observe_end" && d.status?.state === "error") ||
       event.type === "disconnected"
     ) {
       let text =
@@ -359,6 +367,7 @@ export function aggregate(events: Event[], now = Date.now()) {
         details,
         failed:
           (event.type.includes("error") && !d.aborted) ||
+          (event.type === "perception_observe_end" && d.status?.state === "error" && d.outcome !== "cancelled") ||
           (event.type === "compaction_http_end" && d.status >= 400),
       });
     }
@@ -374,6 +383,7 @@ export function aggregate(events: Event[], now = Date.now()) {
   return {
     calls,
     observations,
+    perception: perceptionStatus(events),
     notices,
     skills,
     lastControl,

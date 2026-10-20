@@ -11,11 +11,8 @@ from ._context import invocation
 from .benchmarks import benchmark, current_benchmark
 
 
-def capability(function=None, *, hook=None):
-    """Register a capability; hook="observe" also supplies the loop's observation."""
-    if hook not in (None, "observe"):
-        raise ValueError('The only supported capability hook is "observe"')
-
+def capability(function=None):
+    """Register an ordinary function as a discoverable workspace capability."""
     def mark(target):
         source = Path(target.__code__.co_filename).resolve()
         workspace = Path(os.environ.get("RSA_WORKSPACE", os.getcwd())).resolve()
@@ -40,7 +37,6 @@ def capability(function=None, *, hook=None):
                     return target(*args, **kwargs)
 
         wrapped.__rsa_capability__ = True
-        wrapped.__rsa_hook__ = hook
         return wrapped
 
     return mark if function is None else mark(function)

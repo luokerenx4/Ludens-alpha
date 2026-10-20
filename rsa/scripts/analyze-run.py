@@ -87,6 +87,65 @@ def span_summary(spans):
             "durationMs": stats(span["durationMs"] for span in spans)}
 
 
+def sample_age_ms(sampled_at, received_at):
+    """Age at read completion only when both timestamps include a timezone."""
+    try:
+        sample, received = (datetime.fromisoformat(value.replace("Z", "+00:00"))
+                            for value in (sampled_at, received_at))
+        if sample.utcoffset() is None or received.utcoffset() is None:
+            return None
+        age = (received - sample).total_seconds() * 1000
+        return round(age, 3) if age >= 0 else None
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def perception_report(inside, events):
+    reads = operation_spans(inside, events, "perception_observe_start", "perception_observe_end")
+    by_seq = {event["seq"]: event for event in events if event["type"] == "perception_observe_end"}
+    for read in reads:
+        end = by_seq.get(read["endSeq"])
+        data = end["data"] if end else {}
+        snapshot = data.get("snapshot")
+        read.update({"status": data.get("status"), "snapshot": snapshot, "reused": data.get("reused"),
+                     "executionId": data.get("result", {}).get("id"),
+                     "observationIds": [item["id"] for item in data.get("result", {}).get("observations", [])],
+                     "sampleAgeMs": sample_age_ms(snapshot.get("sampledAt"), end["at"])
+                     if snapshot and end else None})
+    statuses = [{"seq": event["seq"], "at": event["at"], "trace": event.get("trace", {}), "status": event["data"]}
+                for event in inside if event["type"] == "perception_status"]
+    by_result = {(read["trace"].get("epoch"), read["executionId"]): read
+                 for read in reads if read["executionId"]}
+    input_errors = []
+    for event in inside:
+        if event["type"] != "perception_input_error":
+            continue
+        data = event["data"]
+        result_id = data.get("result", {}).get("id")
+        read = by_result.get((event.get("trace", {}).get("epoch"), result_id))
+        input_errors.append({"seq": event["seq"], "at": event["at"], "trace": event.get("trace", {}),
+                             "executionId": result_id, "error": data.get("error"), "status": data.get("status"),
+                             "readStartSeq": read["startSeq"] if read else None,
+                             "readEndSeq": read["endSeq"] if read else None})
+    snapshots = [read for read in reads if read["snapshot"]]
+    summary = {
+        **span_summary(reads),
+        "ended": sum(read["endSeq"] is not None for read in reads),
+        "readStates": dict(Counter((read["status"] or {}).get("state", "unknown")
+                                  for read in reads if read["endSeq"] is not None)),
+        "statusEvents": dict(Counter(item["status"].get("state", "unknown") for item in statuses)),
+        "newResults": sum(read["reused"] is False for read in snapshots),
+        "reusedResults": sum(read["reused"] is True for read in snapshots),
+        "unknownReuseResults": sum(type(read["reused"]) is not bool for read in snapshots),
+        "uniqueSnapshots": len({read["snapshot"]["id"] for read in snapshots if read["snapshot"].get("id")}),
+        "sampleAgeMs": stats(read["sampleAgeMs"] for read in snapshots),
+        "unknownSampleAge": sum(read["sampleAgeMs"] is None for read in snapshots),
+        "errorReasons": dict(Counter(read["error"] for read in reads if read["error"])),
+        "inputErrors": len(input_errors),
+    }
+    return summary, {"reads": reads, "statuses": statuses, "inputErrors": input_errors}
+
+
 def model_attempts(related):
     requests = {event["trace"]["requestId"]: event for event in related if event["type"] == "model_request"}
     streams = {(event["trace"].get("requestId"), event["trace"].get("httpId")): event
@@ -409,6 +468,7 @@ def analyze(run, epoch=None):
     local_python_calls = operation_spans(inside, events, "python_call_start", "python_call_end")
     discovery = operation_spans(inside, events, "python_capabilities_start", "python_capabilities")
     shiori_spans = operation_spans(inside, events, "shiori_span_start", "shiori_span_end")
+    perception_summary, perception = perception_report(inside, events)
     # A native loop can end after control was handed back; attach its summary to the loop we actually started.
     loop_keys = {trace_key(event, "traceId", "spanId") for event in inside
                  if event["type"] == "shiori_span_start" and event["data"].get("operation") == "invoke_agent"}
@@ -494,8 +554,9 @@ def analyze(run, epoch=None):
         "capabilities": span_summary(capabilities), "pythonCapabilities": span_summary(python_calls),
         "localPythonCalls": span_summary(local_python_calls),
         "capabilityDiscovery": span_summary(discovery),
+        "perception": perception_summary,
         "shiori": {"spans": span_summary(shiori_spans), "nativeLoops": len(native_runs)}}
-    return {"analysisVersion": 4, "runDir": str(run), "generatedAt": datetime.now(timezone.utc).isoformat(),
+    return {"analysisVersion": 5, "runDir": str(run), "generatedAt": datetime.now(timezone.utc).isoformat(),
         "source": {"path": "events.jsonl", "eventCount": len(events), "lastSeq": events[-1]["seq"] if events else None,
                    "lastEventAt": events[-1]["at"] if events else None, "ignoredPartialLastLine": partial},
         "window": {"epoch": selected_epoch,
@@ -512,6 +573,7 @@ def analyze(run, epoch=None):
         "compactionHttpAttempts": compaction_http,
         "capabilities": capabilities, "pythonCapabilities": python_calls, "capabilityDiscovery": discovery,
         "localPythonCalls": local_python_calls,
+        "perception": perception,
         "shiori": {"spans": shiori_spans, "runs": native_runs},
         "notes": [
             "Offline snapshot of the selected takeover epoch; multiple takeovers require explicit selection. Control mode refers to that epoch and does not prove the host process is live. Pending requests and a partial final line may complete later.",
@@ -533,6 +595,8 @@ def analyze(run, epoch=None):
             "toolExecution measures tool_start to tool_end, including any capture/result preparation; execCommandMs measures only exec to exec_result. Commands are nested within tools: do not add these durations together. Pending spans have no duration, and command text is not parsed to infer waiting or action time.",
             "Skill read/write/edit counts use successful tool completion and named SKILL.md paths. They do not prove the quality of learned content or that an edit changed its hash.",
             "Capture intervals include waiting, GPU readback and file encoding. sourceSequence advance does not prove that the frame reflects the preceding action.",
+            "perception measures explicitly traced snapshot reads, including late ends, not background sampling or controller actions. New/reused counts use the recorded reused flag; unique snapshot IDs are separate from read count. sampleAgeMs is read-end wall time minus the declared sampledAt only when both have timezones and the age is nonnegative; missing/invalid/future timestamps remain unknown. It does not measure model-dispatch age, sample freshness guarantees, or sensor capture duration. Status events without the selected epoch are not assigned by time.",
+            "perception.inputErrors separately records post-read model-input/media-encoding failures, linked by epoch and result.id. A successful perception read does not imply successful delivery to the model; read outcomes are retained rather than overwritten by encoding failures.",
             "P95 uses the nearest-rank percentile. Capability and Shiori spans pair only by explicit epoch/traceId/spanId; older untraced calls are not inferred.",
             "Native Shiori run summaries cover one agent loop, not a whole takeover. They overlap existing model/tool metrics and must not be added to token/cost totals. Python detail spans overlap their enclosing capability calls; durations are inclusive, not additive.",
             "localPythonCalls measures decorated functions executing in the workspace Python process, separate from pythonCapabilities (external runner). Nested calls retain their own spans and overlap enclosing durations; neither counts as additional controller actions. Function origin/codeSHA identify loaded code, while origin/endOrigin retain the Python event clock.",

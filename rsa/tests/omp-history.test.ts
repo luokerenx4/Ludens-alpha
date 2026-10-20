@@ -9,7 +9,7 @@ import { buildTransformedCodexRequestBody } from "@oh-my-pi/pi-ai/providers/open
 import { buildResponsesDeltaInput } from "@oh-my-pi/pi-ai/providers/openai-shared";
 import { createRsaExtension } from "../src/harness/omp/extension.ts";
 import { createOmpSession } from "../src/harness/omp/session.ts";
-import { captureResult, createTestRuntime } from "./runtime-fixture.ts";
+import { captureResult, readTestController, createTestRuntime, installTestPerception } from "./runtime-fixture.ts";
 import { Workspace } from "../src/harness/workspace.ts";
 
 test.each([1, 26])("OMP persists batches of %i images and reuses the Codex prefix across tools and prompts", async (batchSize) => {
@@ -30,9 +30,11 @@ test.each([1, 26])("OMP persists batches of %i images and reuses the Codex prefi
         timing: { clock: "test", requestedAtMs: captures, receivedAtMs: captures } }))), stdout: `interface-state-${captures}` };
     },
   }] }, (type, data) => { events.push({ type, data }); });
+  installTestPerception(runtime, workspace, directory, (signal, trace) =>
+    readTestController(runtime, "camera", [], signal, trace));
   const control = new AbortController();
   const extension = createRsaExtension({ runtime, workspace: new Workspace(workspace, join(directory, "skill-versions")),
-    basewareSocket: "/tmp/unused.sock", binDir: "/tmp", autoObserve: [{ controllerId: "camera", argv: [] }],
+    basewareSocket: "/tmp/unused.sock", binDir: "/tmp",
     maxRequests: 9, cycle: () => ({ epoch: "test", signal: control.signal }),
   });
   const settings = Settings.isolated({ "memory.backend": "off", "autolearn.enabled": false,
@@ -70,14 +72,14 @@ test.each([1, 26])("OMP persists batches of %i images and reuses the Codex prefi
     const index = ++requests;
     const done = index >= 7;
     const exec = (suffix: string, command: string) => ({ type: "toolCall" as const, id: `call_${index}_${suffix}`, name: "exec", arguments: { command } });
-    const observe = (argv: string[] = []) => ({ type: "toolCall" as const, id: `call_${index}_observe`, name: "observe", arguments: { controllerId: "camera", argv } });
+    const observe = () => ({ type: "toolCall" as const, id: `call_${index}_observe`, name: "observe", arguments: {} });
     const invalid = (suffix: string) => ({ type: "toolCall" as const, id: `call_${index}_${suffix}`, name: "exec", arguments: {} });
     const batches = [
       [invalid("bad_before"), exec("a", "printf first > position"), exec("b", "printf second > position"), invalid("bad_after")],
       [exec("a", "sleep 0.03; printf third > position"), observe()],
       [observe(), exec("a", "printf fourth > position")],
       [observe()],
-      [observe(["detail"])], // The latest explicit sample satisfies this sensor regardless of arguments.
+      [observe()], // A final explicit read supplies the batch's observation.
       [exec("a", "printf done")],
     ];
     const message: AssistantMessage = {
@@ -110,7 +112,7 @@ test.each([1, 26])("OMP persists batches of %i images and reuses the Codex prefi
     expect(imageCounts).toEqual([1, 2, 3, 5, 6, 7, 8, 9, 10].map(n => n * batchSize));
     expect(textCounts).toEqual([1, 2, 3, 5, 6, 7, 8, 9, 10]);
     expect(states).toEqual(["initial", "second", "third", "third", ...Array(6).fill("fourth")]);
-    expect(events.filter(e => e.type === "observation" && e.data.origin === "explicit")).toHaveLength(4 * batchSize);
+    expect(events.filter(e => e.type === "perception_observe_end")).toHaveLength(10);
     const contexts = events.filter(e => e.type === "observation_context");
     expect(contexts).toHaveLength(9);
     expect(contexts.filter(e => e.data.reusedObservations.length)).toHaveLength(3);

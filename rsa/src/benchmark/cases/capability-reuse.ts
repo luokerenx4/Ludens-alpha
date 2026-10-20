@@ -1,10 +1,12 @@
-import { readdir, readFile, rm } from "node:fs/promises";
+import { readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { BasewareCore } from "@playness/baseware/core";
+import { writeCapabilityDocument } from "@playness/baseware/catalog";
 import { listen as listenBaseware } from "@playness/baseware/server";
 import { connectBaseware } from "../../harness/baseware.ts";
 import { WorkspaceController } from "../../harness/controller.ts";
 import { PythonCapabilities } from "../../harness/python-capabilities.ts";
+import { PerceptionRuntime } from "../../harness/perception.ts";
 import { Runtime } from "../../harness/runtime.ts";
 import { listen as listenRsa } from "../../harness/transport.ts";
 import { resolveWorkspaceState } from "../../harness/workspace-state.ts";
@@ -12,6 +14,7 @@ import type { RecordEvent } from "../../harness/events.ts";
 import type { BenchmarkContext, CaseOutcome } from "../types.ts";
 import { ReuseEnvironment } from "../fixtures/reuse-environment.ts";
 import { evaluateReuse, type ReuseEvent } from "../fixtures/reuse-evaluator.ts";
+import perceptionTemplate from "../../../templates/perception.py" with { type: "text" };
 
 async function workspaceBaseline(workspace: string) {
   const files: string[] = [];
@@ -64,19 +67,23 @@ export async function run(ctx: BenchmarkContext): Promise<CaseOutcome> {
     ctx.signal?.throwIfAborted();
     closeBaseware = await listenBaseware(basewareSocket, core);
     devices = await connectBaseware({ socket: basewareSocket, seconds: ctx.seconds, runDir: ctx.runDir, record });
+    await writeCapabilityDocument(devices.catalog, join(ctx.workspace, "baseware.json"));
+    await writeFile(join(ctx.workspace, "perception.py"), perceptionTemplate, { flag: "wx" });
     runtime = new Runtime(devices, record, ctx.seconds, ctx.log.clock.id);
     const binDir = resolve(import.meta.dir, "../../../bin");
     const env = { RSA_SOCKET: rsaSocket, BASEWARE_SOCKET: basewareSocket,
       RSA_WORKSPACE: ctx.workspace, RSA_RUN_ID: ctx.log.clock.id,
       PATH: [dirname(process.execPath), binDir, process.env.PATH ?? ""].join(":") };
     runtime.controller = new WorkspaceController({ workspace: ctx.workspace, devices, env, record });
+    runtime.perception = new PerceptionRuntime({ workspace: ctx.workspace, runDir: ctx.runDir, env, record });
     devices.onHandback(reason => { void runtime!.stop(reason); });
     devices.onDisconnect(error => { void runtime!.disconnected(error); });
     closeRsa = await listenRsa(rsaSocket, runtime);
+    await runtime.perception.reload();
     const { createOmpAgent } = await import("../../harness/omp/session.ts");
     runtime.agent = await createOmpAgent({ runtime, workspace: ctx.workspace, runDir: ctx.runDir, state,
       basewareSocket, rsaSocket, binDir, model: ctx.model, maxRequests: ctx.maxRequests,
-      autoObserve: [{ controllerId: "screen", argv: ["capture"] }], compactionThreshold: 256000, log: ctx.log });
+      compactionThreshold: 256000, log: ctx.log });
     ctx.signal?.throwIfAborted();
     epoch = (await runtime.start("Complete both batches of assembly orders shown on the supplied display. A new batch arrives after the previous operation returns. Use the supplied capabilities and your workspace.")).epoch!;
     ctx.signal?.throwIfAborted();

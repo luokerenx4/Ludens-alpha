@@ -10,7 +10,6 @@ export interface PythonCapability {
   parameters: Record<string, unknown>;
   origin: { path: string; function: string; line: number };
   codeSHA: string;
-  hook?: "observe";
 }
 
 export interface PythonDiagnostic {
@@ -18,8 +17,6 @@ export interface PythonDiagnostic {
   function?: string;
   line?: number;
   message: string;
-  /** Declared hook, including an unsupported name or <dynamic> expression. */
-  hook?: string;
 }
 
 export interface PythonDiscovery {

@@ -83,7 +83,7 @@ rsa controller list
 rsa controller controller/cua.get_desktop_state
 ```
 
-Baseware 持有一个 Cua Driver MCP 子进程，桌面能力仍通过同一 `rsa controller` 目录和 Python API 使用，不注入 OMP 工具列表。Cua 工作区启动不探测模拟器或 TCP 桥；自动观测使用 `cua.get_desktop_state`，将图像和文本一起交给现有循环。需要接管时执行 `rsa auto on`，`rsa auto off` 交还控制；`rsa down` 结束本工作区的服务。桌面应用仍留在当前系统，工作区只隔离 Agent 的文件与会话。
+Baseware 持有一个 Cua Driver MCP 子进程，桌面能力仍通过同一 `rsa controller` 目录和 Python API 使用，不注入 OMP 工具列表。Cua 工作区启动不探测模拟器或 TCP 桥；工作区可以调用 `cua.get_desktop_state` 获取图像与文字，再由 `perception.py` 选择送入循环的表示。需要接管时执行 `rsa auto on`，`rsa auto off` 交还控制；`rsa down` 结束本工作区的服务。桌面应用仍留在当前系统，工作区只隔离 Agent 的文件与会话。
 
 NDS 的 [melonDS](https://github.com/melonDS-emu/melonDS/releases) 可按桌面应用接入：启动原装模拟器，在自己的工作区执行上述 Cua 启动流程，再通过目录发现窗口、键鼠和采样能力。屏幕布局、裁剪和观测选择由工作区代码自行适配，Baseware 不预设双屏含义。空窗口连通不等于游戏兼容性验证。
 
@@ -99,7 +99,7 @@ rsa controller list
 rsa controller controller/touch --help
 ```
 
-已有带桥模拟器运行时可省略 `--game`；默认原生桥端口为 47673。按键、摇杆和触屏通过模拟器内部输入状态注入，不依赖桌面鼠标坐标或窗口焦点。初始自动观测分别调用 `screen.top capture` 和 `screen.bottom capture`，原样送入两张独立的 400×240、320×240 图像。它们来自各自的硬件屏幕，不从窗口合图中裁剪；采样时间分别记录，不假定同时采样。Agent 自己在 workspace 中编写、试用和修改 observe hook，决定如何融合这些观测；驱动不提供拼接策略或画面到触点的坐标变换。
+已有带桥模拟器运行时可省略 `--game`；默认原生桥端口为 47673。按键、摇杆和触屏通过模拟器内部输入状态注入，不依赖桌面鼠标坐标或窗口焦点。`screen.top capture` 和 `screen.bottom capture` 提供两张独立的 400×240、320×240 图像。它们来自各自的硬件屏幕，不从窗口合图中裁剪；采样时间分别记录，不假定同时采样。Agent 自己实现 workspace 的 `perception.py`，决定采集哪些源、如何融合；初始空实现以文字自举，不预填截图。驱动不提供拼接策略或画面到触点的坐标变换。
 
 `touch` 只提供 `down --x <整数> --y <整数>`、`move --x <整数> --y <整数>`、`up`。3DS 范围为 x=0..319、y=0..239，均包含端点；原点在左上，x 向右、y 向下。状态跨调用保留，down 要求当前未按下，move 要求已经按下，释放操作权或取消会抬起。点按、拖拽、等待和画面坐标转换由 Agent 自己组合成 workspace 脚本，仍优先通过 `rsa controller` 发现和使用。
 
@@ -208,7 +208,7 @@ macOS arm64 桥接基于 Ryubing 的 `Canary-1.3.351` 标签，固定到提交 `
 
 准备设备后，进入任务工作区使用 `rsa init --driver ryubing` / `rsa up`，或分别启动 `baseware serve --driver ryubing` 与 `rsa run`。项目从空经验开始，不加载其他游戏技能；模型循环与 GBA 使用同一实现。
 
-`screen capture` 请求模拟器呈现画面的原始 PNG；系统输入框弹出时，改采集该弹窗的真实界面，不采集桌面。可用 `capture --delay-ms 500` 在发送采集请求前等待固定时间；默认 0，等待可取消。这不检测动画完成，返回帧序号也不能保证画面已经呈现该次按键的结果。自动观测通过装配层配置，例如 `--auto-observe '[{"controllerId":"screen","argv":["capture","--delay-ms","500"]}]'`，Harness 通过同一 Controller 调用采样，不维护另一套传感器接口。
+`screen capture` 请求模拟器呈现画面的原始 PNG；系统输入框弹出时，改采集该弹窗的真实界面，不采集桌面。可用 `capture --delay-ms 500` 在发送采集请求前等待固定时间；默认 0，等待可取消。这不检测动画完成，返回帧序号也不能保证画面已经呈现该次按键的结果。工作区的 `perception.py` 通过同一 Controller 采样并组织自动观测；Harness 不预设采样参数。
 
 `pad` 提供 16 个数字按键和四个摇杆轴，原子动作参数见 `rsa controller controller/pad --help`。动作按墙钟时间执行，时长由调用方选择，每段为至少 16 ms 的安全整数，合计也须为安全整数，输入轮询处切换完整状态。命令等待动作完成，期间仍可用 `pad release` 中断。AI 模式覆盖一号手柄及其体感输入；其他玩家、触屏、模拟器快捷键不在此控制器范围内。完成/取消归零，关闭接管或 TCP 断连恢复一号原生手柄输入。桥接只监听本机回环地址，作为可信本机进程间接口，不是多用户安全隔离。
 
@@ -298,29 +298,43 @@ RSA 按需扫描 workspace 中的 `.py` 文件，只登记 `@capability` / `@cap
 - `rsa controller python/... --args ...` 启动一次 Python 入口，校验源码版本和 JSON 参数、返回 JSON 结果，普通 print 放进 stderr。入口内部可以持续运行；独立的 CLI 调用不共享内存。
 - `Client.call("controller/...", ...)` 仍连接 RSA，由 Baseware 执行设备调用。
 
-装饰器为直接调用和本地 `Client.call()` 记录入口身份、实际加载的源码版本、耗时及终态，并将嵌套设备调用接入同一 trace。日志不要求模型对象或训练张量转换成 JSON；参数与返回值的 JSON 约束保留在跨进程入口。模型缓存和内部执行循环由工作区程序管理，不另加常驻服务或全局串行队列。
+装饰器为直接调用和本地 `Client.call()` 记录入口身份、实际加载的源码版本、耗时及终态，并将嵌套设备调用接入同一 trace。日志不要求模型对象或训练张量转换成 JSON；参数与返回值的 JSON 约束保留在跨进程入口。模型缓存和内部执行循环由工作区程序管理；自动感知拥有专门的常驻 Python 进程，不把普通能力调用改成通用常驻执行服务。
 
 `logs/`、`.git/`、依赖和虚拟环境目录不参与扫描。脚本可放在工作区根目录、`scripts/` 或技能目录，未标记的辅助函数保持普通 Python 用法。签名与语法诊断通过目录返回，供 Agent 自行修正。OMP 仍只暴露 `read/write/edit/exec/observe`，不会逐轮注入完整能力目录或各函数 schema；模型通过 CLI 按需发现。
 
 shell 与 Python 能力自动获得 RSA/Baseware CLI、Python 包路径及当前 `RSA_WORKSPACE` / `RSA_RUN_ID` / `RSA_SOCKET` / `BASEWARE_SOCKET` / `BASEWARE_EPOCH` / `BASEWARE_TRACE`。设备请求和调用日志连接同一 RSA 宿主，原始设备调用最终交给 Baseware，观测与调用 trace 保持连通。人工接管会取消宿主管理的在途调用和脚本进程组，并由 Baseware 释放设备；脚本不自行获取操作权。这里是可信本机 shell，不是 Python 沙箱。
 
-### 工作区观察 hook
+### 工作区感知进程
 
-工作区可用一个无参数函数替换循环的自动观测：
+`rsa init` 放入空的 `perception.py`，Agent 自己实现其中的 `Perception` 类。它是普通 Python 程序，通过 `start(context)` 初始化模型与状态，`observe()` 返回当前结果，`close()` 清理资源。要连续采样、训练或缓存，由工作区自己组织；RSA 不替它写融合算法或采样循环。
 
 ```python
-from rsa_tools import capability
+class Perception:
+    def start(self, context):
+        self.context = context
+        # 初始化模型；按需创建自己的后台采样循环。
 
-@capability(hook="observe")
-def observe() -> dict:
-    """Collect the information useful for the current task."""
-    # 在这里调用已发现的能力、处理数据并保存需要返回的媒体。
-    return {"text": "...", "media": [{"path": "view.png", "mediaType": "image/png"}]}
+    def observe(self):
+        # 返回自己的采样、处理结果；未实现时允许抛 NotImplementedError。
+        return {"sequence": 1, "text": "...",
+                "media": [{"path": "view.png", "mediaType": "image/png"}]}
+
+    def close(self):
+        pass
 ```
 
-`text` 和 `media` 均可省略；媒体路径相对于 workspace，也可用绝对路径。函数负责采集与处理，不会预先强制截取默认画面。每个自动观察边界重新发现当前代码并启动一次 Python 入口，新增、修改或移除标记从下一次观测生效；只允许一个有效的 observe hook，自动观测之间不共享 Python 内存。工作区程序也可直接调用这个函数，在自己的进程内连续采样和复用状态。它仍可通过 `rsa controller` 单独调用，不添加新的 OMP 工具。
+结果必须带 `sequence`（字符串或整数），新样本使用新序号；重复读取同一个结果保留序号。`text/media`、实际采样时间 `sampledAt`（ISO 字符串）和来源 `sources` 可选。媒体路径相对于 workspace，也可使用绝对路径。工作区负责让返回媒体在归档读取期间保持稳定；RSA 把选中结果复制到 run 中，后续覆盖工作文件不会修改历史输入。
 
-无 hook 时沿用默认观测；函数异常、多个 hook 或返回格式错误时，将诊断和默认观测一起交给模型，供它自行修复。取消会结束该次调用，不再追加默认采样。原有 `observe` 工具保留，用于按需读取原始设备。运行日志保存 hook 身份、源码 hash、采样结果和失败信息；源码与媒体分别归档到本次 run 的 `observer-sources/` 和 `observations/`，修改工作区文件不改变历史。
+```sh
+rsa perception status
+rsa perception reload
+rsa perception observe
+rsa perception stop
+```
+
+`reload` 正常关闭旧实例后启动新 Python 进程，加载代码、helper 和权重修改。不同模型轮次共用这个进程、模块和实例缓存；没有按轮 import/reload。单次观测等待取消不销毁进程；`stop`、下一次 `reload` 或关闭宿主才结束它。感知进程不持控制 epoch，只读能力无需接管；它不自行获取动作权限。
+
+状态为 `unimplemented/loading/ready/stopped/error`。空实现或故障以文字进入模型，让 Agent 用工作区工具完成或修复；没有默认截图回退。`observe` 模型工具也读取感知结果；原始设备通过 `rsa controller` 或 Python API 按需访问。日志保存进程 generation、源码版本、结果序号、采样时间、复用状态和实际输入的归档文件。反复读同一结果不等于获得新画面。
 
 ## 边界与数据
 
@@ -332,10 +346,11 @@ src/app/main.ts              连接 Baseware 并装配 Agent
 src/app/workspace.ts         本机组件启动与停止
 ```
 
-Harness 不导入具体 driver，不解释 GBA 按键、帧率或 ROM。`screen capture` 自动观测配置也由装配层传入。提供者内部将小型 screen/pad 实现合在一个文件中，没有另建框架。
+Harness 不导入具体 driver，不解释 GBA 按键、帧率或 ROM。自动观测来自工作区的感知进程。提供者内部将小型 screen/pad 实现合在一个文件中，没有另建框架。
 
 工作区就是当前目录，目录用途由根目录 `AGENTS.md` 说明：
 
+- `perception.py`：模型实现并维护的常驻感知入口。
 - `skills/`：模型自行生成的 `SKILL.md` 和脚本。
 - `memory/`：模型维护的当前目标、现场状态、疑问和下一步；覆盖更新工作记忆。
 - `logs/<run-id>/`：该次启动的 manifest、events.jsonl、observations 图片、payloads、streams 与复盘结果。
@@ -352,7 +367,7 @@ Harness 不导入具体 driver，不解释 GBA 按键、帧率或 ROM。`screen 
 
 宿主或模拟器的额外 stdout/stderr 重定向文件也约定放在该工作区的 `logs/` 下。做 `workspace-before/after` 快照时排除 `logs/`，避免把历史日志再次复制进本轮目录。
 
-每次 prompt 开始，以及一条模型回复中的整批工具执行结束后，采集自动观测、更新技能索引。`exec` 和 `observe` 按调用顺序执行；批次内最后一次 `exec` 后已有成功主动观测的传感器，优先复用其最近一次结果，即使参数与默认采样不同；其余默认传感器照常采样，每次 `exec` 清除此前可复用的观测。初始观测保存为 OMP 会话消息，后续观测随最后完成的工具结果保存；主动观测的图片不重复附加。模型按需读取技能正文和执行脚本。
+每次 prompt 开始，以及一条模型回复中的整批工具执行结束后，从常驻感知进程读取结果并更新技能索引。初始观测保存为 OMP 会话消息，后续观测随最后完成的工具结果保存；缺失或错误记录为文字，不终止模型修复流程。显式 `observe` 的结果保留在对应工具返回中，不替换感知进程的当前结果。模型按需读取技能正文和执行脚本。
 
 模型默认使用循环已提供的观测进行下一次决策；`observe` 保留为按需补充采样的能力，用于已有观测不足、读取其他传感器或使用不同采样参数的情况。提示词与工具说明不要求模型在每次操作后再主动采样。
 
@@ -390,7 +405,7 @@ WS 临时传输故障（连接到期、关闭、握手/首事件超时等）需�
 - 未打补丁的 OMP 18.9.1 在离线假连接每次返回 1009 时发送 **6 次**（首次加 5 次重试）才回退 SSE。`retry.enabled: false` 关闭的是 agent 层重试，未关闭这一层传输重试。对相同大包反复重发无法解决体积拒绝，这是 SDK 的错误分类/降级缺陷；底层网络事件未通过 `onSseEvent` 暴露，也是原 Harness 日志看不到拒绝原因的原因。
 - SSE 连续成功请求的压缩后上传量从约 13.5 MB 增长到 21.8 MB，响应头等待从约 54 秒增长到 111 秒。第二轮输入缓存为 96.2%，仍耗时约 58 秒；缓存不会省掉上传。日志记录的请求准备仅约 0.6～0.9 秒，观测约 0.2 秒，手柄动作约 0.1 秒。现有计时无法进一步区分上传、网络与服务端排队；诊断期间短暂请求重叠可能影响并发限流，不能据此排除用户在 Codex 侧看到的 429。
 
-当前循环在每批工具完成后提供一组观测，并复用该批显式 `observe` 的结果；模型图像在首次入历史前按 OMP 路径编码，之后保持不变。`status.thinking` 仍表示 agent 循环正在运行，细分阶段由事件日志和看板展示。确认游戏推进可同时查看 `model_end`、`execution` 与操作后的画面，传感器/控制器边界不包含游戏语义。
+当前循环在每批工具完成后读取感知结果，保留序号与复用状态；模型图像在首次入历史前按 OMP 路径编码，之后保持不变。`status.thinking` 仍表示 agent 循环正在运行，细分阶段由事件日志和看板展示。确认游戏推进可同时查看 `model_end`、`execution` 与操作后的画面，传感器/控制器边界不包含游戏语义。
 
 ## 事件日志
 
@@ -411,7 +426,7 @@ Agent Loop 内核语义上称为 **Shiori**，当前实现 OMP 18.9.1。schema 2
 为排查 2026-10-15 实跑中的动作后过早采样和技能读取漏记，日志额外记录以下信息；这些诊断字段不进入模型上下文，也不改变采样时机：
 
 - `observation.origin` 区分 `prompt_start`、`tool_batch`、`explicit` 和 `cli`。`afterExecution` 关联采样请求前最后完成的控制器调用，并记录从该调用结束到采样请求／返回的间隔；只比较同一时钟。`previousObservationId` 和可选 `sourceSequenceDelta` 关联同一传感器、同一参数的相邻采样。序号增长只能证明源序列前进，不能证明游戏已完成动作或画面已稳定。
-- `observation_context` 列出循环采用的新采样与复用的主动采样。`observation_media` 记录每张图片读取和编码耗时、原始／模型图片字节数及输出尺寸，便于确认没有重复编码历史。
+- `observation_context` 记录本次采用的感知状态和结果身份，复用结果不标成新采样。`observation_media` 记录每张图片读取和编码耗时、原始／模型图片字节数及输出尺寸，便于确认没有重复编码历史。
 - `read` 在工具返回后记录原始路径、OMP 解析出的实际文件路径、成功／失败和读取后文件 hash，支持 `SKILL.md:19-22` 这样的选择器。hash 表示日志采集时的整份文件版本；实际返回的片段和多目标读取结果以 `tool_end` 的正文为准。
 - `model_http_dispatch` 标记检查、保存请求体后即将调用 fetch 的时刻。`model_http_end.fetchToHeadersMs` 单列 fetch 到响应头的等待，`model_ws_dispatch` 记录通过尺寸检查、即将交给 socket 的 JSON 帧大小；`model_request` 的 transport/bodyBytes/incremental 描述构建的请求。`model_stream_start` 只标记首个入站事件，忽略 OMP 混入同一回调的出站 WS 通知（不等同首个文本 token）。`model_end` 汇总请求快照、HTTP 请求体检查和流日志写入耗时，以及首事件前后时间。这里仍不能把上传、网络和服务端排队拆开，不能把首事件前的等待全算成模型推理。
 
@@ -439,6 +454,8 @@ Codex 原生压缩另用 `compaction_http_start/end/error` 观察 HTTP 边界：
 
 `python3 scripts/analyze-run.py <run目录>` 离线生成 `analysis.json`，用 `--output <路径>` 指定其他位置。同一宿主多次接管时必须用 `--epoch <UUID>` 选择周期，模型、工具和压缩 HTTP 按周期及关联 ID 隔离，保留停止后的清理事件。支持空日志、未完成请求和只有一个完成请求；成功压缩的原生 usage 与独立 HTTP 统计单列，不混入主循环缓存指标。该脚本不打开完整 payload，也不访问模型或设备。
 观测明细的 `argv` 按 epoch 和 operationId 关联 `observation_start`，缺失时为 `null`；`captureMsByOrigin` 按观测来源分组统计完整采样区间，和 `captureMs` 一样包含主动等待，不解析传感器参数来推断纯捕获耗时。
+
+`summary.perception` 汇总带明确 trace 的感知读取次数、状态、终态、耗时、新结果与复用结果；明细在 `perception.reads/statuses`。读取成功后仍可能在模型媒体编码阶段失败，另用 `inputErrors` 按 epoch/result.id 关联记录，不把读取成功当输入成功。`sampleAgeMs` 仅在结果声明了带时区的 `sampledAt` 时计算读取结束时的年龄；缺失、无时区或未来时间保持未知，不用读取耗时代替采样年龄。后台采样不是模型动作；没有选定 epoch 的后台状态不按时间猜归属。
 
 分析结果中的 `compactionSpeculation` 保留后台生命周期；其 summary 统计各阶段次数与摘要就绪耗时。`compactionMaintenance` 单独记录前台 `auto_compaction_start/end` 的窗口，汇总已结束窗口的阻塞耗时（包括失败或取消），未结束的保持 pending。新日志的 HTTP 子 span 与所属候选／维护显式关联，后台摘要耗时和主循环停顿仍是不同指标。候选通过 OMP 的诊断通道在创建时固定 operationId 与 epoch；晚到完成、重试、应用与清理保留原身份。分析器与看板统一按 trace.epoch 选择事件，控制边界只计算活跃时长。旧日志缺少身份时不补猜，详见 [日志契约](docs/logging.md)。
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { resolve, join, delimiter } from "node:path";
 import { parseArgs } from "node:util";
 import { cli, HELP } from "../harness/cli.ts";
@@ -11,21 +11,22 @@ import { defaultSocket } from "@playness/baseware/address";
 import { writeCapabilityDocument } from "@playness/baseware/catalog";
 import { EventLog, EVENT_SCHEMA_VERSION } from "../harness/events.ts";
 import { runProvenance } from "../harness/provenance.ts";
-import type { ControllerRequest } from "@playness/baseware/contracts";
+import { PerceptionRuntime } from "../harness/perception.ts";
 import { readCurrentSession, resolveWorkspaceState } from "../harness/workspace-state.ts";
 import { validateSessionWorkspace } from "../harness/omp/workspace-session.ts";
 import workspaceGuide from "../../templates/AGENTS.md" with { type: "text" };
+import perceptionTemplate from "../../templates/perception.py" with { type: "text" };
 import { WORKSPACE_HELP, workspaceCommand } from "./workspace.ts";
 
 // Runtime state lives beside the monorepo, outside its component directories.
 const artifactRoot = resolve(import.meta.dir, "../../../../artifacts/rsa");
 let exit: (code: number) => void | Promise<void> = code => process.exit(code);
-const RUN_HELP = `rsa [--workspace <path>] run [--baseware-socket <path>] [--workspace <path>] [--device-only] [--model <provider/model>] [--resume <session.jsonl> | --new-session] [--seconds <n>] [--requests <n>] [--compaction-threshold <tokens>] [--auto-observe <JSON>]
+const RUN_HELP = `rsa [--workspace <path>] run [--baseware-socket <path>] [--workspace <path>] [--device-only] [--model <provider/model>] [--resume <session.jsonl> | --new-session] [--seconds <n>] [--requests <n>] [--compaction-threshold <tokens>]
 Each workspace keeps its own session; --new-session starts fresh without deleting workspace files.
 The current directory is the default workspace. Run logs go to <workspace>/logs/<run-id>/.
 --resume selects an existing session from the same workspace, then remembers it for future starts.
 --compaction-threshold configures OMP's native compaction trigger; default is 256000 tokens.
---auto-observe supplies an array of {controllerId, argv} requests; default is screen capture.
+Perception starts empty. Implement workspace/perception.py and use rsa perception reload.
 Hardware is provided by an independent Baseware service. Its default socket is derived from the workspace.`;
 
 async function main() {
@@ -56,7 +57,6 @@ async function main() {
     seconds: { type: "string", default: "300" },
     requests: { type: "string", default: "50" },
     "compaction-threshold": { type: "string", default: "256000" },
-    "auto-observe": { type: "string" },
   } });
   const seconds = Number(values.seconds);
   if (!Number.isFinite(seconds) || seconds <= 0) throw new Error("--seconds must be positive");
@@ -64,10 +64,6 @@ async function main() {
   if (!Number.isInteger(maxRequests) || maxRequests <= 0) throw new Error("--requests must be a positive integer");
   const compactionThreshold = Number(values["compaction-threshold"]);
   if (!Number.isInteger(compactionThreshold) || compactionThreshold <= 0) throw new Error("--compaction-threshold must be a positive integer");
-  const autoObserve: ControllerRequest[] = values["auto-observe"] === undefined
-    ? [{ controllerId: "screen", argv: ["capture"] }] : JSON.parse(values["auto-observe"]);
-  if (!Array.isArray(autoObserve) || autoObserve.some(request => !request || typeof request.controllerId !== "string"
-    || !Array.isArray(request.argv) || request.argv.some(arg => typeof arg !== "string"))) throw new Error("--auto-observe expects [{controllerId, argv: string[]}]");
   if (values.resume && values["new-session"]) throw new Error("Use either --resume or --new-session");
   if (values["device-only"] && (values.resume || values["new-session"])) throw new Error("Session options require an agent");
   const state = await resolveWorkspaceState(values.workspace!, artifactRoot);
@@ -109,16 +105,8 @@ async function main() {
     await mkdir(join(workspace, "memory"), { recursive: true });
     await mkdir(runDir, { recursive: true });
     const guidePath = join(workspace, "AGENTS.md");
-    await writeFile(guidePath, workspaceGuide, { flag: "wx" }).catch(async error => {
-      if (error.code !== "EEXIST") throw error;
-      const existing = await readFile(guidePath, "utf8");
-      const additions = [
-        ["baseware.json", "- `baseware.json`:"],
-        ["@benchmark", "When measurement helps,"],
-      ].filter(([marker]) => !existing.includes(marker!))
-        .map(([, prefix]) => workspaceGuide.split("\n").find(line => line.startsWith(prefix!))!);
-      if (additions.length) await appendFile(guidePath, `${existing.endsWith("\n") ? "" : "\n"}\n${additions.join("\n\n")}\n`);
-    });
+    await writeFile(guidePath, workspaceGuide, { flag: "wx" }).catch(error => { if (error.code !== "EEXIST") throw error; });
+    await writeFile(join(workspace, "perception.py"), perceptionTemplate, { flag: "wx" }).catch(error => { if (error.code !== "EEXIST") throw error; });
     // Let the dashboard locate logs even when this workspace is outside the checkout.
     await writeFile(join(state.dir, "workspace.json"), JSON.stringify({ workspace }, null, 2));
     const clock = { id: runId, now: () => performance.now() };
@@ -128,11 +116,13 @@ async function main() {
     await writeCapabilityDocument(devices.catalog, join(workspace, "baseware.json"));
     runtime = new Runtime(devices, log.record, seconds, runId);
     const binDir = resolve(import.meta.dir, "../../bin");
-    runtime.controller = new WorkspaceController({ workspace, devices, record: log.record, env: {
+    const environment = {
       RSA_SOCKET: socket, BASEWARE_SOCKET: basewareSocket,
       RSA_WORKSPACE: workspace, RSA_RUN_ID: runId,
       PATH: [binDir, resolve(import.meta.dir, "../../../baseware/bin"), process.env.PATH ?? ""].join(delimiter),
-    } });
+    };
+    runtime.controller = new WorkspaceController({ workspace, devices, record: log.record, env: environment });
+    runtime.perception = new PerceptionRuntime({ workspace, runDir, env: environment, record: log.record, clock });
     devices.onHandback(reason => { void runtime!.stop(reason); });
     devices.onDisconnect((error) => { void runtime!.disconnected(error); });
     const model = values.model ?? "openai-codex/gpt-6.1-sol";
@@ -145,15 +135,16 @@ async function main() {
       exit = postmortem.quit;
       const { createOmpAgent } = await import("../harness/omp/session.ts");
       runtime.agent = await createOmpAgent({ runtime, workspace, state, runDir, log, resume,
-        binDir, rsaSocket: socket, basewareSocket, model, maxRequests, compactionThreshold, autoObserve,
+        binDir, rsaSocket: socket, basewareSocket, model, maxRequests, compactionThreshold,
       });
     }
     await writeFile(join(runDir, "manifest.json"), JSON.stringify({ runId, workspace, workspaceId: state.id, stateDir: state.dir, socket,
       drivers: devices.catalog.drivers, basewareSocket, omp: "18.9.1", eventSchemaVersion: EVENT_SCHEMA_VERSION,
       shiori: values["device-only"] ? null : { implementation: "omp", implementationVersion: "18.9.1" },
       provenance: await runProvenance(workspace), model: values["device-only"] ? null : model,
-      seconds, maxRequests, resume, autoObserve, compactionThreshold: compactionThreshold ?? null }, null, 2));
+      seconds, maxRequests, resume, perception: { entry: "perception.py:Perception" }, compactionThreshold: compactionThreshold ?? null }, null, 2));
     ready = true;
+    await runtime.perception.reload();
     console.log(JSON.stringify({ ready: true, socket, workspace, stateDir: state.dir, runDir, ...runtime.status() }, null, 2));
     await new Promise<void>((done) => { process.once("SIGINT", done); process.once("SIGTERM", done); });
   } finally {

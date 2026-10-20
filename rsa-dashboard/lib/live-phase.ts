@@ -10,6 +10,7 @@ const labels: Record<LivePhase["kind"], string> = {
   tool: "工具处理中",
   capture: "采集观测",
   observation: "整理观测",
+  perception: "读取感知状态",
   compaction: "OMP 正在压缩历史",
   idle: "等待下一步",
 };
@@ -54,6 +55,7 @@ export function getLivePhase(
     const modelKey = `model:${t.modelCallId}`;
     const toolKey = `tool:${owner}`;
     const captureKey = `capture:${owner}:${t.operationId}`;
+    const perceptionKey = `perception:${t.traceId}:${t.spanId}`;
     const model = pending.get(modelKey);
     const tool = pending.get(toolKey);
     const capture = pending.get(captureKey);
@@ -128,6 +130,12 @@ export function getLivePhase(
         break;
       case "observation_start":
         if (t.operationId) start(captureKey, "capture", event, owner);
+        break;
+      case "perception_observe_start":
+        if (t.traceId && t.spanId) start(perceptionKey, "perception", event, owner);
+        break;
+      case "perception_observe_end":
+        finish(perceptionKey, event);
         break;
       case "observation_end":
         if (capture?.kind === "capture") {

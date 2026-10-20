@@ -55,7 +55,9 @@ Shiori invoke_agent
 
 宿主为 shell 和 Python 入口注入 `RSA_WORKSPACE`、`RSA_RUN_ID` 与原有 socket/epoch/trace。日志通过现有 RSA socket 接收，校验 runId 并保留源时钟和原 epoch；未注入运行上下文时，装饰函数可作为普通 Python 代码运行。日志发送失败只报告诊断，不替换函数结果或重试动作。进程被强制结束时，本地函数可能只有 start；分析保留 pending，外层 exec/runner 的 cancelled 表明进程已结束，不伪造函数正常返回。
 
-自动观察每次发现工作区 hook。`observe_hook_start/end` 记录选中函数、源码 hash、结果、耗时与终态，内部 Python 和设备调用沿同一 trace 继续；选择失败或媒体编码失败记录 `observe_hook_error`。`observation_context` 的 `hook/hookError` 表示这一批模型输入使用的观察方式和回退原因。源码留在 run 的 `observer-sources/<hash>.py`，返回媒体复制到 `observations/`，便于核对实际输入。没有 hook 时只保留 discovery 与既有默认观测事件。
+工作区感知进程以 `perception_status` 记录 unimplemented/loading/ready/stopped/error、generation、PID 和入口源码 hash；`perception_observe_start/end` 记录本次读取的状态、结果、耗时及终态。结果含 snapshot ID、工作区提供的 sequence、可选 sampledAt/sources，以及 reused 标记。入口源码、实际导入的工作区模块版本清单 `sources.json` 与 stderr 位于 run 的 `perception/<generation>/`，选中的媒体复制进 `observations/`。重复读取同 generation/sequence 保留同一归档；不能把读取时间当成新采样时间。`observation_context` 与 `model_start.observations` 保留实际送入模型的输入身份；空实现或失败只有文字诊断，没有默认截图回退。取消读取不杀感知进程，迟到结果不归入已取消的模型调用。
+
+带新 PID 的 `perception_status` 是该 generation 的后台 trace 根。初始化和后台采样沿此 trace 记录，不继承触发重载的模型请求或控制 epoch；同步 `observe()` 内的调用沿对应读取 span 记录。模型输入编码失败另记 `perception_input_error`，通过结果 ID 关联原读取，不把读取成功等同于输入成功。
 
 Baseware 为每次 Controller 调用生成子 span，`command/execution/execution_error` 为统一执行生命周期，记录 `controllerId` 与已知的 `requiresControl`。媒体调用的 `observation_start/end/error` 和每条 `observation` 共用这个 span，保留采样区间、帧号与媒体路径；它们是同一次操作的采样详情，不另算一次设备调用。采样结果使用 `controllerId`；历史日志读取时仍识别旧 `sensorId`。trace 是观测信息，不授予操作权；epoch 校验和取消行为保持独立。
 

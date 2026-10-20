@@ -9,6 +9,7 @@ test.each([
   ["control-handoff", ["control", "capability_start", "execution", "python_capability_result"]],
   ["ws-recovery", ["model_start", "model_ws_dispatch", "model_http_start", "model_end"]],
   ["background-compaction", ["compaction_speculation", "compaction_http_start", "compaction_http_end", "auto_compaction_end"]],
+  ["perception-lifecycle", ["perception_status", "perception_observe_start", "perception_observe_end"]],
 ] as const)("%s evaluates real production events without network or devices", async (id, requiredEvents) => {
   const directory = await mkdtemp(join(tmpdir(), "rsa-benchmark-test-"));
   const runDir = join(directory, "logs/run"), workspace = join(directory, "workspace");

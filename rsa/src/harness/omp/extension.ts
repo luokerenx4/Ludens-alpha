@@ -4,12 +4,12 @@ import { delimiter, join, resolve } from "node:path";
 import type { ExtensionFactory, CustomTool, ReadToolResultEvent } from "@oh-my-pi/pi-coding-agent";
 import { resizeImage } from "@oh-my-pi/pi-coding-agent/utils/image-resize";
 import * as z from "@oh-my-pi/omptype/zod";
-import type { Clock, Observation, ControllerRequest, ExecutionResult } from "@playness/baseware/contracts";
+import type { Clock, Observation } from "@playness/baseware/contracts";
 import type { Runtime } from "../runtime.ts";
 import { Workspace } from "../workspace.ts";
 import type { EventTrace, RecordEvent } from "../events.ts";
 import { pythonModulePaths } from "../python-capabilities.ts";
-import { runObserveHook } from "../observe-hook.ts";
+import type { PerceptionRead } from "../perception.ts";
 
 export async function media(observations: Observation[], record?: RecordEvent, trace?: EventTrace) {
   return Promise.all(observations.map(async (observation) => {
@@ -38,7 +38,6 @@ export function createRsaExtension(options: {
   basewareSocket: string;
   rsaSocket?: string;
   binDir: string;
-  autoObserve: ControllerRequest[];
   runDir?: string;
   clock?: Clock;
   cycle(): Cycle;
@@ -46,17 +45,13 @@ export function createRsaExtension(options: {
   trace?(toolCallId?: string): EventTrace;
 }) {
   const { runtime, workspace } = options;
-  const hookClock = options.clock ?? { id: crypto.randomUUID(), now: () => performance.now() };
   let requests = 0;
   let requestEpoch: string | undefined;
   const pendingTools = new Set<string>();
-  const observed = new Map<string, ExecutionResult>();
+  let observed: PerceptionRead | undefined;
   let latestContext: { observations: string[]; executions: string[]; skills: Awaited<ReturnType<Workspace["snapshot"]>> };
   const trace = (toolCallId?: string): EventTrace => ({ epoch: options.cycle().epoch, ...options.trace?.(toolCallId), ...(toolCallId ? { toolCallId } : {}) });
-  const observeParameters = z.object({
-    controllerId: z.string().describe("Controller ID without the controller/ prefix used in the catalog."),
-    argv: z.array(z.string()),
-  });
+  const observeParameters = z.object({});
   const execParameters = z.object({ command: z.string() });
 
   const commandEnvironment = (cycle: Cycle, parent: EventTrace): NodeJS.ProcessEnv => {
@@ -75,14 +70,14 @@ export function createRsaExtension(options: {
 
   const observe: CustomTool<typeof observeParameters> = {
     name: "observe", label: "Observe", loadMode: "essential", approval: "read",
-    description: "Call an injected read-only controller for additional information or media when the loop's observation is insufficient. Use rsa controller list and rsa controller <id> --help to discover controller arguments.",
+    description: "Read the current workspace perception state. Implement perception.py and load it with rsa perception reload. Discover raw device capabilities through rsa controller.",
     parameters: observeParameters,
     async execute(id, params, _onUpdate, _ctx, signal) {
       const cycle = options.cycle();
-      const result = await runtime.observe(params, signal ? AbortSignal.any([signal, cycle.signal]) : cycle.signal, trace(id), "explicit");
-      const content = await media(result.observations ?? [], runtime.record, trace(id));
-      observed.set(params.controllerId, result);
-      return { content: [{ type: "text", text: JSON.stringify(result) }, ...content], details: result };
+      const read = await readPerception(signal ? AbortSignal.any([signal, cycle.signal]) : cycle.signal, trace(id));
+      const content = await perceptionContent(read, trace(id));
+      observed = read;
+      return { content, details: read, isError: read.status.state === "error" };
     },
   };
 
@@ -96,7 +91,7 @@ export function createRsaExtension(options: {
       combined.throwIfAborted();
       // A shell command may change the environment; earlier observations no
       // longer describe the end of this batch, even if that command fails.
-      observed.clear();
+      observed = undefined;
       const skills = await workspace.snapshot();
       combined.throwIfAborted();
       const parent = trace(id);
@@ -125,72 +120,69 @@ export function createRsaExtension(options: {
     },
   };
 
+  async function readPerception(signal: AbortSignal, parent: EventTrace): Promise<PerceptionRead> {
+    signal.throwIfAborted();
+    if (runtime.perception) return runtime.perception.observe(signal, parent);
+    const text = "Perception is not configured. Implement perception.py and run rsa perception reload.";
+    return { status: { state: "unimplemented", generation: null }, error: text,
+      result: { id: crypto.randomUUID(), status: "failed", exitCode: 1, stdout: text, stderr: text, observations: [],
+        timing: { clock: "rsa", requestedAtMs: performance.now(), receivedAtMs: performance.now() } } };
+
+  }
+
+  async function perceptionContent(read: PerceptionRead, parent: EventTrace) {
+    let images: Awaited<ReturnType<typeof media>> = [];
+    try { images = await media(read.result?.observations ?? [], runtime.record, parent); }
+    catch (error) {
+      options.cycle().signal.throwIfAborted();
+      const message = error instanceof Error ? error.message : String(error);
+      read.status = { ...read.status, state: "error", error: message };
+      read.error = message;
+      read.snapshot = undefined;
+      if (read.result) read.result = { ...read.result, observations: [], stdout: message, exitCode: 1, status: "failed" };
+      runtime.record("perception_input_error", read, parent);
+    }
+    return [{ type: "text" as const, text: JSON.stringify(read) }, ...images];
+  }
+
   async function captureContext(parent: EventTrace, origin: "prompt_start" | "tool_batch") {
     const cycle = options.cycle();
     cycle.signal.throwIfAborted();
-    try {
-      const consolidating = cycle.purpose === "consolidate";
-      // A workspace hook owns automatic collection; explicit observe remains independent.
-      let hook = consolidating ? undefined : await runObserveHook({
-        workspace: workspace.path, runDir: options.runDir ?? join(workspace.versions, "observer-run"),
-        env: commandEnvironment(cycle, parent), signal: cycle.signal, trace: parent,
-        clock: hookClock, record: runtime.record,
-      });
-      let hookContent: Awaited<ReturnType<typeof media>> | undefined;
-      if (hook?.result) {
-        try { hookContent = await media(hook.result.observations ?? [], runtime.record, parent); }
-        catch (error) {
-          cycle.signal.throwIfAborted();
-          const message = error instanceof Error ? error.message : String(error);
-          runtime.record("observe_hook_error", { hook: hook.hook, phase: "media", error: message }, parent);
-          hook = { ...hook, result: undefined, error: message };
-        }
-      }
-      const fresh = hook?.result ? [{ controllerId: hook.hook!.id, result: hook.result }]
-        : consolidating ? [] : await Promise.all(options.autoObserve.filter(request => !observed.has(request.controllerId))
-        .map(async request => ({ controllerId: request.controllerId, result: await runtime.observe(request, cycle.signal, parent, origin) })));
-      const reused = consolidating || hook?.result ? [] : options.autoObserve.flatMap(request => {
-        const result = observed.get(request.controllerId);
-        return result ? [{ controllerId: request.controllerId, result }] : [];
-      });
-      const samples = [...reused, ...fresh];
-      const observations = samples.flatMap(({ result }) => result.observations ?? []);
-      const skills = await workspace.snapshot();
-      // Explicit observe results already contain their text and media in history.
-      const content = hookContent ?? await media(fresh.flatMap(({ result }) => result.observations ?? []), runtime.record, parent);
-      const controllerOutputs = fresh.filter(({ result }) => result.stdout || result.stderr).map(({ controllerId, result }) => ({
-        controllerId, executionId: result.id, stdout: result.stdout, stderr: result.stderr,
-      }));
-      cycle.signal.throwIfAborted();
-      latestContext = { observations: observations.map((o) => o.id), executions: samples.map(({ result }) => result.id), skills };
-      runtime.record("observation_context", { origin, observations: latestContext.observations,
-        executions: latestContext.executions, purpose: cycle.purpose,
-        hook: hook?.hook, hookError: hook?.error,
-        freshObservations: fresh.flatMap(({ result }) => result.observations?.map(o => o.id) ?? []),
-        reusedObservations: reused.flatMap(({ result }) => result.observations?.map(o => o.id) ?? []),
-        freshExecutions: fresh.map(({ result }) => result.id), reusedExecutions: reused.map(({ result }) => result.id),
-        skillVersion: skills.version, memoryVersion: skills.memory.version }, parent);
-      return [{ type: "text" as const, text: JSON.stringify({
-        ...(consolidating ? { purpose: cycle.purpose } : {}),
-        control: runtime.status(), observations, skills,
-        ...(controllerOutputs.length ? { controllerOutputs } : {}),
-        ...(hook?.hook ? { observeHook: hook.hook } : {}),
-        ...(hook?.error ? { observeHookError: hook.error } : {}),
-        ...(hook?.diagnostics.length ? { capabilityDiagnostics: hook.diagnostics } : {}),
-      }) }, ...content];
-    } catch (error) { await runtime.stop(`observation failed: ${error}`); throw error; }
+    const consolidating = cycle.purpose === "consolidate";
+    const reused = !consolidating && observed !== undefined;
+    const perception = consolidating ? undefined : observed ?? await readPerception(cycle.signal, parent);
+    // An explicit observe result already appears in the immutable tool history.
+    const content = perception && !reused ? await perceptionContent(perception, parent) : [];
+    const observations = perception?.result?.observations ?? [];
+    const skills = await workspace.snapshot();
+    cycle.signal.throwIfAborted();
+    latestContext = { observations: observations.map(o => o.id),
+      executions: perception?.result ? [perception.result.id] : [], skills };
+    runtime.record("observation_context", { origin,
+      observations: latestContext.observations, executions: latestContext.executions,
+      purpose: cycle.purpose, perception: perception?.status, snapshot: perception?.snapshot,
+      reusedObservations: reused || perception?.reused ? latestContext.observations : [],
+      freshObservations: reused || perception?.reused ? [] : latestContext.observations,
+      freshExecutions: reused ? [] : latestContext.executions,
+      reusedExecutions: reused ? latestContext.executions : [],
+      skillVersion: skills.version, memoryVersion: skills.memory.version }, parent);
+    return [{ type: "text" as const, text: JSON.stringify({
+      ...(consolidating ? { purpose: cycle.purpose } : {}),
+      control: runtime.status(), observations, skills,
+      perception: perception?.status, snapshot: perception?.snapshot,
+    }) }, ...content];
   }
 
   const factory: ExtensionFactory = (pi) => {
     // OMP persists both the initial custom message and enriched tool results.
     // Keep history immutable between compactions so provider prefixes can be reused.
     pi.on("before_agent_start", async () => {
-      observed.clear();
+      observed = undefined;
       return { message: { customType: "rsa-observation", content: await captureContext({ epoch: options.cycle().epoch }, "prompt_start"), display: false } };
     });
     pi.on("assistant_message", () => {
       pendingTools.clear();
-      observed.clear();
+      observed = undefined;
     });
     pi.on("tool_result", async (event) => {
       if (event.toolName === "read") {

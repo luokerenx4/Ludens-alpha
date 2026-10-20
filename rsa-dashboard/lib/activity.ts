@@ -215,7 +215,7 @@ export async function activityBlocks(path: string, events: Event[]): Promise<Log
         status: data.isError || previous?.status === "error" || (event.type === "exec_result" && data.exitCode !== 0) ? "error" : event.type === "tool_end" ? "complete" : "running" });
       continue;
     }
-    const failed = data.outcome === "error" || (data.outcome !== "cancelled" && !data.aborted
+    const failed = data.outcome === "error" || (event.type === "perception_status" && data.state === "error") || (data.outcome !== "cancelled" && !data.aborted
       && (event.type.endsWith("_error") || data.isError === true || data.stopReason === "error"));
     if (event.type === "model_end") {
       for (const block of blocks.values()) {
@@ -228,7 +228,7 @@ export async function activityBlocks(path: string, events: Event[]): Promise<Log
         }
       }
     }
-    const system = failed || event.type === "control" || event.type.includes("compaction") || event.type === "run_end";
+    const system = failed || event.type === "control" || event.type === "perception_status" || event.type.includes("compaction") || event.type === "run_end";
     blocks.set(`event:${path.split("/").at(-1)}:${event.seq}`, {
       id: `event:${path.split("/").at(-1)}:${event.seq}`, kind: system ? "system" : "diagnostic",
       at: event.at, title: event.type, text: readable(data), data: structuredText(readable(data)) as Record<string, unknown>,
