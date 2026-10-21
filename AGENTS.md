@@ -1,14 +1,9 @@
 # 开发约定
 
-- `baseware/` 是独立设备服务、driver、CLI/API/MCP；`rsa/` 是 Harness、Shiori 和工作区能力；`rsa-dashboard/` 是日志 API 与统一运行 / Benchmark / Alice 界面；`rsa-companion/` 是加载同一界面的 Electron 壳与原生 Pet。不要另建一套桌面主 UI。Shiori 是 Agent Loop 内核的语义名称，当前实现为 OMP，代码仍在 `rsa/src/harness/omp/`。
-- 日志来源按职责标注 source.component，实现/版本独立标注；转发保留 origin，跨进程调用传 traceId/spanId/parentSpanId。Shiori 复用 OMP 原生 telemetry，分析与 UI 消费已有事实；不要把调用成功当任务成功。契约见 `rsa/docs/logging.md`。
-- Harness 通过 Baseware 客户端发现和调用统一 Controller（包括返回信息或媒体的采样能力），不导入具体 driver。设备协议与输入仲裁留在 Baseware；RSA 用 `rsa controller` / `rsa_tools.Client` 统一访问原始设备和工作区 Python 装饰器能力，按需查询，不自动注册为 OMP 工具。MCP 不默认注入。
-- Workspace 是普通 Coding 工作区：Python 程序自行组织采样、训练和动作闭环；直接 import 和 `Client.call("python/...")` 在当前进程执行并复用模块，设备调用仍走 RSA/Baseware。装饰器声明普通能力入口并记录调用，不要求装饰辅助函数；独立 CLI 调用不共享内存。感知用专门的 workspace 常驻进程保留模型，不另建通用执行服务、沙盒或训练平台。
-- Benchmark 是 RSA 的统一子系统：内置工况与 workspace 的 `@benchmark` 共用定义、结果、日志、比较和看板。直接 import 评测仍在原 Python 进程执行；评测不注册为 Controller 或 OMP 工具。执行事实与版本化报告分开；报告修正不重新执行动作，也不改写原执行状态。评测口径 protocolVersion 与代码 revision 分开，指标不等于任务成功，见 `rsa/benchmarks/README.md`。
-- 自动观测只读取 `perception.py:Perception` 的结果；`start(context)/observe()/close()` 管生命周期，workspace 决定采样、融合、模型和后台循环。显式 `rsa perception reload` 加载代码/权重修改；缺失、未实现或失败只反馈文字，不回退默认截图。日志保留 generation、结果序号、来源时间和实际模型输入；不把复用结果当新样本。感知不继承控制 epoch；不要把屏幕布局或任务处理写进 Harness/driver。
-- 各组件独立安装和验证，使用各自锁文件。运行数据和任务 workspace 不进仓库。
-- 工作区由模型生成的 skill / memory 不手工整理，不注入游戏攻略。
-- 默认验证使用离线测试。真实设备测试、接管和进程重启会影响正在运行的游戏，按当前任务授权操作。
-- 架构边界清楚、实现简单；不要为目录整理引入额外兼容层或构建框架。
-- 独立改动完成并通过相关验证后及时提交；提交前检查文件范围与大小，保持运行数据、本机配置和凭据在仓库外。
-- 启动任务先进入目标 workspace：`rsa init` 生成 `rsa.json`，`rsa up --dry-run` 核对计划，`rsa up` 启动，`rsa services` 检查，再按授权 `rsa auto on`。`rsa auto off` 交还控制，`rsa down` 停止本工作区管理的服务，保留共享 Dashboard / Alice Pet；`--pet` 显式退出共享 Pet。预算、模型或 Host 代码修改使用 `rsa down --keep-emulator` / `rsa up` 保留当前游戏后加载。详见 `rsa/README.md`，不要把开发者运维说明写入游戏 agent 的工作区指令。
+- 现行文档统一放根目录 `docs/`，组件 README 只作入口；修改契约时同步对应文档，不另写一份重复说明。历史设计在 `docs/history/`，不作为当前接口依据。
+- 守住 [架构边界](docs/architecture.md)：Baseware 管 driver、设备协议和输入仲裁；RSA 通过客户端发现能力；Shiori 当前使用 OMP。优先用 OMP 原生工具和扩展机制，功能性改动尽量留在我们的代码。Dashboard 是唯一主界面，Electron 复用它。
+- [Workspace](docs/workspace.md) 是普通 Coding 工作区。模型自己组织 Python、训练、后台程序和常驻感知；能力不自动塞进 OMP 工具列表。不要把任务知识、屏幕布局或训练框架写进 Harness / driver，也不另包执行服务或沙盒。
+- [日志](docs/logging.md) 保留来源和跨进程调用关系；[Benchmark](docs/benchmark.md) 分开执行事实与版本化报告。直接 import 也算复用，调用成功不等于任务成功，报告修正不重跑动作。
+- 各组件使用自己的锁文件，运行数据和任务 workspace 留在仓库外。模型生成的 skill / memory 不手工整理，不注入游戏攻略。
+- 按 [开发与运行指南](docs/development.md) 启停和验证。默认做相关离线检查；真实设备接管、重启或在线模型测试按当前任务授权，不影响其他运行。
+- 实现保持简单，不为整理引入兼容层或构建框架。独立改动验证后及时提交；提交前检查范围与大小，排除运行数据、本机配置和凭据。

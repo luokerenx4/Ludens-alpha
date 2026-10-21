@@ -6,6 +6,7 @@
 </style><main>
 <p class="eyebrow">PLAYNESS / PRODUCT REQUIREMENTS / 2026.10.19</p>
 <h1>一个控制台，看见整个循环。</h1>
+<p class="note">历史设计记录（2026-10-19），保留当时的需求与验收结果；当前使用方式以 <a href="../../development.md">开发指南</a>、<a href="../../logging.md">日志契约</a> 和 <a href="../../benchmark.md">Benchmark</a> 为准。视觉生成提示见 <a href="prompts.json">prompts.json</a>。原始大图存放于仓库外的 artifacts，未随源码分发，以下仅保留文件名。</p>
 <p class="lead">浏览器与 Electron 使用同一份前端。Alice 继续陪伴在桌面上，运行详情、性能与设置都回到统一的工作台。</p>
 <p>版本 1.0 · 本地产品改版 · 顺序：现状盘点 → PRD → 图像生成视觉稿 → 共享前端与桌面壳 → 真实日志与离线验证。</p>
 <h2>01 · 要解决的问题</h2>
@@ -35,14 +36,14 @@
 <p>不为改版引入新的后端服务、数据库、通用插件框架或全套设计组件库。可拆出共享页面组件与纯投影函数；保留已有控制边界。</p>
 <h2>07 · 视觉稿</h2>
 <p>生成两张高保真主稿：运行页和 Benchmark 页。稿中 Besiege 场景与数字仅用于设计演示；实现使用真实日志，不把示例内容带入产品。</p>
-<figure><img src="../../../../artifacts/unified-console-design/01-live.png" alt="生成的运行页视觉稿"><figcaption>01 / 运行页：观测画面、日志与当前阶段</figcaption></figure>
-<figure><img src="../../../../artifacts/unified-console-design/02-benchmark.png" alt="生成的 Benchmark 视觉稿"><figcaption>02 / Benchmark：请求性能与调用链</figcaption></figure>
+<figure><p>生成的运行页视觉稿：<code>artifacts/unified-console-design/01-live.png</code></p><figcaption>01 / 运行页：观测画面、日志与当前阶段</figcaption></figure>
+<figure><p>生成的 Benchmark 视觉稿：<code>artifacts/unified-console-design/02-benchmark.png</code></p><figcaption>02 / Benchmark：请求性能与调用链</figcaption></figure>
 <h2>08 · 验收标准</h2>
 <ol><li>浏览器与 Electron 展示同一个 Dashboard 页面，旧 Electron 运行页不再被构建或使用。</li><li>原有请求/动作/观测/技能/错误/压缩回放功能保留；新来源、span 信息在有证据时可见，旧日志显示缺失而非推断。</li><li>workspace/run/epoch、页面和气泡 block 可深链接；历史选择与浏览器返回正常，跨周期不串数据。</li><li>真实日志可浏览；离线 fixture 可覆盖活动流、错误、空态、断连和历史周期。测试不产生游戏输入或在线模型请求。</li><li>Alice 的原浮窗、图片、音频路径保持；声音导入/预览/重置、通知可见性可操作，尺寸保留原托盘入口。网页模式有明确能力边界。</li><li>1440 与 390 视口截图核对视觉稿，最小 900 宽桌面窗口可用，无页面横向溢出；按钮无死链接。</li><li>相关测试、类型检查和生产构建通过；代码与小型 PRD 进 Git，运行日志和原始大图留在 artifacts。</li></ol>
 <h2>09 · 实现记录</h2>
 <p id="implementation">已实现：rsa-dashboard 是唯一主 UI，提供运行 / Benchmark / Alice 三页；Electron 加载同一个本地页面，保留原生 Pet、托盘、音频与偏好。删除旧 React / Vite 主窗口及其依赖，Pet renderer 和资源保留。</p>
 <ul><li>活动流默认展示思考、文本、工具与系统块，支持筛选、搜索、展开和精确 block 定位；历史 URL 固定 run/epoch，浏览器返回可恢复。</li><li>调用链只连接显式身份；旧日志不推测 span。Shiori 与模型用量不重复累计，缺失指标显示“—”。</li><li>Dashboard 类型检查、53 项测试与生产构建通过；桌面类型检查、75 项测试与构建通过。</li><li>浏览器实际验收：1440、900、390 宽度无页面横向溢出；真实 Besiege 日志、工具详情、页面切换、历史返回、网页 Alice 设置不可用说明均已核对，无浏览器控制台错误。</li><li>真实 Electron 临时 profile 烟测通过：HTTP 页面加载生产 preload，渲染进程无 Node；声音和偏好 IPC 可用，Pet 详情保留 run/epoch/block，异源 IPC 被拒绝。未重启现有 Pet、宿主或游戏，未发在线模型请求。</li></ul>
 <p>生成稿与验收截图保存在仓库外的 artifacts/unified-console-design，避免将大图与运行画面带入源码仓库；clone 本仓库不会包含这些本机附件。验证范围不包含一次新的真实游戏运行，原有日志缺少 telemetry 的字段仍显示缺失。</p>
-<figure><img src="../../../../artifacts/unified-console-design/implemented-live.png" alt="统一运行页实际实现"><figcaption>实际实现 / 读取历史 Besiege 运行日志</figcaption></figure>
-<figure><img src="../../../../artifacts/unified-console-design/implemented-benchmark.png" alt="统一 Benchmark 实际实现"><figcaption>实际实现 / 请求、传输、缓存及调用证据</figcaption></figure>
+<figure><p>统一运行页实际实现：<code>artifacts/unified-console-design/implemented-live.png</code></p><figcaption>实际实现 / 读取历史 Besiege 运行日志</figcaption></figure>
+<figure><p>统一 Benchmark 实际实现：<code>artifacts/unified-console-design/implemented-benchmark.png</code></p><figcaption>实际实现 / 请求、传输、缓存及调用证据</figcaption></figure>
 </main></html>

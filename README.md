@@ -24,10 +24,10 @@ These are mechanisms for experimenting with adaptation, not a claim that an agen
 
 | Driver | Environment | Setup |
 | --- | --- | --- |
-| mGBA | Game Boy Advance emulator | Open a ROM and load the bundled Lua bridge. See [RSA setup](rsa/README.md). |
-| Ryubing | Nintendo Switch emulator | Build and install the patched emulator. See the [Ryubing guide](baseware/src/drivers/ryubing/README.md). |
-| Azahar | Nintendo 3DS emulator | Build and install the patched emulator. Native pad, touch, and separate top/bottom screen capture. See the [Azahar guide](baseware/src/drivers/azahar/README.md). |
-| Cua | Local desktop applications | Install the upstream Cua Driver and grant its required OS permissions. See [Baseware setup](baseware/README.md). |
+| mGBA | Game Boy Advance emulator | Open a ROM and load the bundled Lua bridge. See [mGBA setup](docs/development.md#mgba). |
+| Ryubing | Nintendo Switch emulator | Build and install the patched emulator. See the [Ryubing guide](docs/development.md#ryubing). |
+| Azahar | Nintendo 3DS emulator | Build and install the patched emulator. Native pad, touch, and separate top/bottom screen capture. See the [Azahar guide](docs/development.md#azahar). |
+| Cua | Local desktop applications | Install the upstream Cua Driver and grant its required OS permissions. See [Cua setup](docs/development.md#cua). |
 
 Drivers expose device capabilities, not game strategies. Screen processing, coordinate conversion, action sequences, and task-specific logic belong in the workspace.
 
@@ -40,7 +40,7 @@ Drivers expose device capabilities, not game strategies. Screen processing, coor
 - Local **OMP model credentials** configured before starting the agent. RSA reuses OMP authentication; the default model is `openai-codex/gpt-6.1-sol`.
 - One prepared environment from the table above. ROMs, firmware, keys, and saves are not included.
 
-For component-level startup and model configuration, see the [RSA guide](rsa/README.md).
+For device preparation and model configuration, see the [development guide](docs/development.md).
 
 ### 2. Install the components
 
@@ -52,6 +52,7 @@ cd Ludens-alpha
 
 (cd baseware && bun install --frozen-lockfile)
 (cd rsa && bun install --frozen-lockfile)
+python3 -m pip install -r rsa/python/requirements.txt
 (cd rsa-dashboard && npm ci)
 (cd rsa-companion && pnpm install --frozen-lockfile && pnpm build)
 
@@ -107,7 +108,7 @@ rsa down --keep-emulator  # Stop the host and Baseware; keep the game open
 rsa down                  # Also stop the workspace-managed emulator
 ```
 
-Save your game before closing its emulator. Shared Dashboard and Alice processes remain running by default; see the [RSA lifecycle guide](rsa/README.md) for shutdown options and configuration changes.
+Save your game before closing its emulator. Shared Dashboard and Alice processes remain running by default; see the [lifecycle guide](docs/development.md#工作区启动与停止) for shutdown options and configuration changes.
 
 ## How it works
 
@@ -137,11 +138,7 @@ my-task/
 └── logs/             # Run records, model inputs, and diagnostics
 ```
 
-Use `@capability` to make a typed Python function discoverable through `rsa controller`. Normal imports and Python capability calls run in the current process, so they can reuse loaded models and state. Separate CLI calls do not share memory. Discovery reads source without importing it; already-loaded Python code needs a process restart to pick up edits.
-
-Perception has its own `start(context)`, `observe()`, and `close()` lifecycle. The workspace chooses what to sample, how to process it, and whether to run a background loop. Use `rsa perception reload` after changing its code or weights.
-
-Workspace files and sessions persist across runs. Shared workspace indexes and session data live under `<repo>/../artifacts/rsa/`; device builds also live outside the checkout. See the [RSA guide](rsa/README.md) for the full directory and execution contracts.
+The agent can compose Python functions, retain models in its perception process, and manage background programs with OMP's native tools. Workspace files and sessions persist across runs; separate CLI invocations do not share memory. See the [workspace contract](docs/workspace.md) for capability discovery, Python APIs, perception reloads, and storage locations.
 
 ### Benchmarks
 
@@ -155,22 +152,11 @@ rsa bench help capability-reuse
 
 The built-in cases cover perception lifecycle, control handoff, WebSocket recovery, background compaction, and capability reuse. Each run selects one case explicitly; read its help first. The capability-reuse case uses a real model in an isolated test environment.
 
-Workspace functions marked with `@benchmark` can report metrics and checks through the same interface. Inspect results in the console or use `rsa bench history` and `rsa bench compare`. Execution status and pass/fail verdicts are separate: a completed call is not evidence of task success. See the [Benchmark guide](rsa/benchmarks/README.md).
+Workspace functions marked with `@benchmark` can report metrics and checks through the same interface. Inspect results in the console or use `rsa bench history` and `rsa bench compare`. Execution status and pass/fail verdicts are separate: a completed call is not evidence of task success. See the [Benchmark guide](docs/benchmark.md).
 
 ## Development
 
-Run the component checks from the repository root:
-
-```sh
-(cd baseware && bun run check && bun test)
-(cd rsa && bun run check && bun test)
-(cd rsa-dashboard && npm test && npm run typecheck)
-(cd rsa-companion && pnpm typecheck && pnpm test)
-```
-
-The default checks use offline fixtures. Live model and device tests require explicit opt-in. Component guides document those tests; [AGENTS.md](AGENTS.md) describes the architecture and development conventions.
-
-To work on the console alone, run `npm run dev` in `rsa-dashboard/`. It can display an empty state without starting a model or emulator. The desktop shell connects to the same local Dashboard.
+Follow [AGENTS.md](AGENTS.md) for development conventions and the [development guide](docs/development.md) for component startup, checks, and the WS recovery test rationale. Each component retains its own lockfile. Default checks are offline; live model and device tests are explicit.
 
 ## Boundaries and safety
 
@@ -182,15 +168,17 @@ To work on the console alone, run `npm run dev` in `rsa-dashboard/`. It can disp
 
 ## Documentation
 
-- [RSA: startup, workspace APIs, perception, and sessions](rsa/README.md)
-- [Baseware: drivers, discovery, and device control](baseware/README.md)
-- [Architecture](rsa/docs/architecture.md)
-- [Benchmark guide](rsa/benchmarks/README.md)
-- [Logging contract](rsa/docs/logging.md)
-- [Dashboard](rsa-dashboard/README.md)
-- [Alice companion](rsa-companion/README.md)
+Current documentation lives in the root `docs/` directory. Component READMEs only link here.
 
-The detailed guides currently include both English and Chinese documentation.
+| Guide | Contents |
+| --- | --- |
+| [Architecture](docs/architecture.md) | Component boundaries, Shiori, control flow, and extension points. |
+| [Development](docs/development.md) | Installation, device setup, service lifecycle, verification, and WS test provenance. |
+| [Workspace](docs/workspace.md) | Configuration, Python capabilities, perception, and agent-owned programs. |
+| [Logging](docs/logging.md) | Events, model inputs, trace attribution, performance metrics, and console consumers. |
+| [Benchmark](docs/benchmark.md) | Cases, execution records, reports, comparison, and workspace benchmarks. |
+
+The original [unified console](docs/history/unified-console/prd.html) and [benchmark](docs/history/benchmarks/prd.html) design records are archived under `docs/history/`; they describe past decisions, not the current API. Detailed guides are currently in Chinese. Runtime prompts, workspace templates, and license notices remain beside the files that consume them.
 
 ## License and attribution
 

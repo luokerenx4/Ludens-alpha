@@ -4,7 +4,7 @@
 <style>:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#171918;color:#e9e9e2;font:16px/1.85 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}main{max-width:1080px;margin:auto;padding:60px 32px}h1{font-size:38px;line-height:1.3}h2{margin-top:42px;border-top:1px solid #343a35;padding-top:22px}p,li{color:#b4bcb3}table{border-collapse:collapse;width:100%;font-size:14px}td,th{padding:14px 10px;text-align:left;border-bottom:1px solid #343a35;vertical-align:top}th,a,code{color:#dbbc81}small{color:#a3aaa2}.note{padding:16px;background:#24291f;border-left:3px solid #dbbc81}img{width:100%;border:1px solid #343a35;border-radius:12px}</style>
 <main><small>PLAYNESS / PRODUCT REQUIREMENTS / 2026.10.19 / v1</small>
 <h1>用同一份日志，验证 Harness 的变化。</h1>
-<p class="note">历史设计稿（2026-10-19 v1）。当前接口已采用独立执行记录与版本化报告，取消 all / --live；实施契约见 <a href="../../rsa/benchmarks/README.md">RSA Benchmark 说明</a>。</p>
+<p class="note">历史设计记录（2026-10-19），保留当时的需求与验收结果；当前使用方式以 <a href="../../development.md">开发指南</a>、<a href="../../logging.md">日志契约</a> 和 <a href="../../benchmark.md">Benchmark</a> 为准。视觉生成提示见 <a href="prompts.json">prompts.json</a>。原始大图存放于仓库外的 artifacts，未随源码分发，以下仅保留文件名。</p>
 <p>流程：现状盘点 → PRD → 图像生成视觉稿 → 实现 → 离线与短模型实跑 → 页面验收。沿用统一控制台的布局与视觉，不新增桌面前端或分析服务。</p>
 <h2>01 · 问题与目标</h2>
 <p>现有 Benchmark 是运行剖析：能看耗时与调用链，但缺少固定输入、明确判定和可反复执行的 case。新增四个可运行 case，给每次执行留下条件、检查项、指标与原始证据。把基础设施错误、任务未通过和证据不足区分开；不以测试断言数量、skill 字数或脚本数量衡量能力。</p>
@@ -24,7 +24,7 @@
 <p>桌面 1440/900 宽可用，390 改为纵向布局；表格局部滚动，页面无横向溢出。原生按钮、清楚焦点、键盘可选记录，状态不用颜色单独表达。</p>
 <h2>06 · 视觉稿</h2>
 <p>用 imagegen 生成基准用例页高保真稿，沿用现有控制台。示例数字仅用于构图，不进入产品数据。生成提示保存于本目录，图片与实际验收截图存于仓库外 artifacts/benchmark-design。</p>
-<figure><img src="../../../artifacts/benchmark-design/target.png" alt="基准用例页视觉目标（生成后保存）"></figure>
+<figure><p>基准用例页视觉目标（生成后保存）：<code>artifacts/benchmark-design/target.png</code></p></figure>
 <h2>07 · 验收</h2>
 <ol><li>四个 case 均有可执行 CLI、参数、明确判定和日志证据；前三个用实际生产路径完成离线执行，第四个完成一次有界真实模型尝试，保留实际成绩。</li><li>取消、恢复、压缩与复用的 evaluator 有针对性负例，不会将缺证据或 fixture 写出的脚本计作真实学习。</li><li>多次执行可发现、比较、深链接到原日志；未知状态不补成功；模拟耗时不冒充线上性能。</li><li>真实结果在浏览器页面可读，900/390 响应式、选择/返回、命令复制与证据定位可用；Electron 继续复用同一前端。</li><li>相关检查、类型和生产构建通过；PRD 与小型代码进入 Git，workspace、模型历史、图像和运行日志不进入仓库。</li></ol>
 <h2>08 · 实现记录</h2><p id="implementation">2026-10-19 已实现四个 CLI case、独立进程与 workspace、结果侧文件、只读 API 和基准用例页。按视觉稿实施，实际验证基线比较、证据展开、原运行深链接、URL 刷新/返回、命令复制及 1440/900/390 宽度；页面无横向溢出。截图保存在 artifacts/benchmark-design/actual-*.png。</p>
@@ -32,5 +32,5 @@
 <p>2026-10-19 修正能力复用为 v2：普通 Python 函数即可，直接 import 和统一接口调用同等有效；目录发现、注册与接口选择只作诊断。直接 import 以成功写入源码、执行命令 AST、成功 exec 与设备订单共同验证，不把只 import、空函数、无关 helper 加手动动作算作复用；跨批仍要求不同模型轮次。复杂脚本或缺少调用证据保留待定，不等于没有学会。静态识别未覆盖依赖导入副作用与 write 后的其他源码修改，相关情况需核对原日志。复用原日志重评时保留 v1 与版本变更说明，不追加模型请求、不修改 Agent 脚本，也不把重评伪装成新实跑。</p>
 <p>v1 验收：RSA 11 项（128 断言）通过；Dashboard 60 项、两组件类型检查与前端生产构建通过。取消验证覆盖嵌套 Python 退出和全局传输恢复；后台压缩无 control 的 fixture 可按完整 run 查看，不伪造接管事件。模拟耗时不代表线上网络性能，dirty provenance 也不是完整源码快照。v2 沿用现有页面，只更新判定语义与结果，不重做视觉。</p>
 <p>v2 离线重评首轮原日志：四项检查通过，1 个自写函数跨批使用 6 次，第二批 3 次；全部走直接 import，统一目录发现与注册函数调用均为 0。旧 v1 结果与原始事件保留，未新增模型请求。相关离线验证 6 项 / 102 断言及 RSA 类型检查通过；看板 API 可返回 v2 通过结果与全部 29 条证据，无缺失引用。</p>
-<p><a href="../../../artifacts/benchmark-design/actual-desktop.png">桌面验收截图</a> · <a href="../../../artifacts/benchmark-design/actual-390.png">390px 验收截图</a> · <a href="../../rsa/benchmarks/README.md">执行与判定说明</a></p>
+<p>桌面验收截图：<code>artifacts/benchmark-design/actual-desktop.png</code> · 390px 验收截图：<code>artifacts/benchmark-design/actual-390.png</code> · <a href="../../benchmark.md">执行与判定说明</a></p>
 </main></html>
