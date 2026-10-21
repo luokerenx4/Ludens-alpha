@@ -29,6 +29,7 @@ bridge?.onActivity(event => {
   clearTimeout(hideTimer);
   activityId = event.displayId;
   renderLogContent(message, event.input);
+  poses.activity(event.input);
   activityActions.hidden = false;
   bubble.classList.add('open', 'activity');
   bubble.setAttribute('aria-hidden', 'false');
@@ -55,18 +56,46 @@ function playClickSound() {
   void clickAudio.play().catch(() => console.warn('Pet click sound could not play'));
 }
 let lastPoint = { x: -1, y: -1 };
-// English placeholder dialogue: Alice's own words in Carroll's original novel.
-// https://www.gutenberg.org/files/11/11-h/11-h.htm (chapters II, I, I, XI, VII, VII, VIII, XII)
-const lines = [
-  'Curiouser and curiouser!',
-  'What a curious feeling!',
-  'Do cats eat bats?',
-  'I’m growing.',
-  'There’s plenty of room!',
-  'Yes, please do!',
-  'Nonsense!',
-  'I won’t!',
-];
+const lines = ['我在。', '先观察，再行动。', '嗯？叫卢登斯。', '别戳了，在想了。', '这次有把握。大概。', '蛛腿也要休息。', '再试一次。', '一起看看？'];
+const assets = new Map(ludensCatalog.assets.map(asset => [asset.id, asset]));
+const effectImage = document.querySelector('#effect');
+let requestedState = null, requestVersion = 0;
+async function showPose({ state, effect }) {
+  const overlay = assets.get(effect);
+  effectImage.hidden = !overlay;
+  if (overlay) effectImage.src = 'ludens/' + overlay.file;
+  if (state === requestedState) return;
+  const asset = assets.get(state);
+  if (!asset || asset.kind !== 'state') return;
+  requestedState = state;
+  const version = ++requestVersion;
+  try {
+    const image = new Image(); image.src = 'ludens/' + asset.file;
+    await image.decode();
+    const canvas = document.createElement('canvas');
+    canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(image, 0, 0);
+    const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    if (version !== requestVersion) return;
+    // Commit art and its alpha mask together; slow decodes cannot overwrite a newer pose.
+    portrait.src = image.src; alpha = pixels;
+    portrait.alt = '卢登斯 · ' + asset.label;
+    pet.dataset.state = state;
+    update(lastPoint);
+  } catch (error) {
+    if (version === requestVersion) requestedState = null;
+    console.warn('Ludens pose unavailable:', state, error);
+  }
+}
+const poses = createPetState(value => { void showPose(value); });
+bridge?.onPose?.(value => {
+  if (!value || (value.state !== null && assets.get(value.state)?.kind !== 'state')) return;
+  if (value.effect !== null && assets.get(value.effect)?.kind !== 'effect') return;
+  poses.choose(value.state, value.effect);
+});
+const poseTimer = setInterval(() => poses.refresh(), 1000);
+window.addEventListener('pagehide', () => clearInterval(poseTimer));
 
 function hit(point) {
   const rect = portrait.getBoundingClientRect();
@@ -74,7 +103,7 @@ function hit(point) {
   let x = (point.x - rect.left) / rect.width;
   const y = (point.y - rect.top) / rect.height;
   if (x < 0 || y < 0 || x >= 1 || y >= 1 || !alpha) return false;
-  // During the 300ms flip use the currently rendered direction, not its target.
+  // During the flip use the currently rendered direction, not its target.
   if (new DOMMatrixReadOnly(getComputedStyle(mirror).transform).a < 0) x = 1 - x;
   const px = Math.min(alpha.width - 1, Math.floor(x * alpha.width));
   return alpha.data[(Math.floor(y * alpha.height) * alpha.width + px) * 4 + 3] > 10;
@@ -85,6 +114,7 @@ function update(point) {
   if (next !== interactive) { interactive = next; bridge?.interactive(next); }
 }
 function speak() {
+  poses.interact(line % 2 ? '14-petted' : '13-poked');
   playClickSound();
   if (activityId) { activityOpen.focus(); return; }
   clearTimeout(hideTimer);
@@ -93,13 +123,14 @@ function speak() {
   bubble.setAttribute('aria-hidden', 'false');
   hideTimer = setTimeout(hideBubble, 5000);
 }
-function hideBubble() { activityId = null; if (bubble.contains(document.activeElement)) pet.focus(); activityActions.hidden = true; delete message.dataset.blockId; bubble.classList.remove('open', 'activity'); bubble.setAttribute('aria-hidden', 'true'); update(lastPoint); }
+function hideBubble() { poses.activity(null); activityId = null; if (bubble.contains(document.activeElement)) pet.focus(); activityActions.hidden = true; delete message.dataset.blockId; bubble.classList.remove('open', 'activity'); bubble.setAttribute('aria-hidden', 'true'); update(lastPoint); }
 pet.addEventListener('pointerdown', event => {
   if (event.button !== 0 || !hit({ x: event.clientX, y: event.clientY })) return;
   event.preventDefault();
   held = event.pointerId;
   pet.setPointerCapture(held);
   body.classList.add('pressed');
+  poses.interact('15-dragged', Infinity);
   bridge?.beginDrag();
 });
 async function release(event, cancelled = false) {
@@ -109,6 +140,7 @@ async function release(event, cancelled = false) {
   body.classList.remove('pressed');
   const moved = await bridge?.endDrag(cancelled);
   if (pet.hasPointerCapture(pointer)) pet.releasePointerCapture(pointer);
+  poses.interact(!cancelled && moved ? '16-land' : '01-idle', cancelled ? 0 : 900);
   if (!cancelled && !moved) speak();
   if (event) update({ x: event.clientX, y: event.clientY });
 }
@@ -151,6 +183,7 @@ async function prepare() {
   await document.querySelector('#bubble img').decode();
   try { if (bridge?.getSound) configureSound(await bridge.getSound()); }
   catch { console.warn('Pet sound settings unavailable'); }
+  poses.refresh();
   bridge?.ready();
 }
 void prepare().catch(error => console.error('Companion asset failed:', error));

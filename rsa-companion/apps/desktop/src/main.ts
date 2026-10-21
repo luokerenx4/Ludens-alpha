@@ -13,7 +13,7 @@ const { values } = parseArgs({ args: process.argv.slice(2), options: {
   'show-window': { type: 'boolean' }, help: { type: 'boolean' },
 } })
 if (values.help) {
-  console.log('Alice Pet — RSA log viewer\n\n--workspace PATH   Initial workspace, only when no follow target has been saved\n--dashboard URL    Local RSA dashboard (default: http://127.0.0.1:3015)\n--profile PATH     Separate local pet preferences\n--show-window      Open the run/settings window on launch\n\nChoose the workspace to follow in the Dashboard. The pet reads existing logs; it never starts or stops the game agent.')
+  console.log('Ludens Pet — RSA log viewer\n\n--workspace PATH   Initial workspace, only when no follow target has been saved\n--dashboard URL    Local RSA dashboard (default: http://127.0.0.1:3015)\n--profile PATH     Separate local pet preferences\n--show-window      Open the run/settings window on launch\n\nChoose the workspace to follow in the Dashboard. The pet reads existing logs; it never starts or stops the game agent.')
   app.exit(0)
 } else {
   const initialWorkspace = values.workspace ?? process.env.RSA_WORKSPACE
@@ -23,7 +23,7 @@ if (values.help) {
     throw new Error('--dashboard must be a local HTTP URL')
   }
   const here = dirname(fileURLToPath(import.meta.url))
-  app.setName('RSA Alice Pet')
+  app.setName('RSA Ludens Pet')
   app.setPath('userData', resolve(values.profile ?? join(app.getPath('appData'), 'RSA Alice Pet')))
   mkdirSync(app.getPath('userData'), { recursive: true })
   if (!app.requestSingleInstanceLock()) {
@@ -66,7 +66,7 @@ if (values.help) {
         void owner.loadURL(url).catch(error => console.error('[alice-pet] dashboard navigation failed:', error))
       }
       const pet = createCompanion(owner, { trustedOwner: trusted, openDetails })
-      if (!pet) throw new Error('Alice Pet is disabled by OPENALICE_DISABLE_COMPANION')
+      if (!pet) throw new Error('Ludens Pet is disabled by OPENALICE_DISABLE_COMPANION')
       ipcMain.handle('rsa-pet:snapshot', event => {
         if (!trusted(event)) throw new Error('Unauthorized pet access')
         return snapshot
@@ -85,18 +85,18 @@ if (values.help) {
       } })
       pet.configureActivity(source)
       void source.start(workspace)
-      const icon = nativeImage.createFromPath(resolve(here, '../../ui/public/companion/alice.png')).resize({ width: 20, height: 20 })
+      const icon = nativeImage.createFromPath(resolve(here, '../../ui/public/companion/ludens/icons/icon-tray.png')).resize({ width: 20, height: 20 })
       tray = new Tray(icon)
-      tray.setToolTip('Alice Pet · RSA')
+      tray.setToolTip('Ludens Pet · RSA')
       tray.on('click', showOwner)
       tray.on('right-click', () => Menu.buildFromTemplate([
-        { label: 'Open Alice Pet', click: showOwner },
+        { label: 'Open Ludens Pet', click: showOwner },
         ...pet.trayMenuItems(),
         { type: 'separator' },
-        { label: 'Quit Alice Pet', click: () => app.quit() },
+        { label: 'Quit Ludens Pet', click: () => app.quit() },
       ]).popup())
       Menu.setApplicationMenu(Menu.buildFromTemplate([
-        { label: 'Alice Pet', submenu: [ { label: 'Open Alice Pet', click: showOwner }, { type: 'separator' }, { role: 'quit' } ] },
+        { label: 'Ludens Pet', submenu: [ { label: 'Open Ludens Pet', click: showOwner }, { type: 'separator' }, { role: 'quit' } ] },
         { role: 'editMenu' },
         { role: 'windowMenu' },
       ]))
@@ -111,7 +111,7 @@ if (values.help) {
           dashboardReady = true
         } catch {
           if (owner && !owner.isDestroyed() && !quitting) {
-            const offline = '<!doctype html><html lang="zh"><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'"><title>Playness · 等待日志服务</title><body style="background:#202321;color:#f0f2ee;font:16px system-ui;padding:64px"><h1>等待本地日志服务</h1><p>Alice 正在重新连接。服务恢复后，这个窗口会自动打开。</p></body></html>'
+            const offline = '<!doctype html><html lang="zh"><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'"><title>Playness · 等待日志服务</title><body style="background:#202321;color:#f0f2ee;font:16px system-ui;padding:64px"><h1>等待本地日志服务</h1><p>卢登斯正在重新连接。服务恢复后，这个窗口会自动打开。</p></body></html>'
             await owner.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(offline)}`).catch(() => {})
           }
         } finally { loadingDashboard = false }

@@ -26,7 +26,22 @@ void app.whenReady().then(async () => {
   assert.equal(info.bridge, true)
   assert.equal(info.node, 'undefined')
   assert.equal(info.alpha, 0)
-  assert.equal(info.width, 1254)
+  assert.equal(info.width, 512)
+  // Decode every shipped raster and switch every pose through the real renderer.
+  const assets = await pet.webContents.executeJavaScript(`(async () => {
+    for (const asset of ludensCatalog.assets) {
+      const image = new Image(); image.src = 'ludens/' + asset.file; await image.decode();
+      if (image.naturalWidth !== 512 || image.naturalHeight !== 512) throw new Error(asset.id + ': wrong dimensions');
+      if (asset.kind === 'state') {
+        await showPose({state:asset.id,effect:null});
+        if (document.querySelector('#pet').dataset.state !== asset.id) throw new Error(asset.id + ': not displayed');
+      }
+    }
+    await showPose({state:'01-idle',effect:null});
+    return ludensCatalog.assets.length;
+  })()`)
+  assert.equal(assets, 36)
+
   const bubbleAlpha = await pet.webContents.executeJavaScript(`(() => {
     const img = document.querySelector('#bubble img');
     const canvas = document.createElement('canvas');
@@ -65,16 +80,14 @@ void app.whenReady().then(async () => {
   assert.equal(await pet.webContents.executeJavaScript(`bubble.classList.contains('open')`), true,
     await pet.webContents.executeJavaScript(`JSON.stringify({events:window.smokeEvents,held,pressed:body.className})`))
   assert.equal(await pet.webContents.executeJavaScript(`body.classList.contains('pressed')`), false)
-  const expectedLines = ['Curiouser and curiouser!', 'What a curious feeling!',
-    'Do cats eat bats?', 'I’m growing.', 'There’s plenty of room!',
-    'Yes, please do!', 'Nonsense!', 'I won’t!']
+  const expectedLines = ['我在。', '先观察，再行动。', '嗯？叫卢登斯。', '别戳了，在想了。', '这次有把握。大概。', '蛛腿也要休息。', '再试一次。', '一起看看？']
   assert.equal(await pet.webContents.executeJavaScript(`message.textContent`), expectedLines[0])
   for (let i = 1; i <= expectedLines.length; i++) {
     const text = await pet.webContents.executeJavaScript(`(() => {
       pet.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true}));
       return message.textContent;
     })()`)
-    assert.equal(text, expectedLines[i % expectedLines.length], 'Dialogue must cycle through all eight English lines')
+    assert.equal(text, expectedLines[i % expectedLines.length], 'Dialogue must cycle through all eight Ludens lines')
   }
   writeFileSync(join(home, 'bubble.png'), (await pet.webContents.capturePage()).toPNG())
   // A light renderer backdrop exposes outline/tail placement hidden by dark previews.

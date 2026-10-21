@@ -5,7 +5,7 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
 #mirror.flipped { transform: scaleX(-1); }
 /* Native window is 2.7 × character stage width: reserve both sides for face-level speech. */
 #body { position: absolute; inset: 0 calc(100% * .85 / 2.7); transform-origin: 50% 100%; transition: transform .22s cubic-bezier(.34,1.56,.64,1); }
-#body.pressed { transform: scaleY(.88) scaleX(1.05); }
+#body.pressed { transform: none; }
 #pet { position: absolute; bottom: 0; left: 5%; width: 90%; padding: 0; margin: 0; border: 0; background: transparent; aspect-ratio: 1; cursor: grab; outline-offset: -10px; pointer-events: auto; touch-action: none; }
 #pet:focus-visible { outline: 2px solid #648bc8; border-radius: 40%; }
 #pet img { display: block; width: 100%; height: 100%; pointer-events: none; -webkit-user-drag: none; }
@@ -59,3 +59,6 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
 #mirror.flipped #activity-actions { transform: scaleX(-1); }
 @keyframes log-pulse { 50% { opacity: .4; } }
 @media (prefers-reduced-motion: reduce) { .log-stream { animation: none; } }
+
+#pet #effect { position: absolute; width: 26%; height: 26%; right: 2%; top: 2%; }
+#pet #effect[hidden] { display: none; }
