@@ -1,21 +1,12 @@
 # Workspace
 
-This is a normal coding workspace. Write and run Python programs here; a program
-can collect data, train models, and continuously observe and act using the supplied capabilities.
+Use this as a normal coding workspace. Write programs, collect data, build training
+environments, train models, and install dependencies as needed.
 
-- `rsa.json`: launch configuration for this workspace.
-- `baseware.json`: generated device capabilities, parameter schemas, and invocation contracts; read as needed and refresh with `baseware export`.
-- `perception.py`: your persistent `Perception` implementation; choose sampling, processing, and any background loop.
-- `skills/`: reusable methods and supporting scripts learned in this workspace.
-- `memory/`: current goals, state, uncertainties, and next steps; replace outdated notes.
-- `logs/`: Harness-generated run records, observations, and diagnostics. Keep these separate from learned methods and working memory.
+- `baseware.json`: device schemas. Discover and invoke capabilities with `rsa controller list` and `rsa controller <id> --help`, or Python's `rsa_tools.Client`.
+- Python functions compose through normal imports. `@capability` from `rsa_tools` exposes typed, documented functions in the catalog; `@benchmark` exposes evaluations through `rsa bench`. See `rsa bench --help` and `rsa bench schema`.
+- `perception.py:Perception`: persistent observation processing. Read its starter contract; load changes with `rsa perception reload`. The loop supplies its output automatically.
+- `skills/<name>/SKILL.md`: reusable methods, with `name` and `description` frontmatter. `memory/current.md`: current state and next steps.
+- `logs/`: run and benchmark records. `rsa.json`: launch settings. Organize other files as needed.
 
-Other task files may live here as needed. Discover device and workspace capabilities with `rsa controller list` and `rsa controller <id> --help`. Mark entry points with `@capability` from `rsa_tools`, typed parameters, and a docstring to expose them in that catalog. Reuse functions with normal imports or `rsa_tools.Client`; Python capability calls stay in your process, while device calls use Baseware. Separate CLI invocations do not share memory. Harness implementation and dependencies are maintained outside this workspace.
-
-Use native `bash` to run programs, including background jobs or named services; inspect and stop them through `proc://`, and use `wait` when awaiting results. A running process does not retain device control after human takeover; keep the supplied control epoch unchanged.
-
-Use OMP's native background management to keep programs running across turns and train models for capabilities when useful; choose what to optimize and measure task success, action latency, and completion speed.
-
-Read the starter contract in `perception.py`. Its process stays alive between observations, retaining imported modules, models, and state. Choose continuous background sampling or on-demand sampling in `observe()`. Use `rsa perception status`, `reload`, `observe`, or `stop`; reload after code or weight changes. Automatic observation reads your result; missing or failed perception yields text, with no default screenshot. Perception uses read-only device calls without a control epoch. Keep sequence and sample times honest; reusing a result is not a new sample.
-
-When measurement helps, use `@benchmark` from `rsa_tools` to evaluate your capabilities, return metrics and optional checks, and compare runs with `rsa bench`. Read `rsa bench schema` for the report format; validate with `rsa bench validate`, or repair a saved report with `rsa bench report` without repeating actions.
+Keep the supplied control epoch unchanged; human takeover ends device access.

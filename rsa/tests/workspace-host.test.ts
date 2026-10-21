@@ -147,6 +147,9 @@ test("hosts route by workspace, resume only its selected session, and can start 
       expect(result.runDir).toBe(join(state.workspace, "logs", result.runId));
       expect(JSON.parse(await readFile(join(state.dir, "workspace.json"), "utf8"))).toEqual({ workspace: state.workspace });
       expect(await Bun.file(join(result.runDir, "events.jsonl")).exists()).toBe(true);
+      const manifest = JSON.parse(await readFile(join(result.runDir, "manifest.json"), "utf8"));
+      expect(manifest.provenance.workspaceInstructionsSHA256).toBe(state === first
+        ? new Bun.SHA256().update("Keep these task instructions.\n").digest("hex") : null);
       const catalog = JSON.parse(await readFile(join(state.workspace, "baseware.json"), "utf8"));
       expect(catalog.schemaVersion).toBe(1);
       expect(Number.isNaN(Date.parse(catalog.generatedAt))).toBe(false);
@@ -160,9 +163,7 @@ test("hosts route by workspace, resume only its selected session, and can start 
     }
     const firstGuide = await readFile(join(first.workspace, "AGENTS.md"), "utf8");
     expect(firstGuide).toBe("Keep these task instructions.\n");
-    expect(await readFile(join(second.workspace, "AGENTS.md"), "utf8")).toContain("`logs/`");
-    expect(await readFile(join(second.workspace, "AGENTS.md"), "utf8")).toContain("`baseware.json`");
-    expect(await readFile(join(second.workspace, "AGENTS.md"), "utf8")).toContain("`@benchmark`");
+    expect(await Bun.file(join(second.workspace, "AGENTS.md")).exists()).toBe(false);
     expect(await readFile(join(second.workspace, "perception.py"), "utf8")).toContain("raise NotImplementedError");
     expect(testbed.operations).toEqual(["HELLO", "HELLO"]);
     const secondCatalog = await readFile(join(second.workspace, "baseware.json"), "utf8");

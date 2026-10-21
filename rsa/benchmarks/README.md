@@ -127,7 +127,7 @@ Dashboard 的 **Benchmark → 评测目录** 列出内置和 workspace 评测，
 | `background-compaction` | 后台候选复用、尾部保留、晚到归属、取消后不提交 | 真实 OMP maintenance / V2；注入接近阈值的 token 计数和受控 SSE，不下调生产阈值 |
 | `capability-reuse` v3 | 两批订单完成、自主创建 Python 函数、跨批次实际复用 | 真实模型、空感知入口与 PNG 传感器；允许直接 import 或统一接口调用，不代表长期泛化 |
 
-模型工况沿用标准 RSA prompt、Low、WS auto、Infinity 图片预算和 256000 原生压缩阈值；每次新建 OMP session，skills、memory 为空，不携带游戏经验或预填解法。
+模型工况沿用 OMP 原生系统提示词和 RSA 工作区 `AGENTS.md` 模板、Low、WS auto、Infinity 图片预算和 256000 原生压缩阈值；每次新建 OMP session，skills、memory 为空，不携带游戏经验或预填解法。
 
 v3 从空的感知实现开始，Agent 自行用设备采样，并可实现 `perception.py`；不预填默认截图。此前 v2 使用预填采样，两版成绩不视为相同条件。
 

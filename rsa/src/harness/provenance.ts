@@ -12,7 +12,11 @@ export async function runProvenance(workspace: string) {
   const git = async (args: string[]) => (await exec("git", args, { cwd: repository })).stdout.trim();
   const code = await Promise.all([git(["rev-parse", "HEAD"]), git(["status", "--porcelain"])])
     .then(([commit, status]) => ({ commit, dirty: status.length > 0 })).catch(() => null);
-  const prompts = Object.fromEntries(await Promise.all(["explore", "continue", "consolidate"].map(async name =>
+  const prompts = Object.fromEntries(await Promise.all(["continue", "consolidate"].map(async name =>
     [name, sha(await readFile(join(repository, "rsa/prompts", `${name}.md`)))])));
-  return { code, prompts, workspaceInstructionsSHA256: sha(await readFile(join(workspace, "AGENTS.md"))) };
+  const workspaceInstructionsSHA256 = await readFile(join(workspace, "AGENTS.md")).then(sha).catch(error => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  return { code, prompts, workspaceInstructionsSHA256 };
 }

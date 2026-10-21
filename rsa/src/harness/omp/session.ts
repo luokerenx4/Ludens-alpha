@@ -12,7 +12,6 @@ import { createRsaExtension, type Cycle } from "./extension.ts";
 import type { EventLog } from "../events.ts";
 import { installCompactionHttpTrace, ModelTrace } from "./trace.ts";
 import { SHIORI_SOURCE } from "./shiori.ts";
-import prompt from "../../../prompts/explore.md" with { type: "text" };
 import continuation from "../../../prompts/continue.md" with { type: "text" };
 import consolidation from "../../../prompts/consolidate.md" with { type: "text" };
 
@@ -98,13 +97,17 @@ export async function createOmpAgent(options: {
     const model = modelRegistry.find(provider, id);
     if (!model || !model.input.includes("image")) throw new Error(`An image-capable model is required: ${options.model}`);
     const extensionPath = resolve(import.meta.dir, "extension.ts");
+    const instructionsPath = join(options.workspace, "AGENTS.md");
+    const instructions = await readFile(instructionsPath, "utf8").catch(error => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    });
     manager = await openWorkspaceSession(options.state, options.resume);
     const { session } = await createOmpSession({
       cwd: options.workspace, agentDir: join(options.runDir, "omp"),
       model, authStorage, modelRegistry, settings, sessionManager: manager, telemetry: trace.shiori.config,
-      customSystemPrompt: prompt, thinkingLevel: ThinkingLevel.Low, cacheWarming: false,
-      skills: [], rules: [], contextFiles: [{ path: join(options.workspace, "AGENTS.md"),
-        content: await readFile(join(options.workspace, "AGENTS.md"), "utf8") }],
+      thinkingLevel: ThinkingLevel.Low, cacheWarming: false,
+      skills: [], rules: [], contextFiles: instructions === undefined ? [] : [{ path: instructionsPath, content: instructions }],
       promptTemplates: [], slashCommands: [],
       enableMCP: false, enableLsp: false, enableIrc: false, skipPythonPreflight: true,
       disableExtensionDiscovery: true, restrictToolNames: true, allowRestrictedCustomTools: true,

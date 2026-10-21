@@ -26,10 +26,11 @@ test("a new workspace session survives idle shutdown, resumes, and can start fre
   const modelRegistry = new ModelRegistry(authStorage, undefined, { settings });
   const model = modelRegistry.find("openai-codex", "gpt-6.1-sol")!;
   let manager = await openWorkspaceSession(state);
-  const create = () => createOmpSession({
+  const create = async () => createOmpSession({
     cwd: state.workspace, agentDir: join(directory, "omp"), model, authStorage, modelRegistry, settings,
-    sessionManager: manager, customSystemPrompt: "Offline workspace lifecycle test.", cacheWarming: false,
-    skills: [], rules: [], contextFiles: [{ path: agentsPath, content: "Workspace-local instructions: keep run records in logs/.\n" }],
+    sessionManager: manager, cacheWarming: false,
+    skills: [], rules: [], contextFiles: await Bun.file(agentsPath).exists()
+      ? [{ path: agentsPath, content: await readFile(agentsPath, "utf8") }] : [],
     promptTemplates: [], slashCommands: [],
     enableMCP: false, enableLsp: false, enableIrc: false, skipPythonPreflight: true,
     disableExtensionDiscovery: true, restrictToolNames: true, toolNames: [],
@@ -37,7 +38,7 @@ test("a new workspace session survives idle shutdown, resumes, and can start fre
   let { session } = await create();
   try {
     const systemPrompt = JSON.stringify(session.agent.state.systemPrompt);
-    expect(systemPrompt).toContain("Offline workspace lifecycle test.");
+    expect(systemPrompt).toContain("You are omp's trusted coding assistant.");
     expect(systemPrompt).toContain("Workspace-local instructions: keep run records in logs/.");
     expect(systemPrompt).not.toContain("UNRELATED_PARENT_INSTRUCTIONS");
     const emptyFile = await selectWorkspaceSession(state, manager);
@@ -64,9 +65,16 @@ test("a new workspace session survives idle shutdown, resumes, and can start fre
     await session.prompt("Remember this workspace.");
     await session.dispose();
 
+    await rm(agentsPath);
     manager = await openWorkspaceSession(state, await readCurrentSession(state));
     expect(JSON.stringify(manager.buildSessionContext().messages)).toContain("Workspace history survives restart.");
-    await manager.close();
+    ({ session } = await create());
+    const resumedPrompt = JSON.stringify(session.agent.state.systemPrompt);
+    expect(resumedPrompt).toContain("You are omp's trusted coding assistant.");
+    expect(resumedPrompt).not.toContain("Workspace-local instructions");
+    expect(resumedPrompt).not.toContain("UNRELATED_PARENT_INSTRUCTIONS");
+    expect(JSON.stringify(session.agent.state.messages)).toContain("Workspace history survives restart.");
+    await session.dispose();
     manager = await openWorkspaceSession(state); // --new-session deliberately omits resume.
     expect(manager.buildSessionContext().messages).toHaveLength(0);
     const freshFile = await selectWorkspaceSession(state, manager);

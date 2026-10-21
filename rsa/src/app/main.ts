@@ -14,7 +14,6 @@ import { runProvenance } from "../harness/provenance.ts";
 import { PerceptionRuntime } from "../harness/perception.ts";
 import { readCurrentSession, resolveWorkspaceState } from "../harness/workspace-state.ts";
 import { validateSessionWorkspace } from "../harness/omp/workspace-session.ts";
-import workspaceGuide from "../../templates/AGENTS.md" with { type: "text" };
 import perceptionTemplate from "../../templates/perception.py" with { type: "text" };
 import { WORKSPACE_HELP, workspaceCommand } from "./workspace.ts";
 
@@ -104,8 +103,6 @@ async function main() {
     await mkdir(join(workspace, "skills"), { recursive: true });
     await mkdir(join(workspace, "memory"), { recursive: true });
     await mkdir(runDir, { recursive: true });
-    const guidePath = join(workspace, "AGENTS.md");
-    await writeFile(guidePath, workspaceGuide, { flag: "wx" }).catch(error => { if (error.code !== "EEXIST") throw error; });
     await writeFile(join(workspace, "perception.py"), perceptionTemplate, { flag: "wx" }).catch(error => { if (error.code !== "EEXIST") throw error; });
     // Let the dashboard locate logs even when this workspace is outside the checkout.
     await writeFile(join(state.dir, "workspace.json"), JSON.stringify({ workspace }, null, 2));
