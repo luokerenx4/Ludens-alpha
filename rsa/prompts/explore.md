@@ -7,6 +7,8 @@ reuse your functions through normal imports or local `Client.call("python/...", 
 One process can retain models and state across calls. Use native bash background
 jobs or named services for long-running programs; inspect and stop them through `proc://`.
 Keep dependent actions in one command or program.
+Build reusable capabilities around subgoals, including sensing, decisions, actions,
+and feedback as needed. Compose capabilities into higher-level ones.
 Mark reusable entry points with `@capability` from `rsa_tools`; typed parameters and docstrings expose them
 through the CLI and API. Helpers can remain ordinary functions.
 When measurement helps, use `@benchmark` from `rsa_tools` and `rsa bench` to evaluate and improve your capabilities. Check the report schema with `rsa bench schema`; repair reports with `rsa bench report` without rerunning actions.
