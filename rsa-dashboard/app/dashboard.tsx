@@ -1,10 +1,9 @@
 "use client";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import type { Project, RunData } from "@/lib/types";
-import type { LogBlock } from "@/lib/activity";
 import { initialSelection, latestGameRun } from "@/lib/initial-selection";
-import { medianRequestWaits } from "@/lib/transport";
 import { ActivityFeed } from "@/components/activity-feed";
+import { useActivityFeed } from "@/components/use-activity-feed";
 import { AliceSettings } from "@/components/alice-settings";
 import { AliceFollowCard, useAliceFollow } from "@/components/alice-follow";
 import { DesktopBridge } from "@/components/desktop-bridge";
@@ -117,31 +116,25 @@ export default function Dashboard() {
   const [loaded, setLoaded] = useState<{ key: string; data: RunData } | null>(
     null,
   );
-  const [activity, setActivity] = useState<{
-    key: string;
-    epoch: string | null;
-    blocks: LogBlock[];
-  } | null>(null);
   const [error, setError] = useState("");
-  const [activityError, setActivityError] = useState("");
   const [refresh, setRefresh] = useState(true);
   const alice = useAliceFollow();
   const [stopping, setStopping] = useState(false);
   const [panel, setPanel] = useState("trace");
-  const [requestLimit, setRequestLimit] = useState(100);
   const selection = initialSelection(search, projects);
   const project = projects.find((p) => p.id === selection.project);
   const latest = latestGameRun(project);
   const run = selection.run || latest?.id || "";
-  const key = selection.project + "/" + run + "/" + selection.epoch;
-  const data = loaded?.key === key ? loaded.data : null;
-  const blocks =
-    activity?.key === key && activity.epoch === data?.selectedEpoch
-      ? activity.blocks
-      : [];
-  const call =
-    data?.calls.find((c) => c.id === query.get("call")) ?? data?.calls.at(-1);
+  const scopeKey = selection.project + "/" + run + "/" + selection.epoch;
+  const beforeCall = query.get("beforeCall") ?? "";
+  const requestedCall = query.get("call") ?? "";
   const selectedImage = query.get("image") ?? undefined;
+  const key = JSON.stringify([scopeKey, beforeCall, requestedCall, selectedImage]);
+  const data = loaded?.key === key ? loaded.data : null;
+  const activity = useActivityFeed({ project: selection.project, run, epoch: selection.epoch || undefined,
+    enabled: view === "live", refresh, selectedBlock: query.get("block") ?? undefined });
+  const call =
+    data?.selectedCall ?? data?.calls.find((c) => c.id === requestedCall) ?? data?.calls.at(-1);
   const navigateUrl = useCallback((target: string) => {
     const url = new URL(target, window.location.href);
     if (url.origin !== window.location.origin) return;
@@ -194,6 +187,9 @@ export default function Dashboard() {
       project: selection.project,
       run,
       ...(selection.epoch ? { epoch: selection.epoch } : {}),
+      ...(beforeCall ? { beforeCall } : {}),
+      ...(requestedCall ? { call: requestedCall } : {}),
+      ...(selectedImage ? { image: selectedImage } : {}),
     });
     const load = async () => {
       try {
@@ -204,28 +200,7 @@ export default function Dashboard() {
         if (controller.signal.aborted) return;
         setLoaded({ key, data: next });
         setError("");
-        if (view === "live") {
-          try {
-            // Pin activity to the cycle returned by /run so a new takeover cannot mix two cycles.
-            const activityParams = new URLSearchParams(params);
-            if (next.selectedEpoch)
-              activityParams.set("epoch", next.selectedEpoch);
-            const result = await json<{ blocks: LogBlock[] }>(
-              "/api/activity?" + activityParams,
-              controller.signal,
-            );
-            if (!controller.signal.aborted) {
-              setActivity({
-                key,
-                epoch: next.selectedEpoch,
-                blocks: result.blocks,
-              });
-              setActivityError("");
-            }
-          } catch (e) {
-            if (!controller.signal.aborted) setActivityError(String(e));
-          }
-        }
+
       } catch (e) {
         if (!controller.signal.aborted) setError(String(e));
       } finally {
@@ -242,6 +217,9 @@ export default function Dashboard() {
     selection.project,
     run,
     selection.epoch,
+    beforeCall,
+    requestedCall,
+    selectedImage,
     key,
     refresh,
     view,
@@ -289,6 +267,9 @@ export default function Dashboard() {
             project: data.project,
             run: data.run,
             ...(data.selectedEpoch ? { epoch: data.selectedEpoch } : {}),
+            ...(beforeCall ? { beforeCall } : {}),
+            ...(requestedCall ? { call: requestedCall } : {}),
+            ...(selectedImage ? { image: selectedImage } : {}),
           }),
       );
       setLoaded({ key, data: next });
@@ -300,9 +281,11 @@ export default function Dashboard() {
     }
   };
   const s = data?.summary;
-  const waitSummary = medianRequestWaits(data?.calls ?? [])
-    .map((wait) => wait.label + " " + seconds(wait.ms))
-    .join(" · ");
+  const waitSummary = [
+    s?.medianHttpHeadersMs != null ? "HTTP 响应头等待 " + seconds(s.medianHttpHeadersMs) : "",
+    s?.medianWsWaitMs != null ? "WS 首事件等待 " + seconds(s.medianWsWaitMs) : "",
+  ].filter(Boolean).join(" · ");
+  const pageRange = data?.calls.length ? `本页 #${data.paging.firstIndex}–#${data.paging.lastIndex} · 共 ${data.paging.totalCalls} 个请求` : "本页无请求";
   const hasTelemetry = data?.telemetry.sources.some(
     (source) => source.component !== "unlabelled",
   );
@@ -337,6 +320,7 @@ export default function Dashboard() {
                   workspace: null,
                   run: null,
                   epoch: null,
+                  beforeCall: null,
                   call: null,
                   block: null,
                   image: null,
@@ -394,6 +378,7 @@ export default function Dashboard() {
                     navigate({
                       run: e.target.value,
                       epoch: null,
+                      beforeCall: null,
                       call: null,
                       block: null,
                       image: null,
@@ -421,6 +406,7 @@ export default function Dashboard() {
                       project: selection.project,
                       run,
                       epoch: e.target.value,
+                      beforeCall: null,
                       call: null,
                       block: null,
                       image: null,
@@ -551,7 +537,7 @@ export default function Dashboard() {
                 <Metric
                   label="完成请求"
                   value={String(s!.completed)}
-                  detail={"共 " + data.calls.length + " 个请求"}
+                  detail={"共 " + data.paging.totalCalls + " 个请求"}
                 />
                 {view === "live" ? (
                   <Metric
@@ -593,11 +579,11 @@ export default function Dashboard() {
                       >
                         检查本轮性能 ↗
                       </button>
-                      {query.has("call") && (
+                      {(query.has("call") || query.has("beforeCall")) && (
                         <button
                           className="text-button"
                           onClick={() =>
-                            navigate({ call: null, image: null, block: null })
+                            navigate({ beforeCall: null, call: null, image: null, block: null })
                           }
                         >
                           回到最新请求 ↓
@@ -609,14 +595,10 @@ export default function Dashboard() {
                     </div>
                   </div>
                   <ActivityFeed
-                    key={key + "/" + data.selectedEpoch}
-                    blocks={blocks}
+                    key={scopeKey + "/" + data.selectedEpoch}
+                    feed={activity}
+                    expectedEpoch={data.selectedEpoch}
                     selectedBlock={query.get("block") ?? undefined}
-                    loading={
-                      activity?.key !== key ||
-                      activity.epoch !== data.selectedEpoch
-                    }
-                    error={activityError}
                     onSelect={(block) =>
                       navigate({
                         ...pinned,
@@ -632,6 +614,7 @@ export default function Dashboard() {
                   <section className="charts">
                     {(["latency", "cache", "body"] as const).map((type) => (
                       <div className="surface chart-card" key={type}>
+                        <p className="feed-notice">{pageRange}</p>
                         <div className="surface-heading">
                           <h2>
                             {type === "latency"
@@ -664,15 +647,15 @@ export default function Dashboard() {
                         <button
                           className="text-button"
                           onClick={() =>
-                            navigate({ call: null, image: null, block: null })
+                            navigate({ beforeCall: null, call: null, image: null, block: null })
                           }
                         >
                           跟随最新 ↓
                         </button>
                       </div>
+                      <p className="feed-notice">{pageRange}</p>
                       <div className="timeline-list">
-                        {data.calls
-                          .slice(-requestLimit)
+                        {[...data.calls]
                           .reverse()
                           .map((c) => (
                             <button
@@ -712,12 +695,10 @@ export default function Dashboard() {
                               </small>
                             </button>
                           ))}
-                        {data.calls.length > requestLimit && (
-                          <button
-                            className="text-button load-more"
-                            onClick={() => setRequestLimit((n) => n + 100)}
-                          >
-                            显示更早的 100 个请求
+                        {data.paging.hasMore && data.paging.beforeCall !== null && (
+                          <button className="text-button load-more"
+                            onClick={() => navigate({ ...pinned, beforeCall: String(data.paging.beforeCall), call: null, image: null, block: null })}>
+                            上一页 · 更早的 100 个请求
                           </button>
                         )}
                         {!data.calls.length && (
@@ -834,7 +815,7 @@ export default function Dashboard() {
                       请求统计仅含主循环，独立压缩请求单列于事件。Shiori、工具和嵌套能力的耗时与用量不能相加。WS
                       字节是构建帧大小；HTTP 等待截至响应头，WS
                       等待从发送截至首事件，概况分别取完成请求的中位数。两者都不能进一步拆分网络与服务端耗时。来源分布仅覆盖当前运行事件，不代表
-                      Pet 的在线状态。
+                      Pet 的在线状态。图表和时间轴按请求分页，技能、通知和独立压缩详情显示近期截面；完整历史可在活动日志中搜索。
                     </p>
                   </details>
                 </>

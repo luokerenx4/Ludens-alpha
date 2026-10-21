@@ -231,6 +231,8 @@ export interface RunData {
   cycles: { epoch: string; startedAt: string }[];
   selectedEpoch: string | null;
   calls: Call[];
+  selectedCall?: Call;
+  paging: { totalCalls: number; beforeCall: number | null; hasMore: boolean; firstIndex: number; lastIndex: number };
   observations: Observation[];
   perception: PerceptionStatus | null;
   notices: Notice[];
@@ -256,6 +258,8 @@ export interface RunData {
     medianMs: number | null;
     p95Ms: number | null;
     medianHeadersMs: number | null;
+    medianHttpHeadersMs: number | null;
+    medianWsWaitMs: number | null;
     cacheHit: number | null;
     warmCacheHit: number | null;
     elapsedSeconds: number;

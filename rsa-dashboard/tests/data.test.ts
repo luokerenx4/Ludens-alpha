@@ -1,3 +1,4 @@
+import { clearCatalogCache } from "../lib/data";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { writeFile, realpath, mkdtemp, mkdir, symlink, rm } from "node:fs/promises";
@@ -321,6 +322,7 @@ test("workspace index discovers external workspace logs alongside retained histo
     await symlink(join(state, "runs/old"), join(workspace, "logs/escape"));
     await assert.rejects(resolveRun("ws-workspace-a", "escape", root));
     await rm(join(workspace, "logs"), { recursive: true });
+    clearCatalogCache();
     assert.deepEqual((await catalog(root))[0].runs.map((run) => run.id), ["old"]);
   } finally {
     await rm(temp, { recursive: true, force: true });

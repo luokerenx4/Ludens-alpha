@@ -681,6 +681,7 @@ export function RequestDetails({
           </>
         ) : panel === "skills" ? (
           <>
+            <p className="help-text">近期最多 100 条技能证据；完整记录可在运行页的活动日志中搜索。</p>
             {[...data.skills].reverse().map((e) => (
               <button
                 className="evidence-row"
@@ -700,12 +701,13 @@ export function RequestDetails({
               </button>
             ))}
             {!data.skills.length && (
-              <p className="empty-state">本轮没有技能读写证据。</p>
+              <p className="empty-state">当前范围没有技能读写证据。</p>
             )}
             <p className="help-text">读写成功不表示技能质量或任务能力提高。</p>
           </>
         ) : (
           <>
+            <p className="help-text">近期最多 100 条事件；完整历史可在运行页的活动日志中按类型筛选。</p>
             {[...data.notices].reverse().map((n) => (
               <button
                 className="evidence-row"

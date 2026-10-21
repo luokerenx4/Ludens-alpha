@@ -1,17 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { appendFileSync, mkdirSync, realpathSync } from 'node:fs'
 import { basename, join } from 'node:path'
+import { ActivityChangesClient, type ActivityBlock, type ActivityProjection } from '../../../../rsa-dashboard/lib/activity-client.js'
+export type { ActivityBlock, ActivityProjection, ActivityChanges, LogBlock } from '../../../../rsa-dashboard/lib/activity-client.js'
 
-type EventSource = { component: string; implementation?: string; implementationVersion?: string }
-export interface ActivityProjection {
-  source: EventSource
-  throughSeq: number
-  latestEventAt: string | null
-  latestSourceAt: string | null
-  generatedAt: string
-  durationMs: number
-  blockCount: number
-}
 export type ConsumerRecord = (type: string, data: Record<string, unknown>, context?: {
   runId?: string | null; epoch?: string | null; trace?: Record<string, string>
 }) => void
@@ -32,22 +24,6 @@ export function consumerRecorder(workspace: string): ConsumerRecord {
   }
 }
 
-export interface LogBlock {
-  id: string
-  kind: 'thinking' | 'text' | 'tool' | 'system' | 'diagnostic'
-  at: string
-  title: string
-  text: string
-  status: 'running' | 'complete' | 'error'
-  tool?: { intent?: string; args?: unknown; result?: unknown }
-  data?: Record<string, unknown>
-  source?: EventSource
-  trace?: Record<string, string>
-  eventId?: string
-  seq?: number
-  updatedAt?: string
-}
-
 export interface RsaPetSnapshot {
   workspace: string | null
   runId: string | null
@@ -58,7 +34,6 @@ export interface RsaPetSnapshot {
   updatedAt: string | null
   error: string | null
   dashboardUrl: string
-  blocks?: LogBlock[]
 }
 
 export interface RsaActivitySnapshot {
@@ -66,7 +41,12 @@ export interface RsaActivitySnapshot {
   identity: string
   activity: 'running' | 'manual' | 'offline' | 'idle'
   current: RsaPetSnapshot
-  blocks: LogBlock[]
+  blocks: ActivityBlock[]
+  mode: 'snapshot' | 'delta'
+  revision: number
+  hasMore: boolean
+  /** Advance the source cursor only after this page has entered the queue. */
+  acknowledge?(): void
   projection?: ActivityProjection
 }
 
@@ -75,19 +55,6 @@ export interface RsaActivitySource {
   read(signal?: AbortSignal): Promise<RsaActivitySnapshot>
   stop?(): void
   record?: ConsumerRecord
-}
-
-// The dashboard owns log projection and live host checks. No second parser here.
-export interface RsaRunView {
-  project: string
-  run: string
-  manifest: { workspace: string }
-  selectedEpoch: string | null
-  calls: { inputObservations: string[]; tools: { intent: string; at: string }[] }[]
-  observations: { id: string; mediaType: string }[]
-  live: { runId: string; epoch: string | null; mode: string; connected: boolean; reason: string } | null
-  livePhase: { label: string } | null
-  updatedAt: string
 }
 
 /** Matches RSA resolveWorkspaceState; the input must already be canonical. */
@@ -103,38 +70,13 @@ function url(base: string, path: string, query: Record<string, string | null> = 
   return result.href
 }
 
-export function projectRsaRun(run: RsaRunView, workspace: string, dashboardUrl: string, blocks: LogBlock[] = []): RsaActivitySnapshot {
-  // Releasing control clears the host's epoch; the log retains the reviewed epoch.
-  const currentRun = run.live?.runId === run.run && (run.live.epoch === run.selectedEpoch
-    || (run.live.mode === 'manual' && run.live.epoch === null))
-  const connected = currentRun && run.live!.connected
-  const activity = !run.live || !connected ? 'offline' : run.live!.mode === 'auto' ? 'running'
-    : run.live!.mode === 'manual' ? 'manual' : 'idle'
-  const phase = !run.live ? 'Host 离线' : !currentRun ? '历史运行'
-    : !run.live.connected ? '设备已断开' : activity === 'running' ? run.livePhase?.label ?? '等待下一步'
-      : activity === 'manual' ? run.selectedEpoch === null ? '已连接，等待 AI 接管' : '已交还控制权'
-        : run.live.mode === 'acquiring' ? '正在接管' : '正在交还控制权'
-  const lastCall = run.calls.at(-1)
-  // Never substitute a newly captured frame which the model has not received.
-  const imageId = [...lastCall?.inputObservations ?? []].reverse().find(id => run.observations.some(o => o.id === id && o.mediaType.startsWith('image/')))
-  const intent = run.calls.flatMap(call => call.tools).reverse().find(tool => tool.intent.trim())?.intent ?? null
-  return {
-    identity: `${workspace}:${run.run}:${run.selectedEpoch ?? ''}`, activity, blocks,
-    current: {
-      workspace, runId: run.run, epoch: run.selectedEpoch, phase, intent, blocks,
-      observationUrl: imageId ? url(dashboardUrl, '/api/media', { project: run.project, run: run.run, id: imageId }) : null,
-      updatedAt: run.updatedAt, error: activity === 'offline' ? phase : null,
-      dashboardUrl: url(dashboardUrl, '/', { project: run.project, run: run.run, epoch: run.selectedEpoch }),
-    },
-  }
-}
-
 /** Read-only polling source. It never calls the dashboard's control endpoint. */
 export class RsaSource implements RsaActivitySource {
   private readonly workspace: string
   private readonly project: string
   private readonly dashboardUrl: string
-  private latest: RsaActivitySnapshot
+  private latest: Omit<RsaActivitySnapshot, 'blocks' | 'acknowledge'>
+  private readonly client: ActivityChangesClient
   private abort = new AbortController()
   private progress = ''
   readonly record: ConsumerRecord
@@ -142,22 +84,14 @@ export class RsaSource implements RsaActivitySource {
     this.workspace = realpathSync(options.workspace)
     this.project = rsaProjectId(this.workspace)
     this.dashboardUrl = new URL(options.dashboardUrl).origin
-    this.latest = this.empty('尚未读取日志', 'idle')
+    this.client = new ActivityChangesClient({ project: this.project, baseUrl: this.dashboardUrl })
+    this.latest = { identity: this.identity(), activity: 'idle', mode: 'snapshot', revision: 0, hasMore: false,
+      current: { workspace: this.workspace, runId: null, epoch: null, phase: '尚未读取日志', intent: null,
+        observationUrl: null, updatedAt: null, error: null, dashboardUrl: this.dashboardUrl } }
     this.record = options.record ?? (() => {})
   }
   identity(): string { return `${this.workspace}:${this.dashboardUrl}` }
   stop() { this.abort.abort() }
-  private empty(phase: string, activity: RsaActivitySnapshot['activity']): RsaActivitySnapshot {
-    return { identity: this.identity(), activity, blocks: [], current: {
-      workspace: this.workspace, runId: null, epoch: null, phase, intent: null, observationUrl: null,
-      updatedAt: null, error: null, dashboardUrl: this.dashboardUrl, blocks: [],
-    } }
-  }
-  private async json<T>(path: string, signal: AbortSignal): Promise<T> {
-    const response = await fetch(url(this.dashboardUrl, path), { signal, cache: 'no-store' })
-    if (!response.ok) throw new Error(`日志服务 HTTP ${response.status}`)
-    return response.json() as Promise<T>
-  }
   async read(signal?: AbortSignal): Promise<RsaActivitySnapshot> {
     const started = performance.now()
     this.abort.signal.throwIfAborted()
@@ -166,38 +100,44 @@ export class RsaSource implements RsaActivitySource {
     let next: RsaActivitySnapshot
     let readError: string | undefined
     try {
-      const catalog = await this.json<{ id: string; runs: { id: string; kind?: string; benchmark?: unknown }[] }[]>('/api/catalog', requestSignal)
-      const runId = catalog.find(project => project.id === this.project)?.runs
-        .filter(run => run.kind !== 'benchmark' && !run.benchmark).map(run => run.id).sort().at(-1)
-      if (!runId) next = this.empty('工作区尚无运行记录', 'idle')
-      else {
-        const query = new URLSearchParams({ project: this.project, run: runId })
-        const run = await this.json<RsaRunView>(`/api/run?${query}`, requestSignal)
-        if (run.manifest.workspace !== this.workspace) throw new Error('运行记录不属于当前工作区')
-        if (run.selectedEpoch) query.set('epoch', run.selectedEpoch)
-        const activity = await this.json<{ blocks: LogBlock[]; projection?: ActivityProjection }>(`/api/activity?${query}`, requestSignal)
-        next = { ...projectRsaRun(run, this.workspace, this.dashboardUrl, activity.blocks), projection: activity.projection }
+      const page = await this.client.read(requestSignal)
+      if (page.current.workspace !== null && page.current.workspace !== this.workspace)
+        throw new Error('运行记录不属于当前工作区')
+      const { activity, observationId, ...current } = page.current
+      next = {
+        identity: `${this.workspace}:${page.scope.runId ?? ''}:${page.scope.epoch ?? ''}:${page.projection.generation}`,
+        activity, blocks: page.blocks, mode: page.mode, revision: page.projection.revision,
+        hasMore: page.hasMore, projection: page.projection,
+        current: { ...current, workspace: current.workspace ?? this.workspace, phase: current.phase ?? '尚未读取日志',
+          // Pet health describes log consumption; runtime failures are activity blocks.
+          error: null,
+          observationUrl: observationId && current.runId ? url(this.dashboardUrl, '/api/media', {
+            project: this.project, run: current.runId, id: observationId,
+          }) : null,
+          dashboardUrl: url(this.dashboardUrl, '/', { project: this.project, run: current.runId, epoch: current.epoch }),
+        },
+        acknowledge: page.acknowledge,
       }
     } catch (error) {
       if (signal?.aborted || this.abort.signal.aborted) throw error
       readError = String(error)
-      next = { ...this.latest, activity: 'offline', current: {
+      next = { ...this.latest, mode: 'delta', hasMore: false, blocks: [], activity: 'offline', current: {
         ...this.latest.current, phase: '日志服务离线', intent: null, error: String(error),
       } }
     }
     if (signal?.aborted) throw signal.reason
     this.abort.signal.throwIfAborted()
-    // Streaming text can advance without a new events.jsonl sequence.
-    const progress = JSON.stringify([next.identity, next.activity, next.current.error, next.projection?.throughSeq,
-      next.blocks.map(block => [block.id, block.status, block.updatedAt, block.text.length])])
+    // Revisions include streaming text; no full-history fingerprint or retained block cache.
+    const progress = JSON.stringify([next.identity, next.activity, next.current.error, next.projection?.throughSeq, next.revision])
     if (progress !== this.progress) {
       this.record(readError ? 'read_error' : 'read', {
         durationMs: performance.now() - started, projection: next.projection, blocks: next.blocks.length,
-        activity: next.activity, error: readError ?? null,
+        activity: next.activity, mode: next.mode, revision: next.revision, hasMore: next.hasMore, error: readError ?? null,
       }, next.current)
       this.progress = progress
     }
-    this.latest = next
+    const { blocks: _blocks, acknowledge: _acknowledge, ...latest } = next
+    this.latest = latest
     this.options.onSnapshot(next.current)
     return next
   }

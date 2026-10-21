@@ -1,21 +1,21 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { LogBlock } from "@/lib/activity";
 import {
-  activityPage,
+  matchesActivity,
   blockLabels,
   printable,
   type ActivityFilter,
 } from "./activity-feed-model";
+import type { ActivityFeedData } from "./use-activity-feed";
 import "./activity-feed.css";
 
 interface ActivityFeedProps {
-  blocks: LogBlock[];
+  feed: ActivityFeedData;
+  expectedEpoch?: string | null;
   selectedBlock?: string;
   onSelect?: (block: LogBlock) => void;
-  loading?: boolean;
-  error?: string;
 }
 
 const filters: ActivityFilter[] = [
@@ -253,182 +253,105 @@ function ActivityBlock({
   );
 }
 
-export function ActivityFeed({
-  blocks,
-  selectedBlock,
-  onSelect,
-  loading = false,
-  error,
-}: ActivityFeedProps) {
-  const [filter, setFilter] = useState<ActivityFilter>("all");
-  const [query, setQuery] = useState("");
-  const [limit, setLimit] = useState(100);
+export function ActivityFeed({ feed, expectedEpoch, selectedBlock, onSelect }: ActivityFeedProps) {
+  const { filter, query, setFilter, setQuery } = feed;
+  const consistent = expectedEpoch === undefined || feed.scope?.epoch === expectedEpoch;
+  const page = consistent ? feed.blocks.filter(block => matchesActivity(block, filter, query)) : [];
+  const selected = consistent ? page.find(block => block.id === selectedBlock) ?? feed.selected : undefined;
+  const pinned = selected && !page.some(block => block.id === selected.id) ? selected : undefined;
+  const loading = feed.loading || !consistent;
+  const missingSelection = Boolean(selectedBlock && feed.selectionReady && !selected && consistent);
   const list = useRef<HTMLDivElement>(null);
   const nodes = useRef(new Map<string, HTMLDivElement>());
   const initiallyPositioned = useRef(false);
-  const { page, pinned, total, remaining, missingSelection } = useMemo(
-    () => activityPage(blocks, filter, query, limit, selectedBlock),
-    [blocks, filter, query, limit, selectedBlock],
-  );
-  const selectionPresent = Boolean(selectedBlock && !missingSelection);
+  const positionLatest = useRef(false);
+  const previousAnchor = useRef<{ id: string; top: number } | null>(null);
+  const selectionPresent = Boolean(selected);
   useEffect(() => {
     if (selectedBlock && selectionPresent)
       nodes.current.get(selectedBlock)?.scrollIntoView({ block: "nearest" });
-    // Only an explicit selection moves the view, never a streaming update.
   }, [selectedBlock, selectionPresent]);
-  useEffect(() => {
-    if (initiallyPositioned.current || blocks.length === 0) return;
-    initiallyPositioned.current = true;
-    // The parent keys each epoch; start at the present once, then leave scrolling to the reader.
-    if (!selectedBlock && list.current)
-      list.current.scrollTop = list.current.scrollHeight;
-  }, [blocks.length, selectedBlock]);
+  useLayoutEffect(() => {
+    if (loading || feed.loadingOlder) return;
+    const anchor = previousAnchor.current;
+    if (anchor && list.current) {
+      const node = nodes.current.get(anchor.id);
+      if (node) list.current.scrollTop += node.getBoundingClientRect().top - anchor.top;
+      previousAnchor.current = null;
+    }
+    if (positionLatest.current || (!initiallyPositioned.current && page.length > 0 && !selectedBlock)) {
+      list.current?.scrollTo({ top: list.current.scrollHeight });
+      initiallyPositioned.current = true;
+      positionLatest.current = false;
+    }
+  }, [feed.blocks, feed.loadingOlder, loading, page.length, selectedBlock]);
   const renderBlock = (block: LogBlock) => (
-    <div
-      key={block.id}
-      ref={(node) => {
-        if (node) nodes.current.set(block.id, node);
-        else nodes.current.delete(block.id);
-      }}
-    >
-      <ActivityBlock
-        block={block}
-        selected={block.id === selectedBlock}
-        onSelect={onSelect}
-      />
+    <div key={block.id} ref={(node) => {
+      if (node) nodes.current.set(block.id, node);
+      else nodes.current.delete(block.id);
+    }}>
+      <ActivityBlock block={block} selected={block.id === selectedBlock} onSelect={onSelect} />
     </div>
   );
   return (
     <section className="feed-panel" aria-label="活动日志">
       <header className="feed-heading">
         <h2>活动日志</h2>
-        <span>
-          {loading ? "读取中…" : `${blocks.length.toLocaleString()} 条`}
+        <span title="当前筛选最近一次历史查询的总数">
+          {loading ? "读取中…" : `${feed.total.toLocaleString()} 条`}
         </span>
       </header>
       <div className="feed-filters" role="group" aria-label="日志类型">
         {filters.map((kind) => (
-          <button
-            type="button"
-            key={kind}
+          <button type="button" key={kind}
             className={`feed-filter${filter === kind ? " feed-filter-active" : ""}${kind === "diagnostic" ? " feed-filter-diagnostic" : ""}`}
-            aria-pressed={filter === kind}
-            onClick={() => {
-              setFilter(kind);
-              setLimit(100);
-            }}
-          >
+            aria-pressed={filter === kind} onClick={() => setFilter(kind)}>
             {kind === "all" ? "全部" : blockLabels[kind]}
           </button>
         ))}
       </div>
       <div className="feed-search-row">
         <label className="feed-search">
-          <svg
-            width="15"
-            height="15"
-            viewBox="0 0 20 20"
-            fill="none"
-            stroke="currentColor"
-            aria-hidden="true"
-          >
-            <circle cx="8.5" cy="8.5" r="5.5" />
-            <path d="m13 13 4 4" />
+          <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" aria-hidden="true">
+            <circle cx="8.5" cy="8.5" r="5.5" /><path d="m13 13 4 4" />
           </svg>
-          <input
-            aria-label="搜索活动日志"
-            type="search"
-            placeholder="搜索内容、工具或来源"
-            value={query}
-            onChange={(event) => {
-              setQuery(event.target.value);
-              setLimit(100);
-            }}
-          />
+          <input aria-label="搜索活动日志" type="search" placeholder="搜索内容、工具或来源"
+            value={query} onChange={(event) => setQuery(event.target.value)} />
         </label>
-        <button
-          type="button"
-          className="feed-latest"
-          title="返回当前筛选下最新的 100 条"
-          onClick={() => {
-            setLimit(100);
-            requestAnimationFrame(() =>
-              list.current?.scrollTo({
-                top: list.current.scrollHeight,
-                behavior: "smooth",
-              }),
-            );
-          }}
-        >
+        <button type="button" className="feed-latest" title="返回当前筛选下最新的 100 条"
+          onClick={() => { positionLatest.current = true; feed.latest(); }}>
           最新 <span aria-hidden="true">↓</span>
         </button>
       </div>
-      {error && (
-        <p className="feed-error" role="alert">
-          日志读取失败：{error}
-          {blocks.length > 0 ? "；以下为上次读取内容。" : ""}
-        </p>
-      )}
-      {missingSelection && !loading && (
-        <p className="feed-notice">
-          这条日志不在当前运行中，请检查运行与轮次选择。
-        </p>
-      )}
-      <div ref={list} className="feed-list" aria-busy={loading}>
-        {pinned && (
-          <div className="feed-pinned">
-            <p className="feed-notice">
-              正在定位的日志 · 位于当前筛选或分页之外
-            </p>
-            {renderBlock(pinned)}
-          </div>
-        )}
-        {remaining > 0 && (
-          <button
-            type="button"
-            className="feed-earlier"
-            onClick={() => {
-              const previousHeight = list.current?.scrollHeight ?? 0;
-              const previousTop = list.current?.scrollTop ?? 0;
-              setLimit((value) => value + 100);
-              requestAnimationFrame(() => {
-                if (list.current)
-                  list.current.scrollTop =
-                    previousTop + list.current.scrollHeight - previousHeight;
-              });
-            }}
-          >
-            加载更早的 {Math.min(100, remaining)} 条{" "}
-            <span>还有 {remaining.toLocaleString()} 条</span>
-          </button>
-        )}
+      {feed.error && <p className="feed-error" role="alert">日志读取失败：{feed.error}
+        {page.length > 0 ? "；以下为上次读取内容。" : ""}</p>}
+      {missingSelection && !loading && <p className="feed-notice">这条日志不在当前运行中，请检查运行与轮次选择。</p>}
+      <div ref={list} className="feed-list" aria-busy={loading || feed.loadingOlder}>
+        {pinned && <div className="feed-pinned">
+          <p className="feed-notice">正在定位的日志 · 位于当前筛选或分页之外</p>{renderBlock(pinned)}
+        </div>}
+        {feed.hasMore && consistent && <button type="button" className="feed-earlier"
+          disabled={loading || feed.loadingOlder} onClick={() => {
+            const first = page[0];
+            const node = first && nodes.current.get(first.id);
+            if (node) previousAnchor.current = { id: first.id, top: node.getBoundingClientRect().top };
+            void feed.earlier();
+          }}>
+          {feed.loadingOlder ? "读取更早记录…" : "加载更早的 100 条"}
+          <span>历史记录按页读取</span>
+        </button>}
         {page.map(renderBlock)}
-        {page.length === 0 && !pinned && (
-          <div className="feed-empty">
-            <BlockIcon kind={filter === "all" ? "text" : filter} />
-            <p>
-              {loading
-                ? "正在读取活动日志…"
-                : blocks.length === 0
-                  ? "这个运行还没有活动日志"
-                  : "没有符合筛选条件的日志"}
-            </p>
-            <span>
-              {!loading && blocks.length === 0
-                ? "模型输出和工具调用会在这里显示。"
-                : query
-                  ? "换个关键词，或选择其他日志类型。"
-                  : ""}
-            </span>
-          </div>
-        )}
+        {page.length === 0 && !pinned && <div className="feed-empty">
+          <BlockIcon kind={filter === "all" ? "text" : filter} />
+          <p>{loading ? "正在读取活动日志…" : feed.total === 0 && filter === "all" && !query
+            ? "这个运行还没有活动日志" : "没有符合筛选条件的日志"}</p>
+          <span>{!loading && !query ? "模型输出和工具调用会在这里显示。" : query ? "换个关键词，或选择其他日志类型。" : ""}</span>
+        </div>}
       </div>
       <footer className="feed-footer">
-        <span>
-          显示 {page.length.toLocaleString()} / {total.toLocaleString()} 条
-          {pinned ? " · 已保留定位日志" : ""}
-        </span>
-        <span>{filter === "all" ? "诊断按需查看" : blockLabels[filter]}</span>
+        <span>窗口内 {page.length.toLocaleString()} 条 · 历史查询共 {feed.total.toLocaleString()} 条
+          {pinned ? " · 已保留定位日志" : ""}</span>
+        <span>{feed.historical ? "较早记录 · 点最新返回" : filter === "all" ? "诊断按需查看" : blockLabels[filter]}</span>
       </footer>
     </section>
   );

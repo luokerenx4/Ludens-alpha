@@ -2,15 +2,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ActivityDisplay } from './activity-controller.js'
 import { DEFAULT_ACTIVITY_PREFERENCES } from './activity-policy.js'
 import { RsaActivityController } from './rsa-activity-controller.js'
-import type { LogBlock, RsaActivitySnapshot } from './rsa-source.js'
+import type { ActivityBlock, LogBlock, RsaActivitySnapshot } from './rsa-source.js'
+
+let revision = 0
+const versions = new Map<string, { text: string; block: ActivityBlock }>()
 
 function block(id: string, kind: LogBlock['kind'] = 'tool', status: LogBlock['status'] = 'complete', text = id): LogBlock {
   return { id, kind, status, text, title: kind, at: '2026-10-17T13:40:00Z' }
 }
 function state(blocks: LogBlock[] = [], overrides: Partial<RsaActivitySnapshot> = {}): RsaActivitySnapshot {
-  return { identity: 'workspace:run:epoch', activity: 'running', blocks, current: {
+  const changes = blocks.map(block => {
+    const old = versions.get(block.id), text = JSON.stringify(block)
+    if (old?.text === text) return old.block
+    const next = { ...block, revision: ++revision, createdRevision: old?.block.createdRevision ?? revision }
+    versions.set(block.id, { text, block: next }); return next
+  })
+  return { identity: 'workspace:run:epoch', activity: 'running', blocks: changes, mode: 'delta', revision, hasMore: false, current: {
     workspace: '/workspace', runId: 'run', epoch: 'epoch', phase: '等待模型首事件', intent: '查看证据',
-    observationUrl: null, updatedAt: '2026-10-17T13:40:00Z', error: null, dashboardUrl: 'http://localhost:3015/?project=workspace&run=run&epoch=epoch', blocks,
+    observationUrl: null, updatedAt: '2026-10-17T13:40:00Z', error: null, dashboardUrl: 'http://localhost:3015/?project=workspace&run=run&epoch=epoch',
   }, ...overrides }
 }
 function setup() {
@@ -32,7 +41,7 @@ function setup() {
     poll: async (snapshot = state()) => { read.mockResolvedValueOnce(snapshot); await controller.poll() },
   }
 }
-beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-17T13:40:00Z')) })
+beforeEach(() => { revision = 0; versions.clear(); vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-17T13:40:00Z')) })
 afterEach(() => vi.useRealTimers())
 
 describe('RSA block speech', () => {
@@ -206,8 +215,49 @@ describe('RSA block speech', () => {
     expect(s.shows().filter(item => item.event.input.id === 'queued')).toHaveLength(1)
     s.controller.stop()
   })
+  it('does not replay unseen historical blocks, late errors, or dismissed streaming blocks', async () => {
+    const s = setup()
+    await s.poll(state([], { mode: 'snapshot', revision: 100 }))
+    const old: ActivityBlock = { ...block('outside-recent-snapshot', 'tool', 'error'), createdRevision: 3, revision: 101 }
+    const fresh: ActivityBlock = { ...block('fresh', 'thinking', 'running', 'live'), createdRevision: 102, revision: 102 }
+    await s.poll(state([], { blocks: [old, fresh], revision: 102 }))
+    expect(s.shows().map(item => item.event.input.id)).toEqual(['fresh'])
+    expect(s.controller.dismiss(s.shows()[0].event.displayId, 'pet')).toBe(true)
+    await s.poll(state([], { blocks: [{ ...fresh, revision: 103, status: 'error', text: 'late failure' }], revision: 103 }))
+    expect(s.shows()).toHaveLength(1)
+    s.controller.stop()
+  })
+  it('accepts and acknowledges each page before requesting the next, merging updates without losing queued blocks', async () => {
+    const s = setup(); await s.poll(state([], { mode: 'snapshot', revision: 10 })); s.hidePet()
+    const a: ActivityBlock = { ...block('a', 'text', 'running', 'start'), createdRevision: 11, revision: 11 }
+    const b: ActivityBlock = { ...block('b'), createdRevision: 12, revision: 12 }
+    const firstAccepted = vi.fn(() => {
+      expect(s.record).toHaveBeenLastCalledWith('queue_changed', expect.objectContaining({ pendingBlocks: 2 }), expect.anything())
+    })
+    const secondAccepted = vi.fn()
+    s.read.mockResolvedValueOnce(state([], { blocks: [a, b], revision: 12, hasMore: true, acknowledge: firstAccepted }))
+    s.read.mockImplementationOnce(async () => {
+      expect(firstAccepted).toHaveBeenCalledOnce()
+      return state([], { blocks: [{ ...a, revision: 13, status: 'complete', text: 'finished' }], revision: 13, acknowledge: secondAccepted })
+    })
+    await s.controller.poll()
+    expect(secondAccepted).toHaveBeenCalledOnce()
+    s.showPet(); expect(s.shows()[0].event.input).toMatchObject({ id: 'a', description: 'finished' })
+    await vi.advanceTimersByTimeAsync(4_000)
+    expect(s.shows().at(-1)?.event.input.id).toBe('b')
+    s.controller.stop()
+  })
+  it('rebaselines a snapshot reset without replaying recent completed blocks', async () => {
+    const s = setup(); await s.poll()
+    await s.poll(state([block('queued')]))
+    await s.poll(state([block('old-error', 'tool', 'error'), block('running', 'text', 'running')], { mode: 'snapshot' }))
+    expect(s.shows().at(-1)?.event.input.id).toBe('running')
+    expect(s.shows().some(item => item.event.input.id === 'old-error')).toBe(false)
+    s.controller.stop()
+  })
   it('serializes each source but immediately reads a new source and ignores late old workspace results', async () => {
     const s = setup(); let resolve!: (value: RsaActivitySnapshot) => void, resolveNew!: (value: RsaActivitySnapshot) => void
+    const staleAccepted = vi.fn()
     s.read.mockImplementationOnce((signal: AbortSignal) => {
       expect(signal).toBeInstanceOf(AbortSignal)
       return new Promise<RsaActivitySnapshot>(r => { resolve = r })
@@ -216,7 +266,8 @@ describe('RSA block speech', () => {
     s.read.mockImplementationOnce(() => new Promise<RsaActivitySnapshot>(r => { resolveNew = r }))
     s.switchSource(); const next = s.controller.poll()
     expect(s.read).toHaveBeenCalledTimes(2)
-    resolve(state([block('stale', 'text', 'running')])); await pending
+    resolve(state([block('stale', 'text', 'running')], { acknowledge: staleAccepted, hasMore: true })); await pending
+    expect(staleAccepted).not.toHaveBeenCalled()
     expect(s.shows()).toHaveLength(0)
     await s.controller.poll()
     expect(s.read).toHaveBeenCalledTimes(2)

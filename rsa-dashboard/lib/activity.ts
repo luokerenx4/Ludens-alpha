@@ -1,8 +1,14 @@
-import { readFile, realpath, stat } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { gunzip } from "node:zlib";
 import { promisify } from "node:util";
-import { loadRun, selectRunEvents } from "./data";
+import { catalog, hostRequest, loadRun } from "./data";
+import { latestGameRun } from "./initial-selection";
+import { LogIndex, SourceChanged, type RecordPointer } from "./log-index";
+import { activitySearchText } from "../components/activity-feed-model";
+import { advanceLivePhase, emptyLivePhase, livePhaseValue, type LivePhaseState } from "./live-phase";
+import { eventObservations } from "./observation-events";
 import type { Event } from "./types";
 
 export interface LogBlock {
@@ -19,6 +25,8 @@ export interface LogBlock {
   eventId?: string;
   seq?: number;
   updatedAt?: string;
+  createdRevision?: number;
+  revision?: number;
 }
 
 const provenance = (event: Partial<Event>) => ({ source: event.source, trace: event.trace,
@@ -54,12 +62,17 @@ function resultText(value: any): string {
 }
 
 /** Project raw provider output only; request input/history is never a new block. */
-export function streamBlocks(text: string, model: string, anchor: Pick<Event, "at" | "atMs"> & Partial<Event>): LogBlock[] {
-  const blocks = new Map<string, LogBlock>();
-  const aliases = new Map<string, string>();
-  const toolNames = new Map<string, string>();
-  const seen = new Set<string>();
-  let responseId = "";
+interface StreamState {
+  blocks: [string, LogBlock][]; aliases: [string, string][]; toolNames: [string, string][];
+  seen: string[]; responseId: string; line: number; terminal: boolean;
+}
+const emptyStream = (): StreamState => ({ blocks: [], aliases: [], toolNames: [], seen: [], responseId: "", line: 0, terminal: false });
+function advanceStream(text: string, model: string, anchor: Pick<Event, "at" | "atMs"> & Partial<Event>, state: StreamState): LogBlock[] {
+  const blocks = new Map(state.blocks);
+  const aliases = new Map(state.aliases);
+  const toolNames = new Map(state.toolNames);
+  const seen = new Set(state.seen);
+  let responseId = state.responseId;
   let origin = provenance(anchor);
   const clock = Date.parse(anchor.at) - anchor.atMs;
   const put = (id: string, kind: LogBlock["kind"], at: string, title: string, value: string, done = false, append = false) => {
@@ -86,8 +99,9 @@ export function streamBlocks(text: string, model: string, anchor: Pick<Event, "a
     }
   };
   const lines = text.split("\n");
-  if (!text.endsWith("\n")) lines.pop();
-  for (const [lineIndex, line] of lines.entries()) {
+  lines.pop();
+  for (const line of lines) {
+    const lineIndex = state.line++;
     if (!line.trim()) continue;
     const row = JSON.parse(line);
     origin = { ...provenance(anchor), source: row.source ?? anchor.source, trace: { ...anchor.trace, ...row.trace } };
@@ -134,9 +148,10 @@ export function streamBlocks(text: string, model: string, anchor: Pick<Event, "a
           if (tool.function?.name) toolNames.set(id, tool.function.name);
           put(id, "tool", at, toolNames.get(id) ?? "工具", tool.function?.arguments ?? "", false, true);
         }
-        if (choice.finish_reason) for (const block of blocks.values()) block.status = "complete";
+        if (choice.finish_reason) { state.terminal = true; for (const block of blocks.values()) block.status = "complete"; }
       }
     } else if (type === "response.completed" || type === "response.incomplete" || type === "response.failed") {
+      state.terminal = true;
       for (const [i, output] of (value.response?.output ?? []).entries()) item(output, at, true, i);
       for (const block of blocks.values()) if (block.status === "running") block.status = type === "response.failed" ? "error" : "complete";
     } else if (!type.startsWith("response.content_part.") && !type.startsWith("response.reasoning_summary_part.")) {
@@ -149,41 +164,36 @@ export function streamBlocks(text: string, model: string, anchor: Pick<Event, "a
       blocks.get(id)!.data = structuredText(text) as Record<string, unknown>;
     }
   }
+  state.blocks = [...blocks]; state.aliases = [...aliases]; state.toolNames = [...toolNames];
+  state.seen = [...seen]; state.responseId = responseId;
   return [...blocks.values()].filter(block => block.text.trim() || block.kind === "tool")
     .map(block => block.kind === "tool" ? { ...block, text: argumentsText(block.text),
       tool: { args: structuredText(argumentsText(block.text)) } } : block);
 }
 
-const streamCache = new Map<string, { mtime: number; size: number; blocks: LogBlock[] }>();
-const payloadCache = new Map<string, { mtime: number; size: number; text: string }>();
-function remember<T>(cache: Map<string, T>, key: string, value: T) {
-  cache.delete(key); cache.set(key, value);
-  if (cache.size > 1024) cache.delete(cache.keys().next().value!);
+export function streamBlocks(text: string, model: string, anchor: Pick<Event, "at" | "atMs"> & Partial<Event>): LogBlock[] {
+  return advanceStream(text, model, anchor, emptyStream());
 }
 async function streamFile(path: string, model: string, anchor: Event): Promise<LogBlock[]> {
   if (!/^[a-zA-Z0-9_-]+$/.test(model)) throw new Error("无效的模型调用 ID");
   const file = join(path, "streams", `${model}.jsonl`);
   try {
     if (await realpath(file) !== file) throw new Error("流日志必须位于运行目录内");
-    const s = await stat(file), cached = streamCache.get(file);
-    if (cached?.mtime === s.mtimeMs && cached.size === s.size) return cached.blocks;
-    const blocks = streamBlocks(await readFile(file, "utf8"), model, anchor);
-    remember(streamCache, file, { mtime: s.mtimeMs, size: s.size, blocks });
-    return blocks;
+    return streamBlocks(await readFile(file, "utf8"), model, anchor);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
   }
 }
-async function payloadText(path: string, value: any): Promise<string> {
+async function payloadText(path: string, value: any, index?: LogIndex): Promise<string> {
   if (!value?.path) return resultText(value);
   if (!/^payloads\/[a-f0-9]{64}\.json\.gz$/.test(value.path)) throw new Error("无效的工具结果路径");
+  const saved = await index?.store("payloads").get<string>(value.path);
+  if (saved !== undefined) return saved;
   const file = join(path, value.path);
   if (await realpath(file) !== file) throw new Error("工具结果必须位于运行目录内");
-  const s = await stat(file), cached = payloadCache.get(file);
-  if (cached?.mtime === s.mtimeMs && cached.size === s.size) return cached.text;
   const text = resultText(JSON.parse((await unpack(await readFile(file))).toString("utf8")));
-  remember(payloadCache, file, { mtime: s.mtimeMs, size: s.size, text });
+  await index?.store("payloads").put(value.path, text);
   return text;
 }
 
@@ -192,6 +202,10 @@ export async function activityBlocks(path: string, events: Event[]): Promise<Log
   for (const event of events) if (event.trace.modelCallId && !calls.has(event.trace.modelCallId)) calls.set(event.trace.modelCallId, event);
   const blocks = new Map((await Promise.all([...calls].map(([id, anchor]) => streamFile(path, id, anchor))))
     .flat().map(block => [block.id, { ...block }]));
+  await overlayEvents(path, events, blocks);
+  return [...blocks.values()].sort((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id));
+}
+async function overlayEvents(path: string, events: Event[], blocks: Map<string, LogBlock>, index?: LogIndex) {
   const executingTools = new Set(events.filter(event => event.type === "tool_start" && event.trace.modelCallId && event.trace.toolCallId)
     .map(event => toolId(event.trace.modelCallId, event.trace.toolCallId)));
   const tools = new Map<string, { name: string; intent: string; args: string; result: string }>();
@@ -207,7 +221,7 @@ export async function activityBlocks(path: string, events: Event[]): Promise<Log
       if (event.type === "exec" && !tool.args) tool.args = argumentsText({ command: data.command });
       if (event.type === "exec_result") tool.result = readable(data);
       if (["tool_update", "tool_end"].includes(event.type) && data.result !== undefined)
-        tool.result = await payloadText(path, data.result);
+        tool.result = await payloadText(path, data.result, index);
       tools.set(id, tool);
       blocks.set(id, { id, kind: "tool", at: previous?.at ?? event.at, title: tool.name, ...provenance(event),
         text: [tool.intent && `意图：${tool.intent}`, tool.args && `参数：\n${tool.args}`, tool.result && `结果：\n${tool.result}`].filter(Boolean).join("\n\n"),
@@ -238,16 +252,257 @@ export async function activityBlocks(path: string, events: Event[]): Promise<Log
       status: failed ? "error" : "complete",
     });
   }
-  return [...blocks.values()].sort((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id));
 }
 
-export async function getActivity(project: string, run: string, epoch?: string) {
-  const { path, manifest, events } = await loadRun(project, run);
-  const started = performance.now();
-  const selected = selectRunEvents(manifest, events, epoch).events;
-  const blocks = await activityBlocks(path, selected);
-  const latest = selected.at(-1);
-  return { blocks, projection: { source: { component: "dashboard" }, throughSeq: latest?.seq ?? 0,
+
+const TOOL_EVENTS = ["tool_start", "tool_update", "tool_end", "exec", "exec_result", "model_end"];
+async function saveBlock(index: LogIndex, block: LogBlock) {
+  const store = index.store("blocks");
+  const prior = store.meta(block.id);
+  const { createdRevision: _created, revision: _revision, ...content } = block;
+  const digest = createHash("sha256").update(JSON.stringify(content)).digest("hex");
+  if (prior?.digest === digest) return;
+  const revision = index.revision + 1;
+  const createdRevision = prior ? Number(prior.createdRevision) : revision;
+  const value = { ...content, createdRevision, revision };
+  // Immutable versions preserve creation order when a late update lands beyond
+  // a consumer's current page. The index holds only metadata, never block text.
+  await store.put(block.id, value, { model: block.trace?.modelCallId ?? null, epoch: block.trace?.epoch ?? null,
+    at: block.at, kind: block.kind, status: block.status, createdRevision, revision, digest });
+  index.setMeta("revision", revision);
+}
+interface CurrentState {
+  phase: LivePhaseState; intent: string | null; observationId: string | null;
+  updatedAt: string | null; error: string | null;
+}
+const emptyCurrent = (): CurrentState => ({ phase: emptyLivePhase(), intent: null, observationId: null, updatedAt: null, error: null });
+async function projectEvents(index: LogIndex) {
+  let position = Number(index.meta("activityPosition") ?? 0);
+  const dirty = new Set<string>(JSON.parse(index.meta("activityDirty") ?? "[]"));
+  for (;;) {
+    const page = await index.queryEvents({ afterPosition: position, limit: 250 });
+    if (!page.length) break;
+    const ordinary = new Map<string, LogBlock>();
+    const current = new Map<string, CurrentState>();
+    const phases = new Map<string, Event[]>();
+    await overlayEvents(index.path, page.map(row => row.event).filter(event =>
+      !(event.trace?.modelCallId && TOOL_EVENTS.includes(event.type))), ordinary, index);
+    for (const block of ordinary.values()) await saveBlock(index, block);
+    for (const { event } of page) {
+      const model = event.trace?.modelCallId;
+      if (model) {
+        if (!index.store("streams").meta(model)) await index.store("streams").put(model, { anchor: event, state: emptyStream() });
+        dirty.add(model);
+      }
+      const key = `current:${event.trace?.epoch ?? ""}`;
+      let state = current.get(key);
+      if (!state) { state = JSON.parse(index.meta(key) ?? "null") ?? emptyCurrent(); current.set(key, state!); }
+      const phaseEvents = phases.get(key) ?? [];
+      phaseEvents.push(event); phases.set(key, phaseEvents);
+      state!.updatedAt = event.at;
+      if (event.type === "model_start") state!.error = null;
+      if (event.type === "tool_start" && event.data.intent) state!.intent = event.data.intent;
+      for (const observation of eventObservations(event)) {
+        if (observation.mediaType?.startsWith("image/")) index.setMeta(`image:${observation.id}`, "1");
+      }
+      if (event.type === "model_start") {
+        const images = (event.data.observations ?? []).filter((id: string) => index.meta(`image:${id}`));
+        state!.observationId = images.at(-1) ?? null;
+      }
+      if (event.type.endsWith("_error")) state!.error = event.data.error ? String(event.data.error) : null;
+      if (event.type === "control" && event.data.mode === "auto") {
+        const epochs: string[] = JSON.parse(index.meta("activityEpochs") ?? "[]");
+        if (event.trace.epoch && !epochs.includes(event.trace.epoch)) epochs.push(event.trace.epoch);
+        index.setMeta("activityEpochs", JSON.stringify(epochs));
+      }
+      index.setMeta(`latest:${event.trace?.epoch ?? ""}`, JSON.stringify({ seq: event.seq, at: event.at, origin: event.origin }));
+      index.setMeta("activityLatest", JSON.stringify({ seq: event.seq, at: event.at, origin: event.origin }));
+    }
+    for (const [key, state] of current) {
+      advanceLivePhase(state.phase, phases.get(key)!);
+      index.setMeta(key, JSON.stringify(state));
+    }
+    position = page.at(-1)!.position;
+    index.setMeta("activityPosition", position);
+    index.setMeta("activityDirty", JSON.stringify([...dirty]));
+    await new Promise<void>(resolve => setImmediate(resolve));
+  }
+  return dirty;
+}
+async function projectModel(index: LogIndex, model: string, changed: boolean) {
+  if (!/^[a-zA-Z0-9_-]+$/.test(model)) throw new Error("无效的模型调用 ID");
+  const relative = `streams/${model}.jsonl`;
+  let next = await index.readAppend(relative);
+  if (!changed && !next?.changed) return;
+  const saved = (await index.store("streams").get<{ anchor: Event; state: StreamState }>(model))!;
+  const { anchor, state } = saved;
+  let projected = advanceStream("", model, anchor, state);
+  let lastOffset = -1;
+  while (next?.changed && next.state.offset !== lastOffset) {
+    lastOffset = next.state.offset;
+    projected = advanceStream(next.text, model, anchor, state);
+    index.saveFile(next.state);
+    if (next.state.offset === next.state.size || !next.text) break;
+    next = await index.readAppend(relative);
+  }
+  await index.store("streams").put(model, { anchor, state });
+  const blocks = new Map(projected.map(block => [block.id, block]));
+  let position = 0;
+  const events: Event[] = [];
+  // Only one call's tool lifecycle is read; unrelated history stays on disk.
+  for (;;) {
+    const page = await index.queryEvents({ model, afterPosition: position, types: TOOL_EVENTS });
+    if (!page.length) break;
+    events.push(...page.map(row => row.event)); position = page.at(-1)!.position;
+  }
+  await overlayEvents(index.path, events, blocks, index);
+  for (const block of blocks.values()) await saveBlock(index, block);
+}
+const refreshes = new WeakMap<LogIndex, Promise<void>>();
+/** Incremental source ingestion; no historical Event[] or global block array. */
+export function refreshActivity(index: LogIndex) {
+  let pending = refreshes.get(index);
+  if (!pending) {
+    pending = index.exclusive(async () => {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await index.appendEvents();
+          const dirty = await projectEvents(index);
+          // Checking file metadata also notices a late stream append or replacement
+          // after model_end. Parser states are loaded only for changed calls.
+          for (const row of index.store("streams").entries())
+            await projectModel(index, row.id, dirty.has(row.id));
+          index.setMeta("activityDirty", "[]");
+          break;
+        } catch (error) {
+          if (!(error instanceof SourceChanged) || attempt) throw error;
+          await index.reset();
+        }
+      }
+    }).finally(() => refreshes.delete(index));
+    refreshes.set(index, pending);
+  }
+  return pending;
+}
+
+export interface ActivityScope { project: string; runId: string | null; epoch: string | null }
+export interface ActivityQuery {
+  mode?: "changes" | "history" | "block"; cursor?: string; before?: string;
+  kind?: string; q?: string; limit?: number; id?: string;
+}
+const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+function decode(value?: string): any { try { return value ? JSON.parse(Buffer.from(value, "base64url").toString()) : null; } catch { return null; } }
+const lexical = (left: string, right: string) => left === right ? 0 : left < right ? -1 : 1;
+const ascending = (blocks: LogBlock[]) => blocks.sort((a, b) => lexical(a.at, b.at) || lexical(a.id, b.id));
+function selectedEpoch(index: LogIndex, requested?: string) {
+  const epochs: string[] = JSON.parse(index.meta("activityEpochs") ?? "[]");
+  if (requested && !epochs.includes(requested)) throw new Error("未找到接管轮次");
+  return requested ?? epochs.at(-1) ?? null;
+}
+/** Read one page of full blocks; filtering and pagination retain only pointers. */
+export async function queryActivity(index: LogIndex, scope: ActivityScope, query: ActivityQuery = {}, signal?: AbortSignal) {
+  signal?.throwIfAborted();
+  const limit = Math.max(1, Math.min(Math.floor(query.limit ?? 100) || 100, 500));
+  const store = index.store("blocks");
+  const generation = index.generation;
+  const head = index.revision;
+  const token = (extra: object) => encode({ scope, generation, ...extra });
+  const bound = (value: any) => value?.generation === generation && JSON.stringify(value.scope) === JSON.stringify(scope);
+  const inEpoch = (pointer: RecordPointer) => !scope.epoch || pointer.epoch === scope.epoch;
+  const latest: Event | null = JSON.parse(index.meta(scope.epoch ? `latest:${scope.epoch}` : "activityLatest") ?? "null");
+  const pointers = [...store.entries()].filter(inEpoch);
+  const projection = { source: { component: "dashboard" }, throughSeq: latest?.seq ?? 0,
     latestEventAt: latest?.at ?? null, latestSourceAt: latest?.origin?.at ?? latest?.at ?? null,
-    generatedAt: new Date().toISOString(), durationMs: performance.now() - started, blockCount: blocks.length } };
+    generatedAt: new Date().toISOString(), durationMs: 0, blockCount: pointers.length, revision: head, generation };
+  const read = (items: RecordPointer[]) => Promise.all(items.map(item => store.read<LogBlock>(item)));
+  const byNewest = (a: RecordPointer, b: RecordPointer) => lexical(String(b.at), String(a.at)) || lexical(b.id, a.id);
+  if (query.mode === "block") {
+    const pointer = store.meta(query.id ?? "");
+    return { scope, mode: "block" as const, blocks: pointer && inEpoch(pointer) ? await read([pointer]) : [], hasMore: false, projection };
+  }
+  if (query.mode === "history") {
+    const kind = query.kind ?? "all", q = (query.q ?? "").trim().toLocaleLowerCase();
+    if (!["all", "thinking", "text", "tool", "system", "diagnostic"].includes(kind)) throw new Error("无效的日志类型");
+    const candidates = pointers.filter(pointer => kind === "all" ? pointer.kind !== "diagnostic" : pointer.kind === kind).sort(byNewest);
+    const before = decode(query.before);
+    const validBefore = bound(before) && before.kind === kind && before.q === q && typeof before.at === "string" && typeof before.id === "string";
+    const page: LogBlock[] = [];
+    let total = 0, hasMore = false;
+    let examined = 0;
+    for (const pointer of candidates) {
+      if (++examined % 250 === 0) {
+        await new Promise<void>(resolve => setImmediate(resolve));
+        signal?.throwIfAborted();
+      }
+      // Search is on demand. Only a page and one examined block are retained.
+      const block = q ? await store.read<LogBlock>(pointer) : undefined;
+      if (q && !activitySearchText(block!).includes(q)) continue;
+      total++;
+      if (validBefore && !(String(pointer.at) < before.at || (pointer.at === before.at && pointer.id < before.id))) continue;
+      if (page.length >= limit) { hasMore = true; continue; }
+      page.push(block ?? await store.read<LogBlock>(pointer));
+    }
+    const oldest = page.at(-1);
+    return { scope, mode: "history" as const, blocks: ascending(page), total, hasMore,
+      before: hasMore && oldest ? token({ kind, q, at: oldest.at, id: oldest.id }) : null, projection };
+  }
+  const cursor = decode(query.cursor);
+  if (bound(cursor) && Number.isSafeInteger(cursor.revision) && cursor.revision >= 0 && cursor.revision <= head) {
+    const versions = store.versions();
+    // Revisions are monotonic; finding the next delta never scans old bodies.
+    let low = 0, high = versions.length;
+    while (low < high) { const mid = (low + high) >>> 1; if (Number(versions[mid].revision) <= cursor.revision) low = mid + 1; else high = mid; }
+    const page: RecordPointer[] = [];
+    for (let i = low; i < versions.length && page.length <= limit; i++) if (inEpoch(versions[i])) page.push(versions[i]);
+    const hasMore = page.length > limit;
+    if (hasMore) page.pop();
+    const revision = hasMore ? Number(page.at(-1)!.revision) : head;
+    return { scope, mode: "delta" as const, blocks: await read(page), cursor: token({ revision }), hasMore,
+      projection: { ...projection, revision } };
+  }
+  const recent = pointers.sort(byNewest).slice(0, limit);
+  const running = pointers.filter(pointer => pointer.status === "running");
+  const selected = new Map([...recent, ...running].map(pointer => [pointer.id, pointer]));
+  return { scope, mode: "snapshot" as const, blocks: ascending(await read([...selected.values()])),
+    cursor: token({ revision: head }), hasMore: false, projection };
+}
+
+export async function getActivity(project: string, run?: string, epoch?: string, query: ActivityQuery = {}, signal?: AbortSignal) {
+  signal?.throwIfAborted();
+  const started = performance.now();
+  const projects = await catalog(undefined, true);
+  const selected = projects.find(value => value.id === project);
+  if (!selected) throw new Error("未找到工作区");
+  const latest = latestGameRun(selected)?.id;
+  const runId = run || latest;
+  if (!runId) return { scope: { project, runId: null, epoch: null }, mode: "snapshot", blocks: [], cursor: null, hasMore: false,
+    projection: { source: { component: "dashboard" }, throughSeq: 0, latestEventAt: null, latestSourceAt: null,
+      generatedAt: new Date().toISOString(), durationMs: performance.now() - started, blockCount: 0, revision: 0, generation: "empty" },
+    current: { workspace: selected.workspace ?? null, runId: null, epoch: null, activity: "idle", phase: "工作区尚无运行记录",
+      intent: null, observationId: null, updatedAt: null, error: null } };
+  const { manifest, index } = await loadRun(project, runId);
+  await refreshActivity(index);
+  // Readers may leave; shared projection work remains available to other consumers.
+  signal?.throwIfAborted();
+  const selectedState = await index.exclusive(async () => {
+    const scope = { project, runId, epoch: selectedEpoch(index, epoch) };
+    const state: CurrentState = JSON.parse(index.meta(`current:${scope.epoch ?? ""}`) ?? "null") ?? emptyCurrent();
+    return { scope, state };
+  });
+  // Pointer snapshots refer to immutable versions. A long history search does
+  // not hold the writer lock or delay Pet's next incremental page.
+  const result = { ...await queryActivity(index, selectedState.scope, query, signal), state: selectedState.state };
+  const live = latest === runId && manifest.kind !== "benchmark"
+    ? await hostRequest(manifest.socket, { kind: "status", argv: [] }).catch(() => null) : null;
+  const selectedCurrent = live?.runId === runId && (live.mode === "manual" || live.epoch === result.scope.epoch);
+  const connected = selectedCurrent && live?.connected;
+  const activity = connected ? (live.mode === "auto" && live.epoch === result.scope.epoch ? "running" : "manual") : "offline";
+  const { state, ...response } = result;
+  response.projection.durationMs = performance.now() - started;
+  return { ...response, current: { workspace: selected.workspace ?? manifest.workspace ?? null, runId, epoch: result.scope.epoch,
+    activity, phase: activity === "running" ? livePhaseValue(state.phase)?.label ?? "等待下一步"
+      : activity === "manual" ? (result.scope.epoch ? "已交还控制权" : "已连接，等待 AI 接管")
+      : live?.runId === runId && live.mode === "auto" && live.epoch !== result.scope.epoch ? "历史运行，仅供回放"
+      : live?.runId === runId && !live.connected ? "设备连接已断开" : "Host 离线",
+    intent: state.intent, observationId: state.observationId, updatedAt: state.updatedAt, error: state.error } };
 }

@@ -17,7 +17,8 @@ describe('companion notification IPC',()=>{
     const activity=installCompanionActivity(owner as never,pet as never)
     let blocks:LogBlock[]=[{id:'tool:1',at:'1',kind:'tool',title:'工具',text:'Inspect the current screen',status:'running'}]
     activity.configure({identity:()=> 'workspace',read:async()=>({
-      identity:'run:epoch',activity:'running',blocks,current:{workspace:'/workspace',runId:'run',epoch:'epoch',
+      identity:'run:epoch',activity:'running',mode:'delta',revision:blocks.length,hasMore:false,
+      blocks:blocks.map((block,index)=>({...block,createdRevision:index+1,revision:blocks.length})),current:{workspace:'/workspace',runId:'run',epoch:'epoch',
       phase:'等待模型',intent:blocks.at(-1)!.text,observationUrl:null,updatedAt:null,error:null,dashboardUrl:'http://127.0.0.1:3015'},
     })})
     await vi.advanceTimersByTimeAsync(0)

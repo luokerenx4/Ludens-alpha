@@ -47,8 +47,7 @@ export class AliceSessionCoordinator implements RsaActivitySource {
   private empty(phase: string): RsaPetSnapshot {
     return { workspace: this.target?.workspace ?? null, runId: null, epoch: null, phase,
       intent: null, observationUrl: null, updatedAt: null, error: null,
-      dashboardUrl: this.target ? `${this.origin}/?project=${encodeURIComponent(this.target.project)}&view=live` : `${this.origin}/`,
-      blocks: [] }
+      dashboardUrl: this.target ? `${this.origin}/?project=${encodeURIComponent(this.target.project)}&view=live` : `${this.origin}/` }
   }
   private publish(snapshot: RsaPetSnapshot) {
     this.current = snapshot
@@ -126,7 +125,7 @@ export class AliceSessionCoordinator implements RsaActivitySource {
       if (generation !== this.generation) throw new DOMException('Follow target changed', 'AbortError')
       return snapshot
     }
-    return { identity: this.identity(), activity: 'idle', current: this.current, blocks: [] }
+    return { identity: this.identity(), activity: 'idle', current: this.current, blocks: [], mode: 'snapshot', revision: 0, hasMore: false }
   }
   heartbeat(): Promise<void> {
     if (this.stopped) return Promise.resolve()

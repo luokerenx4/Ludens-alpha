@@ -2,117 +2,137 @@ import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSy
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { consumerRecorder, projectRsaRun, rsaProjectId, RsaSource, type RsaRunView, type LogBlock } from './rsa-source.js'
+import { consumerRecorder, rsaProjectId, RsaSource, type ActivityChanges } from './rsa-source.js'
 
-function run(overrides: Partial<RsaRunView> = {}): RsaRunView {
+const directories: string[] = []
+function workspace() {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), 'rsa-pet-source-')))
+  directories.push(directory)
+  return directory
+}
+function page(directory: string, overrides: Partial<ActivityChanges> = {}): ActivityChanges {
   return {
-    project: 'ws-test', run: '2026-10-17T13-38-12.609Z', manifest: { workspace: '/workspace' }, selectedEpoch: 'epoch-a',
-    calls: [{ inputObservations: ['model-input'], tools: [{ intent: '查看证据', at: '2026-10-17T13:39:01Z' }] }],
-    observations: [{ id: 'model-input', mediaType: 'image/png' }, { id: 'newly-captured', mediaType: 'image/png' }],
-    live: { runId: '2026-10-17T13-38-12.609Z', epoch: 'epoch-a', mode: 'auto', connected: true, reason: '' },
-    livePhase: { label: '等待模型首事件' }, updatedAt: '2026-10-17T13:40:00Z', ...overrides,
+    scope: { project: rsaProjectId(directory), runId: 'run-a', epoch: 'epoch-a' }, mode: 'snapshot', cursor: 'opaque:42', hasMore: false,
+    blocks: [{ id: 'tool', createdRevision: 10, revision: 42, kind: 'tool', at: '2026-10-17T13:40:00Z',
+      title: 'Tool', text: 'streamed intent', status: 'running' }],
+    projection: { source: { component: 'dashboard' }, throughSeq: 42, revision: 42, generation: 'generation-a',
+      latestEventAt: '2026-10-17T13:40:00Z', latestSourceAt: '2026-10-17T13:40:00Z',
+      generatedAt: '2026-10-17T13:40:00Z', durationMs: 2, blockCount: 1000 },
+    current: { workspace: directory, runId: 'run-a', epoch: 'epoch-a', activity: 'running',
+      phase: '等待模型首事件', intent: '查看证据', observationId: 'actual-model-input', updatedAt: '2026-10-17T13:40:00Z', error: null },
+    ...overrides,
   }
 }
-const blocks: LogBlock[] = [
-  { id: 'thought', kind: 'thinking', at: '2026-10-17T13:40:00Z', title: 'Thinking', text: 'logged thinking block', status: 'complete' },
-  { id: 'message', kind: 'text', at: '2026-10-17T13:40:01Z', title: 'Text', text: 'logged text block', status: 'complete' },
-  { id: 'tool', kind: 'tool', at: '2026-10-17T13:40:02Z', title: 'Tool', text: 'logged tool block', status: 'running' },
-]
-const directories: string[] = []
 afterEach(() => { vi.unstubAllGlobals(); for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }) })
 
-describe('RSA dashboard block source', () => {
-  it('preserves all projected blocks and uses actual model input rather than the newest unconsumed capture', () => {
-    const snapshot = projectRsaRun(run(), '/workspace', 'http://127.0.0.1:3015', blocks)
-    expect(snapshot.current.observationUrl).toContain('id=model-input')
-    expect(snapshot.current.intent).toBe('查看证据')
-    expect(snapshot.current.phase).toBe('等待模型首事件')
-    expect(snapshot.activity).toBe('running')
-    expect(snapshot.blocks).toBe(blocks); expect(snapshot.current.blocks).toBe(blocks)
-    expect(projectRsaRun(run({ calls: [{ inputObservations: [], tools: [] }] }), '/workspace', 'http://localhost:3015').current.observationUrl).toBeNull()
-  })
-  it('does not turn historical auto records or another epoch into live activity', () => {
-    expect(projectRsaRun(run({ live: null }), '/workspace', 'http://localhost:3015')).toMatchObject({ activity: 'offline', current: { phase: 'Host 离线' } })
-    const manual = run(); manual.live!.mode = 'manual'
-    expect(projectRsaRun(manual, '/workspace', 'http://localhost:3015')).toMatchObject({ activity: 'manual', current: { phase: '已交还控制权' } })
-    manual.live!.epoch = 'old-epoch'
-    expect(projectRsaRun(manual, '/workspace', 'http://localhost:3015').activity).toBe('offline')
-  })
-  it('recognizes a connected manual host after it clears its epoch, while auto requires an epoch match', () => {
-    const stopped = run()
-    stopped.live = { ...stopped.live!, mode: 'manual', epoch: null, reason: 'time budget' }
-    expect(projectRsaRun(stopped, '/workspace', 'http://localhost:3015')).toMatchObject({
-      activity: 'manual', current: { phase: '已交还控制权', error: null, epoch: 'epoch-a' },
-    })
-    stopped.live.mode = 'auto'
-    expect(projectRsaRun(stopped, '/workspace', 'http://localhost:3015').activity).toBe('offline')
-    stopped.live.mode = 'manual'; stopped.live.runId = 'another-run'
-    expect(projectRsaRun(stopped, '/workspace', 'http://localhost:3015').activity).toBe('offline')
-  })
-  it('describes a new manual host with no historical epoch as waiting for takeover', () => {
-    const fresh = run({ selectedEpoch: null, calls: [] })
-    fresh.live = { ...fresh.live!, mode: 'manual', epoch: null }
-    expect(projectRsaRun(fresh, '/workspace', 'http://localhost:3015')).toMatchObject({
-      activity: 'manual', current: { phase: '已连接，等待 AI 接管', epoch: null, error: null },
-    })
-  })
-  it('canonicalizes workspace and fetches every activity block from the selected run and epoch', async () => {
-    const directory = realpathSync(mkdtempSync(join(tmpdir(), 'rsa-pet-source-'))); directories.push(directory)
-    const link = directory + '-link'; symlinkSync(directory, link); directories.push(link)
-    const onSnapshot = vi.fn()
+describe('RSA incremental activity source', () => {
+  it('makes one changes request, publishes thin current state, and commits the cursor only after acceptance', async () => {
+    const directory = workspace(), link = directory + '-link'; symlinkSync(directory, link); directories.push(link)
+    const onSnapshot = vi.fn(), response = page(directory)
     const source = new RsaSource({ workspace: link, dashboardUrl: 'http://127.0.0.1:3015/', onSnapshot })
-    const project = rsaProjectId(directory)
-    const fetch = vi.fn().mockResolvedValueOnce(Response.json([{ id: 'other', runs: [{ id: 'newest-other' }] }, { id: project, runs: [
-      { id: '2026-10-17T12-00-00.000Z' }, { id: '2026-10-17T13-38-12.609Z' },
-      { id: '2026-10-18T00-00-00.000Z', kind: 'benchmark' }, { id: '2026-10-19T00-00-00.000Z', benchmark: { id: 'legacy-benchmark' } },
-    ] }]))
-      .mockResolvedValueOnce(Response.json(run({ manifest: { workspace: directory } })))
-      .mockResolvedValueOnce(Response.json({ blocks }))
-    vi.stubGlobal('fetch', fetch)
-    const actual = await source.read()
-    expect(fetch.mock.calls[1][0]).toContain(`project=${project}&run=2026-10-17T13-38-12.609Z`)
-    expect(fetch.mock.calls[2][0]).toContain(`/api/activity?project=${project}&run=2026-10-17T13-38-12.609Z&epoch=epoch-a`)
-    expect(actual.blocks).toEqual(blocks)
-    expect(onSnapshot).toHaveBeenCalledWith(expect.objectContaining({ workspace: directory, blocks }))
+    const fetch = vi.fn().mockImplementation(async () => Response.json(response)); vi.stubGlobal('fetch', fetch)
+    const first = await source.read()
+    expect(fetch).toHaveBeenCalledTimes(1)
+    expect(new URL(fetch.mock.calls[0][0]).pathname).toBe('/api/activity')
+    expect(Object.fromEntries(new URL(fetch.mock.calls[0][0]).searchParams)).toEqual({ project: rsaProjectId(directory), mode: 'changes' })
+    expect(first).toMatchObject({ mode: 'snapshot', revision: 42, blocks: response.blocks })
+    expect(first.current).toMatchObject({ workspace: directory, phase: '等待模型首事件', intent: '查看证据' })
+    expect(first.current.observationUrl).toContain('id=actual-model-input')
+    expect(onSnapshot).toHaveBeenLastCalledWith(first.current)
+    expect(first.current).not.toHaveProperty('blocks')
+    await source.read()
+    expect(new URL(fetch.mock.calls[1][0]).searchParams.has('cursor')).toBe(false)
+    first.acknowledge!()
+    await source.read()
+    expect(new URL(fetch.mock.calls[2][0]).searchParams.get('cursor')).toBe('opaque:42')
     fetch.mockRejectedValueOnce(new Error('connection refused'))
-    expect(await source.read()).toMatchObject({ activity: 'offline', blocks, current: { phase: '日志服务离线', intent: null, error: 'Error: connection refused', blocks } })
+    expect(await source.read()).toMatchObject({ activity: 'offline', mode: 'delta', blocks: [], hasMore: false,
+      current: { phase: '日志服务离线', error: 'Error: connection refused' } })
     source.stop()
   })
-  it('does not publish stale data after cancellation or after the source stops', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'rsa-pet-abort-')); directories.push(directory)
-    const onSnapshot = vi.fn(), abort = new AbortController()
-    const source = new RsaSource({ workspace: directory, dashboardUrl: 'http://127.0.0.1:3015', onSnapshot })
-    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => { abort.abort(); throw new Error('aborted') }))
-    await expect(source.read(abort.signal)).rejects.toThrow('aborted')
+
+  it('passes delta pages and current state directly, including cursor reset after an index generation changes', async () => {
+    const directory = workspace(), first = page(directory)
+    const delta = page(directory, { mode: 'delta', cursor: 'opaque:43', hasMore: true,
+      blocks: [{ ...first.blocks[0], revision: 43, text: 'complete text', status: 'complete' }],
+      projection: { ...first.projection, revision: 43 },
+      current: { ...first.current, activity: 'manual', phase: '已交还控制权', observationId: null } })
+    const reset = page(directory, { projection: { ...first.projection, generation: 'generation-b' }, cursor: 'new:42' })
+    const fetch = vi.fn().mockResolvedValueOnce(Response.json(first)).mockResolvedValueOnce(Response.json(delta))
+      .mockResolvedValueOnce(Response.json(reset)); vi.stubGlobal('fetch', fetch)
+    const source = new RsaSource({ workspace: directory, dashboardUrl: 'http://localhost:3015', onSnapshot: () => {} })
+    const initial = await source.read(); initial.acknowledge!()
+    const changes = await source.read(); changes.acknowledge!()
+    expect(changes).toMatchObject({ mode: 'delta', revision: 43, hasMore: true, blocks: delta.blocks, activity: 'manual' })
+    expect(changes.current.observationUrl).toBeNull()
+    const rebuilt = await source.read()
+    expect(rebuilt.mode).toBe('snapshot'); expect(rebuilt.identity).not.toBe(initial.identity)
+    expect(new URL(fetch.mock.calls[2][0]).searchParams.get('cursor')).toBe('opaque:43')
+    source.stop()
+  })
+
+  it('accepts an empty workspace without requesting a catalog or full run', async () => {
+    const directory = workspace(), empty = page(directory)
+    empty.scope.runId = null; empty.scope.epoch = null; empty.blocks = []; empty.cursor = null
+    empty.current = { ...empty.current, runId: null, epoch: null, activity: 'idle', phase: '工作区尚无运行记录', observationId: null }
+    const fetch = vi.fn().mockResolvedValue(Response.json(empty)); vi.stubGlobal('fetch', fetch)
+    const source = new RsaSource({ workspace: directory, dashboardUrl: 'http://localhost:3015', onSnapshot: () => {} })
+    expect(await source.read()).toMatchObject({ activity: 'idle', blocks: [], current: { workspace: directory, runId: null } })
+    expect(fetch).toHaveBeenCalledTimes(1); source.stop()
+  })
+
+  it('keeps runtime failures in blocks without treating a healthy log feed as a consumer error', async () => {
+    const directory = workspace(), response = page(directory), onSnapshot = vi.fn()
+    response.current = { ...response.current, activity: 'manual', phase: '已交还控制权', error: 'Invalid channel/value: A=true' }
+    response.blocks = [{ ...response.blocks[0], status: 'error', text: response.current.error! }]
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValueOnce(new Error('connection refused'))
+      .mockResolvedValueOnce(Response.json(response)))
+    const source = new RsaSource({ workspace: directory, dashboardUrl: 'http://localhost:3015', onSnapshot })
+    expect((await source.read()).current.error).toContain('connection refused')
+    const recovered = await source.read()
+    expect(recovered).toMatchObject({ activity: 'manual', blocks: response.blocks, current: { error: null } })
+    expect(onSnapshot).toHaveBeenLastCalledWith(expect.objectContaining({ error: null, phase: '已交还控制权' }))
+    source.stop()
+  })
+
+  it('does not publish stale data after cancellation or stop', async () => {
+    const directory = workspace(), onSnapshot = vi.fn(), abort = new AbortController()
+    const source = new RsaSource({ workspace: directory, dashboardUrl: 'http://localhost:3015', onSnapshot })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => ({ ok: true, json: async () => {
+      abort.abort(new Error('switched workspace')); return page(directory)
+    } })))
+    await expect(source.read(abort.signal)).rejects.toThrow('switched workspace')
     expect(onSnapshot).not.toHaveBeenCalled()
     source.stop(); await expect(source.read()).rejects.toThrow()
     expect(onSnapshot).not.toHaveBeenCalled()
   })
-  it('records changed consumption and failures once in a separate workspace journal', async () => {
-    const directory = realpathSync(mkdtempSync(join(tmpdir(), 'rsa-pet-journal-'))); directories.push(directory)
-    const projection = { source: { component: 'dashboard' }, throughSeq: 42, latestEventAt: run().updatedAt,
-      latestSourceAt: run().updatedAt, generatedAt: run().updatedAt, durationMs: 2, blockCount: blocks.length }
-    const source = new RsaSource({ workspace: directory, dashboardUrl: 'http://localhost:3015', onSnapshot: () => {},
-      record: consumerRecorder(directory) })
+
+  it('rejects data from a different workspace without advancing its cursor', async () => {
+    const directory = workspace(), response = page(directory); response.current.workspace = '/another-workspace'
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(response)))
+    const source = new RsaSource({ workspace: directory, dashboardUrl: 'http://localhost:3015', onSnapshot: () => {} })
+    const result = await source.read()
+    expect(result).toMatchObject({ activity: 'offline', blocks: [] })
+    expect(result.current.error).toContain('当前工作区'); expect(result.acknowledge).toBeUndefined(); source.stop()
+  })
+
+  it('records cursor progress and failures once without a block-history fingerprint', async () => {
+    const directory = workspace(), response = page(directory)
+    const source = new RsaSource({ workspace: directory, dashboardUrl: 'http://localhost:3015', onSnapshot: () => {}, record: consumerRecorder(directory) })
     let fail = false
-    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => {
       if (fail) throw new Error('connection refused')
-      if (url.includes('/api/catalog')) return Response.json([{ id: rsaProjectId(directory), runs: [{ id: run().run }] }])
-      if (url.includes('/api/run?')) return Response.json(run({ manifest: { workspace: directory } }))
-      return Response.json({ blocks, projection })
+      return Response.json(response)
     }))
-    expect((await source.read()).projection).toEqual(projection)
-    await source.read()
+    await source.read(); await source.read()
     fail = true; await source.read(); await source.read()
     const files = readdirSync(join(directory, 'logs', 'consumers'))
     expect(files).toHaveLength(1)
     const rows = readFileSync(join(directory, 'logs', 'consumers', files[0]), 'utf8').trim().split('\n').map(line => JSON.parse(line))
     expect(rows.map(row => row.type)).toEqual(['read', 'read_error'])
-    expect(rows[0]).toMatchObject({ schemaVersion: 2, source: { component: 'pet' }, runId: run().run,
-      seq: 1, trace: { epoch: 'epoch-a' }, data: { projection: { throughSeq: 42 }, blocks: 3 } })
+    expect(rows[0]).toMatchObject({ source: { component: 'pet' }, runId: 'run-a', seq: 1, trace: { epoch: 'epoch-a' },
+      data: { projection: { throughSeq: 42, revision: 42 }, revision: 42, blocks: 1 } })
     expect(rows[0].origin.clockId).toBe(rows[1].origin.clockId)
-    expect(rows[0].origin.eventId).not.toBe(rows[1].origin.eventId)
-    expect(rows[1].data.error).toContain('connection refused')
-    source.stop()
+    expect(rows[1].data.error).toContain('connection refused'); source.stop()
   })
 })

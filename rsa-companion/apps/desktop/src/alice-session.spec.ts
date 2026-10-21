@@ -8,10 +8,10 @@ function target(name: string): AliceTarget {
   return { project: `ws-${name}`, workspace: `/${name}`, revision: name, updatedAt: '2026-10-20T00:00:00Z' }
 }
 function snapshot(name: string): RsaActivitySnapshot {
-  const blocks = [{ id: name, kind: 'text' as const, title: name, text: name, status: 'running' as const, at: '' }]
-  return { identity: `${name}:run:epoch`, activity: 'running', blocks, current: {
+  const blocks = [{ id: name, kind: 'text' as const, title: name, text: name, status: 'running' as const, at: '', createdRevision: 1, revision: 1 }]
+  return { identity: `${name}:run:epoch`, activity: 'running', blocks, mode: 'delta', revision: 1, hasMore: false, current: {
     workspace: `/${name}`, runId: `run-${name}`, epoch: 'epoch', phase: name,
-    intent: null, observationUrl: null, updatedAt: null, error: null, dashboardUrl: 'http://localhost:3015', blocks,
+    intent: null, observationUrl: null, updatedAt: null, error: null, dashboardUrl: 'http://localhost:3015',
   } }
 }
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers() })

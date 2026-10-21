@@ -12,11 +12,11 @@ export class RsaActivityController {
   private sourceId: string | null = null
   private runId: string | null = null
   private activity: RsaActivitySnapshot['activity'] = 'idle'
-  private known = new Map<string, LogBlock>()
   private pending = new Map<string, LogBlock>()
   private queuedAt = new Map<string, number>()
   private progress = ''
   private throughSeq = 0
+  private revision = 0
   private context: { runId?: string | null; epoch?: string | null } = {}
   private dashboardUrl = ''
   private current: Displayed | null = null
@@ -41,13 +41,13 @@ export class RsaActivityController {
     if (this.current) this.surface.send(this.current.surface, { type: 'hide', displayId: this.current.displayId })
     this.current = null
   }
-  private clear() { this.hideCurrent(); this.pending.clear(); this.queuedAt.clear(); this.known.clear() }
+  private clear() { this.hideCurrent(); this.pending.clear(); this.queuedAt.clear(); this.revision = 0 }
   private enqueue(block: LogBlock) {
     if (!this.pending.has(block.id)) this.queuedAt.set(block.id, performance.now())
     this.pending.set(block.id, block)
   }
   private recordQueue() {
-    const data = { ...this.context, throughSeq: this.throughSeq, pendingBlocks: this.pending.size,
+    const data = { ...this.context, throughSeq: this.throughSeq, revision: this.revision, pendingBlocks: this.pending.size,
       queuedBlocks: this.pending.size - (this.current ? 1 : 0), activeBlockId: this.current?.blockId ?? null }
     const progress = JSON.stringify(data)
     if (progress === this.progress) return
@@ -135,14 +135,13 @@ export class RsaActivityController {
     } finally { this.recordQueue() }
   }
   private accept(snapshot: RsaActivitySnapshot) {
-    const changed = snapshot.identity !== this.runId
+    const changed = snapshot.identity !== this.runId || snapshot.mode === 'snapshot'
     this.context = { runId: snapshot.current.runId, epoch: snapshot.current.epoch }
     this.dashboardUrl = snapshot.current.dashboardUrl
     this.throughSeq = snapshot.projection?.throughSeq ?? 0
     this.activity = snapshot.activity
     if (changed) {
       this.clear(); this.runId = snapshot.identity
-      for (const block of snapshot.blocks) this.known.set(block.id, block)
       // Connecting does not replay a completed history. An active block is live
       // state, and all subsequent new blocks are queued in their recorded order.
       if (snapshot.activity === 'running') {
@@ -156,14 +155,16 @@ export class RsaActivityController {
       }
     } else {
       for (const block of snapshot.blocks) {
-        const previous = this.known.get(block.id)
-        this.known.set(block.id, block)
-        if (!this.visible(block)) continue
-        if (!previous || this.pending.has(block.id) || (block.status === 'error' && previous.status !== 'error')) {
+        if (block.revision <= this.revision || !this.visible(block)) continue
+        // Changes arrive in revision order, including each block's creation.
+        // Late updates refresh pending/active blocks, but never resurrect a
+        // historical or dismissed bubble. No all-history ID map is necessary.
+        if (this.pending.has(block.id) || block.createdRevision > this.revision) {
           this.enqueue(block)
         }
       }
     }
+    this.revision = snapshot.revision
     this.flush()
   }
   async poll() {
@@ -176,9 +177,14 @@ export class RsaActivityController {
     if (this.abort || !sourceId) return
     const abort = this.abort = new AbortController()
     try {
-      const snapshot = await this.source.read(abort.signal)
-      if (this.stopped || abort.signal.aborted || sourceId !== this.source.identity()) return
-      this.accept(snapshot)
+      let more = true
+      while (more) {
+        const snapshot = await this.source.read(abort.signal)
+        if (this.stopped || abort.signal.aborted || sourceId !== this.source.identity()) return
+        this.accept(snapshot)
+        snapshot.acknowledge?.()
+        more = snapshot.hasMore
+      }
     } catch {
       if (!this.stopped && sourceId === this.source.identity()) { this.activity = 'offline'; this.flush() }
     } finally { if (this.abort === abort) this.abort = null }

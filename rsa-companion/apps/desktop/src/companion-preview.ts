@@ -119,7 +119,8 @@ void app.whenReady().then(async () => {
   const blocks: LogBlock[] = [{ id: 'fixture:thinking', kind: 'thinking', at: new Date().toISOString(),
     title: '思考', text: 'Read the current screen', status: 'running' }]
   companion.configureActivity({ identity: () => 'smoke:workspace', read: async () => ({
-    identity: 'smoke:workspace:run:epoch', activity: 'running', blocks: blocks.map(block => ({ ...block })),
+    identity: 'smoke:workspace:run:epoch', activity: 'running', mode: 'delta', revision: blocks.length, hasMore: false,
+    blocks: blocks.map((block, index) => ({ ...block, createdRevision: index + 1, revision: blocks.length })),
     current: { workspace: home, runId: 'fixture', epoch: 'fixture', phase: '等待模型首事件',
       intent: 'Read the current screen', observationUrl: null, updatedAt: new Date().toISOString(),
       error: null, dashboardUrl: 'http://127.0.0.1:3015/' },
@@ -150,7 +151,7 @@ void app.whenReady().then(async () => {
   // Exercise the native content layout through the same IPC used by real logs.
   // Fixtures do not touch the running workspace, model, game, or user preferences.
   companion.configureActivity({ identity: () => 'smoke:complete', read: async () => ({
-    identity: 'smoke:complete', activity: 'idle', blocks: [], current: {
+    identity: 'smoke:complete', activity: 'idle', blocks: [], mode: 'snapshot', revision: 0, hasMore: false, current: {
       workspace: home, runId: null, epoch: null, phase: 'fixture', intent: null,
       observationUrl: null, updatedAt: null, error: null, dashboardUrl: 'http://127.0.0.1:3015/',
     },

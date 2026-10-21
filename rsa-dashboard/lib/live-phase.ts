@@ -23,25 +23,20 @@ type Pending = {
   httpId?: string;
   requestId?: string;
   transport?: "websocket" | "sse";
-  images?: Set<string>;
+  images?: string[];
   uncertainStart?: boolean;
 };
 
-// This is a view of logged operations, not a second scheduler. A completion may
-// only change its own operation; late events cannot end a newer HTTP/tool/capture.
-export function getLivePhase(
-  events: Event[],
-  run: string,
-  epoch: string | null,
-  live: LiveStatus | null,
-  now = Date.now(),
-): LivePhase | null {
-  if (!epoch || live?.runId !== run || live.epoch !== epoch ||
-      !live.connected || live.mode !== "auto") return null;
-
-  const pending = new Map<string, Pending>();
-  let compactionCount = 0;
-  let idle: Event | undefined;
+// Persist only unfinished operations. Completed history lives in the file index.
+export interface LivePhaseState {
+  pending: Record<string, Pending>;
+  compactionCount: number;
+  idle?: Event;
+}
+export const emptyLivePhase = (): LivePhaseState => ({ pending: {}, compactionCount: 0 });
+export function advanceLivePhase(state: LivePhaseState, events: Iterable<Event>) {
+  const pending = new Map(Object.entries(state.pending));
+  let { compactionCount, idle } = state;
   const start = (key: string, kind: Pending["kind"], event: Event, owner: string) => {
     pending.set(key, { kind, event, owner, order: event.seq });
   };
@@ -49,7 +44,6 @@ export function getLivePhase(
     if (pending.delete(key)) idle = event;
   };
   for (const event of events) {
-    if (event.trace.epoch !== epoch) continue;
     const { type, trace: t, data: d } = event;
     const owner = JSON.stringify([t.epoch, t.modelCallId, t.toolCallId]);
     const modelKey = `model:${t.modelCallId}`;
@@ -142,7 +136,7 @@ export function getLivePhase(
           if (d.observations?.length) {
             capture.kind = "observation";
             capture.event = event;
-            capture.images = new Set(d.observations);
+            capture.images = d.observations;
           } else finish(captureKey, event);
         }
         break;
@@ -156,8 +150,8 @@ export function getLivePhase(
         const ids: string[] = type === "observation_media" ? [d.observationId] : d.observations ?? [];
         for (const [key, operation] of pending) {
           if (operation.owner !== owner || !operation.images) continue;
-          for (const id of ids) operation.images.delete(id);
-          if (!operation.images.size) finish(key, event);
+          operation.images = operation.images.filter(id => !ids.includes(id));
+          if (!operation.images.length) finish(key, event);
         }
         break;
       }
@@ -173,6 +167,13 @@ export function getLivePhase(
       // compaction_http_* is independent background work, never a blocking phase.
     }
   }
+  state.pending = Object.fromEntries(pending);
+  state.compactionCount = compactionCount;
+  state.idle = idle;
+}
+export function livePhaseValue(state: LivePhaseState, now = Date.now()): LivePhase | null {
+  const pending = new Map(Object.entries(state.pending));
+  const idle = state.idle;
   const phase = pending.get("compaction") ?? [...pending.values()].sort((a, b) => b.order - a.order)[0];
   const event = phase?.event ?? idle;
   if (!event) return null;
@@ -184,4 +185,14 @@ export function getLivePhase(
     elapsedMs: phase?.uncertainStart ? null : Math.max(0, now - Date.parse(event.at)),
     sourceSeq: event.seq,
   };
+}
+
+// The pure projector is also used by small fixtures and offline callers.
+export function getLivePhase(events: Event[], run: string, epoch: string | null,
+  live: LiveStatus | null, now = Date.now()): LivePhase | null {
+  if (!epoch || live?.runId !== run || live.epoch !== epoch ||
+      !live.connected || live.mode !== "auto") return null;
+  const state = emptyLivePhase();
+  advanceLivePhase(state, events.filter(event => event.trace.epoch === epoch));
+  return livePhaseValue(state, now);
 }

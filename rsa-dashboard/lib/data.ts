@@ -1,12 +1,11 @@
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { join, resolve, basename, dirname } from "node:path";
 import { connect } from "node:net";
-import { aggregate, parseEvents, selectCycle } from "./aggregate";
-import { getLivePhase } from "./live-phase";
-import { projectTelemetry } from "./telemetry";
+import { selectCycle } from "./aggregate";
+import { loadIndexedEvents } from "./log-index";
+import { refreshRunProjection, selectIndexedCycle, readRunProjection, indexedObservation, type RunPage } from "./run-index";
 import { latestGameRun } from "./initial-selection";
 import type { Event, Manifest, Project, RunData, LiveStatus } from "./types";
-import { eventObservations, perceptionStatus } from "./observation-events";
 // Runtime state lives in artifacts beside the monorepo, outside its Git tree.
 export const artifactRoot = resolve(process.cwd(), "../../artifacts/rsa");
 const safePart = (value: string) =>
@@ -50,7 +49,22 @@ export async function resolveRun(
 ) {
   return resolveInRoots(run, await runRoots(project, root));
 }
+const catalogCache = new Map<string, { expires: number; value?: Project[]; pending?: Promise<Project[]> }>();
+export function clearCatalogCache() { catalogCache.clear(); }
 export async function catalog(root = artifactRoot, includeEmpty = false): Promise<Project[]> {
+  const key = JSON.stringify([root, includeEmpty]);
+  const cached = catalogCache.get(key);
+  if (cached?.pending) return cached.pending;
+  if (cached?.value && cached.expires > Date.now()) return cached.value;
+  const entry: { expires: number; value?: Project[]; pending?: Promise<Project[]> } = { expires: 0 };
+  entry.pending = scanCatalog(root, includeEmpty).then(value => {
+    entry.value = value; entry.expires = Date.now() + 3000; delete entry.pending;
+    return value;
+  }, error => { if (catalogCache.get(key) === entry) catalogCache.delete(key); throw error; });
+  catalogCache.set(key, entry);
+  return entry.pending;
+}
+async function scanCatalog(root: string, includeEmpty: boolean): Promise<Project[]> {
   const directories = await readdir(/* turbopackIgnore: true */ root, {
     withFileTypes: true,
   }).catch((error: NodeJS.ErrnoException) => {
@@ -104,29 +118,15 @@ export async function catalog(root = artifactRoot, includeEmpty = false): Promis
     .sort((a, b) => (latestGameRun(b)?.id ?? b.runs[0]?.id ?? "")
       .localeCompare(latestGameRun(a)?.id ?? a.runs[0]?.id ?? ""));
 }
-const eventCache = new Map<
-  string,
-  { mtime: number; size: number; events: Event[] }
->();
 export async function loadRun(project: string, run: string, root = artifactRoot) {
   const path = await resolveRun(project, run, root);
-  const [manifest, s] = await Promise.all([
+  const [manifest, indexed] = await Promise.all([
     readFile(join(path, "manifest.json"), "utf8").then(
       (s) => JSON.parse(s) as Manifest,
     ),
-    stat(join(path, "events.jsonl")),
+    loadIndexedEvents(path),
   ]);
-  let cached = eventCache.get(path);
-  if (!cached || cached.mtime !== s.mtimeMs || cached.size !== s.size) {
-    cached = {
-      mtime: s.mtimeMs,
-      size: s.size,
-      events: parseEvents(await readFile(join(path, "events.jsonl"), "utf8")),
-    };
-    eventCache.set(path, cached);
-    if (eventCache.size > 8) eventCache.delete(eventCache.keys().next().value!);
-  }
-  return { path, manifest, events: cached.events };
+  return { path, manifest, ...indexed };
 }
 export function hostRequest(
   socketPath: string,
@@ -190,12 +190,15 @@ export async function getRun(
   project: string,
   run: string,
   epoch?: string,
+  page: RunPage = {},
 ): Promise<RunData> {
-  const [{ manifest, events }, projects] = await Promise.all([
+  const [{ manifest, index }, projects] = await Promise.all([
     loadRun(project, run),
     catalog(),
   ]);
-  const cycle = selectRunEvents(manifest, events, epoch);
+  await refreshRunProjection(index);
+  const cycle = await selectIndexedCycle(index, manifest, epoch);
+  const { phase, ...projection } = await readRunProjection(index, cycle.selectedEpoch, page, cycle.wholeRun);
   const latest = latestGameRun(projects.find((p) => p.id === project))?.id;
   let live: LiveStatus | null = null;
   // Only the newest manifest may designate a live socket. Archived runs never contact hosts.
@@ -213,12 +216,9 @@ export async function getRun(
     manifest,
     cycles: cycle.cycles,
     selectedEpoch: cycle.selectedEpoch,
-    ...aggregate(cycle.events),
-    // Process lifecycle is independent of takeover epochs.
-    perception: perceptionStatus(events, cycle.selectedEpoch),
-    telemetry: projectTelemetry(cycle.events, events),
+    ...projection,
     live: matched ? live : null,
-    livePhase: getLivePhase(cycle.events, run, cycle.selectedEpoch, live),
+    livePhase: matched && live?.connected && live.mode === "auto" && live.epoch === cycle.selectedEpoch ? phase : null,
     controlAllowed,
     controlReason:
       latest !== run
@@ -260,8 +260,8 @@ export async function stopRun(
   });
 }
 export async function mediaFile(project: string, run: string, id: string, root = artifactRoot) {
-  const { path, events } = await loadRun(project, run, root);
-  const observation = events.flatMap(eventObservations).find((item) => item.id === id);
+  const { path, index } = await loadRun(project, run, root);
+  const observation = await indexedObservation(index, id);
   const textMedia = observation?.mediaType.startsWith("text/") || observation?.mediaType === "application/json";
   if (
     !observation || typeof observation.path !== "string" ||
