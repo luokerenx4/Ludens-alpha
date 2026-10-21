@@ -129,7 +129,7 @@ A workspace lives outside the source checkout:
 ```text
 my-task/
 ├── rsa.json          # Launch configuration
-├── AGENTS.md         # Workspace instructions
+├── AGENTS.md         # Optional workspace instructions
 ├── baseware.json     # Generated device capability and parameter reference
 ├── perception.py     # Persistent, workspace-owned perception
 ├── skills/           # Reusable methods and supporting scripts
@@ -150,10 +150,10 @@ Run benchmarks from a workspace:
 ```sh
 rsa bench list
 rsa bench run perception-lifecycle
-rsa bench run all
+rsa bench help capability-reuse
 ```
 
-The built-in cases cover perception lifecycle, control handoff, WebSocket recovery, background compaction, and capability reuse. `run all` selects only built-in cases and skips those requiring `--live`; the live capability-reuse case uses a real model in an isolated test environment.
+The built-in cases cover perception lifecycle, control handoff, WebSocket recovery, background compaction, and capability reuse. Each run selects one case explicitly; read its help first. The capability-reuse case uses a real model in an isolated test environment.
 
 Workspace functions marked with `@benchmark` can report metrics and checks through the same interface. Inspect results in the console or use `rsa bench history` and `rsa bench compare`. Execution status and pass/fail verdicts are separate: a completed call is not evidence of task success. See the [Benchmark guide](rsa/benchmarks/README.md).
 
