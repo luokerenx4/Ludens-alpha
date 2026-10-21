@@ -471,7 +471,9 @@ mGBA 0.10.5 的 socket 析构会再次关闭未置为无效的描述符（[源�
 
 ## 验证
 
-Benchmark 统一管理内置 Harness 工况与 workspace 的 `@benchmark` Python 函数：`rsa bench list/help/run/history/compare` 用于发现、执行与比较，结果均在本工作区 `logs/` 和看板 **Benchmark → 基准用例** 查看。Python 直接 import 评测也自动记录，可复用原进程模型；不进入 Controller 或 OMP 工具列表。`rsa bench run all` 跳过需要 `--live` 的工况；`rsa bench run capability-reuse --live` 在隔离工作区评测真实模型的能力创建与复用。内置工况不操作当前游戏，自定义评测按作者代码执行。执行参数、结果协议和边界见 [Benchmark 说明](benchmarks/README.md)。
+Benchmark 统一管理内置 Harness 工况与 workspace 的 `@benchmark` Python 函数：`rsa bench list/help/run/history/compare` 用于发现、执行与比较，结果在本工作区 `logs/` 和看板 **Benchmark → 评测目录** 查看。Python 直接 import 评测在原进程执行并记录，可复用模型；不进入 Controller 或 OMP 工具列表。
+
+`run` 显式选择评测 ID；`capability-reuse` 会在隔离工作区调用真实模型，其他内置工况使用模拟条件，不操作当前游戏。自定义评测按作者代码执行，设备控制仍由 Baseware 管理。作者用 `rsa bench schema` 读取报告格式、`validate` 检查数据；报告有误时用 `rsa bench report <run-id> --file <report.json>` 修正，保留版本且不重做动作。执行事实与报告判定分别记录。完整契约与边界见 [Benchmark 说明](benchmarks/README.md)。
 
 ```sh
 bun run check

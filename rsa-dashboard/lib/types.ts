@@ -21,7 +21,7 @@ export interface Event {
 export interface Manifest {
   kind?: string;
   parentRunId?: string;
-  benchmark?: { id: string; revision: string; mode: "offline" | "live" };
+  benchmark?: { id: string; revision: string; protocolVersion: string };
   shiori?: { implementation: string; implementationVersion: string } | null;
   runId: string;
   workspace: string;

@@ -8,7 +8,6 @@ from functools import wraps
 import hashlib
 import inspect
 import json
-import math
 import os
 from pathlib import Path
 import re
@@ -18,6 +17,7 @@ import uuid
 
 from ._capabilities import function_schema, load_function, marked_functions, validate, workspace_sources
 from ._context import current, scope as call_scope
+from ._benchmark_report import write_report
 
 
 _active = ContextVar("rsa_benchmark", default=None)
@@ -60,8 +60,8 @@ def _options(marker):
         if marker.args:
             raise ValueError("Benchmark decorator options must be named literals")
         for keyword in marker.keywords:
-            if keyword.arg not in {"targets", "mode", "title", "scope"} or keyword.arg in options:
-                raise ValueError("Supported benchmark options are targets, mode, title, and scope")
+            if keyword.arg not in {"targets", "protocol", "title", "scope"} or keyword.arg in options:
+                raise ValueError("Supported benchmark options are targets, protocol, title, and scope")
             try:
                 options[keyword.arg] = ast.literal_eval(keyword.value)
             except (ValueError, TypeError):
@@ -71,8 +71,8 @@ def _options(marker):
         raise ValueError("Benchmark targets must be a list of nonempty capability IDs")
     if len(set(targets)) != len(targets):
         raise ValueError("Benchmark targets must be unique")
-    if not isinstance(options.get("mode", "offline"), str) or options.get("mode", "offline") not in {"offline", "live"}:
-        raise ValueError('Benchmark mode must be "offline" or "live"')
+    if not isinstance(options.get("protocol", "1"), str) or not options.get("protocol", "1").strip():
+        raise ValueError("Benchmark protocol must be a nonempty version string")
     if options.get("title") is not None and (not isinstance(options["title"], str) or not options["title"].strip()):
         raise ValueError("Benchmark title must be a nonempty string")
     if not isinstance(options.get("scope", ""), str):
@@ -94,7 +94,7 @@ def _definition(relative, raw, tree, node, markers):
         "id": "python/%s:%s" % (relative, node.name),
         "title": options.get("title") or description.splitlines()[0],
         "description": description, "scope": options.get("scope", ""),
-        "revision": code_sha, "source": "workspace", "mode": options.get("mode", "offline"),
+        "revision": code_sha, "source": "workspace", "protocolVersion": options.get("protocol", "1"),
         "parameters": parameters, "targets": options.get("targets", []),
         "entry": {"kind": "python", "path": relative, "function": node.name, "codeSHA": code_sha},
     }
@@ -134,11 +134,11 @@ def _new_run(workspace, definition, parameters, parent):
     directory.mkdir(parents=True)
     (directory / "artifacts").mkdir()
     result = {
-        "schemaVersion": 2, "definition": definition, "status": "running", "verdict": None,
+        "schemaVersion": 3, "definition": definition, "status": "running",
         "startedAt": started, "endedAt": None, "durationMs": None,
         "runId": run_id, "project": _workspace_id(workspace), "workspace": str(workspace),
         "trace": _child_trace(parent), "parameters": parameters,
-        "provenance": {"python": sys.version.split()[0]}, "checks": [], "metrics": [],
+        "provenance": {"python": sys.version.split()[0]},
         "conditions": {}, "subjects": [], "artifacts": [], "limitations": [definition["scope"]] if definition["scope"] else [],
     }
     if parent.get("run_id"):
@@ -148,60 +148,10 @@ def _new_run(workspace, definition, parameters, parent):
         "workspaceId": result["project"], "eventSchemaVersion": 2,
         "drivers": [], "model": None, "seconds": 0, "maxRequests": 0,
         "trace": result["trace"], **({"parentRunId": result["parentRunId"]} if "parentRunId" in result else {}),
-        "benchmark": {"id": definition["id"], "revision": definition["revision"], "mode": definition["mode"]},
+        "benchmark": {"id": definition["id"], "revision": definition["revision"], "protocolVersion": definition["protocolVersion"]},
     })
     _write(directory / "benchmark.json", result)
     return directory, result
-
-
-def _validate_outcome(outcome):
-    _json(outcome)
-    for key in ("checks", "metrics"):
-        items = outcome[key]
-        if not isinstance(items, list):
-            raise ValueError("Benchmark %s must be an array" % key)
-        ids = []
-        for item in items:
-            if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not item["id"]:
-                raise ValueError("Benchmark %s require nonempty IDs" % key)
-            ids.append(item["id"])
-        if len(set(ids)) != len(ids):
-            raise ValueError("Benchmark metric/check IDs must be unique")
-    for metric in outcome["metrics"]:
-        value = metric.get("value")
-        if "value" not in metric or (value is not None and (type(value) not in (int, float) or not math.isfinite(value))):
-            raise ValueError("Benchmark metric value must be a finite number or null")
-        if not isinstance(metric.get("unit"), str) or metric.get("direction", "none") not in {"lower", "higher", "none"}:
-            raise ValueError("Benchmark metric requires a unit and valid direction")
-        if "label" in metric and not isinstance(metric["label"], str):
-            raise ValueError("Benchmark metric label must be a string")
-    for check in outcome["checks"]:
-        if "passed" not in check or (check["passed"] is not None and type(check["passed"]) is not bool):
-            raise ValueError("Benchmark check passed must be true, false, or null")
-        if any(not isinstance(check.get(key), str) for key in ("label", "expected", "actual")):
-            raise ValueError("Benchmark checks require label, expected, and actual strings")
-        if not isinstance(check.get("evidenceSeq"), list) or any(type(seq) is not int or seq < 1 or seq > 9007199254740991 for seq in check["evidenceSeq"]):
-            raise ValueError("Benchmark check evidenceSeq must contain positive safe integers")
-    if "conditions" in outcome and not isinstance(outcome["conditions"], dict):
-        raise ValueError("Benchmark conditions must be an object")
-    for key in ("subjects", "artifacts"):
-        if key in outcome and not isinstance(outcome[key], list):
-            raise ValueError("Benchmark %s must be an array" % key)
-    for subject in outcome.get("subjects", []):
-        if not isinstance(subject, dict) or not isinstance(subject.get("id"), str) or not subject["id"]:
-            raise ValueError("Benchmark subject requires an ID")
-        if any(key in subject and not isinstance(subject[key], str) for key in ("path", "sha256", "revision")):
-            raise ValueError("Benchmark subject references must be strings")
-    for artifact in outcome.get("artifacts", []):
-        if not isinstance(artifact, dict) or not isinstance(artifact.get("path"), str) or not artifact["path"]:
-            raise ValueError("Benchmark artifact requires a path")
-        path = artifact["path"]
-        if path.startswith("/") or "\\" in path or ".." in path.split("/"):
-            raise ValueError("Artifacts must be relative to the benchmark run")
-        if "label" in artifact and not isinstance(artifact["label"], str):
-            raise ValueError("Benchmark artifact label must be a string")
-    if "limitations" in outcome and (not isinstance(outcome["limitations"], list) or any(not isinstance(item, str) for item in outcome["limitations"])):
-        raise ValueError("Benchmark limitations must be strings")
 
 
 class BenchmarkContext:
@@ -220,21 +170,38 @@ class BenchmarkContext:
         self._save()
 
     def subject(self, id, *, path=None, sha256=None, revision=None):
+        if not isinstance(id, str) or not id:
+            raise ValueError("Benchmark subject requires a nonempty ID")
         item = {"id": id, **{key: str(value) for key, value in {"path": path, "sha256": sha256, "revision": revision}.items() if value is not None}}
-        _validate_outcome({"checks": [], "metrics": [], "subjects": [item]})
         self.result.setdefault("subjects", []).append(item)
         self._save()
         return item
 
     def artifact(self, path, *, label=None):
+        """Archive a workspace file; relative paths are relative to the workspace."""
         path = Path(path)
-        absolute = (self.run_dir / path).resolve() if not path.is_absolute() else path.resolve()
-        relative = absolute.relative_to(self.run_dir).as_posix()
-        item = {"path": relative, **({"label": label} if label is not None else {})}
-        _validate_outcome({"checks": [], "metrics": [], "artifacts": [item]})
+        workspace = Path(self.result["workspace"])
+        source = (workspace / path).resolve() if not path.is_absolute() else path.resolve()
+        source.relative_to(workspace)
+        if label is not None and not isinstance(label, str):
+            raise ValueError("Benchmark artifact label must be a string")
+        data = source.read_bytes()
+        sha256 = hashlib.sha256(data).hexdigest()
+        directory = self.run_dir / "artifacts"
+        directory.mkdir(exist_ok=True)
+        destination = directory / (sha256 + "-" + source.name)
+        destination.write_bytes(data)
+        item = {"path": destination.relative_to(self.run_dir).as_posix(), "sha256": sha256,
+                **({"label": label} if label is not None else {})}
         self.result.setdefault("artifacts", []).append(item)
         self._save()
         return item
+
+    def limitations(self, *messages):
+        if any(not isinstance(message, str) for message in messages):
+            raise ValueError("Benchmark limitations must be strings")
+        self.result.setdefault("limitations", []).extend(messages)
+        self._save()
 
     def record(self, event_type, data, trace=None, *, origin=None, source=None):
         self._sequence += 1
@@ -249,6 +216,7 @@ class BenchmarkContext:
         }
         with (self.run_dir / "events.jsonl").open("a", encoding="utf-8") as output:
             output.write(_json(event) + "\n")
+        return self._sequence
 
     def _workspace_event(self, context, event_type, data, origin):
         self.record(event_type, data, context["trace"], origin=origin,
@@ -260,33 +228,17 @@ class BenchmarkContext:
                 subjects.append(subject)
                 self._save()
 
-    def _complete(self, report):
-        if report is None:
-            report = {}
-        if not isinstance(report, dict):
-            raise ValueError("A benchmark must return a report dict or None")
-        allowed = {"checks", "metrics", "conditions", "subjects", "artifacts", "limitations"}
-        if set(report) - allowed:
-            raise ValueError("Unknown benchmark report fields: " + ", ".join(sorted(set(report) - allowed)))
-        outcome = {"checks": [], "metrics": [], **report}
-        for key in ("subjects", "artifacts", "limitations"):
-            if key in self.result:
-                if not isinstance(outcome.get(key, []), list):
-                    raise ValueError("Benchmark %s must be an array" % key)
-                outcome[key] = self.result[key] + outcome.get(key, [])
-        if "conditions" in self.result:
-            if not isinstance(outcome.get("conditions", {}), dict):
-                raise ValueError("Benchmark conditions must be an object")
-            outcome["conditions"] = {**self.result["conditions"], **outcome.get("conditions", {})}
-        _validate_outcome(outcome)
-        for artifact in outcome.get("artifacts", []):
-            path = Path(artifact["path"])
-            (self.run_dir / path).resolve().relative_to(self.run_dir)
-        self.result.update(json.loads(_json(outcome)))
-        checks = self.result["checks"]
-        self.result["verdict"] = "failed" if any(check["passed"] is False for check in checks) else (
-            "inconclusive" if any(check["passed"] is None for check in checks) else "passed" if checks else None)
-        self.result["status"] = "completed"
+    def _report(self, raw):
+        report = write_report(self.run_dir, self.result, raw)
+        self.record("benchmark_report", {"benchmarkId": self.result["definition"]["id"],
+                    "reportId": report["id"], "previousReportId": report["previousReportId"],
+                    "valid": not report["errors"], "errors": report["errors"]})
+        if report["errors"]:
+            issues = "\n".join("  %s: %s" % (item["path"], item["message"]) for item in report["errors"])
+            print("RSA benchmark execution completed; report %s needs correction.\n%s\n"
+                  "Repair without rerunning: rsa bench report %s --file report.json" %
+                  (report["id"], issues, self.result["runId"]), file=sys.stderr)
+        return report
 
 
 def current_benchmark():
@@ -307,7 +259,7 @@ def prepared_run(directory, result):
         _prepared.reset(token)
 
 
-def benchmark(function=None, *, targets=None, mode="offline", title=None, scope=""):
+def benchmark(function=None, *, targets=None, protocol="1", title=None, scope=""):
     """Mark a synchronous, typed benchmark without exposing a Controller capability."""
     def mark(target):
         workspace = Path(current()["workspace"]).resolve()
@@ -358,10 +310,9 @@ def benchmark(function=None, *, targets=None, mode="offline", title=None, scope=
                 # to that host, while this sink also records them in this run.
                 with call_scope({**parent, "trace": result["trace"], "event_sink": context._workspace_event}):
                     report = target(*args, **kwargs)
-                    context._complete(report)
             except BaseException as error:
                 result.update(status="cancelled" if isinstance(error, KeyboardInterrupt) else "error",
-                              verdict=None, error="%s: %s" % (type(error).__name__, error))
+                              errorPhase="execute", error="%s: %s" % (type(error).__name__, error))
                 try:
                     context.record("benchmark_error", {"error": result["error"]})
                     _finish(context, started)
@@ -369,7 +320,10 @@ def benchmark(function=None, *, targets=None, mode="offline", title=None, scope=
                     print("RSA benchmark result write failed: %s" % write_error, file=sys.stderr)
                 raise
             else:
+                result["status"] = "completed"
                 _finish(context, started)
+                # A malformed report cannot undo an already completed experiment.
+                context._report(report)
                 return report
             finally:
                 _active.reset(active_token)
@@ -386,7 +340,7 @@ def _finish(context, started):
     result = context.result
     result["endedAt"] = _now()
     result["durationMs"] = (time.monotonic() - started) * 1000
-    context.record("benchmark_end", {"benchmarkId": result["definition"]["id"], "status": result["status"], "verdict": result["verdict"]})
+    context.record("benchmark_end", {"benchmarkId": result["definition"]["id"], "status": result["status"]})
     context._save()
 
 

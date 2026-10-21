@@ -5,7 +5,7 @@ import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { pythonModulePaths } from "../src/harness/python-capabilities.ts";
 import { resolveWorkspaceState } from "../src/harness/workspace-state.ts";
-import { validateResult, type BenchmarkDefinition, type BenchmarkResult } from "../src/benchmark/contract.ts";
+import { projectResult, validateExecution, validateResult, type BenchmarkDefinition, type BenchmarkExecution } from "../src/benchmark/contract.ts";
 
 const bridgePath = fileURLToPath(new URL("../python/rsa_tools/_bridge.py", import.meta.url));
 async function fixture() {
@@ -40,7 +40,12 @@ async function results(workspace: string) {
   const entries = await readdir(join(workspace, "logs"), { withFileTypes: true });
   return Promise.all(entries.filter(item => item.isDirectory()).map(async item => {
     const directory = join(workspace, "logs", item.name);
-    const result = JSON.parse(await readFile(join(directory, "benchmark.json"), "utf8")) as BenchmarkResult;
+    const execution = JSON.parse(await readFile(join(directory, "benchmark.json"), "utf8")) as BenchmarkExecution;
+    validateExecution(execution);
+    const names = await readdir(join(directory, "reports")).catch(() => []);
+    const reports = await Promise.all(names.filter(name => name.endsWith(".json") && !name.endsWith(".raw.json")).sort()
+      .map(name => readFile(join(directory, "reports", name), "utf8").then(JSON.parse)));
+    const result = projectResult(execution, reports);
     validateResult(result);
     const events = (await readFile(join(directory, "events.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
     return { result, events, directory };
@@ -59,7 +64,7 @@ Path("imported").touch()
 def quality(seed: int = 7, weights: str | None = None):
     """Measure the current model."""
     return {}
-@rsa.benchmark(mode="live")
+@rsa.benchmark(protocol="2")
 def online():
     """Evaluate an explicitly requested online service."""
     return None
@@ -79,8 +84,9 @@ def invalid(model):
     expect(found.reply.benchmarks.map((item: BenchmarkDefinition) => item.id)).toEqual([
       "python/evaluations/quality.py:quality", "python/evaluations/quality.py:online",
     ]);
-    expect(found.reply.benchmarks[0]).toMatchObject({ title: "Quality", source: "workspace", mode: "offline",
+    expect(found.reply.benchmarks[0]).toMatchObject({ title: "Quality", source: "workspace", protocolVersion: "1",
       targets: ["python/model.py:predict"], parameters: { properties: { seed: { type: "integer", default: 7 } } } });
+    expect(found.reply.benchmarks[1].protocolVersion).toBe("2");
     expect(found.reply.benchmarks[0].revision).toBe(found.reply.benchmarks[0].entry.codeSHA);
     expect(found.reply.diagnostics).toHaveLength(2);
     expect(await Bun.file(join(workspace, "imported")).exists()).toBe(false);
@@ -95,7 +101,8 @@ def invalid(model):
 test("direct imports and SDK runs reuse models, persist parameterized reports offline, and keep host traces", async () => {
   const { root, workspace, artifactRoot } = await fixture();
   try {
-    const source = `from rsa_tools import benchmark, capability, current_benchmark
+    const source = `from pathlib import Path
+from rsa_tools import benchmark, capability, current_benchmark
 from rsa_tools._context import current
 MODEL = object()
 seen = []
@@ -110,10 +117,10 @@ def quality(seed: int = 7, *, samples: int = 3):
     context = current_benchmark()
     context.conditions(seed=seed, samples=samples)
     context.subject("weights", revision="training-step-10")
-    artifact = context.run_dir / "scores.txt"
+    artifact = Path("scores.txt")
     artifact.write_text("scores")
     context.artifact(artifact, label="Scores")
-    return {"metrics": [{"id": "count", "value": evaluate(), "unit": "calls"}]}
+    return {"metrics": {"count": {"value": evaluate(), "unit": "calls"}}}
 `;
     await writeFile(join(workspace, "model.py"), source);
     const response = await python(workspace, artifactRoot, `import hashlib, json
@@ -126,6 +133,7 @@ identity = model.MODEL
 first = model.quality(11)
 Path("model.py").write_text(Path("model.py").read_text().replace('title="Stable"', 'title="Edited"'))
 second = run("python/model.py:quality", {"seed": 12, "samples": 5})
+Path("scores.txt").write_text("changed after the experiment")
 assert all(item[0] is identity for item in model.seen)
 try:
     Client().call("python/model.py:quality")
@@ -133,7 +141,7 @@ except ValueError as error:
     assert "@capability" in str(error)
 else:
     raise AssertionError("benchmark leaked into Controller capabilities")
-print(json.dumps({"values": [first["metrics"][0]["value"], second["metrics"][0]["value"]],
+print(json.dumps({"values": [first["metrics"]["count"]["value"], second["metrics"]["count"]["value"]],
                   "loaded_hash": loaded_hash, "host_ids": [item[1] for item in model.seen],
                   "traces": [item[2] for item in model.seen]}))
 `, { RSA_RUN_ID: "host-run", BASEWARE_TRACE: JSON.stringify({ traceId: "parent-trace", spanId: "parent-span" }) });
@@ -145,13 +153,17 @@ print(json.dumps({"values": [first["metrics"][0]["value"], second["metrics"][0][
       expect(result).toMatchObject({ status: "completed", verdict: null, parentRunId: "host-run",
         definition: { title: "Stable", revision: response.loaded_hash },
         subjects: [{ id: "weights", revision: "training-step-10" }, { id: "python/model.py:evaluate", revision: response.loaded_hash }],
-        artifacts: [{ path: "scores.txt", label: "Scores" }],
         trace: { traceId: "parent-trace", parentSpanId: "parent-span" } });
+      expect(result.artifacts).toHaveLength(1);
+      expect(result.artifacts![0]).toMatchObject({ label: "Scores", sha256: expect.any(String) });
+      expect(await readFile(join(directory, result.artifacts![0]!.path), "utf8")).toBe("scores");
+      expect(result.report?.errors).toEqual([]);
+      expect(result.reports).toHaveLength(1);
       expect(events.filter(event => event.type === "benchmark_start")).toHaveLength(1);
       expect(events.filter(event => event.type === "benchmark_end")).toHaveLength(1);
-      expect(events.map(event => event.type)).toEqual(["benchmark_start", "python_call_start", "python_call_end", "benchmark_end"]);
+      expect(events.map(event => event.type)).toEqual(["benchmark_start", "python_call_start", "python_call_end", "benchmark_end", "benchmark_report"]);
       expect(events[1].trace.parentSpanId).toBe(result.trace.spanId);
-      expect(events.map(event => event.seq)).toEqual([1, 2, 3, 4]);
+      expect(events.map(event => event.seq)).toEqual([1, 2, 3, 4, 5]);
       const manifest = JSON.parse(await readFile(join(directory, "manifest.json"), "utf8"));
       expect(manifest).toMatchObject({ kind: "benchmark", runId: result.runId, workspaceId: result.project,
         parentRunId: "host-run", trace: result.trace, drivers: [], model: null, seconds: 0, maxRequests: 0,
@@ -161,6 +173,93 @@ print(json.dumps({"values": [first["metrics"][0]["value"], second["metrics"][0][
     const catalog = JSON.parse(await readFile(join(workspace, "logs", "benchmarks-catalog.json"), "utf8"));
     expect(catalog.benchmarks[0].title).toBe("Edited");
     expect(catalog.benchmarks[0].revision).not.toBe(response.loaded_hash);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("production report mistakes collect all errors after one execution, without converting measurements", async () => {
+  const { root, workspace, artifactRoot } = await fixture();
+  try {
+    await writeFile(join(workspace, "evaluation.py"), `from rsa_tools import benchmark, current_benchmark
+calls = []
+@benchmark
+def evaluate(kind: str):
+    """Simulate one expensive action followed by a report."""
+    calls.append(kind)
+    if kind == "valid":
+        seq = current_benchmark().record("measurement", {"distance": 4})
+        return {"checks": {"reached": {"passed": True, "expected": True, "actual": True},
+                           "distance": {"passed": True, "expected": 4, "actual": 4, "evidenceSeq": [seq]}}}
+    if kind == "malformed":
+        return {"metrics": {"duration": {"value": "slow"}, "missing_unit": {"value": 1, "unit": ""}},
+                "checks": {"reached": {"passed": "yes"}}}
+    if kind == "nan":
+        return {"metrics": {"duration": {"value": float("nan"), "unit": "s"}}}
+    return {"checks": {"native_object": {"passed": True, "actual": object()}}}
+`);
+    const child = Bun.spawn(["python3", "-B", "-c", `import json
+import evaluation
+for kind in ["valid", "malformed", "nan", "object"]:
+    result = evaluation.evaluate(kind)
+    assert isinstance(result, dict)
+print(json.dumps(evaluation.calls))
+`], { cwd: workspace, env: environment(workspace, artifactRoot), stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
+    ]);
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout)).toEqual(["valid", "malformed", "nan", "object"]);
+    expect(stderr.match(/Repair without rerunning: rsa bench report/g)).toHaveLength(3);
+    const runs = await results(workspace);
+    expect(runs).toHaveLength(4);
+    expect(runs.every(run => run.result.status === "completed")).toBe(true);
+    const byKind = new Map(runs.map(run => [run.result.parameters.kind, run]));
+    expect(byKind.get("valid")!.result).toMatchObject({ verdict: "passed", checks: [
+      { id: "reached", label: "reached", passed: true, expected: true, actual: true, evidenceSeq: [] },
+      { id: "distance", expected: 4, actual: 4, evidenceSeq: [2] },
+    ] });
+    const malformed = byKind.get("malformed")!.result.report!;
+    expect(malformed.errors).toHaveLength(4);
+    expect(malformed.errors.map(error => error.path)).toEqual([
+      "/checks/reached/passed", "/metrics/duration", "/metrics/duration/value", "/metrics/missing_unit/unit",
+    ]);
+    expect(malformed.outcome).toBeNull();
+    expect(malformed.raw).toMatchObject({ metrics: { duration: { value: "slow" } } });
+    const nan = byKind.get("nan")!.result;
+    expect(nan.verdict).toBeNull();
+    expect(nan.report).toMatchObject({ raw: null, outcome: null,
+      errors: [{ path: "/metrics/duration/value", message: expect.stringContaining("finite") }] });
+    expect(nan.report!.rawText).toContain("nan");
+    expect(byKind.get("object")!.result.report).toMatchObject({ raw: null, outcome: null,
+      errors: [{ path: "/checks/native_object/actual", message: expect.stringContaining("JSON") }] });
+    for (const { result, events, directory } of runs) {
+      expect(events.filter(event => event.type === "benchmark_start")).toHaveLength(1);
+      expect(events.slice(-2).map(event => event.type)).toEqual(["benchmark_end", "benchmark_report"]);
+      const raw = JSON.parse(await readFile(join(directory, "reports", result.report!.id + ".raw.json"), "utf8"));
+      expect(raw.raw).toEqual(result.report!.raw);
+      expect(raw.rawText).toBe(result.report!.rawText);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("benchmark bridge exposes an import failure as load, before execution starts", async () => {
+  const { root, workspace, artifactRoot } = await fixture();
+  try {
+    await writeFile(join(workspace, "evaluation.py"), `from rsa_tools import benchmark
+from missing_actions import pause_menu_visible
+@benchmark
+def evaluate():
+    """This entry cannot load."""
+    return {}
+`);
+    const discovery = await bridge(workspace, artifactRoot, { action: "discover_benchmarks", workspace });
+    const definition = discovery.reply.benchmarks[0];
+    const executed = await bridge(workspace, artifactRoot, { action: "invoke_benchmark", workspace,
+      definition, arguments: {}, runDir: join(workspace, "logs", "reserved"), result: { status: "running" } });
+    expect(executed.exitCode).toBe(1);
+    expect(executed.reply).toMatchObject({ ok: false, error: {
+      type: "ModuleNotFoundError", message: "No module named 'missing_actions'", phase: "load",
+    } });
+    expect(await Bun.file(join(workspace, "logs", "reserved", "events.jsonl")).exists()).toBe(false);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -174,8 +273,6 @@ def fail(kind: str):
     current_benchmark().conditions(stage="registered")
     if kind == "cancel":
         raise KeyboardInterrupt("stop")
-    if kind == "nan":
-        return {"metrics": [{"id": "bad", "value": float("nan"), "unit": "ratio"}]}
     raise LookupError("original failure")
 @benchmark
 def no_checks():
@@ -185,25 +282,24 @@ def no_checks():
     expect(await python(workspace, artifactRoot, `import json
 import evaluation
 seen = []
-for kind in ["error", "cancel", "nan"]:
+for kind in ["error", "cancel"]:
     try:
         evaluation.fail(kind)
     except BaseException as error:
         seen.append(type(error).__name__)
 assert evaluation.no_checks() is None
 print(json.dumps(seen))
-`)).toEqual(["LookupError", "KeyboardInterrupt", "ValueError"]);
+`)).toEqual(["LookupError", "KeyboardInterrupt"]);
     const runs = await results(workspace);
-    expect(runs).toHaveLength(4);
+    expect(runs).toHaveLength(3);
     const byKind = new Map(runs.map(run => [run.result.parameters.kind, run.result]));
     expect(byKind.get("error")).toMatchObject({ status: "error", verdict: null, error: "LookupError: original failure",
       conditions: { stage: "registered" } });
     expect(byKind.get("cancel")).toMatchObject({ status: "cancelled", verdict: null });
-    expect(byKind.get("nan")).toMatchObject({ status: "error", verdict: null });
     expect(byKind.get(undefined)).toMatchObject({ status: "completed", verdict: null, checks: [], metrics: [] });
     for (const { result, events } of runs) {
       expect(result.endedAt).not.toBeNull();
-      expect(events.at(-1).type).toBe("benchmark_end");
+      expect(events.some(event => event.type === "benchmark_end")).toBe(true);
     }
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -217,17 +313,17 @@ test("JSON bridge adopts the reserved run once and captures incidental prints", 
 def score(value: int = 2):
     """Measure a parameter."""
     print("native diagnostic")
-    return {"metrics": [{"id": "score", "value": value, "unit": "points"}]}
+    return {"metrics": {"score": {"value": value, "unit": "points"}}}
 `);
     const discovery = await bridge(workspace, artifactRoot, { action: "discover_benchmarks", workspace });
     const definition: BenchmarkDefinition = discovery.reply.benchmarks[0];
     const state = await resolveWorkspaceState(workspace, artifactRoot);
     const runDir = join(workspace, "logs", "reserved");
     await mkdir(runDir);
-    const initial: BenchmarkResult = { schemaVersion: 2, definition, status: "running", verdict: null,
+    const initial: BenchmarkExecution = { schemaVersion: 3, definition, status: "running",
       startedAt: new Date().toISOString(), endedAt: null, durationMs: null, runId: "reserved", project: state.id,
       workspace, trace: { traceId: "cli-trace", spanId: "cli-span" }, parameters: { value: 9 }, provenance: {},
-      checks: [], metrics: [] };
+      conditions: {}, subjects: [], artifacts: [], limitations: [] };
     await writeFile(join(runDir, "benchmark.json"), JSON.stringify(initial));
     await writeFile(join(runDir, "manifest.json"), JSON.stringify({ runId: "reserved" }));
     const executed = await bridge(workspace, artifactRoot, { action: "invoke_benchmark", workspace, definition,
@@ -235,11 +331,33 @@ def score(value: int = 2):
     expect(executed.exitCode).toBe(0);
     expect(executed.stderr).toContain("native diagnostic");
     expect(executed.reply).toMatchObject({ ok: true, result: { runId: "reserved", status: "completed",
-      trace: initial.trace, metrics: [{ id: "score", value: 9, unit: "points" }] } });
+      trace: initial.trace } });
     const runs = await results(workspace);
     expect(runs).toHaveLength(1);
-    expect(runs[0]!.result).toEqual(executed.reply.result);
-    expect(runs[0]!.events.map(event => event.type)).toEqual(["benchmark_start", "benchmark_end"]);
+    expect(runs[0]!.result).toMatchObject(executed.reply.result);
+    expect(runs[0]!.result.metrics).toEqual([{ id: "score", value: 9, unit: "points", direction: "none" }]);
+    expect(runs[0]!.events.map(event => event.type)).toEqual(["benchmark_start", "benchmark_end", "benchmark_report"]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("report correction follows its parent within one millisecond and retains the scoring protocol", async () => {
+  const { root, workspace, artifactRoot } = await fixture();
+  try {
+    const response = await python(workspace, artifactRoot, `import json
+from pathlib import Path
+from rsa_tools._benchmark_report import write_report
+directory = Path("run")
+(directory / "reports").mkdir(parents=True)
+base = {"schemaVersion": 1, "runId": "run", "createdAt": "2026-10-21T00:00:00.000Z",
+        "reason": "initial", "raw": {}, "errors": [], "outcome": {"checks": [], "metrics": []}}
+first = {**base, "id": "2026-10-21T00-00-00.000Z-ffffffff", "previousReportId": None, "protocolVersion": "1"}
+second = {**base, "id": "2026-10-21T00-00-00.000Z-00000000", "previousReportId": first["id"], "protocolVersion": "2"}
+for report in [first, second]:
+    (directory / "reports" / (report["id"] + ".json")).write_text(json.dumps(report))
+third = write_report(directory, {"runId": "run", "definition": {"protocolVersion": "1"}}, {}, reason="correction")
+print(json.dumps({"previous": third["previousReportId"], "protocol": third["protocolVersion"]}))
+`);
+    expect(response).toEqual({ previous: "2026-10-21T00-00-00.000Z-00000000", protocol: "2" });
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

@@ -9,7 +9,7 @@ jobs or named services for long-running programs; inspect and stop them through 
 Keep dependent actions in one command or program.
 Mark reusable entry points with `@capability` from `rsa_tools`; typed parameters and docstrings expose them
 through the CLI and API. Helpers can remain ordinary functions.
-When measurement helps, use `@benchmark` from `rsa_tools` and `rsa bench` to evaluate and improve your capabilities.
+When measurement helps, use `@benchmark` from `rsa_tools` and `rsa bench` to evaluate and improve your capabilities. Check the report schema with `rsa bench schema`; repair reports with `rsa bench report` without rerunning actions.
 
 Own perception in `perception.py:Perception`. Read its starter contract, implement
 sampling and processing, and use `rsa perception reload` to load code or weight changes.

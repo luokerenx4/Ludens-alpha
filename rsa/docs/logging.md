@@ -89,9 +89,13 @@ Dashboard 的 activity 投影保留来源和调用关联，并返回投影耗时
 
 ## Benchmark
 
-内置工况和工作区 `@benchmark` 共用 schema v2 的 `benchmark.json` 与上述事件格式；每次评测都有独立 `workspace/logs/<run-id>/`。定义快照、参数、conditions、subjects、provenance 和产物引用保留在结果里，数据集与权重不自动复制。`status` 是执行状态，`verdict` 是可选断言结论：只有指标也可正常 completed，断言失败不同于程序异常。每项检查的 expected / actual / evidenceSeq 可回到本次原事件。接口和比较口径见 [Benchmark 说明](../benchmarks/README.md)。
+内置工况和工作区 `@benchmark` 共用 schema v3 的执行记录 `benchmark.json` 与独立的版本化报告 `reports/<id>.json`；事件仍采用上述 schema v2 格式。每次评测有独立 `workspace/logs/<run-id>/`。定义快照、参数、conditions、subjects、provenance 和附件引用属于执行事实；模型权重和数据集不自动复制，显式登记的附件归档并记录 hash。
 
-Python 评测直接在调用进程写开始记录并原子更新结果，不要求 Host 在线；有父运行时保留 `parentRunId` 与 trace。评测生命周期只写本次日志，内部 Python 能力调用可同时写入本次与父 Host 日志，并保留同一 origin。CLI、Python SDK 与 Dashboard 使用同一结果身份，不按转发次数累计成绩。直接进程被硬杀而没有终态时保留未完成记录；受控 worker 的异常和取消由外层收尾，不能编造正常返回。
+函数返回后先保存 `reports/<id>.raw.json`，再验证并生成报告；格式错误保留原始数据和完整字段诊断，不改写 `completed` 执行状态。报告的 checks / metrics 经验证后才投影给 CLI 和看板，`verdict` 只在正常完成且报告有效时成立。检查的 expected / actual 使用 JSON 值，evidenceSeq 可选并引用本次事件；缺测用 null，不能用零或 NaN 冒充测量。
+
+`benchmark_start/end` 描述执行，`benchmark_report` 描述报告保存、口径和验证问题。`rsa bench report` 追加报告及该事件，不重新发出执行开始、也不重做动作；报告携带 previousReportId 与 reason。执行异常与加载异常分别保留 errorPhase，异常执行即使补了有效报告也仍是异常。比较可固定 runId@reportId，修正不算新试验。接口和比较口径见 [Benchmark 说明](../benchmarks/README.md)。
+
+Python 评测在调用进程写记录，不要求 Host 在线；有父运行时保留 `parentRunId` 与 trace。评测生命周期只写本次日志，内部 Python 能力调用可同时写入本次与父 Host 日志，并保留同一 origin。CLI、Python SDK 与 Dashboard 使用同一执行与报告身份，不按转发次数累计成绩。直接进程被硬杀而没有终态时保留未完成记录；受控 worker 的异常和取消由外层收尾，不能编造正常返回。
 
 离线 WS/压缩 case 会产生真实实现的 trace epoch，但没有 Runtime 接管，因此不伪造 `control`。看板对没有接管周期的基准读取完整 run；事件的原 trace 仍可核对。故障注入中的预期错误不能直接当成真实运行故障率。
 

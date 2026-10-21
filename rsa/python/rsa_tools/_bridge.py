@@ -43,6 +43,7 @@ def invoke_benchmark(workspace, request):
     sys.pycache_prefix = str(workspace / "__pycache__" / ("rsa-" + os.urandom(12).hex()))
     with invocation_output():
         function = load_function(workspace, entry["path"], entry["function"], raw=raw, marker="benchmark")
+        request["errorPhase"] = "execute"
         with prepared_run(request["runDir"], request["result"]):
             function(**request["arguments"])
         encoded = json.dumps({"ok": True, "result": request["result"]}, allow_nan=False)
@@ -66,6 +67,7 @@ def invocation_output():
 
 
 def main():
+    request = {}
     try:
         request = json.load(sys.stdin)
         workspace = Path(request["workspace"]).resolve()
@@ -76,11 +78,14 @@ def main():
         elif request["action"] == "invoke":
             print(invoke(workspace, request))
         elif request["action"] == "invoke_benchmark":
+            request["errorPhase"] = "load"
             print(invoke_benchmark(workspace, request))
         else:
             raise ValueError("Unknown Python bridge action")
     except BaseException as error:
-        print(json.dumps({"ok": False, "error": {"type": type(error).__name__, "message": str(error), "traceback": traceback.format_exc()}}))
+        phase = "report" if request.get("result", {}).get("status") == "completed" else request.get("errorPhase")
+        print(json.dumps({"ok": False, "error": {"type": type(error).__name__, "message": str(error),
+                         "traceback": traceback.format_exc(), **({"phase": phase} if phase else {})}}))
         return 1
     return 0
 

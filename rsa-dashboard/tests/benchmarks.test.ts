@@ -1,3 +1,7 @@
+import {
+  projectResult,
+  type BenchmarkExecution,
+} from "../../rsa/src/benchmark/contract";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -16,6 +20,9 @@ import type { Event, Manifest } from "../lib/types";
 import { benchmarkCatalog, benchmarkEvidence } from "../lib/benchmark-data";
 import {
   benchmarkCommand,
+  benchmarkReportCommand,
+  benchmarkSelection,
+  displayCheckValue,
   benchmarkRunUrl,
   compareResults,
   compatibleBaseline,
@@ -25,6 +32,7 @@ import {
   resultLabel,
   type BenchmarkDefinition,
   type BenchmarkResult,
+  type BenchmarkReport,
 } from "../lib/benchmarks";
 
 const definition = (
@@ -36,27 +44,29 @@ const definition = (
   scope: "本地模拟传输",
   revision: "2",
   source: "builtin",
-  mode: "offline",
+  protocolVersion: "1",
   parameters: {},
   targets: [],
   entry: { kind: "builtin", caseId: "ws-recovery" },
   ...patch,
 });
-const result = (patch: Partial<BenchmarkResult> = {}): BenchmarkResult => ({
-  schemaVersion: 2,
-  definition: definition(),
-  status: "completed",
-  verdict: "failed",
-  startedAt: "2026-10-19T01:00:00Z",
-  endedAt: "2026-10-19T01:00:01Z",
-  durationMs: 1000,
-  runId: "new",
-  project: "ws-bench",
-  workspace: "/workspace",
-  trace: {},
-  parameters: { model: null, seconds: 180, maxRequests: 30, seed: 7 },
-  provenance: { code: null, prompts: {}, workspaceInstructionsSHA256: "abc" },
-  checks: [
+const result = (patch: Partial<BenchmarkResult> = {}): BenchmarkResult => {
+  const execution: BenchmarkExecution = {
+    schemaVersion: 3,
+    definition: definition(),
+    status: "completed",
+    startedAt: "2026-10-19T01:00:00Z",
+    endedAt: "2026-10-19T01:00:01Z",
+    durationMs: 1000,
+    runId: "new",
+    project: "ws-bench",
+    workspace: "/workspace",
+    trace: {},
+    parameters: { model: null, seconds: 180, maxRequests: 30, seed: 7 },
+    provenance: { code: null },
+    ...patch,
+  };
+  const checks = patch.checks ?? [
     {
       id: "recovery",
       label: "恢复",
@@ -65,10 +75,40 @@ const result = (patch: Partial<BenchmarkResult> = {}): BenchmarkResult => ({
       actual: "仍然 SSE",
       evidenceSeq: [2, 9],
     },
-  ],
-  metrics: [{ id: "requests", label: "请求数", value: null, unit: "次" }],
-  ...patch,
-});
+  ];
+  const metrics = patch.metrics ?? [
+    { id: "requests", label: "请求数", value: null, unit: "次" },
+  ];
+  const report: BenchmarkReport = {
+    schemaVersion: 1,
+    id: "report-1",
+    runId: execution.runId,
+    createdAt: "2026-10-19T01:00:01Z",
+    previousReportId: null,
+    reason: "initial",
+    protocolVersion: execution.definition.protocolVersion,
+    raw: {
+      checks: Object.fromEntries(checks.map(({ id, ...value }) => [id, value])),
+      metrics: Object.fromEntries(
+        metrics.map(({ id, ...value }) => [id, value]),
+      ),
+    },
+    errors: [],
+    outcome: { checks, metrics },
+  };
+  return projectResult(execution, patch.reports ?? [report], patch.report?.id);
+};
+function executionOnly(value: BenchmarkResult): BenchmarkExecution {
+  const {
+    checks: _checks,
+    metrics: _metrics,
+    verdict: _verdict,
+    report: _report,
+    reports: _reports,
+    ...execution
+  } = value;
+  return execution;
+}
 async function fixture() {
   const temp = await mkdtemp(join(tmpdir(), "rsa-bench-dashboard-"));
   const base = await realpath(temp),
@@ -94,14 +134,20 @@ async function fixture() {
         benchmark: {
           id: value.definition.id,
           revision: value.definition.revision,
-          mode: value.definition.mode,
+          protocolVersion: value.definition.protocolVersion,
         },
       }),
     );
     await writeFile(
       join(path, "benchmark.json"),
-      JSON.stringify({ ...value, workspace }),
+      JSON.stringify({ ...executionOnly(value), workspace }),
     );
+    await mkdir(join(path, "reports"), { recursive: true });
+    for (const report of value.reports)
+      await writeFile(
+        join(path, "reports", `${report.id}.json`),
+        JSON.stringify(report),
+      );
     return path;
   };
   await save(result());
@@ -127,7 +173,7 @@ async function fixture() {
   );
   const definitions = [
     definition(),
-    definition({ id: "capability-reuse", title: "能力复用", mode: "live" }),
+    definition({ id: "capability-reuse", title: "能力复用" }),
   ];
   return {
     base,
@@ -160,7 +206,10 @@ test("unified catalog preserves execution/check distinction and does not inspect
     assert.deepEqual(data.issues, []);
     await writeFile(
       join(f.directory, "benchmark.json"),
-      JSON.stringify(result({ project: "another-workspace" })),
+      JSON.stringify({
+        ...executionOnly(result({ project: "another-workspace" })),
+        workspace: f.workspace,
+      }),
     );
     const invalid = await benchmarkCatalog(f.root, f.definitions);
     assert.equal(invalid.results.length, 0);
@@ -269,12 +318,15 @@ test("old, mismatched and corrupt results are isolated as issues", async () => {
     const mismatch = await f.save(result({ runId: "mismatch" }));
     await writeFile(
       join(mismatch, "benchmark.json"),
-      JSON.stringify(
-        result({
-          runId: "mismatch",
-          definition: definition({ revision: "other" }),
-        }),
-      ),
+      JSON.stringify({
+        ...executionOnly(
+          result({
+            runId: "mismatch",
+            definition: definition({ revision: "other" }),
+          }),
+        ),
+        workspace: f.workspace,
+      }),
     );
     await writeFile(
       join(f.workspace, "logs/benchmarks-catalog.json"),
@@ -330,7 +382,7 @@ test("evidence resolves referenced events, exposes missing sequences and rejects
     await symlink(external, join(f.directory, "benchmark.json"));
     await assert.rejects(
       benchmarkEvidence("ws-bench", "new", f.root),
-      /当前运行目录/,
+      /workspace logs/,
     );
   } finally {
     await f.cleanup();
@@ -357,14 +409,13 @@ test("shared comparison reports condition/subject changes and rejects metric uni
   assert.equal(compared.subjectsChanged, true);
   assert.ok(compared.metrics[0].delta! > 0.09);
   const changed = result({
-    definition: definition({ revision: "3", mode: "live" }),
+    definition: definition({ revision: "3", protocolVersion: "2" }),
     parameters: {},
     conditions: { dataset: "other" },
   });
   assert.equal(compatibleBaseline(current, changed), false);
   assert.deepEqual(comparisonChanges(current, changed), [
-    "评测定义",
-    "运行模式",
+    "评测口径",
     "参数",
     "评测条件",
   ]);
@@ -404,7 +455,7 @@ test("newer benchmark runs do not replace the latest game selection", async () =
   }
 });
 
-test("offline trace epochs remain inspectable without fabricating takeover cycles", async () => {
+test("trace epochs remain inspectable without fabricating takeover cycles", async () => {
   const events: Event[] = [
     {
       seq: 1,
@@ -417,7 +468,7 @@ test("offline trace epochs remain inspectable without fabricating takeover cycle
   ];
   const manifest = {
     kind: "benchmark",
-    benchmark: { id: "ws-recovery", revision: "2", mode: "offline" },
+    benchmark: { id: "ws-recovery", revision: "2", protocolVersion: "1" },
   } as Manifest;
   const scope = selectRunEvents(manifest, events);
   assert.equal(scope.selectedEpoch, null);
@@ -435,6 +486,117 @@ test("offline trace epochs remain inspectable without fabricating takeover cycle
     assert.equal(proof.epoch, null);
     assert.deepEqual(proof.epochs, []);
     assert.equal(proof.events[0].trace.epoch, "fixture");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("report revisions preserve trial count, latest invalid report is visible, and links pin both versions", async () => {
+  const f = await fixture();
+  try {
+    const original = result();
+    const valid = original.report!;
+    const invalid: BenchmarkReport = {
+      ...valid,
+      id: "report-2",
+      createdAt: "2026-10-19T01:00:02Z",
+      previousReportId: valid.id,
+      reason: "bad revision",
+      raw: { metrics: { latency: { value: "bad" } } },
+      errors: [
+        {
+          path: "metrics.latency.value",
+          message: "expected finite number or null",
+        },
+      ],
+      outcome: null,
+    };
+    await writeFile(
+      join(f.directory, "reports/report-2.json"),
+      JSON.stringify(invalid),
+    );
+    const data = await benchmarkCatalog(f.root, f.definitions);
+    assert.equal(data.results.length, 1);
+    assert.equal(data.results[0].reports.length, 2);
+    assert.equal(data.results[0].status, "completed");
+    assert.equal(data.results[0].report?.id, "report-2");
+    assert.equal(data.results[0].verdict, null);
+    assert.equal(data.results[0].checks.length, 0);
+    assert.equal(
+      data.results[0].report?.errors[0].path,
+      "metrics.latency.value",
+    );
+    const pinned = await benchmarkEvidence(
+      "ws-bench",
+      "new",
+      f.root,
+      "report-1",
+    );
+    assert.equal(pinned.result.verdict, "failed");
+    assert.deepEqual(
+      pinned.events.map((event) => event.seq),
+      [2],
+    );
+    await assert.rejects(
+      benchmarkEvidence("ws-bench", "new", f.root, "not-found"),
+      /report not found/,
+    );
+    const baseline = result({ runId: "old", report: undefined });
+    const selection = benchmarkSelection(pinned.result, baseline);
+    assert.equal(selection.report, "report-1");
+    assert.equal(selection.baselineReport, "report-1");
+    const compared = compareResults(pinned.result, baseline);
+    assert.deepEqual(compared.reports, {
+      result: "report-1",
+      baseline: "report-1",
+    });
+    assert.equal(compared.sameExecution, false);
+    const revisionComparison = compareResults(pinned.result, data.results[0]);
+    assert.equal(revisionComparison.sameExecution, true);
+    assert.deepEqual(revisionComparison.reports, {
+      result: "report-1",
+      baseline: "report-2",
+    });
+    assert.equal(revisionComparison.compatible, false);
+    assert.match(
+      benchmarkReportCommand(pinned.result),
+      /bench report 'new' --file report.json/,
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("load failure and missing logs do not become offline mode or a passing verdict", async () => {
+  const f = await fixture();
+  try {
+    await f.save(
+      result({
+        status: "error",
+        error: "ImportError: missing_dependency",
+        errorPhase: "load",
+        checks: [{ id: "ok", label: "ok", passed: true, evidenceSeq: [] }],
+      }),
+    );
+    await rm(join(f.directory, "events.jsonl"));
+    const proof = await benchmarkEvidence("ws-bench", "new", f.root);
+    assert.equal(proof.result.errorPhase, "load");
+    assert.equal(proof.result.report?.outcome?.checks[0].passed, true);
+    assert.equal(proof.result.verdict, null);
+    assert.equal(proof.logAvailable, false);
+    assert.deepEqual(proof.events, []);
+    assert.equal("mode" in proof.result.definition, false);
+    assert.equal(displayCheckValue({ count: 3 }), '{"count":3}');
+    assert.equal(displayCheckValue(null), "null");
+    assert.equal(displayCheckValue(undefined), "未提供");
+    assert.doesNotMatch(
+      benchmarkCommand({
+        key: "builtin/ws-recovery",
+        definition: definition(),
+        available: true,
+      }),
+      /--live/,
+    );
   } finally {
     await f.cleanup();
   }

@@ -3,13 +3,14 @@ import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCase } from "../src/benchmark/runner.ts";
-import { compareResults, outcomeVerdict, validateOutcome } from "../src/benchmark/contract.ts";
+import { compareResults, outcomeVerdict } from "../src/benchmark/contract.ts";
+import { validateAuthorReport } from "../src/benchmark/report.ts";
 import { history } from "../src/benchmark/store.ts";
 
-test("built-in evaluations share workspace/history but isolate fixture work and online requests", async () => {
+test("built-in evaluations share workspace/history but isolate fixture work", async () => {
   const directory = await mkdtemp(join(tmpdir(), "rsa-bench-runner-"));
   const options = { artifactRoot: join(directory, "index"), workspace: join(directory, "workspace"),
-    model: "intentionally-not-configured", seconds: 20, maxRequests: 5, seed: 7, live: false };
+    model: "intentionally-not-configured", seconds: 20, maxRequests: 5, seed: 7 };
   try {
     const first = await runCase("control-handoff", options);
     const second = await runCase("control-handoff", options);
@@ -24,13 +25,10 @@ test("built-in evaluations share workspace/history but isolate fixture work and 
     expect(first.runDir).toBe(join(index.workspace, "logs", first.result.runId));
     expect(await readdir(options.workspace)).not.toContain("handoff.py");
     const events = (await readFile(join(first.runDir, "events.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
-    expect(events[0].type).toBe("benchmark_start"); expect(events.at(-1).type).toBe("benchmark_end");
+    expect(events[0].type).toBe("benchmark_start"); expect(events.at(-1).type).toBe("benchmark_report");
+    expect(events.filter(event => event.type === "benchmark_end")).toHaveLength(1);
     expect(events.at(-1).source.component).toBe("benchmark");
     expect(first.result.checks.every(check => check.evidenceSeq.every(seq => events.some(event => event.seq === seq)))).toBe(true);
-    const skipped = await runCase("capability-reuse", options);
-    expect(skipped.result.status).toBe("skipped"); expect(skipped.result.verdict).toBeNull();
-    expect(await readdir(join(skipped.runDir, "work", "skills"))).toEqual([]);
-    expect(await readdir(skipped.runDir)).not.toContain("benchmark-worker.log");
     const records = await history(options.workspace, "control-handoff");
     expect(records.results).toHaveLength(2); expect(records.issues).toEqual([]);
     const revised = { ...second.result, subjects: [{ id: "model", revision: "new" }] };
@@ -45,5 +43,5 @@ test("metrics-only completion, failed checks and missing evidence have distinct 
   expect(outcomeVerdict({ checks: [], metrics: [] })).toBeNull();
   expect(outcomeVerdict({ checks: [{ ...check, passed: null }], metrics: [] })).toBe("inconclusive");
   expect(outcomeVerdict({ checks: [{ ...check, passed: false }], metrics: [] })).toBe("failed");
-  expect(() => validateOutcome({ checks: [], metrics: [{ id: "latency", value: NaN, unit: "ms" }] })).toThrow();
+  expect(validateAuthorReport({ metrics: { latency: { value: NaN, unit: "ms" } } }).errors.some(error => error.path === "/metrics/latency/value")).toBe(true);
 });

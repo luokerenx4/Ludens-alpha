@@ -15,7 +15,7 @@ import { ReuseEnvironment } from "../src/benchmark/fixtures/reuse-environment.ts
 import { evaluateReuse, type ReuseEvent } from "../src/benchmark/fixtures/reuse-evaluator.ts";
 
 const passed = (events: ReuseEvent[], epoch: string, id: string, runDir?: string) =>
-  evaluateReuse(events, epoch, runDir).checks.find(check => check.id === id)?.passed;
+  evaluateReuse(events, epoch, runDir).checks![id]?.passed;
 
 test("the benchmark sensor emits an actual readable, deterministic PNG", async () => {
   const view = { phase: 1, order: 1, completed: 0, values: [0, 0, 0], target: [2, 4, 1], waiting: false, done: false, notice: "READY" };
@@ -127,14 +127,14 @@ def configure(values: list[int]) -> dict:
     const judge = (records: ReuseEvent[]) => evaluateReuse(records, epoch, runDir);
     const check = (records: ReuseEvent[], id: string) => passed(records, epoch, id, runDir);
     const outcome = judge(events);
-    expect(outcome.checks.filter(check => check.passed !== true)).toEqual([]);
-    expect(outcome.metrics.find(metric => metric.id === "productive-capability-calls")?.value).toBe(6);
-    expect(outcome.metrics.find(metric => metric.id === "productive-reuse-calls")?.value).toBe(3);
-    expect(outcome.metrics.find(metric => metric.id === "phase-1-orders")?.value).toBe(3);
-    expect(outcome.metrics.find(metric => metric.id === "phase-2-orders")?.value).toBe(3);
-    expect(outcome.checks.find(check => check.id === "capability-reused")?.evidenceSeq.length).toBeGreaterThan(12);
-    expect(outcome.metrics.find(metric => metric.id === `${route}-productive-calls`)?.value).toBe(6);
-    expect(outcome.metrics.find(metric => metric.id === "controller-discovered")?.value).toBe(route !== "import" ? 1 : 0);
+    expect(Object.values(outcome.checks!).filter(check => check.passed !== true)).toEqual([]);
+    expect(outcome.metrics!["productive-capability-calls"]?.value).toBe(6);
+    expect(outcome.metrics!["productive-reuse-calls"]?.value).toBe(3);
+    expect(outcome.metrics!["phase-1-orders"]?.value).toBe(3);
+    expect(outcome.metrics!["phase-2-orders"]?.value).toBe(3);
+    expect(outcome.checks!["capability-reused"]?.evidenceSeq?.length).toBeGreaterThan(12);
+    expect(outcome.metrics![`${route}-productive-calls`]?.value).toBe(6);
+    expect(outcome.metrics!["controller-discovered"]?.value).toBe(route !== "import" ? 1 : 0);
 
     if (route === "import") {
       for (const code of [
@@ -177,7 +177,7 @@ def configure(values: list[int]) -> dict:
     // Invocation does its own AST lookup, but that is not an explicit discovery.
     const noDiscovery = events.filter(event => !(event.type === "capability_start" && event.data.action === "list"));
     expect(check(noDiscovery, "capability-created")).toBe(true);
-    expect(judge(noDiscovery).metrics.find(metric => metric.id === "controller-discovered")?.value).toBe(0);
+    expect(judge(noDiscovery).metrics!["controller-discovered"]?.value).toBe(0);
     expect(check(noDiscovery, "capability-reused")).toBe(true);
 
     if (route === "controller") {
@@ -190,9 +190,9 @@ def configure(values: list[int]) -> dict:
     const inventoryOnly = [...events.filter(event => !event.type.startsWith("python_capabilit") && !event.type.startsWith("python_call_")), inventory];
     expect(check(inventoryOnly, "task-completed")).toBe(true);
     expect(check(inventoryOnly, "capability-created")).toBe(true);
-    expect(judge(inventoryOnly).metrics.find(metric => metric.id === "controller-discovered")?.value).toBe(0);
+    expect(judge(inventoryOnly).metrics!["controller-discovered"]?.value).toBe(0);
     expect(check(inventoryOnly, "capability-reused")).toBeNull();
-    expect(judge(inventoryOnly).checks.find(check => check.id === "capability-created")?.evidenceSeq).toEqual([inventory.seq]);
+    expect(judge(inventoryOnly).checks!["capability-created"]?.evidenceSeq).toEqual([inventory.seq]);
     const untrustedInventory = structuredClone(inventoryOnly);
     untrustedInventory.at(-1)!.source = { component: "rsa" };
     expect(check(untrustedInventory, "capability-created")).toBe(false);

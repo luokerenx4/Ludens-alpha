@@ -11,7 +11,7 @@ import { Runtime } from "../../harness/runtime.ts";
 import { listen as listenRsa } from "../../harness/transport.ts";
 import { resolveWorkspaceState } from "../../harness/workspace-state.ts";
 import type { RecordEvent } from "../../harness/events.ts";
-import type { BenchmarkContext, CaseOutcome } from "../types.ts";
+import type { BenchmarkContext, AuthorReport } from "../types.ts";
 import { ReuseEnvironment } from "../fixtures/reuse-environment.ts";
 import { evaluateReuse, type ReuseEvent } from "../fixtures/reuse-evaluator.ts";
 import perceptionTemplate from "../../../templates/perception.py" with { type: "text" };
@@ -34,7 +34,7 @@ async function workspaceBaseline(workspace: string) {
 }
 
 /** Real Shiori + production CLI/API + a tiny simulated device, never a scripted agent. */
-export async function run(ctx: BenchmarkContext): Promise<CaseOutcome> {
+export async function run(ctx: BenchmarkContext): Promise<AuthorReport> {
   ctx.signal?.throwIfAborted();
   const baseline = await workspaceBaseline(ctx.workspace);
   const recordBenchmark = ctx.log.recorder({ component: "benchmark", implementation: "assembly-bench", implementationVersion: "1" });
@@ -105,5 +105,5 @@ export async function run(ctx: BenchmarkContext): Promise<CaseOutcome> {
   const inventory = await new PythonCapabilities(ctx.workspace).discover(ctx.signal);
   recordBenchmark("benchmark_reuse_inventory", { stage: "post-run", ...inventory }, { epoch });
   const events = (await readFile(join(ctx.runDir, "events.jsonl"), "utf8")).split("\n").filter(Boolean).map(line => JSON.parse(line) as ReuseEvent);
-  return evaluateReuse(events, epoch!, ctx.runDir);
+  return evaluateReuse(events, epoch!, ctx.runDir, ctx.metadata);
 }

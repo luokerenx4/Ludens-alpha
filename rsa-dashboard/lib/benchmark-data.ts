@@ -1,7 +1,8 @@
 import { readFile, realpath } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { builtinDefinitions } from "../../rsa/src/benchmark/builtins";
-import { validateDefinition, validateResult } from "../../rsa/src/benchmark/contract";
+import { validateDefinition } from "../../rsa/src/benchmark/contract";
+import { readResult as readStoredResult } from "../../rsa/src/benchmark/store";
 import { artifactRoot, catalog, resolveRun } from "./data";
 import { parseEvents } from "./aggregate";
 import {
@@ -12,13 +13,16 @@ import {
   type BenchmarkResult,
 } from "./benchmarks";
 
-async function readResult(project: string, run: string, root: string) {
+async function readResult(
+  project: string,
+  run: string,
+  root: string,
+  reportId?: string,
+) {
   const directory = await resolveRun(project, run, root);
-  const path = join(directory, "benchmark.json");
-  if ((await realpath(path)) !== path)
-    throw new Error("基准结果必须位于当前运行目录内");
-  const result: BenchmarkResult = JSON.parse(await readFile(path, "utf8"));
-  validateResult(result);
+  // Resolve through the trusted workspace index, never a path from report data.
+  const workspace = dirname(dirname(directory));
+  const result = await readStoredResult(workspace, run, reportId);
   if (result.project !== project || result.runId !== run)
     throw new Error("基准结果身份与运行目录不一致");
   return { result, directory };
@@ -87,7 +91,8 @@ export async function benchmarkCatalog(
               !run.benchmark ||
               result.definition.id !== run.benchmark.id ||
               result.definition.revision !== run.benchmark.revision ||
-              result.definition.mode !== run.benchmark.mode
+              result.definition.protocolVersion !==
+                run.benchmark.protocolVersion
             )
               throw new Error("基准结果与 manifest 不一致");
             return result;
@@ -122,12 +127,19 @@ export async function benchmarkEvidence(
   project: string,
   run: string,
   root = artifactRoot,
+  reportId?: string,
 ): Promise<BenchmarkEvidence> {
-  const { result, directory } = await readResult(project, run, root);
+  const { result, directory } = await readResult(project, run, root, reportId);
   const wanted = new Set(result.checks.flatMap((check) => check.evidenceSeq));
-  const log = parseEvents(
-    await readFile(join(directory, "events.jsonl"), "utf8"),
+  let logAvailable = true;
+  const text = await readFile(join(directory, "events.jsonl"), "utf8").catch(
+    (error) => {
+      if (error.code !== "ENOENT") throw error;
+      logAvailable = false;
+      return "";
+    },
   );
+  const log = parseEvents(text);
   const events = log.filter((event) => wanted.has(event.seq));
   const found = new Set(events.map((event) => event.seq));
   const epochs = log
@@ -144,5 +156,6 @@ export async function benchmarkEvidence(
     missingSeq: [...wanted].filter((seq) => !found.has(seq)),
     epoch: epochs[0] ?? null,
     epochs,
+    logAvailable,
   };
 }

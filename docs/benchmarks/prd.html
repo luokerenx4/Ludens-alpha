@@ -4,6 +4,7 @@
 <style>:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#171918;color:#e9e9e2;font:16px/1.85 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}main{max-width:1080px;margin:auto;padding:60px 32px}h1{font-size:38px;line-height:1.3}h2{margin-top:42px;border-top:1px solid #343a35;padding-top:22px}p,li{color:#b4bcb3}table{border-collapse:collapse;width:100%;font-size:14px}td,th{padding:14px 10px;text-align:left;border-bottom:1px solid #343a35;vertical-align:top}th,a,code{color:#dbbc81}small{color:#a3aaa2}.note{padding:16px;background:#24291f;border-left:3px solid #dbbc81}img{width:100%;border:1px solid #343a35;border-radius:12px}</style>
 <main><small>PLAYNESS / PRODUCT REQUIREMENTS / 2026.10.19 / v1</small>
 <h1>用同一份日志，验证 Harness 的变化。</h1>
+<p class="note">历史设计稿（2026-10-19 v1）。当前接口已采用独立执行记录与版本化报告，取消 all / --live；实施契约见 <a href="../../rsa/benchmarks/README.md">RSA Benchmark 说明</a>。</p>
 <p>流程：现状盘点 → PRD → 图像生成视觉稿 → 实现 → 离线与短模型实跑 → 页面验收。沿用统一控制台的布局与视觉，不新增桌面前端或分析服务。</p>
 <h2>01 · 问题与目标</h2>
 <p>现有 Benchmark 是运行剖析：能看耗时与调用链，但缺少固定输入、明确判定和可反复执行的 case。新增四个可运行 case，给每次执行留下条件、检查项、指标与原始证据。把基础设施错误、任务未通过和证据不足区分开；不以测试断言数量、skill 字数或脚本数量衡量能力。</p>

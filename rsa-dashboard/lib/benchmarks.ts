@@ -2,6 +2,7 @@ import type { Event } from "./types";
 import type {
   BenchmarkDefinition,
   BenchmarkResult,
+  BenchmarkReport,
   BenchmarkStatus,
   BenchmarkVerdict,
 } from "../../rsa/src/benchmark/contract";
@@ -13,6 +14,7 @@ export {
 export type {
   BenchmarkDefinition,
   BenchmarkResult,
+  BenchmarkReport,
   BenchmarkStatus,
   BenchmarkVerdict,
 } from "../../rsa/src/benchmark/contract";
@@ -35,13 +37,13 @@ export interface BenchmarkEvidence {
   missingSeq: number[];
   epoch: string | null;
   epochs: string[];
+  logAvailable: boolean;
 }
 export const statusLabels: Record<BenchmarkStatus, string> = {
   running: "未记录结束",
   completed: "已完成",
   error: "执行异常",
   cancelled: "已取消",
-  skipped: "已跳过",
 };
 export const verdictLabels: Record<Exclude<BenchmarkVerdict, null>, string> = {
   passed: "通过",
@@ -50,7 +52,11 @@ export const verdictLabels: Record<Exclude<BenchmarkVerdict, null>, string> = {
 };
 export const resultLabel = (result: BenchmarkResult) =>
   statusLabels[result.status] +
-  (result.verdict ? ` · ${verdictLabels[result.verdict]}` : "");
+  (result.report?.errors.length
+    ? " · 报告无效"
+    : result.verdict
+      ? ` · ${verdictLabels[result.verdict]}`
+      : "");
 export const resultKey = (result: BenchmarkResult) =>
   `${result.project}/${result.runId}`;
 export const definitionKey = (
@@ -75,5 +81,30 @@ export function benchmarkRunUrl(
 const shellQuote = (value: string) =>
   "'" + value.replaceAll("'", "'\\''") + "'";
 export function benchmarkCommand(entry: BenchmarkEntry) {
-  return `rsa${entry.workspace ? ` --workspace ${shellQuote(entry.workspace)}` : ""} bench run ${shellQuote(entry.definition.id)}${entry.definition.mode === "live" ? " --live" : ""}`;
+  return `rsa${entry.workspace ? ` --workspace ${shellQuote(entry.workspace)}` : ""} bench run ${shellQuote(entry.definition.id)}`;
+}
+
+export const reportLabel = (report: BenchmarkReport | null) =>
+  report ? (report.errors.length ? "报告无效" : "有效报告") : "尚无报告";
+export const displayCheckValue = (value: unknown) =>
+  value === undefined
+    ? "未提供"
+    : typeof value === "string"
+      ? value
+      : JSON.stringify(value);
+export function benchmarkReportCommand(result: BenchmarkResult) {
+  return `rsa --workspace ${shellQuote(result.workspace)} bench report ${shellQuote(result.runId)} --file report.json`;
+}
+/** Pin both immutable report IDs; a report revision is not another trial. */
+export function benchmarkSelection(
+  result: BenchmarkResult,
+  baseline?: BenchmarkResult,
+) {
+  return {
+    case: definitionKey(result.definition, result.project),
+    result: resultKey(result),
+    report: result.report?.id ?? null,
+    baseline: baseline ? resultKey(baseline) : null,
+    baselineReport: baseline?.report?.id ?? null,
+  };
 }

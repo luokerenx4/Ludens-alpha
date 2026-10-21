@@ -1,7 +1,7 @@
 import type { Context } from "@oh-my-pi/pi-ai/types";
 import type { StreamFn } from "@oh-my-pi/pi-agent-core";
 import { ModelTrace } from "../../harness/omp/trace.ts";
-import type { BenchmarkContext, CaseOutcome } from "../types.ts";
+import type { BenchmarkContext, AuthorReport } from "../types.ts";
 import { codexTransport, fixtureModel, inputTexts, userMessage, type SimulatedSocket } from "../fixtures/codex-transport.ts";
 import { readEvents, seqs } from "../fixtures/evidence.ts";
 
@@ -12,22 +12,22 @@ const conditions = [
     fault: "websocket closed (1012) before deliverable output", inject: (socket: SimulatedSocket) => socket.closeFromServer(1012) },
 ] as const;
 
-export async function run(ctx: BenchmarkContext): Promise<CaseOutcome> {
-  const outcomes: CaseOutcome[] = [];
+export async function run(ctx: BenchmarkContext): Promise<AuthorReport> {
+  const outcomes: AuthorReport[] = [];
   for (const condition of conditions) outcomes.push(await runCondition(ctx, condition));
+  ctx.metadata.limitations = [
+    "这是有生产故障依据的 TDD 特例：Besiege 6h 的连接到期，以及 Mario Maker 8h 的响应中关闭 1012；只重建传输工况，不包含用户历史。",
+    "运行真实 OMP Codex provider 和 ModelTrace；WS/SSE 均为进程内传输 fixture，不访问在线模型。",
+    "通过虚拟 Date.now 推进 60 秒冷却；计时使用真实 performance.now，只反映本地处理开销，不代表在线上传、网络或服务端性能。",
+    "每个工况的无重放请求故意产生一次 model_end:error，这是预期故障证据。",
+  ];
   return {
-    checks: outcomes.flatMap(outcome => outcome.checks),
-    metrics: outcomes.flatMap(outcome => outcome.metrics),
-    limitations: [
-      "这是有生产故障依据的 TDD 特例：Besiege 6h 的连接到期，以及 Mario Maker 8h 的响应中关闭 1012；只重建传输工况，不包含用户历史。",
-      "运行真实 OMP Codex provider 和 ModelTrace；WS/SSE 均为进程内传输 fixture，不访问在线模型。",
-      "通过虚拟 Date.now 推进 60 秒冷却；计时使用真实 performance.now，只反映本地处理开销，不代表在线上传、网络或服务端性能。",
-      "每个工况的无重放请求故意产生一次 model_end:error，这是预期故障证据。",
-    ],
+    checks: Object.assign({}, ...outcomes.map(outcome => outcome.checks)),
+    metrics: Object.assign({}, ...outcomes.map(outcome => outcome.metrics)),
   };
 }
 
-async function runCondition(ctx: BenchmarkContext, condition: typeof conditions[number]): Promise<CaseOutcome> {
+async function runCondition(ctx: BenchmarkContext, condition: typeof conditions[number]): Promise<AuthorReport> {
   ctx.signal?.throwIfAborted();
   const transport = codexTransport();
   const originalNow = Date.now;
@@ -107,30 +107,36 @@ async function runCondition(ctx: BenchmarkContext, condition: typeof conditions[
   } finally { Date.now = originalNow; transport.close(); }
   const events = (await readEvents(ctx.runDir)).filter(event => event.trace?.epoch === epoch);
   const evidence = seqs(events, e => e.type === "benchmark_transport_step" || e.type === "benchmark_fault");
-  return {
-    checks: [
-      { id: "responses-completed", label: "正常请求完整完成", passed: results.length === 5 && results.every(reason => reason === "stop") && outputs.every(text => text === "OK"),
+  const report: AuthorReport = {
+    checks: {
+      "responses-completed": { label: "正常请求完整完成", passed: results.length === 5 && results.every(reason => reason === "stop") && outputs.every(text => text === "OK"),
         expected: "前五个正常请求均 stop 且输出 OK；最后的故障注入请求单独判定", actual: JSON.stringify({ stopReasons: results, outputs }), evidenceSeq: evidence },
-      { id: "fallback", label: "故障后安全回退", passed: fallbackValid,
+      "fallback": { label: "故障后安全回退", passed: fallbackValid,
         expected: "故障请求经 SSE 完成、完整历史保留、进入 60 秒冷却", actual: `${transport.http.length} 个 SSE 请求；${results.join(", ")}`, evidenceSeq: evidence },
-      { id: "cooldown", label: "冷却期不重复握手", passed: cooldownValid,
+      "cooldown": { label: "冷却期不重复握手", passed: cooldownValid,
         expected: "冷却期继续 SSE，无新 WS 连接", actual: `verified=${cooldownValid}`, evidenceSeq: evidence },
-      { id: "restore", label: "恢复 WS 全历史", passed: restoredValid,
+      "restore": { label: "恢复 WS 全历史", passed: restoredValid,
         expected: "冷却后新连接使用完整历史，无 previous_response_id", actual: `verified=${restoredValid}; full=${fullBytes} B`, evidenceSeq: evidence },
-      { id: "delta", label: "恢复增量链", passed: deltaValid,
+      "delta": { label: "恢复增量链", passed: deltaValid,
         expected: "下一请求引用恢复后的 response，仅发送新输入", actual: `verified=${deltaValid}; delta=${deltaBytes} B`, evidenceSeq: evidence },
-      { id: "no-tool-replay", label: "已交付工具不重放", passed: noReplay,
+      "no-tool-replay": { label: "已交付工具不重放", passed: noReplay,
         expected: "工具已输出后的故障不自动 SSE 重试，工具只交付一次", actual: `delivered=${delivered}; verified=${noReplay}`,
         evidenceSeq: seqs(events, e => e.type === "benchmark_no_replay" || e.type === "model_end" && e.data.stopReason === "error") },
-    ].map(check => ({ ...check, id: `${condition.id}-${check.id}`, label: `${condition.label} · ${check.label}` })),
-    metrics: [
-      { id: "restored", label: "WS 恢复成功", value: restoredValid && deltaValid ? 1 : 0, unit: "boolean" },
-      { id: "sse-requests", label: "SSE 回退请求", value: transport.http.length, unit: "count" },
-      { id: "connections", label: "WS 连接", value: transport.sockets.length, unit: "count" },
-      { id: "full-frame-bytes", label: "恢复全量帧", value: fullBytes, unit: "B" },
-      { id: "delta-frame-bytes", label: "恢复后增量帧", value: deltaBytes, unit: "B" },
-      { id: "delta-ratio", label: "增量/全量字节", value: fullBytes ? deltaBytes / fullBytes * 100 : null, unit: "%" },
-      { id: "local-request-ms", label: "本地模拟平均耗时", value: durations.reduce((a, b) => a + b, 0) / durations.length, unit: "ms" },
-    ].map(metric => ({ ...metric, id: `${condition.id}-${metric.id}`, label: `${condition.label} · ${metric.label}` })),
+    },
+    metrics: {
+      "restored": { label: "WS 恢复成功", value: restoredValid && deltaValid ? 1 : 0, unit: "boolean" },
+      "sse-requests": { label: "SSE 回退请求", value: transport.http.length, unit: "count" },
+      "connections": { label: "WS 连接", value: transport.sockets.length, unit: "count" },
+      "full-frame-bytes": { label: "恢复全量帧", value: fullBytes, unit: "B" },
+      "delta-frame-bytes": { label: "恢复后增量帧", value: deltaBytes, unit: "B" },
+      "delta-ratio": { label: "增量/全量字节", value: fullBytes ? deltaBytes / fullBytes * 100 : null, unit: "%" },
+      "local-request-ms": { label: "本地模拟平均耗时", value: durations.reduce((a, b) => a + b, 0) / durations.length, unit: "ms" },
+    },
+  };
+  return {
+    checks: Object.fromEntries(Object.entries(report.checks!).map(([id, check]) =>
+      [`${condition.id}-${id}`, { ...check, label: `${condition.label} · ${check.label}` }])),
+    metrics: Object.fromEntries(Object.entries(report.metrics!).map(([id, metric]) =>
+      [`${condition.id}-${id}`, { ...metric, label: `${condition.label} · ${metric.label}` }])),
   };
 }

@@ -1,6 +1,6 @@
 # RSA Benchmark
 
-Benchmark 是 RSA 的统一评测接口。内置 Harness 工况和 workspace 的 Python 评测共用目录、参数 schema、结果、日志与看板；执行方式由各自适配器负责。评测算法由作者编写，RSA 不预设游戏评分、训练方法或自动优化循环。
+Benchmark 是 RSA 的统一评测接口。内置 Harness 工况和 workspace 的 Python 评测共用定义、报告契约、运行日志、比较和看板；评测算法由作者编写。执行记录保存发生过什么，报告保存怎样测量和判断，两者分开。
 
 ## 使用
 
@@ -10,87 +10,110 @@ Benchmark 是 RSA 的统一评测接口。内置 Harness 工况和 workspace 的
 rsa bench list
 rsa bench help ws-recovery
 rsa bench run ws-recovery
-rsa bench run perception-lifecycle
-rsa bench run all --repeat 2
-rsa bench run capability-reuse --live --seconds 180 --requests 30
-rsa bench help python/benchmarks/clamp.py:evaluate
+rsa bench run perception-lifecycle --repeat 2
+rsa bench run capability-reuse --seconds 180 --requests 30
 rsa bench run python/benchmarks/clamp.py:evaluate --args '{"samples":1000}'
 rsa bench history python/benchmarks/clamp.py:evaluate
 rsa bench compare <本次-run-id> <基线-run-id>
+rsa bench schema
+rsa bench validate report.json
 ```
 
-`list/help/history/compare` 输出 JSON，`all` 只选择内置 Harness 工况。`run` 支持 `--args '<JSON object>'`、`--repeat` 和 `--live`。内置工况保留 `--model/--seconds/--requests/--seed` 便捷选项，默认模型 `openai-codex/gpt-6.1-sol`、180 秒、30 次请求和 seed 7。workspace 评测的 `--seconds` 是进程运行预算，另留 30 秒清理时间，函数参数放在 `--args`。结果统一进入当前 workspace 的 `logs/`。
+目录、帮助、结果和比较输出 JSON。`run` 显式指定一个评测 ID，支持 `--args '<JSON object>'` 和 `--repeat`；批量运行可用普通 shell 循环显式列出 ID。内置工况保留 `--model/--seconds/--requests/--seed` 便捷选项，默认模型 `openai-codex/gpt-6.1-sol`、180 秒、30 次请求和 seed 7。workspace 评测的 `--seconds` 是进程预算，另留 30 秒清理时间，函数参数放在 `--args`。结果进入当前 workspace 的 `logs/`。
 
-标为 `live` 的评测只有显式加 `--live` 才由 CLI 执行，否则记录为 skipped。内置工况使用临时工作区和独立进程，不操作当前游戏；workspace 评测运行作者自己的代码，可能按其实现调用设备。设备操作仍须已有操作权，benchmark 不自动接管或重试动作。
+执行前通过 `help` 阅读评测范围：`capability-reuse` 会调用在线模型，其他内置工况使用模拟设备或传输。这里没有 `offline/live` 许可或 `--live` 开关。workspace 评测是作者自己的 Python 代码，可以调用设备、访问网络或运行模型；RSA 不把它当成沙盒。设备动作仍须已有 Baseware 控制权，评测不会自动接管或重试动作。条件由作者声明，调用事实由日志记录；没有调用日志不等于没有副作用。
 
 ## 编写 workspace 评测
 
 用 `from rsa_tools import benchmark` 标记顶层函数，提供类型标注和 docstring。静态发现不导入代码，规则与 `@capability` 相同；ID 是 `python/<相对文件路径>:<函数名>`。评测不进入 Controller 目录，也不注入 OMP 工具。
 
 ```python
-from rsa_tools import benchmark
+from rsa_tools import benchmark, current_benchmark
 
-@benchmark(targets=["python/vision.py:detect"])
+@benchmark(targets=["python/vision.py:detect"], protocol="1")
 def evaluate(dataset: str, checkpoint: str) -> dict:
     """Measure detection accuracy on a labeled dataset."""
-    # 自己加载数据、调用能力并计算 accuracy。
+    record = current_benchmark()
+    record.conditions(dataset=dataset, dataset_revision="v3")
+    record.subject("model", path=checkpoint, revision="epoch-12")
+    # 自己加载数据、调用能力，计算 accuracy 和 all_detected。
     return {
-        "metrics": [
-            {"id": "accuracy", "value": accuracy, "unit": "ratio", "direction": "higher"}
-        ],
-        "conditions": {"dataset": dataset},
-        "subjects": [{"id": "model", "path": checkpoint}],
+        "metrics": {
+            "accuracy": {"value": accuracy, "unit": "ratio", "direction": "higher"},
+            "peak_memory": {"value": None, "unit": "B", "reason": "Not sampled."},
+        },
+        "checks": {
+            "all_detected": {"passed": all_detected, "expected": True, "actual": all_detected},
+        },
     }
 ```
 
-`targets` 可省略，也可关联多个能力或组件；`title`、`scope` 和 `mode="offline" | "live"` 是可选声明。目录 schema 描述 JSON 参数，模型对象、tensor 和辅助函数留在普通 Python 代码里。`benchmarks/` 只是建议目录，不是发现条件。完整可执行的小例子见 [examples/clamp.py](examples/clamp.py)：复制到 workspace 的 `benchmarks/clamp.py` 后即可运行，不依赖模型或设备。
+`targets` 可省略或关联多个能力；`title`、`scope` 描述名称和适用范围。`protocol` 是作者维护的评测口径版本，默认 `"1"`：改变数据划分、评分含义或判断标准时更新它；单纯改进被测能力不需要改评测口径。实际评测代码另存 SHA/revision，修改实现不会自动判为不可比。`benchmarks/` 只是建议目录，不是发现条件。
 
-直接 import 后调用评测函数，或者用 `from rsa_tools.benchmarks import run` 再执行 `run(id, arguments)`，都在当前 Python 进程评测并记录结果。直接调用返回原函数结果；可复用进程内已加载的模型和状态。CLI 每次新开一个 Python 入口，多个 CLI 调用不共享内存。修改代码后，已有进程须重新启动才加载新版本；记录使用实际加载版本的身份。
+报告只包含 `metrics` 与 `checks`，两者都可省略；`{}` 是合法的无指标报告。每个 key 是稳定指标或检查项 ID，不重复填 `id`：
 
-直接调用 `mode="live"` 函数本身就是显式执行，不另加 CLI 的确认开关。纯本地评测无需启动 RSA Host 或 Baseware，结果照常落盘。
+- metric 要有 `value`（有限数值或 `null`）和非空 `unit`；`label`、`direction`（`higher/lower/none`）、缺测说明 `reason` 可选。缺测用 `null`，不写 0 或 NaN。
+- check 只要求 `passed`（`true/false/null`）；`null` 表示证据不足。`label`、`expected`、`actual` 和 `evidenceSeq` 可选；期望值和实际值可以是布尔、数值、对象等 JSON 值。没有 label 时显示 key。
+- `evidenceSeq` 若提供，引用本次 `events.jsonl` 中的正整数序号。它不是数据集的帧序号；图像和逐样本结果可保存为附件。
 
-返回值可省略 `metrics` 或 `checks`。每项 metric 有稳定 `id`、数值或 `null`、`unit`，可选 `label` 与 `direction`（`higher/lower/none`）。每项 check 有 `id/label/passed/expected/actual/evidenceSeq`；`passed=null` 表示证据不足，`evidenceSeq` 引用本次日志，没有引用时用空数组。不要用零代替缺失数值，也不要用同一个指标 ID 表示不同含义。
+唯一作者契约在 [report.schema.json](report.schema.json)，CLI `schema` 导出同一份 JSON Schema，Python 与 TypeScript 使用它验证完整报告并一次返回各字段问题。`rsa bench validate report.json` 只读数据，不运行评测函数。
 
-需要在执行前登记条件、被测模型或产物时：
+完整可执行例子见 [examples/clamp.py](examples/clamp.py)：复制到 workspace 的 `benchmarks/clamp.py` 后即可运行，不依赖模型或设备，包含指标、检查、缺测、条件、源码引用与附件。
+
+直接 import 后调用评测函数，或用 `from rsa_tools.benchmarks import run` 执行 `run(id, arguments)`，都在当前 Python 进程评测并记日志，可复用已加载的模型和状态。直接调用返回原函数结果；报告无效时记录问题并在 stderr 给出修正入口，不因报告格式抛异常重做动作。CLI 每次新开一个 Python 入口。修改代码后，已有进程须重新启动才加载新版本；记录保留实际加载版本的身份。纯本地评测无需启动 RSA Host 或 Baseware。
+
+条件和产物通过 context 登记，不混入返回报告：
 
 ```python
-from rsa_tools import current_benchmark
-
-record = current_benchmark()             # 只能在评测内使用
-record.conditions(dataset_revision="v3")
+record = current_benchmark()  # 只能在评测内使用
+record.conditions(camera="top", dataset_revision="v3")
 record.subject("model", path="weights.pt", revision="epoch-12")
-plot_path = record.run_dir / "artifacts" / "errors.png"
-# 自己将图表写到 plot_path。
-record.artifact(plot_path, label="Error examples")
+record.artifact("errors.png", label="Error examples")
+record.limitations("Only daylight samples were measured.")
+seq = record.record("sample_verified", {"frame": 42})
+# 返回检查项时可以用 evidenceSeq=[seq] 引用这个事件。
 ```
 
-`conditions` 记录评测条件；`subjects` 记录被测对象引用，可显式提供 `path/sha256/revision`。返回字典也可包含这些字段以及 `artifacts`、`limitations`。产物写入本次 `run_dir/artifacts/`，避免后续覆盖工作文件改变历史证据。RSA 不扫描并复制整个 workspace，也不自动归档数据集或模型权重；只写路径不会检测文件内容变化，需作者声明版本或 hash。模型在内存中继续训练时，由作者声明被测时刻的版本，不从文件名推测其状态。
+`artifact` 将工作区文件归档到本次运行并记录 hash；也可直接生成 `record.run_dir / "artifacts" / ...` 后登记。后续覆盖工作文件不会改变附件。`subject` 记录被测对象引用，不复制整个数据集或模型；作者应声明版本或 SHA。模型在内存中继续训练时，要声明被测时刻的版本，不从文件名猜测状态。
 
-## 结果、日志与比较
+## 执行、报告与修正
 
 每次评测有独立的 `workspace/logs/<run-id>/`：
 
 ```text
 manifest.json       # 工作区、评测定义及关联
-benchmark.json      # schema v2 的定义快照、参数、状态、指标和证据
-events.jsonl        # schema v2 的事件、source、origin 和 trace
+benchmark.json      # schema v3：执行事实、参数、条件、对象与附件
+reports/<id>.raw.json # 验证前先保存原始返回；不能表示为 JSON 时保留 rawText
+reports/<id>.json   # 不可变报告：原始返回、验证问题、规范化测量、口径与修正关系
+events.jsonl        # 生命周期、source、origin 和 trace
 artifacts/          # 本次评测产物
 ```
 
-内置工况的隔离工作区位于本次运行内，成绩仍归调用方 workspace。正在运行的 Agent 中发起评测时，`parentRunId` 和 trace 保留父运行与调用链。Python SDK 在本地写开始记录并原子更新结果，Host 不在线也可使用。评测生命周期只写本次日志；内部 Python 能力调用可同时记录在评测与父 Host，保留同一 origin，不另算一次调用或评测。
+内置工况的隔离工作区位于本次运行内，成绩仍归调用方 workspace。Agent 发起评测时保留 `parentRunId` 与调用链。Python SDK 在本地写开始记录，Host 不在线也可使用；内部能力调用可同时进入评测与父 Host 日志，保留同一 origin，不另算一次调用或评测。
 
-执行状态与判定分开：
+函数正常返回后先归档原始报告再验证，报告格式错误不会把已完成的执行变成失败。执行有 `running/completed/error/cancelled`；加载错误保留实际 `ImportError` 等信息，运行异常保留原异常。没有终态的记录仍是未完成，硬杀进程不伪造正常结束。
 
-| 字段 | 值与含义 |
-| --- | --- |
-| `status` | `running`、`completed`、`error`、`cancelled`、`skipped` |
-| `verdict` | 完成后由 checks 得出 `passed`、`failed`、`inconclusive`；没有 checks 为 `null` |
+报告通过验证后才有规范化指标与检查；`verdict` 来自 checks：`passed/failed/inconclusive`，没有 checks 为 `null`。检查未通过是一次已完成的评测。报告缺失或无效则显示待补充/修正，不能用空指标装成一次成功。CLI `run` 退出码 0 表示完成且报告有效、没有失败/待定检查，1 表示执行异常/取消或检查失败/待定，2 表示执行完成但报告待补充/修正。非零返回不能直接理解为需要重跑动作。
 
-仅有指标的评测可以正常 completed。断言失败是一次完成的评测，程序异常才是 error。开始后没有终态的记录保留未完成事实；直接进程被硬杀时不能伪造正常结束。CLI 退出码 0 表示完成且没有失败/待定断言，或显式跳过；异常、取消和失败/待定判定为 1。
+动作已经做完，只是报告字段有误时，读取本次保存的原报告、附件和日志，修正一份 JSON，再提交：
 
-统一契约与比较规则在 [contract.ts](../src/benchmark/contract.ts)。比较显示定义 revision、模式、参数与 conditions 的差异；subjects 的变化单独展示，便于比较代码或模型改进。只有同 ID、单位与方向的指标才计算差值。条件变化时仍可查看两份结果，但不能把差值直接解释成能力提高。定义和历史成绩各自保留，不用新规则悄悄改写旧成绩。
+```sh
+rsa bench validate corrected.json
+rsa bench report <run-id> --file corrected.json --reason "Correct numeric check values"
+# 评分规则改变时显式声明新的口径
+rsa bench report <run-id> --file rescored.json --protocol 2 --reason "Re-evaluate saved samples"
+rsa bench compare <run-id>@<report-id> <baseline-run-id>@<baseline-report-id>
+```
 
-Dashboard 的 **Benchmark → 评测目录** 动态列出内置和 workspace 评测，可以查看历史、选基线、核对检查证据、跳转原运行。网页与 Electron 使用同一视图；运行由 CLI 或 Python 显式发起，看板只读。旧 schema v1 结果可在 `rsa/` 运行一次 `bun scripts/migrate-benchmarks-v1.ts --root <artifactRoot>`（或 `--workspace <workspace>`）升级：先备份原文件为 `benchmark.v1.json` / `manifest.v1.json`，保留原成绩与导入标记，不重新执行评测；重复运行跳过 schema v2。
+`report` 只保存新报告，不导入评测代码、不调用设备、不改参数或原执行状态。报告保留前一版本和修正理由；修十次仍是一次试验。对异常执行补报告也不能把它改成正常完成。只有需要新测量时才再次 `run`。
+
+`history` 按运行列出，默认展示最新报告；比较和分享可固定到 `<run-id>@<report-id>`。看板同样区分执行、报告与判定，旧报告不会被新修正覆盖。schema v3 是当前契约；旧文件不在读取时自动改写。
+
+## 比较
+
+同一评测 ID、口径、参数与 conditions 下才标为可比；实际源码 revision 和 subjects 的变化作为改进对象保留。只有同 ID、单位与方向的指标才计算差值。条件变化时仍可查看两份报告，但不能直接把差值解释为能力提高。同一次执行的两个报告会明确标注，不能算成两次独立试验。
+
+Dashboard 的 **Benchmark → 评测目录** 列出内置和 workspace 评测，可查看历史、报告错误、具体报告版本、基线和证据，并跳转原运行。网页与 Electron 使用同一视图；运行与报告提交由 CLI 或 Python 发起，看板只读。
 
 ## 内置 Harness 工况
 
@@ -116,7 +139,7 @@ v3 从空的感知实现开始，Agent 自行用设备采样，并可实现 `per
 
 ## 开发与验证
 
-内置元数据在 `cases.json`，实现为 `src/benchmark/cases/*.ts` 的 `run(ctx)`。各 case 在 finally 清理服务；独立 worker 隔离故障注入的全局状态。语义或判定变化时提升版本。新增 workspace 评测不需要修改 Harness、Baseware 或 OMP。
+内置元数据在 `cases.json`，实现为 `src/benchmark/cases/*.ts` 的 `run(ctx)`，返回同一份作者报告；条件、被测对象、产物和限制写入 `ctx.metadata`。各 case 在 finally 清理服务；独立 worker 隔离故障注入的全局状态。语义或判定变化时提升 `cases.json` 的 version，它作为评测口径 `protocolVersion`。新增 workspace 评测不需要修改 Harness、Baseware 或 OMP。
 
 ```sh
 bun test tests/benchmark-*.test.ts
