@@ -326,7 +326,7 @@ index 09aad77..3bc5e49 100644
                           top_screen_height, orientation);
          break;
 diff --git a/src/video_core/renderer_vulkan/renderer_vulkan.cpp b/src/video_core/renderer_vulkan/renderer_vulkan.cpp
-index 5221fdf..44575da 100644
+index 5221fdf..c521bc0 100644
 --- a/src/video_core/renderer_vulkan/renderer_vulkan.cpp
 +++ b/src/video_core/renderer_vulkan/renderer_vulkan.cpp
 @@ -912,7 +912,7 @@ void RendererVulkan::DrawTopScreen(const Layout::FramebufferLayout& layout,
@@ -346,4 +346,12 @@ index 5221fdf..44575da 100644
 +    if (!layout.raw_capture) DrawCursor(layout);
 
      scheduler.Record([](vk::CommandBuffer cmdbuf) { cmdbuf.endRenderPass(); });
+ }
+@@ -1482,6 +1482,7 @@ bool RendererVulkan::TryRenderScreenshotWithHostMemory() {
+     // Image data has been copied directly to host memory
+     device.destroyFramebuffer(frame.framebuffer);
+     device.destroyImageView(frame.image_view);
++    vmaDestroyImage(instance.GetAllocator(), frame.image, frame.allocation);
+
+     return true;
  }
