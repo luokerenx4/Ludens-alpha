@@ -122,12 +122,21 @@ class ObservationHistory:
             raise ValueError("Observation query must be an object")
         if set(query) - {"at", "start", "end", "limit", "after"}:
             raise ValueError("Unknown observation query parameter")
+        # Optional tool arguments may arrive as null or blank timestamps.
+        # Normalize once here so the CLI, model tool, and Python callers agree.
+        query = {key: value for key, value in query.items()
+                 if value is not None and not (key in {"at", "start", "end"}
+                                               and isinstance(value, str) and not value.strip())}
         limit = query.get("limit", 8)
         after = query.get("after", 0)
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 64:
             raise ValueError("limit must be an integer from 1 to 64")
         if isinstance(after, bool) or not isinstance(after, int) or after < 0:
             raise ValueError("after must be a non-negative sequence integer")
+        # Sequence zero does not advance a point query. Keep it for range
+        # queries, where it explicitly requests the beginning of history.
+        if "at" in query and query.get("after") == 0:
+            query.pop("after")
         if "at" in query and any(key in query for key in ("start", "end", "after")):
             raise ValueError("at cannot be combined with start, end, or after")
         at = timestamp(query["at"], "at") if "at" in query else None

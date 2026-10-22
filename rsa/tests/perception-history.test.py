@@ -65,6 +65,37 @@ class HistoryTests(unittest.TestCase):
                 }]}, "two", {})
             self.assertEqual(recovered.observe()["records"][0]["sequence"], 3)
 
+    def test_optional_tool_fields_and_real_query_conflicts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            history = ObservationHistory(directory)
+            for second in range(3):
+                history.append({"text": str(second)}, "one", {}, f"2026-10-22T06:45:5{second}Z")
+            # Replay the populated-but-unused fields observed in real tool calls.
+            ranged = history.observe({"at": "", "start": "2026-10-22T06:45:50Z",
+                                      "end": "2026-10-22T06:45:52Z", "limit": 2, "after": 0})
+            self.assertEqual([r["sequence"] for r in ranged["records"]], [1, 2])
+            self.assertNotIn("at", ranged["query"])
+            self.assertEqual(ranged["nextAfter"], 2)
+            point = history.observe({"at": "2026-10-22T06:45:50Z", "start": "",
+                                     "end": " ", "limit": 1, "after": 0})
+            self.assertEqual(point["records"][0]["sequence"], 1)
+            self.assertEqual(point["query"], {"at": "2026-10-22T06:45:50Z", "limit": 1})
+            latest = history.observe(dict.fromkeys(("at", "start", "end", "limit", "after")))
+            self.assertEqual(latest["records"][0]["sequence"], 3)
+            self.assertEqual(latest["query"], {})
+            # Zero alone is still a range cursor, never an alias for latest.
+            self.assertEqual(history.observe({"after": 0, "limit": 1})["records"][0]["sequence"], 1)
+            for invalid in (
+                {"at": "2026-10-22T06:45:50Z", "start": "2026-10-22T06:45:50Z"},
+                {"at": "2026-10-22T06:45:50Z", "after": 1},
+                {"at": "2026-10-22T06:45:50Z", "after": False},
+                {"at": "not-a-time"}, {"start": "2026-10-22T06:45:50"},
+                {"start": "2026-10-22T06:45:52Z", "end": "2026-10-22T06:45:50Z"},
+                {"limit": ""}, {"unknown": None},
+            ):
+                with self.subTest(query=invalid), self.assertRaises(ValueError):
+                    history.observe(invalid)
+
     def test_clock_correction_does_not_lose_records_between_pages(self):
         with tempfile.TemporaryDirectory() as directory:
             history = ObservationHistory(directory)

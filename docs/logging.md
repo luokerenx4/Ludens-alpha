@@ -59,9 +59,11 @@ manifest 记录 Git commit/dirty、continue/consolidate 提示和可选 workspac
 
 `perception_status` 记录状态、generation、PID、源码 hash；`perception_sample` 记录后台生成的快照及媒体数量；`perception_observe_start/end` 记录历史查询及读取结果/耗时。持续采样写入 `ObservationHistory`，不依赖模型是否正在读取。每条快照有 ID、递增 sequence、generation、`recordedAt` 和 `sampling` 区间，以及可选的 `sampledAt/sources`。`recordedAt` 是采样完成墙钟；`sampling.clock/startedAtMs/finishedAtMs` 是同一进程单调时钟区间；`sampledAt` 由 workspace 提供，表示已知的来源时刻，不能用完成时间伪造设备帧时间。
 
-每条记录的媒体在生成时归档，之后的历史读取不会覆盖它。查询返回 `records`、原查询 `query` 和分页字段 `hasMore/nextAfter`；`snapshot` 是本页最后一条。`reused` 表示与上一次读取返回相同的一组记录，不代表采样器停止。重载保留本 run 历史，每条记录仍标明自己的 generation。
+每条记录的媒体在生成时归档，之后的历史读取不会覆盖它。查询开始记录原参数；查询结果返回 `records`、规范化后的 `query` 和分页字段 `hasMore/nextAfter`；`snapshot` 是本页最后一条。`reused` 表示与上一次读取返回相同的一组记录，不代表采样器停止。重载保留本 run 历史，每条记录仍标明自己的 generation。
 
 **模型看到什么以 `observation_context` 和 `model_start.observations` 为准**，包括工作区自己融合或处理的媒体；不能用最新 driver 截图代替。输入编码失败另记 `perception_input_error`，读取成功不保证输入成功。空实现或失败只给文字诊断，不回退默认截图。取消读取不杀感知进程，迟到结果不塞回已取消的模型调用。
+
+原生 bash/read 返回的图片按实际输入字节归档为 `observation(origin=tool_result)`，关联对应工具；后台完成图片在 OMP 将其送入模型时记录为本次交付，不能冒认最近一次前台工具。Dashboard 显示这些真实输入。这里的事件时间是交付时间，不推断原始采样时刻；CLI 历史时间和序号保留在输出标签与查询日志中。仅返回 JSON 路径不计作图片交付。
 
 generation 后台 trace 不继承重载请求或控制 epoch，持续采样与查询分别记录调用；查询不会重新执行 workspace 采样代码。接口及 reload 见 [Workspace](workspace.md)。
 

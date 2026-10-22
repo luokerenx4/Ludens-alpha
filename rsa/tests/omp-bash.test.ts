@@ -18,6 +18,9 @@ import { ModelTrace } from "../src/harness/omp/trace.ts";
 import { Runtime } from "../src/harness/runtime.ts";
 import { listen as listenRsa } from "../src/harness/transport.ts";
 import { Workspace } from "../src/harness/workspace.ts";
+import { PerceptionRuntime } from "../src/harness/perception.ts";
+import { encodeRawPng } from "@oh-my-pi/pi-coding-agent/utils/png-encode";
+import { encodeTerminalImage, TerminalGraphicsDecoder } from "@oh-my-pi/pi-coding-agent/utils/terminal-graphics";
 
 async function until(check: () => boolean | Promise<boolean>) {
   const deadline = performance.now() + 10_000;
@@ -117,7 +120,7 @@ async function fixture() {
     return stream;
   };
   const detachTrace = trace.attach(session);
-  return { workspace, runDir, rsaSocket, basewareSocket, runtime, core, session, results, actions, toolsSeen, baseTools,
+  return { workspace, runDir, rsaSocket, basewareSocket, runtime, core, session, extension, results, actions, toolsSeen, baseTools,
     epoch: () => cycle!.epoch, held: () => held, cancelled: () => cancelled, released: () => released,
     clearCycle() { cycle = undefined; },
     async prompt(...calls: AssistantMessage["content"][]) {
@@ -348,5 +351,69 @@ test("a native background completion after handback cannot start an extra model 
     expect(completed?.trace).toEqual(launched?.trace);
     expect(completed?.trace).toMatchObject({ epoch, toolCallId: "completion-job" });
     expect(completed?.data).toMatchObject({ kind: "job", status: "completed" });
+  } finally { await f.close(); }
+}, 30_000);
+
+test("historical CLI images survive native bash, sibling tools and persistence without a latest-frame substitution", async () => {
+  const f = await fixture();
+  try {
+    const image = (red: number, blue: number) => encodeRawPng(new Uint8Array(Array.from({ length: 32 * 32 }, () => [red, 0, blue]).flat()), 32, 32, 3);
+    const oldPng = image(255, 0), latestPng = image(0, 255);
+    await writeFile(join(f.workspace, "old.png"), oldPng);
+    await writeFile(join(f.workspace, "latest.png"), latestPng);
+    await writeFile(join(f.workspace, "frame"), "old");
+    await writeFile(join(f.workspace, "perception.py"), `from pathlib import Path
+class Perception:
+    sample_hz = 20
+    def start(self, context): pass
+    def sample(self):
+        frame = Path("frame").read_text()
+        return {"text": frame, "media": [{"path": frame+".png", "mediaType": "image/png"}]}
+    def close(self): pass
+`);
+    f.runtime.perception = new PerceptionRuntime({ workspace: f.workspace, runDir: f.runDir, record: f.runtime.record });
+    await f.runtime.perception.reload();
+    await until(() => f.runtime.perception!.status().state === "ready");
+    const old = await f.runtime.perception.observe(new AbortController().signal);
+    await writeFile(join(f.workspace, "frame"), "latest");
+    await until(async () => (await f.runtime.perception!.observe(new AbortController().signal)).result.stdout === "latest");
+    const decoder = new TerminalGraphicsDecoder();
+    decoder.push(await encodeTerminalImage({ type: "image", data: Buffer.from(oldPng).toString("base64"), mimeType: "image/png" }));
+    decoder.finish();
+    const expectedImage = (await decoder.images())[0]!;
+    const command = `rsa observe --at '${old.snapshot!.recordedAt}' --images`;
+    // Test both sibling orders: the final plain-text result must not add a live screenshot.
+    for (const reverse of [false, true]) {
+      const id = `history-${reverse}`;
+      const calls = [...tool(id, "bash", { command }), ...tool(`sibling-${reverse}`, "bash", { command: "sleep 0.05; printf sibling" })];
+      await f.prompt(reverse ? calls.reverse() : calls);
+      expect(f.results.get(id).content.filter((part: any) => part.type === "image")).toEqual([expectedImage]);
+      expect(f.results.get(`sibling-${reverse}`).content.filter((part: any) => part.type === "image")).toHaveLength(0);
+      const inputIds = f.extension.context().observations!;
+      expect(inputIds).toHaveLength(1);
+      const events = await f.events();
+      const delivered = events.find(event => event.type === "observation" && event.data.id === inputIds[0]);
+      expect(delivered.trace.toolCallId).toBe(id);
+      expect(delivered.data.origin).toBe("tool_result");
+      expect(Buffer.from(await readFile(delivered.data.path)).toString("base64")).toBe(expectedImage.data);
+      const saved = f.session.agent.state.messages.find(message => message.role === "toolResult" && message.toolCallId === id);
+      expect(saved?.role === "toolResult" && saved.content).toContainEqual(expectedImage);
+      expect(JSON.stringify(saved)).toContain(old.snapshot!.recordedAt);
+    }
+    // Without --images the JSON remains machine-readable and the normal live
+    // context continues. A CLI lookup alone is never logged as pixel delivery.
+    await f.prompt(tool("json-only", "bash", { command: `rsa observe --at '${old.snapshot!.recordedAt}'` }));
+    const events = await f.events();
+    expect(events.some(event => event.type === "observation" && event.trace.toolCallId === "json-only")).toBe(false);
+    expect(f.extension.context().observations![0]).not.toBe(old.result.observations![0]!.id);
+
+    await f.prompt(tool("background-history", "bash", { command: `sleep 0.1; ${command}`, async: true, timeout: 0 }));
+    const job = f.session.asyncJobManager!.getAllJobs().at(-1)!;
+    await job.promise;
+    await f.session.settleAsyncWork();
+    const backgroundInputs = (await f.events()).filter(event => event.type === "observation" && event.data.controllerId === "background_result");
+    expect(backgroundInputs).toHaveLength(1);
+    expect(Buffer.from(await readFile(backgroundInputs[0].data.path)).toString("base64")).toBe(expectedImage.data);
+    expect(backgroundInputs[0].trace.toolCallId).toBeUndefined();
   } finally { await f.close(); }
 }, 30_000);

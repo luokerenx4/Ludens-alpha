@@ -94,11 +94,15 @@ rsa perception status
 rsa perception reload
 rsa observe
 rsa observe --at 2026-10-22T06:00:00Z
-rsa observe --start 2026-10-22T05:59:50Z --end 2026-10-22T06:00:00Z --limit 8
+rsa observe --start 2026-10-22T05:59:50Z --end 2026-10-22T06:00:00Z --limit 8 --images
 rsa perception stop
 ```
 
 `observe` 默认读取最新结果；`at` 读取不晚于指定时刻的一条记录；`start/end` 读取含端点的时间范围，可省略一侧。查询时间指 `recordedAt`，不是可选的 `sampledAt`。范围按序号升序分页，默认 8 条、最多 64 条；`hasMore/nextAfter` 表示续页，使用 `--after <nextAfter>` 保留原范围继续查询。`at` 不能和范围混用。OMP 工具使用同名参数；`rsa perception observe` 是同一 CLI 入口。返回的 `records` 包含每条快照、文字和媒体，`snapshot` 指向本页最后一条。
+
+未使用的参数可省略或传 `null`，空白时间字符串也视为未填写。`after: 0` 从历史开头分页，与 `at` 同传时不改变点查；真正的时间条件冲突仍报错。
+
+OMP 的 `observe` 工具直接返回带记录时间的图片。CLI 默认输出 JSON 和文件路径，便于脚本处理；在 bash 中看图用 `--images`，经 OMP 原生终端图片通道交付所选像素。一页超过 32 张图或 40 MiB 时明确报错，缩小 `--limit` 分页，不静默丢图。工具批次已返回图片时不再追加最新截图；没有图片的普通操作仍自动读取最新感知。CLI 查询失败保留非零退出码。
 
 `reload` 关闭旧进程并启动新 generation，重新加载入口、helper 和权重并开始持续采样；不会迁移旧实例内存，已归档历史在本 run 内保留。首条结果生成前处于 loading。普通模型轮次、一次读取取消都不会重启采样。感知进程不继承控制 epoch，只读采样无需接管；它不能自行取得动作权限。
 

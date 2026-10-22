@@ -1,13 +1,13 @@
 import { send, type Request } from "./transport.ts";
 import { parseArgs } from "node:util";
-import type { ObservationQuery } from "./perception.ts";
+import type { ObservationQuery, PerceptionRead } from "./perception.ts";
 
 export const HELP = `rsa status
 rsa auto on [--message <text>]
 rsa auto off
 rsa consolidate [--seconds <n>]
 rsa perception status | reload | stop
-rsa observe [--at <ISO> | --start <ISO> --end <ISO>] [--limit <n>] [--after <sequence>]
+rsa observe [--at <ISO> | --start <ISO> --end <ISO>] [--limit <n>] [--after <sequence>] [--images]
 rsa controller list | <id> --help | <id> <arguments...>
 
 Control management is unavailable inside agent cycles carrying BASEWARE_EPOCH.
@@ -15,13 +15,15 @@ The current directory is the workspace; --workspace <path> or RSA_WORKSPACE over
 RSA_SOCKET overrides its default host address. Each workspace resumes its own session.
 Use rsa controller for device and workspace capabilities.`;
 
-export const OBSERVE_HELP = `rsa observe [--at <ISO> | --start <ISO> --end <ISO>] [--limit <n>] [--after <sequence>]
+export const OBSERVE_HELP = `rsa observe [--at <ISO> | --start <ISO> --end <ISO>] [--limit <n>] [--after <sequence>] [--images]
 Read ObservationHistory without triggering a new sample; no arguments reads the latest record.
 --at selects the last record at or before the given recordedAt timestamp.
 --start and --end select an inclusive time range; either bound may be omitted.
 Range pages follow recording sequence, default to 8 records (maximum 64), and return hasMore/nextAfter.
 --after continues after a record sequence. Query times use recordedAt (sampling completion);
 sampledAt, when supplied by the producer, describes the source time separately.
+Default output is JSON with media paths. --images also displays the requested pixels through
+OMP's native terminal image support; use it when reading pictures through bash.
 The same command is available as rsa perception observe.`;
 
 const PERCEPTION_HELP = `rsa perception status | reload | stop
@@ -34,7 +36,7 @@ async function observe(argv: string[], socket: string) {
   if (argv.includes("--help")) { console.log(OBSERVE_HELP); return; }
   const { values } = parseArgs({ args: argv, options: {
     at: { type: "string" }, start: { type: "string" }, end: { type: "string" },
-    limit: { type: "string" }, after: { type: "string" },
+    limit: { type: "string" }, after: { type: "string" }, images: { type: "boolean", default: false },
   } });
   const query: ObservationQuery = {
     ...(values.at !== undefined ? { at: values.at } : {}),
@@ -45,8 +47,12 @@ async function observe(argv: string[], socket: string) {
   };
   const value = await send(socket, { kind: "perception", argv: ["observe"], query,
     epoch: process.env.BASEWARE_EPOCH,
-    trace: process.env.BASEWARE_TRACE ? JSON.parse(process.env.BASEWARE_TRACE) : undefined });
-  console.log(JSON.stringify(value, null, 2));
+    trace: process.env.BASEWARE_TRACE ? JSON.parse(process.env.BASEWARE_TRACE) : undefined }) as PerceptionRead;
+  process.exitCode = value.result.exitCode;
+  const output = values.images
+    ? await (await import("./omp/terminal-observation.ts")).terminalObservation(value)
+    : JSON.stringify(value, null, 2);
+  console.log(output);
 }
 
 export const CONTROLLER_HELP = `rsa controller list

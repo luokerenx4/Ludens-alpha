@@ -1,6 +1,8 @@
-import { readFile } from "node:fs/promises";
-import { delimiter, resolve } from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { delimiter, join, resolve } from "node:path";
 import type { ExtensionFactory, CustomTool, ReadToolResultEvent } from "@oh-my-pi/pi-coding-agent";
+import { ASYNC_RESULT_MESSAGE_TYPE } from "@oh-my-pi/pi-coding-agent/session/async-job-delivery";
+import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { resizeImage } from "@oh-my-pi/pi-coding-agent/utils/image-resize";
 import { refreshShellConfigCache } from "@oh-my-pi/pi-utils/procmgr";
 import * as z from "@oh-my-pi/omptype/zod";
@@ -49,14 +51,16 @@ export function createRsaExtension(options: {
   let requestEpoch: string | undefined;
   const pendingTools = new Set<string>();
   let observed: PerceptionRead | undefined;
+  let toolImages: Observation[] = [];
+  const deliveredBackground = new Set<string>();
   let latestContext: { observations: string[]; executions: string[]; skills: Awaited<ReturnType<Workspace["snapshot"]>> };
   const trace = (toolCallId?: string): EventTrace => ({ epoch: options.cycle().epoch, ...options.trace?.(toolCallId), ...(toolCallId ? { toolCallId } : {}) });
   const observeParameters = z.object({
-    at: z.string().optional().describe("ISO timestamp: last record at or before this recordedAt; cannot combine with a range."),
-    start: z.string().optional().describe("Inclusive ISO recordedAt range start."),
-    end: z.string().optional().describe("Inclusive ISO recordedAt range end."),
-    limit: z.number().int().min(1).max(64).optional().describe("Range page size; default 8."),
-    after: z.number().int().min(0).optional().describe("Range cursor: records after this sequence; use nextAfter to continue."),
+    at: z.string().nullable().optional().describe("ISO timestamp: last record at or before recordedAt. Omit or null when using a range."),
+    start: z.string().nullable().optional().describe("Inclusive ISO recordedAt range start. Omit or null when unused."),
+    end: z.string().nullable().optional().describe("Inclusive ISO recordedAt range end. Omit or null when unused."),
+    limit: z.number().int().min(1).max(64).nullable().optional().describe("Range page size; omit or null for default 8."),
+    after: z.number().int().min(0).nullable().optional().describe("Range cursor from nextAfter; 0 starts history. Omit or null when unused."),
   });
   // Each RSA host owns one OMP session. Use OMP's existing extension environment
   // mechanism; native bash and its process manager own execution. Capture paths
@@ -80,6 +84,7 @@ export function createRsaExtension(options: {
       const read = await readPerception(signal ? AbortSignal.any([signal, cycle.signal]) : cycle.signal, trace(id), params);
       const content = await perceptionContent(read, trace(id));
       observed = read;
+      toolImages.push(...(read.result.observations ?? []));
       return { content, details: read, isError: read.result.exitCode !== 0 };
     },
   };
@@ -97,9 +102,9 @@ export function createRsaExtension(options: {
   async function perceptionContent(read: PerceptionRead, parent: EventTrace) {
     let images: Awaited<ReturnType<typeof media>> = [];
     try {
-      if (read.records && read.records.length > 1) {
+      if (read.records?.length) {
         images = (await Promise.all(read.records.map(async record => [
-          { type: "text" as const, text: `Observation #${record.snapshot.sequence} recordedAt=${record.snapshot.recordedAt}` },
+          { type: "text" as const, text: `Recorded observation #${record.snapshot.sequence} recordedAt=${record.snapshot.recordedAt}` },
           ...await media(record.observations, runtime.record, parent),
         ]))).flat();
       } else images = await media(read.result?.observations ?? [], runtime.record, parent);
@@ -117,15 +122,38 @@ export function createRsaExtension(options: {
     return [{ type: "text" as const, text: JSON.stringify(read) }, ...images];
   }
 
+  // These are already the exact pixels returned by native OMP tools. Archive
+  // them for the dashboard without re-encoding or guessing their capture time.
+  async function archiveToolImages(images: ImageContent[], parent: EventTrace, source: string) {
+    const observations: Observation[] = [];
+    for (const image of images) {
+      const bytes = Buffer.from(image.data, "base64");
+      const hash = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
+      const suffix = ({ "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif" } as Record<string, string>)[image.mimeType] ?? "bin";
+      const directory = join(options.runDir ?? join(workspace.path, "logs", runtime.status().runId), "observations");
+      await mkdir(directory, { recursive: true });
+      const path = join(directory, `input-${hash}.${suffix}`);
+      await writeFile(path, bytes, { flag: "wx" }).catch(error => { if (error.code !== "EEXIST") throw error; });
+      const now = options.clock?.now() ?? performance.now();
+      const observation: Observation = { id: crypto.randomUUID(), controllerId: source, path, mediaType: image.mimeType,
+        timing: { clock: options.clock?.id ?? runtime.status().runId, requestedAtMs: now, receivedAtMs: now } };
+      runtime.record("observation", { ...observation, origin: "tool_result" }, parent);
+      runtime.record("observation_media", { observationId: observation.id, modelBytes: bytes.length, mimeType: image.mimeType }, parent);
+      observations.push(observation);
+    }
+    return observations;
+  }
+
   async function captureContext(parent: EventTrace, origin: "prompt_start" | "tool_batch") {
     const cycle = options.cycle();
     cycle.signal.throwIfAborted();
     const consolidating = cycle.purpose === "consolidate";
     const reused = !consolidating && observed !== undefined;
-    const perception = consolidating ? undefined : observed ?? await readPerception(cycle.signal, parent);
+    const perception = consolidating ? undefined : observed ?? (toolImages.length ? undefined : await readPerception(cycle.signal, parent));
     // An explicit observe result already appears in the immutable tool history.
     const content = perception && !reused ? await perceptionContent(perception, parent) : [];
-    const observations = perception?.result?.observations ?? [];
+    const observations = [...new Map([...(perception?.result?.observations ?? []), ...toolImages].map(o => [o.id, o])).values()];
+    const reusedIds = new Set(reused || perception?.reused ? perception?.result?.observations?.map(o => o.id) : []);
     const skills = await workspace.snapshot();
     cycle.signal.throwIfAborted();
     latestContext = { observations: observations.map(o => o.id),
@@ -134,8 +162,8 @@ export function createRsaExtension(options: {
       observations: latestContext.observations, executions: latestContext.executions,
       purpose: cycle.purpose, perception: perception?.status, snapshot: perception?.snapshot,
       query: perception?.query, records: perception?.records?.map(record => record.snapshot),
-      reusedObservations: reused || perception?.reused ? latestContext.observations : [],
-      freshObservations: reused || perception?.reused ? [] : latestContext.observations,
+      reusedObservations: latestContext.observations.filter(id => reusedIds.has(id)),
+      freshObservations: latestContext.observations.filter(id => !reusedIds.has(id)),
       freshExecutions: reused ? [] : latestContext.executions,
       reusedExecutions: reused ? latestContext.executions : [],
       skillVersion: skills.version, memoryVersion: skills.memory.version }, parent);
@@ -160,6 +188,7 @@ export function createRsaExtension(options: {
       });
       refreshShellConfigCache();
       observed = undefined;
+      toolImages = [];
       return { message: { customType: "rsa-observation", content: await captureContext({ epoch: options.cycle().epoch }, "prompt_start"), display: false } };
     });
     pi.on("session_shutdown", () => {
@@ -171,9 +200,14 @@ export function createRsaExtension(options: {
     pi.on("assistant_message", () => {
       pendingTools.clear();
       observed = undefined;
+      toolImages = [];
     });
     pi.on("tool_result", async (event) => {
       if (event.toolName === "bash") observed = undefined;
+      if (event.toolName !== "observe") {
+        const images = event.content.filter((part): part is ImageContent => part.type === "image");
+        toolImages.push(...await archiveToolImages(images, trace(event.toolCallId), event.toolName));
+      }
       if (event.toolName === "read") {
         // OMP resolves selectors such as SKILL.md:19-22. Use its result metadata
         // instead of treating the selector as part of a filesystem path.
@@ -191,11 +225,26 @@ export function createRsaExtension(options: {
       if (options.cycle().signal.aborted) return;
       // tool_result is awaited before persistence and the next model request;
       // turn_end is only a notification. Attach one observation per tool batch.
-      return { content: [...event.content, ...await captureContext(trace(event.toolCallId), "tool_batch")] };
+      return { content: [...event.content, ...await captureContext(trace(event.toolCallId), "tool_batch")], isError: event.isError };
     });
-    pi.on("context", async () => {
+    pi.on("context", async (event) => {
       const cycle = options.cycle();
       cycle.signal.throwIfAborted();
+      // OMP delivers async images as custom messages, outside tool_result.
+      // Inspect only the new tail, not old images carried across compactions.
+      const tail = (event.messages ?? []).slice((event.messages ?? []).findLastIndex(message => message.role === "assistant") + 1);
+      for (const message of tail) {
+        if (message.role !== "custom" || message.customType !== ASYNC_RESULT_MESSAGE_TYPE || !Array.isArray(message.content)) continue;
+        const key = JSON.stringify([message.timestamp, message.details]);
+        if (deliveredBackground.has(key)) continue;
+        deliveredBackground.add(key);
+        const images = message.content.filter((part): part is ImageContent => part.type === "image");
+        const inputs = await archiveToolImages(images, { epoch: cycle.epoch }, "background_result");
+        if (!inputs.length) continue;
+        latestContext = { ...latestContext, observations: [...latestContext.observations, ...inputs.map(o => o.id)] };
+        runtime.record("observation_context", { origin: "background_result", observations: latestContext.observations,
+          executions: latestContext.executions, freshObservations: inputs.map(o => o.id) }, { epoch: cycle.epoch });
+      }
       // A new takeover gets a fresh budget without replacing the OMP session.
       if (requestEpoch !== cycle.epoch) {
         requestEpoch = cycle.epoch;

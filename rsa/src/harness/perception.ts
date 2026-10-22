@@ -26,7 +26,8 @@ export interface PerceptionSnapshot {
   sources?: unknown[];
 }
 export interface ObservationQuery {
-  at?: string; start?: string; end?: string; limit?: number; after?: number;
+  at?: string | null; start?: string | null; end?: string | null;
+  limit?: number | null; after?: number | null;
 }
 export interface PerceptionRecord {
   snapshot: PerceptionSnapshot; text: string; observations: Observation[];
@@ -115,6 +116,9 @@ export class PerceptionRuntime {
             receivedAtMs: snapshot.sampling.finishedAtMs },
         })),
       }));
+      // The history store normalizes unused tool fields before choosing a mode.
+      // Use the same canonical query when enforcing freshness across reloads.
+      query = value.query;
       const latest = query.at === undefined && query.start === undefined && query.end === undefined && query.after === undefined;
       // During reload/failure, latest must not silently serve an old generation as fresh.
       const currentRecords = latest ? records.filter(record => record.snapshot.generation === worker.generation) : records;

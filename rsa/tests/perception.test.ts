@@ -147,12 +147,19 @@ test("reload replaces code and loaded assets, closes the old process, and preser
     const history = await f.observe({ at: first.snapshot!.recordedAt });
     expect(history.snapshot?.generation).toBe(old.generation!);
     expect(history.result.stdout).toBe("old:old weights");
+    const pointWithEmptyFields = await f.observe({ at: first.snapshot!.recordedAt, start: "", end: null, after: 0 });
+    expect(pointWithEmptyFields.snapshot?.id).toBe(first.snapshot!.id);
+    expect(pointWithEmptyFields.query).toEqual({ at: first.snapshot!.recordedAt });
     const sources = JSON.parse(await readFile(join(f.workspace, "logs", "run", "perception", fresh.generation!, "sources.json"), "utf8"));
     expect(Object.keys(sources).sort()).toEqual(["helper.py", "perception.py"]);
     await f.load(source('        raise RuntimeError("broken sampler")'));
     const failed = await f.observe();
     expect(failed.error).toContain("broken sampler");
     expect(failed.result.observations).toEqual([]);
+    const emptyLatest = await f.observe({ at: "", start: null, end: " ", limit: null, after: null });
+    expect(emptyLatest.error).toContain("broken sampler");
+    expect(emptyLatest.records).toEqual([]);
+    expect(emptyLatest.query).toEqual({});
     expect((await f.observe({ at: first.snapshot!.recordedAt })).snapshot?.id).toBe(first.snapshot!.id);
   } finally { await f.cleanup(); }
 });

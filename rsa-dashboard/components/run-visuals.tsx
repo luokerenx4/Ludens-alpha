@@ -38,6 +38,7 @@ export const observationOrigin: Record<string, string> = {
   cli: "CLI 采样",
   observe_hook: "工作区 observe",
   perception: "工作区感知",
+  tool_result: "工具返回的图像",
 };
 
 export function Metric({

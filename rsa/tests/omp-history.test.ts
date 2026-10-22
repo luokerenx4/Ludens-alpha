@@ -107,17 +107,18 @@ test.each([1, 26])("OMP persists batches of %i images and reuses the Codex prefi
     session.agent.streamFn = streamFn;
     await session.prompt("Resume.");
     expect(requests).toBe(9);
-    // One automatic capture per batch; an explicit final observe is reused.
+    // Any explicit image in a batch supplies its observation, even if a later
+    // sibling is bash. The next model sees the requested frame without a second capture.
     // The larger batch also crosses Codex's SDK cap of 200 retained images.
-    expect(imageCounts).toEqual([1, 2, 3, 5, 6, 7, 8, 9, 10].map(n => n * batchSize));
-    expect(textCounts).toEqual([1, 2, 3, 5, 6, 7, 8, 9, 10]);
-    expect(states).toEqual(["initial", "second", "third", "third", ...Array(6).fill("fourth")]);
-    expect(events.filter(e => e.type === "perception_observe_end")).toHaveLength(10);
+    expect(imageCounts).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9].map(n => n * batchSize));
+    expect(textCounts).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(states).toEqual(["initial", "second", "third", "third", ...Array(5).fill("fourth")]);
+    expect(events.filter(e => e.type === "perception_observe_end")).toHaveLength(9);
     const contexts = events.filter(e => e.type === "observation_context");
     expect(contexts).toHaveLength(9);
     expect(contexts.filter(e => e.data.reusedObservations.length)).toHaveLength(3);
     expect(contexts.filter(e => e.data.reusedObservations.length).every(e => e.data.freshObservations.length === 0)).toBe(true);
-    expect(events.filter(e => e.type === "observation_media")).toHaveLength(10 * batchSize);
+    expect(events.filter(e => e.type === "observation_media")).toHaveLength(9 * batchSize);
     expect(deltas).toHaveLength(8);
     expect(deltas.every((delta) => delta !== null)).toBe(true);
     const entries = manager.getEntries();
@@ -130,7 +131,7 @@ test.each([1, 26])("OMP persists batches of %i images and reuses the Codex prefi
     // gets one observation on its last successful tool, never on invalid calls.
     expect(counts.slice(0, 4)).toEqual([0, expect.any(Number), expect.any(Number), 0]);
     expect(counts.slice(1, 3).toSorted((a, b) => a - b)).toEqual([0, batchSize]);
-    expect(counts.slice(4)).toEqual([0, 1, 1, 1, 1, 1, 1].map(n => n * batchSize));
+    expect(counts.slice(4)).toEqual([0, 1, 1, 0, 1, 1, 1].map(n => n * batchSize));
   } finally {
     await session.dispose(); authStorage.close(); await runtime.close();
     await rm(directory, { recursive: true, force: true });
