@@ -35,6 +35,12 @@ void app.whenReady().then(async () => {
       if (asset.kind === 'state') {
         await showPose({state:asset.id,effect:null});
         if (document.querySelector('#pet').dataset.state !== asset.id) throw new Error(asset.id + ': not displayed');
+        const rect = portrait.getBoundingClientRect(), bounds = asset.bounds_px;
+        if (rect.left + bounds[0] / asset.width * rect.width < 0 ||
+            rect.right - (asset.width - bounds[2]) / asset.width * rect.width > innerWidth ||
+            rect.top + bounds[1] / asset.height * rect.height < 0 ||
+            rect.bottom - (asset.height - bounds[3]) / asset.height * rect.height > innerHeight)
+          throw new Error(asset.id + ': calibrated artwork clipped');
       }
     }
     await showPose({state:'01-idle',effect:null});
@@ -107,10 +113,11 @@ void app.whenReady().then(async () => {
       const layout = await pet.webContents.executeJavaScript(`(() => {
         const b = bubble.getBoundingClientRect(), p = portrait.getBoundingClientRect();
         return {left:b.left, right:b.right, viewport:innerWidth, portrait:p.width,
+          scale:assets.get(pet.dataset.state).display_scale ?? 1,
           offset:(b.left+b.right-p.left-p.right)/2, top:b.top, height:innerHeight};
       })()`)
       assert.ok(layout.left >= -1 && layout.right <= layout.viewport + 1, 'Bubble clipped')
-      assert.ok(Math.abs(layout.portrait - size * .9) < 1, 'Portrait size changed')
+      assert.ok(Math.abs(layout.portrait - size * .9 * layout.scale) < 1, 'Portrait scale changed')
       assert.ok(Math.abs(layout.offset - size * .8 * (flipped ? 1 : -1)) < 1, 'Bubble offset changed')
       assert.ok(Math.abs(layout.top - (layout.height * .26 - 55)) < 1, 'Bubble must sit above-left of Alice')
       assert.ok(layout.top >= 0, 'Raised bubble must remain inside the window')
@@ -211,12 +218,13 @@ void app.whenReady().then(async () => {
         return { top:h.top, bottom:f.bottom, left:Math.min(h.left, f.left), right:Math.max(h.right, f.right),
           separated:h.bottom <= r.top && r.bottom <= f.top, canScroll:c.scrollTop > 0,
           last:c.textContent.endsWith('Final line'), interactive:activityHit({x:r.x+r.width/2,y:r.y+r.height/2}),
-          width:innerWidth, height:innerHeight, portrait:portrait.getBoundingClientRect().width };
+          width:innerWidth, height:innerHeight, portrait:portrait.getBoundingClientRect().width,
+          scale:assets.get(pet.dataset.state).display_scale ?? 1 };
       })()`)
       assert.ok(layout.top > 0 && layout.bottom < layout.height && layout.left > 0 && layout.right < layout.width, 'Content clipped at native window edge')
       assert.ok(layout.separated && layout.canScroll && layout.last, 'Long content or fixed controls lost')
       assert.ok(layout.interactive, 'Scroll area must receive native input when mirrored')
-      assert.ok(Math.abs(layout.portrait - size * .9) < 1, 'Content styling changed Alice size')
+      assert.ok(Math.abs(layout.portrait - size * .9 * layout.scale) < 1, `Content styling changed portrait scale: ${JSON.stringify({size, flip, ...layout})}`)
       writeFileSync(join(home, `content-long-${size}-${flip}.png`), (await pet.webContents.capturePage()).toPNG())
     }
   }

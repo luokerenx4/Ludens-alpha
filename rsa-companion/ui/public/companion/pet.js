@@ -78,7 +78,9 @@ async function showPose({ state, effect }) {
     ctx.drawImage(image, 0, 0);
     const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
     if (version !== requestVersion) return;
-    // Commit art and its alpha mask together; slow decodes cannot overwrite a newer pose.
+    // Calibrate head size, not the full silhouette; keep the button and alpha hit area aligned.
+    pet.style.setProperty('--pose-scale', asset.display_scale ?? 1);
+    // Commit art, layout and alpha together; slow decodes cannot overwrite a newer pose.
     portrait.src = image.src; alpha = pixels;
     portrait.alt = '卢登斯 · ' + asset.label;
     pet.dataset.state = state;

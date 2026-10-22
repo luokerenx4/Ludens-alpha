@@ -169,6 +169,7 @@ rsa run --model openai-codex/gpt-6.1-sol --seconds 300 --requests 50
 桌宠使用卢登斯的静态素材（`rsa-companion/ui/public/companion/ludens/manifest.json`）：
 24 个全身姿态、8 个特效、3 个头像与托盘图标，附生成提示词和 9 份 SVG。
 运行图为 512px 透明 WebP，托盘另带 PNG。无视频或逐帧动画。
+各姿态的 `display_scale` 以默认站立的头部大小做视觉校准，底部居中缩放角色和点击区域，气泡不缩放；修改 manifest 后同步 catalog.js。
 右键「姿态」选择全部姿态或恢复自动，「特效」选择叠加；选择仅在本次进程有效。
 自动状态在闲置 30/90/120 秒时依次托坐、犯困、睡觉，点击会短暂惊讶或开心，
 按住显示被拎起，拖动释放显示落地。现有吸边、左右翻转、尺寸和透明区域穿透保留。
