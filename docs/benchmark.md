@@ -113,7 +113,7 @@ Dashboard **Benchmark → 评测目录** 展示定义、历史、报告版本、
 
 | Case | 范围 |
 | --- | --- |
-| perception-lifecycle | 真实 Python、合成模型/媒体：空实现、缓存、reload、修复、不可变归档；不测 PyTorch/设备 |
+| perception-lifecycle v2 | 真实 Python、合成模型/媒体：持续采样、历史查询、reload、修复、不可变归档；不测 PyTorch/设备 |
 | control-handoff | 真实 Runtime/Baseware/Python、模拟驱动：中断、释放、旧 epoch 拒绝；不测模拟器性能 |
 | ws-recovery v2 | 真实 provider、模拟 WS/HTTP、虚拟时间：SSE 冷却→WS 全量→delta、工具不重放；见 [测试依据](development.md#ws-恢复测试依据) |
 | background-compaction | 真实 OMP maintenance/V2、受控 SSE/token：复用、尾部、晚到归属、取消；保持 256k 阈值 |

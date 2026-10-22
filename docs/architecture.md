@@ -58,7 +58,7 @@ Baseware 负责唯一拥有者、旧 epoch 拒绝、动作取消和设备释放�
 外层续轮仍由 RSA 控制：
 
 1. 在控制周期内用 [continue.md](../rsa/prompts/continue.md) 发起 OMP prompt；`auto on --message` 的补充消息只用于首次。
-2. 插件在 prompt 开始及整批工具结束后读取工作区感知结果，附加技能和记忆索引。显式 `observe` 同样读取感知结果，已返回的结果不会再重复附加。
+2. 工作区感知进程持续调用 `sample()`，将带时间戳的结果写入 `ObservationHistory`。插件在 prompt 开始及整批工具结束后读取最新结果，附加技能和记忆索引。显式 `observe` 可查询历史时刻或范围，已返回的结果不会再重复附加。
 3. OMP 执行自己的推理与工具循环；一次 prompt 结束后，RSA 在预算内继续下一次。
 
 环境在模型思考时继续运行。工作区可改感知和控制程序，不能改外层调度；见 [OMP 装配](../rsa/src/harness/omp/session.ts) 与 [扩展](../rsa/src/harness/omp/extension.ts)。

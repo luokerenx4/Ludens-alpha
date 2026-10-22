@@ -72,15 +72,23 @@ export interface PerceptionStatus {
 export interface PerceptionRead {
   at: string;
   status: PerceptionStatus;
-  snapshot?: {
-    id: string;
-    sequence: string | number;
-    sampledAt?: string;
-    sources?: unknown[];
-  };
+  snapshot?: PerceptionSnapshot;
+  records?: { snapshot: PerceptionSnapshot; text: string; observations: { id: string }[] }[];
+  query?: { at?: string; start?: string; end?: string; limit?: number; after?: number };
+  hasMore?: boolean;
+  nextAfter?: number;
   reused?: boolean;
   durationMs?: number;
   error?: string;
+}
+export interface PerceptionSnapshot {
+  id: string;
+  sequence: number;
+  generation: string;
+  recordedAt: string;
+  sampling: { clock: string; startedAtMs: number; finishedAtMs: number };
+  sampledAt?: string;
+  sources?: unknown[];
 }
 export interface Tool {
   id: string;

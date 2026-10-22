@@ -75,11 +75,12 @@ test("OMP's SDK adapter delivers the abort signal correctly and returns real ima
     await Bun.write(join(work, "perception.py"), `class Perception:
     def start(self, context): pass
     def close(self): pass
-    def observe(self):
+    def sample(self):
         return {"sequence": 1, "text": "active-window:Document", "media": [{"path": "../sample.png", "mediaType": "image/png"}, {"path": "../tree.json", "mediaType": "application/json"}]}
 `);
     runtime.perception = new PerceptionRuntime({ workspace: work, runDir: join(directory, "run"), record: runtime.record });
     await runtime.perception.reload();
+  for (let i = 0; i < 200 && runtime.perception.status().state === "loading"; i++) await Bun.sleep(10);
   }
   const control = new AbortController();
   const extension = createRsaExtension({ runtime, workspace: new Workspace(join(directory, "workspace"), join(directory, "skill-versions")),
@@ -116,12 +117,13 @@ test("text-only perception reaches automatic context and explicit reads are not 
   await Bun.write(join(workspace, "perception.py"), `class Perception:
     def start(self, context): self.count = 0
     def close(self): pass
-    def observe(self):
+    def sample(self):
         self.count += 1
         return {"sequence": self.count, "text": "Window " + str(self.count)}
 `);
   runtime.perception = new PerceptionRuntime({ workspace, runDir: join(directory, "run"), record: runtime.record });
   await runtime.perception.reload();
+  for (let i = 0; i < 200 && runtime.perception.status().state === "loading"; i++) await Bun.sleep(10);
   const control = new AbortController();
   const extension = createRsaExtension({ runtime, workspace: new Workspace(workspace, join(directory, "versions")),
     basewareSocket: "/tmp/unused.sock", binDir: "/tmp", maxRequests: 3,
@@ -139,7 +141,9 @@ test("text-only perception reaches automatic context and explicit reads are not 
     const result = await observe.execute("explicit", {}, control.signal, () => {}, {} as ExtensionContext);
     const enriched = await handlers.tool_result({ toolCallId: "explicit", toolName: "observe", input: {}, ...result });
     expect(calls).toBe(0);
-    expect(JSON.stringify(enriched).match(/Window 2/g)).toHaveLength(1);
+    expect((result.details as PerceptionRead).snapshot?.sequence).toBe(1);
+    expect((result.details as PerceptionRead).reused).toBe(true);
+    expect(enriched.content.filter((part: any) => part.type === "image")).toHaveLength(0);
     expect(JSON.parse(enriched.content.at(-1).text).controllerOutputs).toBeUndefined();
     expect(extension.context().executions).toEqual([(result.details as PerceptionRead).result.id]);
     expect(JSON.stringify(first)).toBe(persisted);

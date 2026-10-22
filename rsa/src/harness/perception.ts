@@ -14,17 +14,31 @@ export interface PerceptionStatus {
   pid?: number;
   codeSHA?: string;
   error?: string;
+  sampleHz?: number;
 }
 export interface PerceptionSnapshot {
   id: string;
-  sequence: string | number;
+  sequence: number;
+  generation: string;
+  recordedAt: string;
+  sampling: { clock: string; startedAtMs: number; finishedAtMs: number };
   sampledAt?: string;
   sources?: unknown[];
+}
+export interface ObservationQuery {
+  at?: string; start?: string; end?: string; limit?: number; after?: number;
+}
+export interface PerceptionRecord {
+  snapshot: PerceptionSnapshot; text: string; observations: Observation[];
 }
 export interface PerceptionRead {
   status: PerceptionStatus;
   result: ExecutionResult;
   snapshot?: PerceptionSnapshot;
+  records?: PerceptionRecord[];
+  query?: ObservationQuery;
+  hasMore?: boolean;
+  nextAfter?: number;
   reused?: boolean;
   error?: string;
 }
@@ -41,18 +55,11 @@ interface Worker {
   expectedExit: boolean;
   generation: string;
 }
-interface Archived {
-  snapshot: PerceptionSnapshot;
-  text: string;
-  observations: Observation[];
-}
-
 /** One workspace process owns perception. Only explicit reload replaces it. */
 export class PerceptionRuntime {
   private current: PerceptionStatus = { state: "unimplemented", generation: null };
   private worker?: Worker;
-  private archived = new Map<string, Archived>();
-  private archiving = new Map<string, Promise<Archived>>();
+  private lastReadIds: string[] = [];
   private transition: Promise<unknown> = Promise.resolve();
   private readonly workspace: string;
   private readonly clock: Clock;
@@ -82,83 +89,65 @@ export class PerceptionRuntime {
     return operation;
   }
 
-  async observe(signal: AbortSignal, parent: EventTrace = {}): Promise<PerceptionRead> {
+  async observe(signal: AbortSignal, parent: EventTrace = {}, query: ObservationQuery = {}): Promise<PerceptionRead> {
     const trace = childTrace(parent), started = this.clock.now();
     const observedStatus = this.status(), worker = this.worker;
-    const replaced = () => {
-      const failed = this.current.generation === observedStatus.generation && this.current.state === "error";
-      return this.finish(this.unavailable(
-        failed ? this.current.error : "Perception generation stopped or was replaced during observation.",
-        failed ? this.status() : { ...observedStatus, state: "stopped" },
-      ), started, trace);
-    };
-    this.record("perception_observe_start", { status: observedStatus }, trace);
+    this.record("perception_observe_start", { status: observedStatus, query }, trace);
     try {
       signal.throwIfAborted();
-      if (!worker || this.current.state === "loading" || this.current.state === "stopped") {
-        return this.finish(this.unavailable(), started, trace);
-      }
-      const reply = await this.request(worker, { action: "observe", trace: withoutEpoch(trace) },
+      if (!worker || worker.expectedExit) return this.finish(this.unavailable(), started, trace);
+      const reply = await this.request(worker, { action: "observe", query },
         this.options.observeTimeoutMs ?? 5000, signal);
       signal.throwIfAborted();
-      if (!this.isCurrent(worker)) return replaced();
-      if (!reply.ok) {
-        const error = `${reply.error?.type}: ${reply.error?.message}`;
-        this.setStatus({ ...this.current,
-          state: reply.error?.type === "NotImplementedError" ? "unimplemented" : "error", error }, trace);
-        return this.finish(this.unavailable(error), started, trace);
+      if (!this.isCurrent(worker)) {
+        return this.finish(this.unavailable("Perception generation stopped or was replaced during observation.",
+          { ...observedStatus, state: "stopped" }), started, trace);
       }
-      const value = reply.result;
-      if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("observe() must return a snapshot object");
-      const { sequence, sampledAt, sources, text = "", media = [] } = value as Record<string, unknown>;
-      if (!(typeof sequence === "string" && sequence.length > 0) && !(typeof sequence === "number" && Number.isFinite(sequence))) {
-        throw new TypeError("observe() snapshot needs a string or finite number sequence");
+      // A bad history query must not poison the running sampler's health.
+      if (!reply.ok) return this.finish(this.unavailable(`${reply.error?.type}: ${reply.error?.message}`), started, trace);
+      const value = reply.result as { records: Array<PerceptionSnapshot & {
+        text: string; media: { path: string; mediaType: string }[];
+      }>; query: ObservationQuery; hasMore: boolean; nextAfter?: number };
+      const records: PerceptionRecord[] = value.records.map(({ text, media, ...snapshot }) => ({
+        snapshot, text, observations: media.map((item, index) => ({
+          id: `${snapshot.id}-${index}`, controllerId: "perception", mediaType: item.mediaType, path: item.path,
+          timing: { clock: snapshot.sampling.clock, requestedAtMs: snapshot.sampling.startedAtMs,
+            receivedAtMs: snapshot.sampling.finishedAtMs },
+        })),
+      }));
+      const latest = query.at === undefined && query.start === undefined && query.end === undefined && query.after === undefined;
+      // During reload/failure, latest must not silently serve an old generation as fresh.
+      const currentRecords = latest ? records.filter(record => record.snapshot.generation === worker.generation) : records;
+      if (!currentRecords.length || (latest && this.current.state !== "ready")) {
+        const error = this.current.error ?? (latest ? "No sample available from the current generation yet." : "No observation at the requested time.");
+        return this.finish({ ...this.unavailable(error), query, records: [], hasMore: false }, started, trace);
       }
-      if (sampledAt !== undefined && (typeof sampledAt !== "string" || !Number.isFinite(Date.parse(sampledAt)))) {
-        throw new TypeError("snapshot sampledAt must be an ISO timestamp when known");
-      }
-      if (sources !== undefined && !Array.isArray(sources)) throw new TypeError("snapshot sources must be an array");
-      if (typeof text !== "string" || !Array.isArray(media)) throw new TypeError("snapshot text must be a string and media must be an array");
-      const key = JSON.stringify([worker.generation, sequence]);
-      let archive = this.archived.get(key);
-      const reused = archive !== undefined || this.archiving.has(key);
-      if (!archive) {
-        let saving = this.archiving.get(key);
-        if (!saving) {
-          saving = this.archive({ id: crypto.randomUUID(), sequence,
-            ...(sampledAt === undefined ? {} : { sampledAt: sampledAt as string }),
-            ...(sources === undefined ? {} : { sources: sources as unknown[] }) }, text, media, started);
-          this.archiving.set(key, saving);
-        }
-        try { archive = await saving; }
-        finally { if (this.archiving.get(key) === saving) this.archiving.delete(key); }
-        if (!this.isCurrent(worker)) return replaced();
-        this.archived.set(key, archive);
-      }
-      signal.throwIfAborted();
-      if (!this.isCurrent(worker)) return replaced();
-      this.setStatus({ ...this.current, state: "ready", error: undefined }, trace);
-      const result = this.execution(archive.text, archive.observations, started);
-      return this.finish({ status: this.status(), result, snapshot: archive.snapshot, reused }, started, trace);
+      const snapshot = currentRecords.at(-1)!.snapshot;
+      const ids = currentRecords.map(record => record.snapshot.id);
+      const reused = ids.length === this.lastReadIds.length && ids.every((id, index) => id === this.lastReadIds[index]);
+      this.lastReadIds = ids;
+      const text = currentRecords.length === 1 ? currentRecords[0]!.text : currentRecords.map(record =>
+        `[${record.snapshot.recordedAt} #${record.snapshot.sequence}]\n${record.text}`).join("\n\n");
+      return this.finish({ status: this.status(),
+        result: this.execution(text, currentRecords.flatMap(record => record.observations), started),
+        snapshot, records: currentRecords, query: value.query, hasMore: value.hasMore,
+        ...(value.nextAfter === undefined ? {} : { nextAfter: value.nextAfter }), reused }, started, trace);
     } catch (error) {
       if (signal.aborted) {
         const result = this.execution("", [], started, "Observation wait cancelled");
         result.status = "interrupted";
-        this.record("perception_observe_end", { status: observedStatus, result, outcome: "cancelled",
+        this.record("perception_observe_end", { status: observedStatus, result, query, outcome: "cancelled",
           durationMs: this.clock.now() - started }, trace);
         throw signal.reason ?? error;
       }
-      if (worker && !this.isCurrent(worker)) return replaced();
       const message = error instanceof Error ? error.message : String(error);
-      this.setStatus({ ...this.current, state: "error", error: message }, trace);
       return this.finish(this.unavailable(message), started, trace);
     }
   }
 
   private async replace(trace: EventTrace): Promise<PerceptionStatus> {
     await this.closeWorker();
-    this.archived.clear();
-    this.archiving.clear();
+    this.lastReadIds = [];
     let source: Buffer;
     try { source = await readFile(join(this.workspace, "perception.py")); }
     catch (error) {
@@ -191,9 +180,17 @@ export class PerceptionRuntime {
     child.stdin.on("error", () => {});
     const lines = createInterface({ input: child.stdout });
     lines.on("line", line => {
-      let reply: Reply;
+      let reply: Reply & { event?: string; state?: PerceptionStatus["state"]; snapshot?: PerceptionSnapshot; mediaCount?: number; trace?: EventTrace };
       try { reply = JSON.parse(line); }
       catch { return; }
+      if (reply.event && this.isCurrent(worker)) {
+        if (reply.event === "status") this.setStatus({ ...this.current, state: reply.state!,
+          error: typeof reply.error === "string" ? reply.error : undefined }, backgroundTrace);
+        if (reply.event === "sample") this.record("perception_sample", {
+          snapshot: reply.snapshot, mediaCount: reply.mediaCount,
+        }, reply.trace ?? backgroundTrace);
+        return;
+      }
       const pending = worker.pending.get(reply.id);
       if (pending) { worker.pending.delete(reply.id); pending.resolve(reply); }
     });
@@ -219,7 +216,7 @@ export class PerceptionRuntime {
         runDir: this.options.runDir, generation, source: source.toString("utf8"), trace: backgroundTrace },
       this.options.startTimeoutMs ?? 30_000);
       if (!reply.ok) throw new Error(`${reply.error?.type}: ${reply.error?.message}`);
-      this.setStatus({ ...this.current, state: "ready" }, trace);
+      this.setStatus({ ...this.current, sampleHz: (reply.result as { sampleHz: number }).sampleHz }, trace);
     } catch (error) {
       await this.closeWorker();
       this.setStatus({ ...this.current, state: "error", pid: undefined, error: String(error) }, trace);
@@ -269,23 +266,6 @@ export class PerceptionRuntime {
     return this.worker === worker && !worker.expectedExit && this.current.generation === worker.generation;
   }
 
-  private async archive(snapshot: PerceptionSnapshot, text: string, media: unknown[], started: number): Promise<Archived> {
-    const observations: Observation[] = [];
-    const directory = join(this.options.runDir, "observations");
-    await mkdir(directory, { recursive: true });
-    for (const item of media) {
-      if (!item || typeof item !== "object" || !("path" in item) || !("mediaType" in item)
-        || typeof item.path !== "string" || typeof item.mediaType !== "string") {
-        throw new TypeError("snapshot media entries need path and mediaType strings");
-      }
-      const id = crypto.randomUUID(), path = join(directory, `${id}-${basename(item.path)}`);
-      await writeFile(path, await readFile(resolve(this.workspace, item.path)), { flag: "wx" });
-      observations.push({ id, controllerId: "perception", mediaType: item.mediaType, path,
-        timing: { clock: this.clock.id, requestedAtMs: started, receivedAtMs: this.clock.now() } });
-    }
-    return { snapshot, text, observations };
-  }
-
   private unavailable(error = this.current.error ?? `Perception is ${this.current.state}.`, status = this.status()): PerceptionRead {
     return { status, result: this.execution(error, [], this.clock.now(), error), error };
   }
@@ -311,9 +291,4 @@ export class PerceptionRuntime {
   private record(type: string, data: unknown, trace?: EventTrace) {
     this.options.record(type, data, trace, { source: { component: "perception", implementation: "python" } });
   }
-}
-
-function withoutEpoch(trace: EventTrace): EventTrace {
-  const { epoch, ...rest } = trace;
-  return rest;
 }

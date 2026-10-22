@@ -3,12 +3,15 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { aggregate } from "../lib/aggregate";
 import { mediaFile } from "../lib/data";
-import { perceptionStatus } from "../lib/observation-events";
-import { perceptionAgeMs, selectObservations } from "../components/observation-model";
+import { eventObservations, perceptionStatus } from "../lib/observation-events";
+import { observationTime, perceptionAgeMs, samplingDurationMs, selectObservations } from "../components/observation-model";
+import { ObservationPanel } from "../components/run-visuals";
 import { projectTelemetry } from "../lib/telemetry";
-import type { Event } from "../lib/types";
+import type { Event, PerceptionSnapshot, RunData } from "../lib/types";
 
 const hook = { id: "python/vision.py:observe", path: "vision.py", codeSHA: "source-hash" };
 const makeEvents = () => {
@@ -51,18 +54,21 @@ test("model input follows hook execution IDs, including text-only outputs; raw c
 test("resident perception reuses snapshots but keeps each read's time, state and model input separate", () => {
   const event = makeEvents();
   const status = { state: "ready", generation: "g1", pid: 123, codeSHA: "v1" };
-  const snapshot = { id: "snapshot", sequence: 4, sampledAt: new Date(0).toISOString(), sources: [{ controller: "screen" }] };
+  const snapshot: PerceptionSnapshot = { id: "snapshot", sequence: 4, generation: "g1",
+    recordedAt: new Date(0).toISOString(), sampling: { clock: "sampler", startedAtMs: 0, finishedAtMs: 20 },
+    sampledAt: new Date(-1000).toISOString(), sources: [{ controller: "screen" }] };
   const output = (id: string) => ({ id, status: "completed", exitCode: 0, stdout: `read ${id}`,
     observations: [{ id: "image", mediaType: "image/png" }] });
+  const records = [{ snapshot, text: "A sampled frame.", observations: output("first").observations }];
   const trace = { traceId: "trace", spanId: "read" };
   const events = [
     event("perception_status", { state: "unimplemented", generation: null }),
     event("perception_status", status),
     event("perception_observe_start", {}, trace),
-    event("perception_observe_end", { status, snapshot, reused: false, durationMs: 20, result: output("first") }, trace),
+    event("perception_observe_end", { status, snapshot, records, reused: false, durationMs: 20, result: output("first") }, trace),
     event("context", { observations: ["image"], executions: ["first"] }),
     event("model_start", { observations: ["image"] }, { modelCallId: "one" }),
-    event("perception_observe_end", { status, snapshot, reused: true, durationMs: 3, result: output("second") }),
+    event("perception_observe_end", { status, snapshot, records, reused: true, durationMs: 3, result: output("second") }),
     event("context", { observations: ["image"], executions: ["second"] }),
     event("model_start", { observations: ["image"] }, { modelCallId: "two" }),
     event("perception_observe_end", { status: { state: "error", generation: "g2", error: "broken module" },
@@ -88,8 +94,71 @@ test("resident perception reuses snapshots but keeps each read's time, state and
   assert.equal(telemetry.perception.started, 1);
   assert.equal(telemetry.perception.durationMs.median, 20);
   assert.equal(telemetry.spans[0].outcome, "success");
-  assert.equal(perceptionAgeMs({ ...first.perception!, snapshot: { id: "unknown", sequence: 0 } }), null);
-  assert.equal(perceptionAgeMs({ ...first.perception!, snapshot: { ...snapshot, sampledAt: "1970-01-01T00:00:00" } }), null);
+  assert.equal(perceptionAgeMs({ ...first.perception!, snapshot: undefined }), null);
+  assert.equal(perceptionAgeMs({ ...first.perception!, snapshot: { ...snapshot, recordedAt: "1970-01-01T00:00:00" } }), null);
+  assert.deepEqual(eventObservations(event("perception_observe_end", {
+    status, snapshot, result: output("legacy"),
+  }))[0].perception?.snapshot, snapshot);
+});
+
+test("range inputs retain each record's time and generation; continuous samples are not model inputs", () => {
+  const event = makeEvents();
+  const first: PerceptionSnapshot = { id: "old", sequence: 1, generation: "old-generation",
+    recordedAt: "1970-01-01T00:00:00.125Z", sampledAt: "1969-12-31T23:59:59.900Z",
+    sampling: { clock: "old-clock", startedAtMs: 100, finishedAtMs: 115 } };
+  const last: PerceptionSnapshot = { id: "new", sequence: 2, generation: "new-generation",
+    recordedAt: "1970-01-01T00:00:00.925Z",
+    sampling: { clock: "new-clock", startedAtMs: 10, finishedAtMs: 42 } };
+  const records = [first, last].map(snapshot => ({ snapshot, text: snapshot.id,
+    observations: [{ id: `${snapshot.id}-image`, mediaType: "image/png" }] }));
+  // Archived history remains readable after a sampler error.
+  const status = { state: "error", generation: "new-generation", error: "sampling stopped" };
+  const query = { start: first.recordedAt, end: last.recordedAt, limit: 2 };
+  const read = (id: string) => ({ status, snapshot: last, records, query, hasMore: true, nextAfter: 2,
+    result: { id, status: "completed", exitCode: 0, stdout: "range text",
+      observations: records.flatMap(record => record.observations) } });
+  const result = aggregate([
+    event("perception_sample", { snapshot: last, observations: [{ id: "producer-only", mediaType: "image/png" }] }),
+    event("perception_observe_end", read("range")),
+    event("context", { observations: ["old-image", "new-image"], executions: ["range"] }),
+    event("model_start", { observations: ["old-image", "new-image"] }, { modelCallId: "range-call" }),
+    event("perception_observe_end", read("again")),
+    event("context", { observations: ["new-image"], executions: ["again"] }),
+    event("model_start", { observations: ["new-image"] }, { modelCallId: "subset-call" }),
+  ]);
+  assert.deepEqual(result.observations.map(o => o.id), ["old-image", "new-image"]);
+  assert.deepEqual(result.observations.map(o => o.perception?.snapshot), [first, last]);
+  assert.deepEqual(result.observations.map(o => o.text), ["old", "new"]);
+  const call = result.calls[0];
+  assert.deepEqual(call.perception?.query, query);
+  assert.equal(call.perception?.hasMore, true);
+  assert.equal(call.perception?.nextAfter, 2);
+  const oldFrame = selectObservations(result.observations, call, "old-image").observation!;
+  const newFrame = selectObservations(result.observations, call, "new-image").observation!;
+  assert.deepEqual(oldFrame.perception?.snapshot, first);
+  assert.deepEqual(newFrame.perception?.snapshot, last);
+  assert.equal(perceptionAgeMs(oldFrame.perception), 1875); // 2s read, not the later 5s reuse.
+  assert.equal(perceptionAgeMs(newFrame.perception), 1075);
+  assert.equal(samplingDurationMs(first), 15);
+  assert.equal(samplingDurationMs(last), 32);
+  assert.equal(observationTime(first.recordedAt), "08:00:00.125");
+  assert.equal(observationTime(first.sampledAt), "07:59:59.900");
+  assert.equal(observationTime(last.sampledAt), "未知");
+  assert.equal(observationTime("1970-01-01T00:00:00"), "未知");
+  const subset = selectObservations(result.observations, result.calls[1]);
+  assert.deepEqual(subset.inputs.map(o => o.id), ["new-image"]);
+  assert.equal(perceptionAgeMs(subset.observation?.perception), 4075);
+  const html = renderToStaticMarkup(createElement(ObservationPanel, {
+    data: { ...result, project: "test", run: "test" } as RunData,
+    call, selectedImage: "old-image", onImage() {},
+  }));
+  assert.match(html, /记录时间<\/dt><dd title="1970-01-01T00:00:00.125Z">08:00:00.125/);
+  assert.match(html, /采样耗时<\/dt><dd title="old-clock">15.0 ms/);
+  assert.match(html, /记录代次<\/dt><dd title="old-generation">/);
+  assert.match(html, /来源时刻<\/dt><dd title="1969-12-31T23:59:59.900Z">07:59:59.900/);
+  assert.match(html, /<small>08:00:00.125<\/small>/);
+  assert.match(html, /<small>08:00:00.925<\/small>/);
+  assert.doesNotMatch(html, /producer-only/);
 });
 
 test("media conversion failures replace the input result and epoch history retains its own lifecycle", () => {

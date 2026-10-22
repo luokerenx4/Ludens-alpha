@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { AuthStorage, ModelRegistry, SessionManager, Settings, type AgentSession } from "@oh-my-pi/pi-coding-agent";
@@ -13,7 +13,7 @@ import { listen } from "../src/harness/transport.ts";
 import { captureResult, createTestRuntime } from "./runtime-fixture.ts";
 
 test("OMP bootstraps empty perception and repairs it through the real reload CLI without default images", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "rsa-omp-observer-"));
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "rsa-omp-observer-")));
   const workspace = join(directory, "workspace"), runDir = join(directory, "run");
   await mkdir(join(workspace, "skills"), { recursive: true });
   const image = join(workspace, "raw.png");
@@ -48,7 +48,7 @@ test("OMP bootstraps empty perception and repairs it through the real reload CLI
   const source = (text: string, broken = false) => `class Perception:
     def start(self, context): pass
     def close(self): pass
-    def observe(self):
+    def sample(self):
         ${broken ? 'raise RuntimeError("observer needs repair")' : `return {"sequence": 1, "text": "${text}", "media": [{"path": "raw.png", "mediaType": "image/png"}]}`}
 `;
   const broken = source("unused", true);
@@ -75,7 +75,7 @@ test("OMP bootstraps empty perception and repairs it through the real reload CLI
       const sources = [source("adapted-v1"), source("adapted-v2"), broken, source("adapted-v3")];
       const content: AssistantMessage["content"] = index <= sources.length
         ? [{ type: "toolCall", id: `write-observer-${index}`, name: "write", arguments: { path: "perception.py", content: sources[index - 1] } },
-           { type: "toolCall", id: `reload-${index}`, name: "bash", arguments: { command: "rsa perception reload" } }]
+           { type: "toolCall", id: `reload-${index}`, name: "bash", arguments: { command: "rsa perception reload; sleep 0.15" } }]
         : [{ type: "text", text: "Observer repaired." }];
       const message: AssistantMessage = { role: "assistant", api: model.api, provider: model.provider, model: model.id,
         timestamp: Date.now(), content, stopReason: index <= sources.length ? "toolUse" : "stop",

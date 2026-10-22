@@ -1,261 +1,191 @@
 import { expect, test } from "bun:test";
 import { mkdtemp, readFile, realpath, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { createServer } from "node:net";
 import { join, resolve } from "node:path";
-import { PerceptionRuntime } from "../src/harness/perception.ts";
+import { PerceptionRuntime, type ObservationQuery } from "../src/harness/perception.ts";
 
-async function fixture(options: { startTimeoutMs?: number; observeTimeoutMs?: number; env?: NodeJS.ProcessEnv } = {}) {
-  const { env, ...timeouts } = options;
+async function fixture(options: { startTimeoutMs?: number; observeTimeoutMs?: number } = {}) {
   const workspace = await realpath(await mkdtemp(join(tmpdir(), "rsa-perception-")));
   const events: { type: string; data: any; trace: any }[] = [];
-  const runtime = new PerceptionRuntime({
-    workspace, runDir: join(workspace, "logs", "run"), env: { BASEWARE_EPOCH: "must-not-leak", ...env },
-    ...timeouts,
+  const runtime = new PerceptionRuntime({ workspace, runDir: join(workspace, "logs", "run"),
+    env: { BASEWARE_EPOCH: "must-not-leak" }, ...options,
     record: (type, data, trace) => events.push({ type, data, trace }),
   });
-  const observe = () => runtime.observe(new AbortController().signal, {
-    traceId: "model-trace", spanId: "model-span", epoch: "must-not-leak-either",
-  });
-  return { workspace, runtime, events, observe,
+  const observe = (query: ObservationQuery = {}) => runtime.observe(new AbortController().signal,
+    { traceId: "model-trace", spanId: "model-span", epoch: "must-not-leak-either" }, query);
+  const wait = async (predicate: () => boolean) => {
+    const deadline = Date.now() + 4000;
+    while (!predicate() && Date.now() < deadline) await Bun.sleep(10);
+    expect(predicate()).toBe(true);
+  };
+  const samples = () => events.filter(e => e.type === "perception_sample");
+  return { workspace, runtime, events, observe, wait, samples,
+    load: async (code: string) => {
+      await writeFile(join(workspace, "perception.py"), code);
+      const status = await runtime.reload({ epoch: "reload-epoch", modelCallId: "reload-call" });
+      await wait(() => runtime.status().state !== "loading");
+      return status;
+    },
     cleanup: async () => { await runtime.stop(); await rm(workspace, { recursive: true, force: true }); } };
 }
 
-function source(body: string, start = "", close = "") {
+function source(body: string, start = "", close = "", hz = 20) {
   return `from pathlib import Path
-import os
+import os, time
 from rsa_tools._context import current
 class Perception:
+    sample_hz = ${hz}
     def start(self, context):
         self.count = 0
 ${start || "        pass"}
-    def observe(self):
+    def sample(self):
 ${body}
     def close(self):
 ${close || "        pass"}
 `;
 }
 
-test("empty perception stays blind, and read errors always have an execution record", async () => {
+test("empty implementation stays blind; sampler failure can be repaired without a raw-image fallback", async () => {
   const f = await fixture();
   try {
     expect((await f.runtime.reload()).state).toBe("unimplemented");
-    const missing = await f.observe();
-    expect(missing.result.observations).toEqual([]);
-    expect(missing.result.id).toBeString();
-    await writeFile(join(f.workspace, "perception.py"), source('        raise NotImplementedError("Build your own perception.")'));
-    await f.runtime.reload();
-    const stub = await f.observe();
-    expect(stub.status.state).toBe("unimplemented");
-    expect(stub.error).toContain("Build your own perception");
-    expect(stub.result.observations).toEqual([]);
+    expect((await f.observe()).result.observations).toEqual([]);
+    await f.load(source('        raise NotImplementedError("Implement sample")'));
+    expect((await f.observe()).error).toContain("Implement sample");
+    await f.load(source('        return {"media": [{"path": "missing.png", "mediaType": "image/png"}]}'));
+    expect(f.runtime.status().state).toBe("error");
+    await f.load(source('        return {"text": "fixed"}'));
+    expect((await f.observe()).result.stdout).toBe("fixed");
     await f.runtime.stop();
     expect((await f.observe()).status.state).toBe("stopped");
-    expect(f.events.filter(event => event.type === "perception_observe_end").every(event => event.data.result.id)).toBe(true);
+    expect(f.events.filter(e => e.type === "perception_observe_end").every(e => e.data.result.id)).toBe(true);
   } finally { await f.cleanup(); }
 });
 
-test("initial and background driver reads attach to their generation root without inheriting the reload epoch", async () => {
-  const socket = `/tmp/rsa-perception-context-${crypto.randomUUID()}.sock`;
-  const received = Promise.withResolvers<any[]>(), requests: any[] = [];
-  const server = createServer(connection => {
-    let data = "";
-    connection.on("data", chunk => {
-      data += chunk.toString();
-      if (!data.includes("\n")) return;
-      requests.push(JSON.parse(data.slice(0, data.indexOf("\n"))));
-      if (requests.length === 2) received.resolve(requests);
-      connection.end(JSON.stringify({ ok: true, value: { status: "completed", observations: [] } }) + "\n");
-    });
-  });
-  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(socket, resolve); });
-  const f = await fixture({ env: { RSA_SOCKET: socket } });
-  try {
-    await writeFile(join(f.workspace, "perception.py"), source(
-      '        return {"sequence": 1}',
-      '        import threading\n        from rsa_tools import Client\n        Client().call("controller/camera", ["initial"])\n        threading.Thread(target=lambda: Client().call("controller/camera", ["sample"]), daemon=True).start()',
-    ));
-    const status = await f.runtime.reload({ epoch: "reload-epoch", modelCallId: "reload-model", traceId: "reload-parent" });
-    for (const request of await received.promise) {
-      expect(request.id).toBe("controller/camera");
-      expect(request.epoch).toBeUndefined();
-      expect(request.trace.epoch).toBeUndefined();
-      expect(request.trace.modelCallId).toBeUndefined();
-      const root = f.events.find(event => event.type === "perception_status"
-        && event.trace?.traceId === request.trace.traceId && event.trace?.spanId === request.trace.spanId);
-      expect(root?.data.generation).toBe(status.generation);
-    }
-  } finally {
-    await f.cleanup();
-    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
-    await rm(socket, { force: true });
-  }
-});
-
-test("calls retain process memory and archive each published sequence once", async () => {
+test("sampling continues without reads, archives overwritten files, and queries paginated time history", async () => {
   const f = await fixture();
   try {
-    await writeFile(join(f.workspace, "frame.txt"), "first frame");
-    await writeFile(join(f.workspace, "perception.py"), source(`        self.count += 1
+    await f.load(source(`        self.count += 1
         assert current()["epoch"] is None
         assert "epoch" not in current()["trace"]
-        return {"sequence": 7, "text": str(self.count), "media": [{"path": "frame.txt", "mediaType": "text/plain"}]}`));
-    await f.runtime.reload();
-    const pid = f.runtime.status().pid;
-    const [first, concurrent] = await Promise.all([f.observe(), f.observe()]);
-    expect(concurrent!.snapshot).toEqual(first!.snapshot);
-    await writeFile(join(f.workspace, "frame.txt"), "source overwritten");
-    const second = await f.observe();
-    expect(f.runtime.status().pid).toBe(pid);
-    expect(second.reused).toBe(true);
-    expect(second.snapshot).toEqual(first!.snapshot);
-    expect(second.snapshot?.sampledAt).toBeUndefined();
-    expect(second.result.id).not.toBe(first!.result.id);
-    expect(second.result.observations).toEqual(first!.result.observations);
-    expect(second.result.stdout).toBe("1");
-    expect(await readFile(second.result.observations![0]!.path, "utf8")).toBe("first frame");
-    const reads = f.events.filter(event => event.type === "perception_observe_end");
-    expect(reads[0]!.trace.spanId).not.toBe(reads[1]!.trace.spanId);
-    expect(reads[0]!.trace.parentSpanId).toBe("model-span");
+        Path("frame.txt").write_text(str(self.count))
+        return {"text": str(self.count), "media": [{"path":"frame.txt","mediaType":"text/plain"}]}`));
+    await f.wait(() => f.samples().length >= 5);
+    expect(f.events.filter(e => e.type === "perception_observe_end")).toHaveLength(0);
+    const first = f.samples()[0]!.data.snapshot, fifth = f.samples()[4]!.data.snapshot;
+    const page = await f.observe({ start: first.recordedAt, end: fifth.recordedAt, limit: 2 });
+    expect(page.records).toHaveLength(2);
+    expect(page.hasMore).toBe(true);
+    const second = await f.observe({ start: first.recordedAt, end: fifth.recordedAt, after: page.nextAfter, limit: 8 });
+    expect(second.records).toHaveLength(3);
+    expect(second.hasMore).toBe(false);
+    expect(page.records![0]!.snapshot.id).toBe(first.id);
+    const exact = await f.observe({ at: first.recordedAt });
+    expect(exact.snapshot?.id).toBe(first.id);
+    expect(exact.result.stdout).toBe("1");
+    expect(await readFile(exact.result.observations![0]!.path, "utf8")).toBe("1");
+    expect(exact.result.observations![0]!.timing.clock).toBe(first.sampling.clock);
+    const gap = new Date((Date.parse(first.recordedAt) + Date.parse(f.samples()[1]!.data.snapshot.recordedAt)) / 2).toISOString();
+    expect((await f.observe({ at: gap })).snapshot?.id).toBe(first.id);
+    expect((await f.observe({ at: "2000-01-01T00:00:00Z" })).records).toEqual([]);
+    const latest = await f.observe();
+    expect(Number(latest.snapshot!.sequence)).toBeGreaterThanOrEqual(5);
+    expect((await f.observe({ at: latest.snapshot!.recordedAt })).reused).toBe(true);
+    const expanded = await f.observe({ start: first.recordedAt, end: latest.snapshot!.recordedAt });
+    expect(expanded.reused).toBe(false);
+    const sampleEvent = f.samples()[0]!;
+    expect(sampleEvent.trace.epoch).toBeUndefined();
+    expect(sampleEvent.trace.modelCallId).toBeUndefined();
+    const read = f.events.find(e => e.type === "perception_observe_end")!;
+    expect(read.trace.parentSpanId).toBe("model-span");
   } finally { await f.cleanup(); }
 });
 
-test("host exit closes stdin and the detached perception worker runs close before exiting", async () => {
+test("slow sampling never blocks reads or overlaps; cancelling a read leaves recording alive", async () => {
   const f = await fixture();
   try {
-    await writeFile(join(f.workspace, "perception.py"), source('        return {"sequence": 1}', "", '        Path("closed").write_text(str(os.getpid()))'));
-    const host = join(f.workspace, "host.ts");
-    await writeFile(host, `
-import { PerceptionRuntime } from ${JSON.stringify(resolve(import.meta.dir, "../src/harness/perception.ts"))};
-const runtime = new PerceptionRuntime({
-  workspace: ${JSON.stringify(f.workspace)}, runDir: ${JSON.stringify(join(f.workspace, "logs", "run"))},
-  record() {},
-});
-const status = await runtime.reload();
-console.log(JSON.stringify(status));
-process.exit(status.state === "ready" ? 0 : 1);
-`);
-    const launched = Bun.spawn(["bun", host], { stdout: "pipe", stderr: "pipe" });
-    const output = await new Response(launched.stdout).text();
-    expect(await launched.exited).toBe(0);
-    const status = JSON.parse(output);
-    const deadline = Date.now() + 3000;
-    let closed = "";
-    while (Date.now() < deadline) {
-      closed = await readFile(join(f.workspace, "closed"), "utf8").catch(() => "");
-      if (closed === String(status.pid)) break;
-      await Bun.sleep(10);
+    await f.load(source(`        self.count += 1
+        if self.count > 1:
+            Path("sampling").write_text("1")
+            time.sleep(0.5)
+        return {"text": str(self.count)}`));
+    await f.wait(() => f.samples().length === 1);
+    await f.wait(() => Bun.file(join(f.workspace, "sampling")).size > 0);
+    const began = performance.now();
+    const one = await f.observe();
+    expect(one.result.stdout).toBe("1");
+    expect(performance.now() - began).toBeLessThan(250);
+    const abort = new AbortController(); abort.abort(new Error("human takeover"));
+    await expect(f.runtime.observe(abort.signal)).rejects.toThrow("human takeover");
+    await f.wait(() => f.samples().length >= 3);
+    const snapshots = f.samples().map(e => e.data.snapshot);
+    for (let i = 1; i < snapshots.length; i++) {
+      expect(snapshots[i].sampling.startedAtMs).toBeGreaterThanOrEqual(snapshots[i - 1].sampling.finishedAtMs);
     }
-    expect(closed).toBe(String(status.pid));
+    expect(f.runtime.status().state).toBe("ready");
   } finally { await f.cleanup(); }
 });
 
-test("explicit reload replaces code, helper modules and model assets, and runs close", async () => {
+test("reload replaces code and loaded assets, closes the old process, and preserves historical generations", async () => {
   const f = await fixture();
   try {
-    const helper = join(f.workspace, "helper.py");
-    const timestamp = new Date("2026-01-01T00:00:00Z");
-    await writeFile(helper, 'VALUE = "old"\n');
-    await utimes(helper, timestamp, timestamp);
+    const helper = join(f.workspace, "helper.py"), stamp = new Date("2026-01-01T00:00:00Z");
+    await writeFile(helper, 'VALUE = "old"\n'); await utimes(helper, stamp, stamp);
     await writeFile(join(f.workspace, "weights.txt"), "old weights");
-    await writeFile(join(f.workspace, "perception.py"), source(
-      '        return {"sequence": 1, "text": self.value}',
+    const code = source('        return {"text": self.value}',
       '        import helper\n        self.value = helper.VALUE + ":" + Path("weights.txt").read_text()',
-      '        Path("closed").write_text(str(os.getpid()))',
-    ));
-    const firstStatus = await f.runtime.reload();
-    expect((await f.observe()).result.stdout).toBe("old:old weights");
-    await writeFile(helper, 'VALUE = "new"\n');
-    await utimes(helper, timestamp, timestamp);
+      '        Path("closed").write_text(str(os.getpid()))');
+    const old = await f.load(code);
+    const first = await f.observe();
+    await writeFile(helper, 'VALUE = "new"\n'); await utimes(helper, stamp, stamp);
     await writeFile(join(f.workspace, "weights.txt"), "new weights");
     expect((await f.observe()).result.stdout).toBe("old:old weights");
-    const secondStatus = await f.runtime.reload();
-    expect(secondStatus.generation).not.toBe(firstStatus.generation);
-    expect(secondStatus.pid).not.toBe(firstStatus.pid);
-    expect(await readFile(join(f.workspace, "closed"), "utf8")).toBe(String(firstStatus.pid));
+    const fresh = await f.load(code);
+    expect(fresh.pid).not.toBe(old.pid);
+    expect(await readFile(join(f.workspace, "closed"), "utf8")).toBe(String(old.pid));
     expect((await f.observe()).result.stdout).toBe("new:new weights");
-    const sources = JSON.parse(await readFile(join(f.workspace, "logs", "run", "perception", secondStatus.generation!, "sources.json"), "utf8"));
+    const history = await f.observe({ at: first.snapshot!.recordedAt });
+    expect(history.snapshot?.generation).toBe(old.generation!);
+    expect(history.result.stdout).toBe("old:old weights");
+    const sources = JSON.parse(await readFile(join(f.workspace, "logs", "run", "perception", fresh.generation!, "sources.json"), "utf8"));
     expect(Object.keys(sources).sort()).toEqual(["helper.py", "perception.py"]);
+    await f.load(source('        raise RuntimeError("broken sampler")'));
+    const failed = await f.observe();
+    expect(failed.error).toContain("broken sampler");
+    expect(failed.result.observations).toEqual([]);
+    expect((await f.observe({ at: first.snapshot!.recordedAt })).snapshot?.id).toBe(first.snapshot!.id);
   } finally { await f.cleanup(); }
 });
 
-test("reload during an observe keeps the old response out of the new generation", async () => {
-  const f = await fixture();
+test("invalid query does not damage sampler health and stuck startup is recoverable", async () => {
+  const f = await fixture({ startTimeoutMs: 200 });
   try {
-    await writeFile(join(f.workspace, "perception.py"), source(`        import time
-        Path("entered").touch()
-        time.sleep(10)
-        return {"sequence": 1, "text": "old response"}`));
-    const oldStatus = await f.runtime.reload();
-    const oldRead = f.observe();
-    const deadline = Date.now() + 2000;
-    while (!await Bun.file(join(f.workspace, "entered")).exists() && Date.now() < deadline) await Bun.sleep(10);
-    await writeFile(join(f.workspace, "perception.py"), source('        return {"sequence": 1, "text": "new response"}'));
-    const newStatus = await f.runtime.reload();
-    const replaced = await oldRead;
-    expect(replaced.status.generation).toBe(oldStatus.generation);
-    expect(replaced.error).toContain("replaced");
-    expect(replaced.result.observations).toEqual([]);
-    expect(f.runtime.status()).toEqual(newStatus);
-    expect((await f.observe()).result.stdout).toBe("new response");
-  } finally { await f.cleanup(); }
-});
-
-test("bounded calls let the agent repair a blocked implementation without losing the host", async () => {
-  const f = await fixture({ startTimeoutMs: 150, observeTimeoutMs: 50 });
-  try {
-    await writeFile(join(f.workspace, "perception.py"), source(
-      '        return {"sequence": 1}',
-      '        import time\n        time.sleep(10)',
-    ));
+    await writeFile(join(f.workspace, "perception.py"), source('        return {}', '        time.sleep(10)'));
     expect((await f.runtime.reload()).error).toContain("start timed out");
-    await writeFile(join(f.workspace, "perception.py"), source('        import time\n        time.sleep(10)\n        return {"sequence": 1}'));
-    await f.runtime.reload();
-    const pid = f.runtime.status().pid;
-    expect((await f.observe()).error).toContain("observe timed out");
-    expect(f.runtime.status().pid).toBe(pid);
-    await writeFile(join(f.workspace, "perception.py"), source('        return {"sequence": 1, "text": "repaired"}'));
-    await f.runtime.reload();
-    expect((await f.observe()).result.stdout).toBe("repaired");
+    await f.load(source('        return {"text":"ok"}'));
+    expect((await f.observe({ at: "bad" })).error).toBeDefined();
+    expect((await f.observe({ at: "2026-01-01T00:00:00Z", start: "2026-01-01T00:00:00Z" })).error).toBeDefined();
+    expect(f.runtime.status().state).toBe("ready");
+    expect((await f.observe()).result.stdout).toBe("ok");
   } finally { await f.cleanup(); }
 });
 
-test("cancelling one wait preserves the worker and its later calls", async () => {
+test("host exit closes the detached recorder and invokes workspace close", async () => {
   const f = await fixture();
   try {
-    await writeFile(join(f.workspace, "perception.py"), source(`        import time
-        self.count += 1
-        Path("entered").touch()
-        if self.count == 1:
-            time.sleep(0.2)
-        return {"sequence": self.count, "text": str(self.count)}`));
-    await f.runtime.reload();
-    const pid = f.runtime.status().pid;
-    const abort = new AbortController();
-    const first = f.runtime.observe(abort.signal);
-    void first.catch(() => {});
-    const deadline = Date.now() + 2000;
-    while (!await Bun.file(join(f.workspace, "entered")).exists() && Date.now() < deadline) await Bun.sleep(10);
-    abort.abort(new Error("human takeover"));
-    await expect(first).rejects.toThrow("human takeover");
-    const second = await f.observe();
-    expect(second.result.stdout).toBe("2");
-    expect(f.runtime.status().pid).toBe(pid);
-    expect(f.events.filter(event => event.type === "perception_observe_end").map(event => event.data.outcome)).toEqual(["cancelled", "success"]);
-  } finally { await f.cleanup(); }
-});
-
-test("failed reload and invalid snapshots are visible, and a repaired implementation can reload", async () => {
-  const f = await fixture();
-  try {
-    await writeFile(join(f.workspace, "perception.py"), "invalid Python !");
-    expect((await f.runtime.reload()).state).toBe("error");
-    expect((await f.observe()).error).toContain("SyntaxError");
-    await writeFile(join(f.workspace, "perception.py"), source('        return {"text": "no version"}'));
-    await f.runtime.reload();
-    expect((await f.observe()).error).toContain("sequence");
-    await writeFile(join(f.workspace, "perception.py"), source('        return {"sequence": 1, "text": "fixed"}'));
-    await f.runtime.reload();
-    expect((await f.observe()).result.stdout).toBe("fixed");
+    await writeFile(join(f.workspace, "perception.py"), source('        return {}', "", '        Path("closed").write_text(str(os.getpid()))'));
+    const host = join(f.workspace, "host.ts");
+    await writeFile(host, `import { PerceptionRuntime } from ${JSON.stringify(resolve(import.meta.dir, "../src/harness/perception.ts"))};
+const runtime = new PerceptionRuntime({workspace:${JSON.stringify(f.workspace)},runDir:${JSON.stringify(join(f.workspace, "logs", "run"))},record(){}});
+console.log(JSON.stringify(await runtime.reload())); process.exit(0);`);
+    const launched = Bun.spawn(["bun", host], { stdout: "pipe", stderr: "pipe" });
+    const status = JSON.parse(await new Response(launched.stdout).text());
+    expect(await launched.exited).toBe(0);
+    let closed = "";
+    for (let i = 0; i < 200 && !closed; i++) {
+      closed = await readFile(join(f.workspace, "closed"), "utf8").catch(() => "");
+      if (!closed) await Bun.sleep(10);
+    }
+    expect(closed).toBe(String(status.pid));
   } finally { await f.cleanup(); }
 });

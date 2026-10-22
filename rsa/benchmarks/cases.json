@@ -1,5 +1,5 @@
 [
-  {"id":"perception-lifecycle","version":1,"title":"感知进程生命周期","description":"验证空实现返回文字、跨轮初始化一次、helper/权重显式 reload、失败修复与不可变结果归档。","scope":"真实工作区 Python 感知进程，合成模型文件与媒体；不调用设备或在线模型，不测 PyTorch 性能。"},
+  {"id":"perception-lifecycle","version":2,"title":"感知进程生命周期","description":"验证无人读取时持续采样、模型跨轮复用、历史时间查询、helper/权重 reload、失败修复与不可变归档。","scope":"真实工作区 Python 感知进程，合成模型文件与媒体；不调用设备或在线模型，不测 PyTorch 性能。"},
   {"id":"control-handoff","version":1,"title":"接管中断","description":"长动作执行中交还控制，检查输入释放、嵌套 Python 退出和旧 epoch 拒绝。","scope":"真实 RSA / Baseware 调用链，可中断的模拟驱动；不操作游戏。"},
   {"id":"ws-recovery","version":2,"title":"WS 故障恢复","description":"分别重建 Besiege 6h 连接到期和 Mario Maker 8h 响应中关闭 1012，验证 SSE 冷却、WS 全量恢复、增量续接与工具不重放。","scope":"真实 OMP provider，模拟 WS / HTTP；冷却时间虚拟推进，耗时仅为本地处理开销。"},
   {"id":"background-compaction","version":1,"title":"后台压缩","description":"延迟摘要并追加历史，检查候选复用、尾部保留、晚到归属和取消后不提交。","scope":"真实 OMP maintenance 与原生 V2 压缩，模拟响应；保持 256k 阈值。"},

@@ -53,6 +53,8 @@ export function installTestPerception(
     signal.throwIfAborted();
     const result = await read(signal, trace);
     const value = { status, result, snapshot: { id: `snapshot-${++sequence}`, sequence,
+      generation: status.generation, recordedAt: new Date().toISOString(),
+      sampling: { clock: "test", startedAtMs: started, finishedAtMs: performance.now() },
       sampledAt: new Date().toISOString() }, reused: false };
     runtime.record("perception_observe_end", { ...value, outcome: "success", durationMs: performance.now() - started }, trace);
     return value;

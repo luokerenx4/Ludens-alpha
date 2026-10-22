@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import type { Call, Observation, RunData, TraceSpan } from "@/lib/types";
 import { requestWait, sseFallbackReason } from "@/lib/transport";
-import { perceptionAgeMs, perceptionStateLabel, selectObservations } from "./observation-model";
+import { observationTime, perceptionAgeMs, perceptionStateLabel, samplingDurationMs, selectObservations } from "./observation-model";
 
 export const seconds = (ms: number | null | undefined) =>
   ms == null ? "—" : (ms / 1000).toFixed(1) + " s";
@@ -232,8 +232,13 @@ export function ObservationPanel({
     data.observations, call, selectedImage,
   );
   const text = showingInput ? call?.inputText : observation?.text;
-  const perception = showingInput ? call?.perception : observation?.perception;
+  const perception = observation?.perception ?? (showingInput ? call?.perception : undefined);
+  const snapshot = perception?.snapshot;
   const age = perceptionAgeMs(perception);
+  const samplingMs = samplingDurationMs(snapshot);
+  const timestamp = (o: Observation) => o.perception ? o.perception.snapshot?.recordedAt : o.at;
+  const duration = (ms: number | null | undefined) => ms != null && ms < 1000
+    ? ms.toFixed(1) + " ms" : seconds(ms);
   const media = (o: Observation) =>
     "/api/media?" +
     new URLSearchParams({ project: data.project, run: data.run, id: o.id });
@@ -245,7 +250,7 @@ export function ObservationPanel({
           className={"sample" + (o.id === observation?.id ? " selected" : "")}
           onClick={() => onImage(o.id)}
           aria-pressed={o.id === observation?.id}
-          title={o.controller}
+          title={[o.controller, timestamp(o)].filter(Boolean).join(" · ")}
         >
           {o.mediaType.startsWith("image/") ? (
             <img src={media(o)} alt="" />
@@ -253,6 +258,7 @@ export function ObservationPanel({
             <span>{o.mediaType.startsWith("audio/") ? "音频" : "文字"}</span>
           )}
           <small>{label}</small>
+          <small>{observationTime(timestamp(o))}</small>
         </button>
       ))}
     </div>
@@ -278,24 +284,30 @@ export function ObservationPanel({
       {perception && (
         <details className="observation-metadata" open={perception.status.state !== "ready"}>
           <summary>
-            本次感知 · {perceptionStateLabel[perception.status.state]}
+            本次读取 · 感知进程{perceptionStateLabel[perception.status.state]}
             {perception.reused === true ? " · 复用已有结果" : ""}
           </summary>
           <dl className="fact-grid">
-            <div><dt>读取耗时</dt><dd>{perception.durationMs != null && perception.durationMs < 1000
-              ? perception.durationMs.toFixed(1) + " ms" : seconds(perception.durationMs)}</dd></div>
+            <div><dt>读取耗时</dt><dd>{duration(perception.durationMs)}</dd></div>
             <div><dt>读取时结果年龄</dt><dd>{age === null ? "未知" : seconds(age)}</dd></div>
-            <div><dt>进程代次</dt><dd title={perception.status.generation ?? ""}>{perception.status.generation?.slice(0, 12) ?? "—"}</dd></div>
-            <div><dt>代码版本</dt><dd title={perception.status.codeSHA}>{perception.status.codeSHA?.slice(0, 12) ?? "—"}</dd></div>
-            {perception.snapshot && <div><dt>结果序号</dt><dd>{perception.snapshot.sequence}</dd></div>}
+            <div><dt>记录时间</dt><dd title={snapshot?.recordedAt}>{observationTime(snapshot?.recordedAt)}</dd></div>
+            <div><dt>采样耗时</dt><dd title={snapshot?.sampling?.clock}>{samplingMs === null ? "未知" : duration(samplingMs)}</dd></div>
+            <div><dt>记录代次</dt><dd title={snapshot?.generation}>{snapshot?.generation?.slice(0, 12) ?? "未知"}</dd></div>
+            <div><dt>来源时刻</dt><dd title={snapshot?.sampledAt}>{observationTime(snapshot?.sampledAt)}</dd></div>
+            {snapshot && <div><dt>记录序号</dt><dd>{snapshot.sequence}</dd></div>}
           </dl>
+          {perception.query && <details>
+            <summary>读取范围{perception.hasMore ? " · 尚有后续记录" : ""}</summary>
+            <pre className="observation-text">{JSON.stringify({ query: perception.query,
+              hasMore: perception.hasMore, nextAfter: perception.nextAfter }, null, 2)}</pre>
+          </details>}
           {(perception.error || perception.status.error) && (
             <pre className="observation-text">{perception.error || perception.status.error}</pre>
           )}
-          {perception.snapshot?.sources && (
+          {snapshot?.sources && (
             <details>
               <summary>采样来源</summary>
-              <pre className="observation-text">{JSON.stringify(perception.snapshot.sources, null, 2)}</pre>
+              <pre className="observation-text">{JSON.stringify(snapshot.sources, null, 2)}</pre>
             </details>
           )}
         </details>
@@ -311,7 +323,7 @@ export function ObservationPanel({
                 " · " +
                 observation.controller +
                 " · " +
-                clockTime(observation.at)
+                observationTime(timestamp(observation))
               }
             />
           ) : observation.mediaType.startsWith("audio/") ? (
@@ -336,7 +348,7 @@ export function ObservationPanel({
           {observation
             ? (observationOrigin[observation.origin] ?? observation.origin) +
               " · " +
-              clockTime(observation.at)
+              (observation.perception ? "记录于 " : "") + observationTime(timestamp(observation))
             : text ? "文字观测" : "暂无输入媒体"}
         </span>
         {observation?.sourceSequence != null && (

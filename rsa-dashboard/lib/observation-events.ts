@@ -18,8 +18,13 @@ export interface ArchivedObservation {
 
 export function perceptionRead(event: Event): PerceptionRead | null {
   if (event.type !== "perception_observe_end" && event.type !== "perception_input_error") return null;
-  const { status, snapshot, reused, durationMs, error } = event.data;
-  return { at: event.at, status, snapshot, reused, durationMs, error };
+  const { status, snapshot, records, query, hasMore, nextAfter, reused, durationMs, error } = event.data;
+  return { at: event.at, status, snapshot, query, hasMore, nextAfter, reused, durationMs, error,
+    records: records?.map((record: NonNullable<PerceptionRead["records"]>[number]) => ({
+      snapshot: record.snapshot, text: record.text,
+      observations: record.observations.map(({ id }) => ({ id })),
+    })),
+  };
 }
 
 export function perceptionStatus(events: Event[], epoch?: string | null): PerceptionStatus | null {
@@ -62,10 +67,15 @@ export function eventObservations(event: Event): ArchivedObservation[] {
   const perception = perceptionRead(event);
   if (perception) {
     const result = event.data.result;
-    if (perception.status.state !== "ready" || result?.status !== "completed" || result.exitCode !== 0) return [];
-    return (result.observations ?? []).map((observation: ArchivedObservation) => ({
-      ...observation, origin: "perception", text: result.stdout, perception,
-    }));
+    // A history query can succeed even while the current sampler is unavailable.
+    if (result?.status !== "completed" || result.exitCode !== 0) return [];
+    const { records, ...read } = perception;
+    const byId = new Map(records?.flatMap(record => record.observations.map(media => [media.id, record] as const)));
+    return (result.observations ?? []).map((observation: ArchivedObservation) => {
+      const record = byId.get(observation.id);
+      return { ...observation, origin: "perception", text: record?.text ?? result.stdout,
+        perception: { ...read, snapshot: record?.snapshot ?? (records ? undefined : read.snapshot) } };
+    });
   }
   const hook = successfulObserveHook(event);
   return hook ? (hook.result.observations ?? []).map((observation) => ({

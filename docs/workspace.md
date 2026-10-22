@@ -66,19 +66,20 @@ JSON 参数校验发生在 CLI 边界；本地 import 和 `Client.call("python/�
 
 ## 常驻感知
 
-自动观测读取 `perception.py:Perception`，Agent 决定采样、融合和输出。类实例与模块在专用 Python 进程中跨轮保留：
+`perception.py:Perception` 在专用 Python 进程中持续采样，Agent 实现采样、融合和输出。类实例、模块和模型跨轮保留；RSA 将结果写入 `ObservationHistory`，Shiori 的 `observe` 只读取历史，不触发采样。
 
 | 方法 | 契约 |
 | --- | --- |
 | `start(context)` | 初始化一次。context 含 `workspace`、`runDir`、`generation`。 |
-| `observe()` | 返回当前结果；可以当场采样，也可读取自建持续采样循环的缓存。 |
+| `sample()` | 采集并返回一次结果；运行时独立于 Shiori 持续调用。 |
 | `close()` | 停止自己创建的后台线程或任务，释放资源。 |
+
+类属性 `sample_hz` 指定目标采样率，默认 2 Hz。采样串行执行，慢采样不重叠、不补跑积压；目标采样率不是设备帧率。
 
 结果示例：
 
 ```python
 {
-    "sequence": 1,
     "text": "可选说明",
     "media": [{"path": "frames/result.png", "mediaType": "image/png"}],
     "sampledAt": "2026-10-21T06:00:00Z",
@@ -86,18 +87,22 @@ JSON 参数校验发生在 CLI 边界；本地 import 和 `Client.call("python/�
 }
 ```
 
-只有 `sequence` 必填，可为非空字符串或有限数字；新数据换序号，复用结果保持序号。`sampledAt` 是实际采样时刻，未知就省略。路径可相对 workspace 或为绝对路径，读取期间不要覆盖文件。`sources` 可记录来源，详见 [logging.md](logging.md)。
+结果字段均可选。`sampledAt` 是已知的来源时刻，未知就省略；`sources` 可记录来源。路径可相对 workspace 或为绝对路径，返回的媒体保持不变直到下一次 `sample()` 调用。运行时在采样完成后归档媒体并分配序号，记录完成时刻 `recordedAt` 及单调时钟下的采样区间，详见 [logging.md](logging.md)。
 
 ```sh
 rsa perception status
 rsa perception reload
-rsa perception observe
+rsa observe
+rsa observe --at 2026-10-22T06:00:00Z
+rsa observe --start 2026-10-22T05:59:50Z --end 2026-10-22T06:00:00Z --limit 8
 rsa perception stop
 ```
 
-`reload` 关闭旧进程并启动新 generation，重新加载入口、helper 和权重；不会迁移旧实例内存。普通模型轮次、一次读取取消都不会重启它。感知进程不继承控制 epoch，只读采样无需接管；它不能自行取得动作权限。
+`observe` 默认读取最新结果；`at` 读取不晚于指定时刻的一条记录；`start/end` 读取含端点的时间范围，可省略一侧。查询时间指 `recordedAt`，不是可选的 `sampledAt`。范围按序号升序分页，默认 8 条、最多 64 条；`hasMore/nextAfter` 表示续页，使用 `--after <nextAfter>` 保留原范围继续查询。`at` 不能和范围混用。OMP 工具使用同名参数；`rsa perception observe` 是同一 CLI 入口。返回的 `records` 包含每条快照、文字和媒体，`snapshot` 指向本页最后一条。
 
-空实现、无可用结果或失败只把文字交给模型修复，**没有默认截图回退**。OMP 的 `observe` 工具读取同一感知结果，原始设备采样仍通过 Controller。循环采用的结果及实际模型输入均会归档，复用结果不算新采样。契约源头是 [模板](../rsa/templates/perception.py) 与 [感知 Runtime](../rsa/src/harness/perception.ts)。
+`reload` 关闭旧进程并启动新 generation，重新加载入口、helper 和权重并开始持续采样；不会迁移旧实例内存，已归档历史在本 run 内保留。首条结果生成前处于 loading。普通模型轮次、一次读取取消都不会重启采样。感知进程不继承控制 epoch，只读采样无需接管；它不能自行取得动作权限。
+
+空实现、无可用结果或采样失败只把文字交给模型修复，**没有默认截图回退**；最新读取不会拿旧 generation 或错误前的记录冒充当前结果，`sample()` 出错时历史查询仍可读取已有记录；入口加载失败则需先修复并 reload，磁盘历史保留。原始设备采样仍通过 Controller。连续记录不等于模型已读取，实际输入另有日志。契约源头是 [模板](../rsa/templates/perception.py) 与 [感知 Runtime](../rsa/src/harness/perception.ts)。
 
 ## 后台程序与人工交还
 

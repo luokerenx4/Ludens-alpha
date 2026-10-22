@@ -2,25 +2,26 @@
 
 
 class Perception:
+    sample_hz = 2.0  # Target rate; slow samples do not overlap or accumulate.
+
     def start(self, context):
         """Initialize models/state once. context is {workspace, runDir, generation}.
 
-        Read baseware.json to discover read-only device capabilities. Choose your
-        sampling and processing; any background worker belongs to this class.
+        Read baseware.json to discover read-only device capabilities.
         """
         self.context = context
 
-    def observe(self):
+    def sample(self):
         """Return a result or raise NotImplementedError until it is available.
 
-        Result: {"sequence": str | int, "text": str,
-                 "media": [{"path": str, "mediaType": str}],
+        Result: {"text": str, "media": [{"path": str, "mediaType": str}],
                  "sampledAt": ISO_timestamp, "sources": [...]}
-        Only sequence is required; return text and/or media as useful. Paths are
-        relative to this workspace or absolute. Increment sequence for new data,
-        retain it for a reused result, and report the actual sample time if known.
-        RSA archives the selected result; do not overwrite a media file while it
-        is being read. Sampling may happen here or in your own background loop.
+        Fields are optional; return text and/or media as useful. Paths are relative
+        to this workspace or absolute. sampledAt is source time, if known.
+        RSA calls this continuously, even while Shiori thinks, and archives each
+        result with its sequence, recordedAt and sampling interval. Keep media
+        unchanged until the next sample call. observe() reads this history:
+        latest by default, or at/start/end timestamps; it does not call sample().
         """
         raise NotImplementedError("Implement workspace perception, then reload it.")
 

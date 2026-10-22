@@ -14,6 +14,7 @@
 | `streams/` | 原始模型流及 source/trace |
 | `observations/` | 归档媒体 |
 | `perception/<generation>/` | 感知入口、实际导入的工作区源码清单 `sources.json`、stderr |
+| `perception/history/records.jsonl` | 连续采样的不可变观测历史，媒体引用指向 `observations/` |
 
 manifest 记录 Git commit/dirty、continue/consolidate 提示和可选 workspace AGENTS 的 hash；dirty 不代表代码快照。认证头不入日志。结构见 [events.ts](../rsa/src/harness/events.ts)、[Baseware protocol](../baseware/src/protocol.ts)、[provenance.ts](../rsa/src/harness/provenance.ts)。
 
@@ -56,11 +57,13 @@ manifest 记录 Git commit/dirty、continue/consolidate 提示和可选 workspac
 
 ## 感知与模型真实输入
 
-`perception_status` 记录状态、generation、PID、源码 hash；`perception_observe_start/end` 记录读取结果/耗时。快照含 ID、sequence、可选 sampledAt/sources、reused。相同 generation/sequence 复用归档，读取时间不是采样时间。
+`perception_status` 记录状态、generation、PID、源码 hash；`perception_sample` 记录后台生成的快照及媒体数量；`perception_observe_start/end` 记录历史查询及读取结果/耗时。持续采样写入 `ObservationHistory`，不依赖模型是否正在读取。每条快照有 ID、递增 sequence、generation、`recordedAt` 和 `sampling` 区间，以及可选的 `sampledAt/sources`。`recordedAt` 是采样完成墙钟；`sampling.clock/startedAtMs/finishedAtMs` 是同一进程单调时钟区间；`sampledAt` 由 workspace 提供，表示已知的来源时刻，不能用完成时间伪造设备帧时间。
+
+每条记录的媒体在生成时归档，之后的历史读取不会覆盖它。查询返回 `records`、原查询 `query` 和分页字段 `hasMore/nextAfter`；`snapshot` 是本页最后一条。`reused` 表示与上一次读取返回相同的一组记录，不代表采样器停止。重载保留本 run 历史，每条记录仍标明自己的 generation。
 
 **模型看到什么以 `observation_context` 和 `model_start.observations` 为准**，包括工作区自己融合或处理的媒体；不能用最新 driver 截图代替。输入编码失败另记 `perception_input_error`，读取成功不保证输入成功。空实现或失败只给文字诊断，不回退默认截图。取消读取不杀感知进程，迟到结果不塞回已取消的模型调用。
 
-generation 后台 trace 不继承重载请求或控制 epoch，同步 observe 内调用继承读取 span。接口及 reload 见 [Workspace](workspace.md)。
+generation 后台 trace 不继承重载请求或控制 epoch，持续采样与查询分别记录调用；查询不会重新执行 workspace 采样代码。接口及 reload 见 [Workspace](workspace.md)。
 
 ## Shiori、压缩与传输
 

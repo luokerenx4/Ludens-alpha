@@ -12,6 +12,7 @@ import json, os
 from helper import transform
 
 class Perception:
+    sample_hz = 20
     def start(self, context):
         self.model = json.loads(Path("weights.json").read_text())["value"]
         self.version = transform(self.model)
@@ -19,7 +20,7 @@ class Perception:
         with Path("initializations.txt").open("a") as output:
             output.write(str(os.getpid()) + "\\n")
 
-    def observe(self):
+    def sample(self):
         self.sequence += 1
         value = {"pid": os.getpid(), "version": self.version, "sequence": self.sequence}
         Path("sample.txt").write_text(json.dumps(value))
@@ -40,6 +41,11 @@ export async function run(ctx: BenchmarkContext): Promise<AuthorReport> {
   const record = ctx.log.recorder({ component: "benchmark", implementation: "perception-lifecycle" });
   const perception = new PerceptionRuntime({ workspace: ctx.workspace, runDir: ctx.runDir, record: ctx.log.record });
   const signal = ctx.signal ?? new AbortController().signal;
+  const reload = async () => {
+    await perception.reload();
+    const deadline = Date.now() + 5000;
+    while (perception.status().state === "loading" && Date.now() < deadline) await Bun.sleep(10);
+  };
   const read = async (stage: string) => {
     signal.throwIfAborted();
     const result = await perception.observe(signal);
@@ -50,19 +56,21 @@ export async function run(ctx: BenchmarkContext): Promise<AuthorReport> {
     JSON.parse(result.result.stdout);
   let missing!: PerceptionRead, first!: PerceptionRead, second!: PerceptionRead;
   let beforeReload!: PerceptionRead, reloaded!: PerceptionRead, failed!: PerceptionRead, repaired!: PerceptionRead;
+  let historical!: PerceptionRead;
   let archived = "", archiveUnchanged = false, startsBeforeReload = 0, coldMs = 0, warmMs = 0;
   try {
-    await perception.reload();
+    await reload();
     missing = await read("unimplemented");
     await writeFile(join(ctx.workspace, "helper.py"), "def transform(value):\n    return value + 1\n");
     await writeFile(join(ctx.workspace, "weights.json"), '{"value":10}');
     await writeFile(join(ctx.workspace, "perception.py"), implementation);
     const started = performance.now();
-    await perception.reload();
+    await reload();
     first = await read("first");
     coldMs = performance.now() - started;
     archived = first.result.observations![0]!.path;
     const original = await readFile(archived, "utf8");
+    await Bun.sleep(100); // Recorder advances while the agent does no reads.
     const warmStarted = performance.now();
     second = await read("second");
     warmMs = performance.now() - warmStarted;
@@ -72,14 +80,16 @@ export async function run(ctx: BenchmarkContext): Promise<AuthorReport> {
     await writeFile(join(ctx.workspace, "helper.py"), "def transform(value):\n    return value + 5\n");
     await writeFile(join(ctx.workspace, "weights.json"), '{"value":20}');
     beforeReload = await read("edits-pending");
-    await perception.reload();
+    await reload();
     reloaded = await read("reloaded");
+    historical = await perception.observe(signal, {}, { at: first.snapshot!.recordedAt });
+    record("benchmark_perception_step", { stage: "historical", ...historical });
     await writeFile(join(ctx.workspace, "perception.py"), implementation.replace(
       "self.sequence += 1", 'raise RuntimeError("fixture perception failure")'));
-    await perception.reload();
+    await reload();
     failed = await read("failed");
     await writeFile(join(ctx.workspace, "perception.py"), implementation);
-    await perception.reload();
+    await reload();
     repaired = await read("repaired");
   } finally {
     await perception.stop();
@@ -100,7 +110,7 @@ export async function run(ctx: BenchmarkContext): Promise<AuthorReport> {
         evidenceSeq: evidence("unimplemented") },
       "persistent-model": { label: "跨轮复用模型", passed: startsBeforeReload === 1 && v1.pid === v2.pid
         && v1.version === 11 && v2.version === 11 && v2.sequence > v1.sequence,
-        expected: "同一 PID 初始化一次，连续读取产生新序号", actual: JSON.stringify({ startsBeforeReload, v1, v2 }),
+        expected: "同一 PID 初始化一次，无人读取期间持续采样，后续读取新序号", actual: JSON.stringify({ startsBeforeReload, v1, v2 }),
         evidenceSeq: evidence("first", "second") },
       "explicit-reload": { label: "helper 和权重显式更新", passed: held.version === 11 && fresh.version === 25
         && beforeReload.status.generation !== reloaded.status.generation && closed.includes(held.pid),
@@ -111,6 +121,10 @@ export async function run(ctx: BenchmarkContext): Promise<AuthorReport> {
         && failed.status.generation !== repaired.status.generation,
         expected: "错误记录可读，修复并 reload 后新 generation 正常返回",
         actual: JSON.stringify({ failed: failed.status, repaired: repaired.status }), evidenceSeq: evidence("failed", "repaired") },
+      "temporal-history": { label: "跨版本回看采样历史", passed: historical.snapshot?.id === first.snapshot?.id
+        && historical.result.stdout === first.result.stdout && historical.snapshot?.generation !== reloaded.snapshot?.generation,
+        expected: "reload 后按时间仍能读取旧版本的不可变记录", actual: JSON.stringify(historical.snapshot),
+        evidenceSeq: evidence("first", "historical", "reloaded") },
       "immutable-evidence": { label: "输入结果独立归档", passed: archiveUnchanged
         && first.snapshot?.id !== second.snapshot?.id && first.result.observations![0]!.id !== second.result.observations![0]!.id,
         expected: "覆盖 workspace 输出后首轮归档不变，结果身份独立",

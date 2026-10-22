@@ -9,7 +9,7 @@ import type { Runtime } from "../runtime.ts";
 import { Workspace } from "../workspace.ts";
 import type { EventTrace, RecordEvent } from "../events.ts";
 import { pythonModulePaths } from "../python-capabilities.ts";
-import type { PerceptionRead } from "../perception.ts";
+import type { ObservationQuery, PerceptionRead } from "../perception.ts";
 
 export async function media(observations: Observation[], record?: RecordEvent, trace?: EventTrace) {
   return Promise.all(observations.map(async (observation) => {
@@ -51,7 +51,13 @@ export function createRsaExtension(options: {
   let observed: PerceptionRead | undefined;
   let latestContext: { observations: string[]; executions: string[]; skills: Awaited<ReturnType<Workspace["snapshot"]>> };
   const trace = (toolCallId?: string): EventTrace => ({ epoch: options.cycle().epoch, ...options.trace?.(toolCallId), ...(toolCallId ? { toolCallId } : {}) });
-  const observeParameters = z.object({});
+  const observeParameters = z.object({
+    at: z.string().optional().describe("ISO timestamp: last record at or before this recordedAt; cannot combine with a range."),
+    start: z.string().optional().describe("Inclusive ISO recordedAt range start."),
+    end: z.string().optional().describe("Inclusive ISO recordedAt range end."),
+    limit: z.number().int().min(1).max(64).optional().describe("Range page size; default 8."),
+    after: z.number().int().min(0).optional().describe("Range cursor: records after this sequence; use nextAfter to continue."),
+  });
   // Each RSA host owns one OMP session. Use OMP's existing extension environment
   // mechanism; native bash and its process manager own execution. Capture paths
   // once so repeated prompts do not keep prepending the same directories.
@@ -67,20 +73,20 @@ export function createRsaExtension(options: {
 
   const observe: CustomTool<typeof observeParameters> = {
     name: "observe", label: "Observe", loadMode: "essential", approval: "read",
-    description: "Read the current workspace perception state. Implement perception.py and load it with rsa perception reload. Discover raw device capabilities through rsa controller.",
+    description: "Read recorded workspace perception: latest by default, one past record with at, or a time range with start/end. Records carry timestamps and sampling intervals. Implement perception.py:Perception.sample and load it with rsa perception reload to start continuous recording. Discover raw device capabilities through rsa controller.",
     parameters: observeParameters,
     async execute(id, params, _onUpdate, _ctx, signal) {
       const cycle = options.cycle();
-      const read = await readPerception(signal ? AbortSignal.any([signal, cycle.signal]) : cycle.signal, trace(id));
+      const read = await readPerception(signal ? AbortSignal.any([signal, cycle.signal]) : cycle.signal, trace(id), params);
       const content = await perceptionContent(read, trace(id));
       observed = read;
-      return { content, details: read, isError: read.status.state === "error" };
+      return { content, details: read, isError: read.result.exitCode !== 0 };
     },
   };
 
-  async function readPerception(signal: AbortSignal, parent: EventTrace): Promise<PerceptionRead> {
+  async function readPerception(signal: AbortSignal, parent: EventTrace, query: ObservationQuery = {}): Promise<PerceptionRead> {
     signal.throwIfAborted();
-    if (runtime.perception) return runtime.perception.observe(signal, parent);
+    if (runtime.perception) return runtime.perception.observe(signal, parent, query);
     const text = "Perception is not configured. Implement perception.py and run rsa perception reload.";
     return { status: { state: "unimplemented", generation: null }, error: text,
       result: { id: crypto.randomUUID(), status: "failed", exitCode: 1, stdout: text, stderr: text, observations: [],
@@ -90,13 +96,21 @@ export function createRsaExtension(options: {
 
   async function perceptionContent(read: PerceptionRead, parent: EventTrace) {
     let images: Awaited<ReturnType<typeof media>> = [];
-    try { images = await media(read.result?.observations ?? [], runtime.record, parent); }
+    try {
+      if (read.records && read.records.length > 1) {
+        images = (await Promise.all(read.records.map(async record => [
+          { type: "text" as const, text: `Observation #${record.snapshot.sequence} recordedAt=${record.snapshot.recordedAt}` },
+          ...await media(record.observations, runtime.record, parent),
+        ]))).flat();
+      } else images = await media(read.result?.observations ?? [], runtime.record, parent);
+    }
     catch (error) {
       options.cycle().signal.throwIfAborted();
       const message = error instanceof Error ? error.message : String(error);
       read.status = { ...read.status, state: "error", error: message };
       read.error = message;
       read.snapshot = undefined;
+      read.records = [];
       if (read.result) read.result = { ...read.result, observations: [], stdout: message, exitCode: 1, status: "failed" };
       runtime.record("perception_input_error", read, parent);
     }
@@ -119,6 +133,7 @@ export function createRsaExtension(options: {
     runtime.record("observation_context", { origin,
       observations: latestContext.observations, executions: latestContext.executions,
       purpose: cycle.purpose, perception: perception?.status, snapshot: perception?.snapshot,
+      query: perception?.query, records: perception?.records?.map(record => record.snapshot),
       reusedObservations: reused || perception?.reused ? latestContext.observations : [],
       freshObservations: reused || perception?.reused ? [] : latestContext.observations,
       freshExecutions: reused ? [] : latestContext.executions,
@@ -128,6 +143,7 @@ export function createRsaExtension(options: {
       ...(consolidating ? { purpose: cycle.purpose } : {}),
       control: runtime.status(), observations, skills,
       perception: perception?.status, snapshot: perception?.snapshot,
+      query: perception?.query, records: perception?.records?.map(record => record.snapshot),
     }) }, ...content];
   }
 

@@ -2,10 +2,12 @@ import { createServer, connect } from "node:net";
 import { lstat, unlink } from "node:fs/promises";
 import type { Runtime } from "./runtime.ts";
 import { childTrace, type EventTrace, type EventMetadata } from "./events.ts";
+import type { ObservationQuery } from "./perception.ts";
 
 export interface Request {
   kind: string; argv: string[]; epoch?: string; runId?: string; expectedEpoch?: string | null;
   action?: "list" | "help" | "call"; id?: string; arguments?: unknown; trace?: EventTrace;
+  query?: ObservationQuery;
   event?: { type: "python_call_start" | "python_call_end"; data: { id: string; [key: string]: unknown }; origin: EventMetadata["origin"] };
 }
 type Response = { ok: true; value: unknown } | { ok: false; error: string };
@@ -63,7 +65,7 @@ export async function dispatch(runtime: Runtime, request: Request, signal = new 
     if (argv[0] === "status") return runtime.perception.status();
     if (argv[0] === "reload") return runtime.perception.reload(trace);
     if (argv[0] === "stop") { await runtime.perception.stop(); return runtime.perception.status(); }
-    if (argv[0] === "observe") return runtime.perception.observe(signal, trace);
+    if (argv[0] === "observe") return runtime.perception.observe(signal, trace, request.query);
     throw new Error("Usage: rsa perception status|reload|stop|observe");
   }
   if (kind === "workspace_event") {

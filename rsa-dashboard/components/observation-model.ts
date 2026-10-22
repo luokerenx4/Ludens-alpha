@@ -1,4 +1,4 @@
-import type { Call, Observation, PerceptionRead, PerceptionStatus } from "../lib/types";
+import type { Call, Observation, PerceptionRead, PerceptionSnapshot, PerceptionStatus } from "../lib/types";
 
 export const perceptionStateLabel: Record<PerceptionStatus["state"], string> = {
   unimplemented: "尚未实现",
@@ -10,21 +10,46 @@ export const perceptionStateLabel: Record<PerceptionStatus["state"], string> = {
 
 /** Age at the actual read, not page viewing time or media archival time. */
 export function perceptionAgeMs(read?: PerceptionRead): number | null {
-  if (!read?.snapshot?.sampledAt) return null;
-  if (![read.at, read.snapshot.sampledAt].every(time => /(?:Z|[+-]\d{2}:?\d{2})$/i.test(time))) return null;
-  const age = Date.parse(read.at) - Date.parse(read.snapshot.sampledAt);
+  if (!read?.snapshot?.recordedAt) return null;
+  const age = timestampMs(read.at) - timestampMs(read.snapshot.recordedAt);
   return Number.isFinite(age) && age >= 0 ? age : null;
+}
+
+function timestampMs(time: string): number {
+  return /(?:Z|[+-]\d{2}:?\d{2})$/i.test(time) ? Date.parse(time) : NaN;
+}
+
+export function observationTime(time?: string): string {
+  if (!time || !Number.isFinite(timestampMs(time))) return "未知";
+  return new Date(time).toLocaleTimeString("zh-CN", {
+    hour12: false, timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", second: "2-digit",
+    fractionalSecondDigits: 3,
+  });
+}
+
+export function samplingDurationMs(snapshot?: PerceptionSnapshot): number | null {
+  if (!snapshot?.sampling) return null;
+  const { startedAtMs, finishedAtMs } = snapshot.sampling;
+  const elapsed = finishedAtMs - startedAtMs;
+  return Number.isFinite(elapsed) && elapsed >= 0 ? elapsed : null;
 }
 
 export function selectObservations(
   observations: Observation[],
-  call?: Pick<Call, "inputObservations" | "observations">,
+  call?: Pick<Call, "inputObservations" | "observations" | "perception">,
   selectedId?: string,
 ) {
   const byId = new Map(observations.map((observation) => [observation.id, observation]));
   const resolve = (ids: string[]) =>
     [...new Set(ids)].flatMap((id) => byId.has(id) ? [byId.get(id)!] : []);
-  const inputs = resolve(call?.inputObservations ?? []);
+  const inputs = resolve(call?.inputObservations ?? []).map(observation => {
+    if (!call?.perception) return observation;
+    const { records, ...read } = call.perception;
+    const record = records?.find(record => record.observations.some(media => media.id === observation.id));
+    // The current request owns the read time; the matching record owns frame metadata.
+    return { ...observation, text: record?.text,
+      perception: { ...read, snapshot: record?.snapshot ?? (records ? undefined : read.snapshot) } };
+  });
   const others = call
     ? resolve(call.observations.filter((id) => !call.inputObservations.includes(id)))
     : observations.slice(-4);
