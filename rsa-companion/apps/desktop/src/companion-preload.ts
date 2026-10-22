@@ -21,6 +21,9 @@ contextBridge.exposeInMainWorld('companion', {
   onCursor: (callback: (point: { x: number; y: number }) => void) => {
     ipcRenderer.on('openalice:companion:cursor', (_event, point) => callback(point))
   },
+  onPose: (callback: (selection: unknown) => void) => {
+    ipcRenderer.on('ludens:companion:pose', (_event, selection) => callback(selection))
+  },
   onFlip: (callback: (flipped: boolean) => void) => {
     ipcRenderer.on('openalice:companion:flip', (_event, flipped) => callback(flipped))
   },

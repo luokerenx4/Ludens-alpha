@@ -147,7 +147,7 @@ rsa run --model openai-codex/gpt-6.1-sol --seconds 300 --requests 50
 # 生产构建/运行：分别执行 npm run build 和 npm start（同一组件目录）。
 ```
 
-打开 [本地控制台](http://127.0.0.1:3015)。另一个终端运行 `rsa-companion/bin/rsa-companion --show-window`，Electron 加载同一页面。关闭窗口只隐藏，双击 Alice/点击托盘重开，Quit 才退出。
+打开 [本地控制台](http://127.0.0.1:3015)。另一个终端运行 `rsa-companion/bin/rsa-companion --show-window`，Electron 加载同一页面。关闭窗口只隐藏，双击卢登斯/点击托盘重开，Quit 才退出。
 
 在共享界面选择“让 Alice 跟随此工作区”即可热切换；历史回放不改变关注目标，Pet 跟随该 workspace 最新非 Benchmark 运行。`--workspace PATH` / `RSA_WORKSPACE` 只提供首次默认选择，`--dashboard URL` 指定本地服务，`--profile PATH` 使用独立偏好目录。默认实例会复用已有窗口。
 
@@ -165,6 +165,18 @@ rsa run --model openai-codex/gpt-6.1-sol --seconds 300 --requests 50
 ```
 
 `(cd rsa-companion && pnpm smoke)` 用临时 profile 验证几何、点击、尺寸、音频和五类日志；`pnpm preview` 留下交互窗口。两者不连接模型或控制模拟器。
+
+桌宠使用卢登斯的静态素材（`rsa-companion/ui/public/companion/ludens/manifest.json`）：
+24 个全身姿态、8 个特效、3 个头像与托盘图标，附生成提示词和 9 份 SVG。
+运行图为 512px 透明 WebP，托盘另带 PNG。无视频或逐帧动画。
+右键「姿态」选择全部姿态或恢复自动，「特效」选择叠加；选择仅在本次进程有效。
+自动状态在闲置 30/90/120 秒时依次托坐、犯困、睡觉，点击会短暂惊讶或开心，
+按住显示被拎起，拖动释放显示落地。现有吸边、左右翻转、尺寸和透明区域穿透保留。
+姿态优先级为互动、当前可见日志、手选姿态、闲置；日志隐藏后恢复原姿态。
+思考日志显示思考，工具运行显示操作，工具完成显示得意，错误显示吃瘪；
+这只表达当前日志块的状态，不代表整项任务成功。简略通知不读取私有日志字段。
+现有 `RSA Alice Pet` 配置目录、IPC 与启动环境变量保留以延续设置。
+
 
 评测统一用 `rsa bench`，先读 help。`capability-reuse` 调用真实模型，其他内置用例离线；自定义评测依其代码运行，见 [benchmark.md](benchmark.md)。
 

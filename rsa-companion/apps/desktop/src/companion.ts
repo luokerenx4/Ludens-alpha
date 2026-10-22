@@ -44,6 +44,10 @@ export function createCompanion(owner: BrowserWindow, access: OwnerAccess = {}):
     ? join(process.resourcesPath, 'runtime/ui/dist/companion')
     : resolve(here, '../../ui/public/companion')
   const statePath = join(app.getPath('userData'), 'companion.json')
+  const catalog = JSON.parse(readFileSync(join(assets, 'ludens/manifest.json'), 'utf8')) as { assets: { id: string; label: string; kind: string; category: string }[] }
+  let selectedPose: string | null = null
+  let selectedEffect: string | null = null
+  const publishPose = () => { if (!pet.isDestroyed()) pet.webContents.send('ludens:companion:pose', { state: selectedPose, effect: selectedEffect }) }
   let size = 220
   let enabled = true
   let saved: Partial<Rect> = {}
@@ -59,7 +63,7 @@ export function createCompanion(owner: BrowserWindow, access: OwnerAccess = {}):
   const bounds = settleCompanion(initial, screen.getDisplayMatching(initial).workArea, false)
   const pet = new BrowserWindow({
     x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height,
-    title: 'Alice', transparent: true, frame: false, hasShadow: false,
+    title: '卢登斯', transparent: true, frame: false, hasShadow: false,
     // Frameless transparent Windows windows reserve a native border outside
     // the requested bounds unless their dimensions are content dimensions.
     // Keep macOS on its existing input-coordinate path.
@@ -190,6 +194,24 @@ export function createCompanion(owner: BrowserWindow, access: OwnerAccess = {}):
   })
   const activity = installCompanionActivity(owner, pet, access)
   const trayMenuItems = (): Electron.MenuItemConstructorOptions[] => [
+    { label: '姿态', submenu: [
+      // Pose selection spans submenus; native radio groups are local to each menu.
+      { label: '自动（随活动与闲置切换）', type: 'checkbox', checked: selectedPose === null,
+        click: () => { selectedPose = null; publishPose() } },
+      ...[...new Set(catalog.assets.filter(a => a.kind === 'state').map(a => a.category))].map(category => ({
+        label: category, submenu: catalog.assets.filter(a => a.kind === 'state' && a.category === category).map(asset => ({
+          label: asset.label, type: 'checkbox' as const, checked: selectedPose === asset.id,
+          click: () => { selectedPose = asset.id; publishPose() },
+        })),
+      })),
+    ] },
+    { label: '特效', submenu: [
+      { label: '无', type: 'radio', checked: selectedEffect === null, click: () => { selectedEffect = null; publishPose() } },
+      ...catalog.assets.filter(a => a.kind === 'effect').map(asset => ({
+        label: asset.label, type: 'radio' as const, checked: selectedEffect === asset.id,
+        click: () => { selectedEffect = asset.id; publishPose() },
+      })),
+    ] },
     { label: enabled ? 'Hide pet' : 'Show pet', click: toggle },
     { label: 'Size', submenu: [170, 220, 280].map(value => ({
       label: value === 170 ? 'Small' : value === 220 ? 'Medium' : 'Large', type: 'radio' as const, checked: size === value,
@@ -203,10 +225,10 @@ export function createCompanion(owner: BrowserWindow, access: OwnerAccess = {}):
     })) },
   ]
   const menu = () => Menu.buildFromTemplate([
-    { label: 'Show Alice Pet', click: open },
+    { label: '打开 Ludens 控制台', click: open },
     ...trayMenuItems(),
     { type: 'separator' },
-    { label: 'Quit Alice Pet', click: () => app.quit() },
+    { label: '退出卢登斯', click: () => app.quit() },
   ])
   const trusted = (event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent) => event.sender === pet.webContents && event.senderFrame === pet.webContents.mainFrame
   const listen = (action: string, callback: (input: unknown) => void) => {
