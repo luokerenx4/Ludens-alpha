@@ -195,11 +195,12 @@ export function createCompanion(owner: BrowserWindow, access: OwnerAccess = {}):
   const activity = installCompanionActivity(owner, pet, access)
   const trayMenuItems = (): Electron.MenuItemConstructorOptions[] => [
     { label: '姿态', submenu: [
-      { label: '自动（随活动与闲置切换）', type: 'radio', checked: selectedPose === null,
+      // Pose selection spans submenus; native radio groups are local to each menu.
+      { label: '自动（随活动与闲置切换）', type: 'checkbox', checked: selectedPose === null,
         click: () => { selectedPose = null; publishPose() } },
       ...[...new Set(catalog.assets.filter(a => a.kind === 'state').map(a => a.category))].map(category => ({
         label: category, submenu: catalog.assets.filter(a => a.kind === 'state' && a.category === category).map(asset => ({
-          label: asset.label, type: 'radio' as const, checked: selectedPose === asset.id,
+          label: asset.label, type: 'checkbox' as const, checked: selectedPose === asset.id,
           click: () => { selectedPose = asset.id; publishPose() },
         })),
       })),
