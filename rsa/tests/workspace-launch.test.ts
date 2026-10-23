@@ -319,7 +319,8 @@ test("shared launchd options write the chosen label and logs while preserving a 
     await chmod(launchctl, 0o755);
     const script = resolve(import.meta.dir, "../scripts/launch-background.py");
     const child = Bun.spawn(["/usr/bin/python3", script, "--label", "dev.playness.alice.pet", "--log-dir", logs, "pet", "/bin/echo", "--workspace", "/tmp/seed workspace"], {
-      cwd: stableCwd, env: { ...process.env, PATH: bin, RSA_WORKSPACE: "/tmp/stale" }, stdout: "pipe", stderr: "pipe",
+      cwd: stableCwd, env: { ...process.env, PATH: bin, RSA_WORKSPACE: "/tmp/stale",
+        RSA_PERCEPTION_PERSIST: "0", RSA_PERCEPTION_HOT_SECONDS: "600" }, stdout: "pipe", stderr: "pipe",
     });
     const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
     expect(stderr).toBe("");
@@ -335,6 +336,8 @@ test("shared launchd options write the chosen label and logs while preserving a 
     expect(plist).toContain(`<key>WorkingDirectory</key>\n\t<string>${canonicalCwd}</string>`);
     expect(plist).toContain(`<string>${join(canonicalLogs, "pet.log")}</string>`);
     expect(plist).not.toContain("RSA_WORKSPACE");
+    expect(plist).toContain("<key>RSA_PERCEPTION_PERSIST</key>\n\t\t<string>0</string>");
+    expect(plist).toContain("<key>RSA_PERCEPTION_HOT_SECONDS</key>\n\t\t<string>600</string>");
     expect(await readdir(stableCwd)).toEqual([]);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

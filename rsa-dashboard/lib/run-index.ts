@@ -107,8 +107,7 @@ async function projectObservation(index: LogIndex, event: Event, position: numbe
   }
 }
 
-/** Incremental read models use files; only touched requests/spans are reconstructed. */
-export async function refreshRunProjection(index: LogIndex) {
+async function projectRun(index: LogIndex) {
   await index.refreshEvents();
   await index.exclusive(async () => {
     await initialise(index);
@@ -183,6 +182,17 @@ export async function refreshRunProjection(index: LogIndex) {
       await new Promise<void>(resolve => setImmediate(resolve));
     }
   });
+}
+
+const refreshes = new WeakMap<LogIndex, Promise<void>>();
+/** Concurrent overview and media readers share one incremental projection. */
+export function refreshRunProjection(index: LogIndex) {
+  let pending = refreshes.get(index);
+  if (!pending) {
+    pending = projectRun(index).finally(() => refreshes.delete(index));
+    refreshes.set(index, pending);
+  }
+  return pending;
 }
 
 export interface RunPage { beforeCall?: number; call?: string; image?: string }

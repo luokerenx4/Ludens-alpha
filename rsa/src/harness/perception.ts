@@ -1,8 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash } from "node:crypto";
-import { createWriteStream } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { basename, delimiter, join, resolve } from "node:path";
+import { constants, createWriteStream } from "node:fs";
+import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { basename, delimiter, extname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import type { Clock, ExecutionResult, Observation } from "@playness/baseware/contracts";
 import { childTrace, type EventTrace, type RecordEvent } from "./events.ts";
@@ -15,6 +15,7 @@ export interface PerceptionStatus {
   codeSHA?: string;
   error?: string;
   sampleHz?: number;
+  history?: { persistent: boolean; hotSeconds: number; segmentSeconds: number; hotBytes: number; segmentBytes: number };
 }
 export interface PerceptionSnapshot {
   id: string;
@@ -42,6 +43,9 @@ export interface PerceptionRead {
   nextAfter?: number;
   reused?: boolean;
   error?: string;
+  availability?: { persistent: boolean; hotSeconds: number;
+    earliest: { sequence: number; recordedAt: string } | null;
+    latest: { sequence: number; recordedAt: string } | null; expired: boolean };
 }
 interface Reply {
   id: string;
@@ -62,6 +66,7 @@ export class PerceptionRuntime {
   private worker?: Worker;
   private lastReadIds: string[] = [];
   private transition: Promise<unknown> = Promise.resolve();
+  private reading: Promise<unknown> = Promise.resolve();
   private readonly workspace: string;
   private readonly clock: Clock;
 
@@ -90,7 +95,15 @@ export class PerceptionRuntime {
     return operation;
   }
 
-  async observe(signal: AbortSignal, parent: EventTrace = {}, query: ObservationQuery = {}): Promise<PerceptionRead> {
+  observe(signal: AbortSignal, parent: EventTrace = {}, query: ObservationQuery = {}): Promise<PerceptionRead> {
+    // The recorder pins one returned page until the next read. Archive that
+    // page before another reader can release its temporary media.
+    const result = this.reading.then(() => this.read(signal, parent, query));
+    this.reading = result.catch(() => {});
+    return result;
+  }
+
+  private async read(signal: AbortSignal, parent: EventTrace, query: ObservationQuery): Promise<PerceptionRead> {
     const trace = childTrace(parent), started = this.clock.now();
     const observedStatus = this.status(), worker = this.worker;
     this.record("perception_observe_start", { status: observedStatus, query }, trace);
@@ -108,7 +121,25 @@ export class PerceptionRuntime {
       if (!reply.ok) return this.finish(this.unavailable(`${reply.error?.type}: ${reply.error?.message}`), started, trace);
       const value = reply.result as { records: Array<PerceptionSnapshot & {
         text: string; media: { path: string; mediaType: string }[];
-      }>; query: ObservationQuery; hasMore: boolean; nextAfter?: number };
+      }>; query: ObservationQuery; hasMore: boolean; nextAfter?: number; availability?: PerceptionRead["availability"] };
+      // Only selected media becomes an audit artifact. Retention of the
+      // sampling history remains independent of the model's input history.
+      if (value.records.some(record => record.media.length)) {
+        const directory = join(this.options.runDir, "observations");
+        await mkdir(directory, { recursive: true });
+        for (const record of value.records) for (const [index, item] of record.media.entries()) {
+          const id = createHash("sha256").update(JSON.stringify([record.id, index, item.path])).digest("hex");
+          const path = join(directory, `perception-read-${id}${extname(item.path)}`);
+          await copyFile(item.path, path, constants.COPYFILE_FICLONE | constants.COPYFILE_EXCL)
+            .catch(error => { if (error.code !== "EEXIST") throw error; });
+          item.path = path;
+        }
+        signal.throwIfAborted();
+      }
+      if (!this.isCurrent(worker)) {
+        return this.finish(this.unavailable("Perception generation stopped or was replaced during observation.",
+          { ...observedStatus, state: "stopped" }), started, trace);
+      }
       const records: PerceptionRecord[] = value.records.map(({ text, media, ...snapshot }) => ({
         snapshot, text, observations: media.map((item, index) => ({
           id: `${snapshot.id}-${index}`, controllerId: "perception", mediaType: item.mediaType, path: item.path,
@@ -123,8 +154,10 @@ export class PerceptionRuntime {
       // During reload/failure, latest must not silently serve an old generation as fresh.
       const currentRecords = latest ? records.filter(record => record.snapshot.generation === worker.generation) : records;
       if (!currentRecords.length || (latest && this.current.state !== "ready")) {
-        const error = this.current.error ?? (latest ? "No sample available from the current generation yet." : "No observation at the requested time.");
-        return this.finish({ ...this.unavailable(error), query, records: [], hasMore: false }, started, trace);
+        const error = this.current.error ?? (value.availability?.expired
+          ? "Requested observation has expired from the non-persistent history window. See availability for the retained range."
+          : latest ? "No sample available from the current generation yet." : "No observation at the requested time.");
+        return this.finish({ ...this.unavailable(error), query, records: [], hasMore: false, availability: value.availability }, started, trace);
       }
       const snapshot = currentRecords.at(-1)!.snapshot;
       const ids = currentRecords.map(record => record.snapshot.id);
@@ -134,7 +167,7 @@ export class PerceptionRuntime {
         `[${record.snapshot.recordedAt} #${record.snapshot.sequence}]\n${record.text}`).join("\n\n");
       return this.finish({ status: this.status(),
         result: this.execution(text, currentRecords.flatMap(record => record.observations), started),
-        snapshot, records: currentRecords, query: value.query, hasMore: value.hasMore,
+        snapshot, records: currentRecords, query: value.query, hasMore: value.hasMore, availability: value.availability,
         ...(value.nextAfter === undefined ? {} : { nextAfter: value.nextAfter }), reused }, started, trace);
     } catch (error) {
       if (signal.aborted) {
@@ -144,8 +177,16 @@ export class PerceptionRuntime {
           durationMs: this.clock.now() - started }, trace);
         throw signal.reason ?? error;
       }
+      if (worker && !this.isCurrent(worker)) {
+        return this.finish(this.unavailable("Perception generation stopped or was replaced during observation.",
+          { ...observedStatus, state: "stopped" }), started, trace);
+      }
       const message = error instanceof Error ? error.message : String(error);
       return this.finish(this.unavailable(message), started, trace);
+    } finally {
+      if (worker && observedStatus.history?.persistent === false && !worker.expectedExit) {
+        await this.request(worker, { action: "release" }, 1000).catch(() => {});
+      }
     }
   }
 
@@ -220,7 +261,8 @@ export class PerceptionRuntime {
         runDir: this.options.runDir, generation, source: source.toString("utf8"), trace: backgroundTrace },
       this.options.startTimeoutMs ?? 30_000);
       if (!reply.ok) throw new Error(`${reply.error?.type}: ${reply.error?.message}`);
-      this.setStatus({ ...this.current, sampleHz: (reply.result as { sampleHz: number }).sampleHz }, trace);
+      const result = reply.result as { sampleHz: number; history: PerceptionStatus["history"] };
+      this.setStatus({ ...this.current, sampleHz: result.sampleHz, history: result.history }, trace);
     } catch (error) {
       await this.closeWorker();
       this.setStatus({ ...this.current, state: "error", pid: undefined, error: String(error) }, trace);

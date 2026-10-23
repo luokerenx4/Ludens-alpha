@@ -14,7 +14,7 @@
 | `streams/` | 原始模型流及 source/trace |
 | `observations/` | 归档媒体 |
 | `perception/<generation>/` | 感知入口、实际导入的工作区源码清单 `sources.json`、stderr |
-| `perception/history/records.jsonl` | 连续采样的不可变观测历史，媒体引用指向 `observations/` |
+| `perception/history/segments/<UTC时间>-<序号>-<标识>.*` | 连续观测分段：JSONL 记录、定长 `.idx` 索引、`.meta.json` 段摘要及 `.media/` 媒体 |
 
 manifest 记录 Git commit/dirty、continue/consolidate 提示和可选 workspace AGENTS 的 hash；dirty 不代表代码快照。认证头不入日志。结构见 [events.ts](../rsa/src/harness/events.ts)、[Baseware protocol](../baseware/src/protocol.ts)、[provenance.ts](../rsa/src/harness/provenance.ts)。
 
@@ -59,7 +59,7 @@ manifest 记录 Git commit/dirty、continue/consolidate 提示和可选 workspac
 
 `perception_status` 记录状态、generation、PID、源码 hash；`perception_sample` 记录后台生成的快照及媒体数量；`perception_observe_start/end` 记录历史查询及读取结果/耗时。持续采样写入 `ObservationHistory`，不依赖模型是否正在读取。每条快照有 ID、递增 sequence、generation、`recordedAt` 和 `sampling` 区间，以及可选的 `sampledAt/sources`。`recordedAt` 是采样完成墙钟；`sampling.clock/startedAtMs/finishedAtMs` 是同一进程单调时钟区间；`sampledAt` 由 workspace 提供，表示已知的来源时刻，不能用完成时间伪造设备帧时间。
 
-每条记录的媒体在生成时归档，之后的历史读取不会覆盖它。查询开始记录原参数；查询结果返回 `records`、规范化后的 `query` 和分页字段 `hasMore/nextAfter`；`snapshot` 是本页最后一条。`reused` 表示与上一次读取返回相同的一组记录，不代表采样器停止。重载保留本 run 历史，每条记录仍标明自己的 generation。
+持久化开启时，每条记录的媒体在生成时归档到所属段，之后的历史读取不会覆盖它。默认热窗口 600 秒、分段 3600 秒，并受字节预算约束；完整配置见 [Workspace](workspace.md#常驻感知)。关闭持久化时记录和媒体只存在于有限窗口，已读取的媒体另存 `observations/` 用于审计。旧 `records.jsonl` 保持只读、按需查询。查询开始记录原参数；查询结果返回 `records`、规范化后的 `query` 和分页字段 `hasMore/nextAfter`；`snapshot` 是本页最后一条。`reused` 表示与上一次读取返回相同的一组记录，不代表采样器停止。重载保留本 run 的持久化历史、清空非持久化窗口，每条记录仍标明自己的 generation。
 
 **模型看到什么以 `observation_context` 和 `model_start.observations` 为准**，包括工作区自己融合或处理的媒体；不能用最新 driver 截图代替。输入编码失败另记 `perception_input_error`，读取成功不保证输入成功。空实现或失败只给文字诊断，不回退默认截图。取消读取不杀感知进程，迟到结果不塞回已取消的模型调用。
 
@@ -91,7 +91,9 @@ Dashboard 负责日志解析和投影，网页与 Alice Pet 共用增量读取�
 
 活动投影读取 events 和模型流，默认展示 thinking/text/tool/system，diagnostic 可选；不读加密推理、不额外请求模型解说。流式内容更新同一块，详情定位原 run/epoch/block；展示筛选不改变日志消费。
 
-每个运行的 `.dashboard-index/` 是可重建的文件缓存：原始事件以字节偏移索引，投影正文追加到分段 JSONL，索引只保存身份、类型、版本和读取位置等元数据。读取检查点保存在 `checkpoint.json`。内存保留轻量索引与当前页面，不常驻全量日志正文；原始 `events.jsonl`、`streams/`、`payloads/` 不改写。首次建立缓存需遍历来源，后续只处理追加；源文件被替换或截断、缓存写入被中断时重建。删除该缓存不删除运行证据。
+每个运行的 `.dashboard-index/` 是可重建的文件缓存：原始事件以字节偏移索引，投影正文追加到分段 JSONL，索引只保存身份、类型、版本和读取位置等元数据。只有原始事件和活动块保留增量游标需要的版本索引，其余投影只在内存保留每个 ID 的最新指针。读取检查点保存在 `checkpoint.json`。内存保留轻量索引与当前页面，不常驻全量日志正文；原始 `events.jsonl`、`streams/`、`payloads/` 不改写。首次建立缓存需遍历来源，后续只处理追加；缓存格式升级、源文件被替换或截断、缓存写入被中断时重建。删除该缓存不删除运行证据。同一运行的并发概览与媒体请求共用一次投影刷新。
+
+实时阶段只保存未完成操作的身份、阶段和起始时间/序号，不保存事件正文。设备采集在 `observation_end/error` 结束；后台帧不一定进入模型，不能等待 `observation_media/context` 才关闭采集。后续输入处理沿用工具或模型请求自身的生命周期。
 
 `/api/activity` 提供三种读取：`changes` 按不透明游标交付新增与更新，`history` 按类型/搜索条件分页，`block` 按稳定 ID 定位详情。浏览器和 Pet 共用 changes 客户端，接收成功后推进游标；仅 streams 增长也会产生新版本，旧工具的晚到结果更新原块。第一次连接或索引重建返回快照，Pet 不回放历史气泡；已有队列中的块仍可更新。历史全文搜索按需读文件，开销与搜索范围有关，不以截断历史换速度。
 

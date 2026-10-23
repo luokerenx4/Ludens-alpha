@@ -114,7 +114,12 @@ def main():
     history = None
     try:
         while True:
-            message = messages.get()
+            try:
+                message = messages.get(timeout=1)
+            except queue.Empty:
+                if history is not None:
+                    history.prune()
+                continue
             reply = {"id": message["id"]}
             try:
                 action = message["action"]
@@ -161,13 +166,18 @@ def main():
                         sampler = threading.Thread(target=sample_continuously, args=(
                             instance, history, message["generation"], sample_hz, context,
                         ), daemon=True)
-                        send({**reply, "ok": True, "result": {"pid": os.getpid(), "sampleHz": sample_hz}})
+                        send({**reply, "ok": True, "result": {"pid": os.getpid(), "sampleHz": sample_hz,
+                                                             "history": history.policy()}})
                         sampler.start()
                         continue
                     elif action == "observe":
                         if history is None:
                             raise ValueError("Perception has not started")
                         result = history.observe(message.get("query"))
+                    elif action == "release":
+                        if history is not None:
+                            history.release()
+                        result = None
                     else:
                         raise ValueError(f"Unknown perception action: {action}")
                 response = {**reply, "ok": True, "result": result}
@@ -187,6 +197,8 @@ def main():
                 instance.close()
             except Exception:
                 traceback.print_exc(file=sys.stderr)
+        if history is not None:
+            history.close()
         protocol.close()
 
 

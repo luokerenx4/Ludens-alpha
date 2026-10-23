@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { randomUUID, createHash } from "node:crypto";
 import type { Event } from "./types";
 
-const FORMAT = "files-1";
+const FORMAT = "files-2";
 const CHUNK = 1024 * 1024;
 const SEGMENT = 8 * CHUNK;
 export type FileState = { path: string; identity: string; size: number; mtime: number; offset: number; head: string; tail: string };
@@ -43,15 +43,16 @@ export class FileRecords {
   private dataFile = "";
   private dataOffset = 0;
   private part = 0;
-  constructor(readonly directory: string, private onWrite = () => {}) {
+  constructor(readonly directory: string, private onWrite = () => {}, private keepHistory = false) {
     mkdirSync(directory, { recursive: true });
     for (const { line } of lines(join(directory, "index.jsonl"))) {
       const pointer = JSON.parse(line) as RecordPointer;
-      if (pointer.deleted) this.latest.delete(pointer.id);
-      else { this.latest.set(pointer.id, pointer); this.history.push(pointer); }
+      this.retain(pointer);
+      // Locate the append segment independently of retained versions, including
+      // segments whose last record was later replaced or deleted.
+      if (pointer.file.startsWith(directory + "/"))
+        this.part = Math.max(this.part, Number(pointer.file.match(/data-(\d+)\.jsonl$/)?.[1] ?? 0));
     }
-    const last = this.history.findLast(pointer => pointer.file.startsWith(directory + "/"));
-    if (last) this.part = Number(last.file.match(/data-(\d+)\.jsonl$/)?.[1] ?? 0);
   }
   entries(): Iterable<RecordPointer> { return this.latest.values(); }
   versions(): readonly RecordPointer[] { return this.history; }
@@ -80,12 +81,18 @@ export class FileRecords {
     const pointer = this.latest.get(id);
     return pointer ? this.read<T>(pointer) : undefined;
   }
+  private retain(pointer: RecordPointer) {
+    if (pointer.deleted) this.latest.delete(pointer.id);
+    else {
+      this.latest.set(pointer.id, pointer);
+      if (this.keepHistory) this.history.push(pointer);
+    }
+  }
   private appendPointer(pointer: RecordPointer) {
     this.onWrite();
     this.indexFd ??= openSync(join(this.directory, "index.jsonl"), "a");
     writeSync(this.indexFd, JSON.stringify(pointer) + "\n");
-    if (pointer.deleted) this.latest.delete(pointer.id);
-    else { this.latest.set(pointer.id, pointer); this.history.push(pointer); }
+    this.retain(pointer);
   }
   reference(id: string, file: string, offset: number, length: number, metadata: Record<string, unknown>) {
     this.appendPointer({ ...metadata, id, file, offset, length });
@@ -144,7 +151,10 @@ export class LogIndex {
   store(name: string) {
     if (!/^[a-zA-Z0-9_-]+$/.test(name)) throw new Error("无效的索引文件名");
     let store = this.stores.get(name);
-    if (!store) { store = new FileRecords(join(this.directory, name), () => this.markDirty()); this.stores.set(name, store); }
+    if (!store) {
+      store = new FileRecords(join(this.directory, name), () => this.markDirty(), name === "events" || name === "blocks");
+      this.stores.set(name, store);
+    }
     return store;
   }
   meta(key: string) { return this.metadata[key]; }

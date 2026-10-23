@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { PerceptionRuntime, type ObservationQuery } from "../src/harness/perception.ts";
 
-async function fixture(options: { startTimeoutMs?: number; observeTimeoutMs?: number } = {}) {
+async function fixture(options: { startTimeoutMs?: number; observeTimeoutMs?: number; env?: NodeJS.ProcessEnv } = {}) {
   const workspace = await realpath(await mkdtemp(join(tmpdir(), "rsa-perception-")));
   const events: { type: string; data: any; trace: any }[] = [];
   const runtime = new PerceptionRuntime({ workspace, runDir: join(workspace, "logs", "run"),
@@ -59,6 +59,48 @@ test("empty implementation stays blind; sampler failure can be repaired without 
     await f.runtime.stop();
     expect((await f.observe()).status.state).toBe("stopped");
     expect(f.events.filter(e => e.type === "perception_observe_end").every(e => e.data.result.id)).toBe(true);
+  } finally { await f.cleanup(); }
+});
+
+test("retention policy reaches the worker and expired history cannot invalidate delivered media", async () => {
+  const f = await fixture({ env: { RSA_PERCEPTION_PERSIST: "0", RSA_PERCEPTION_HOT_SECONDS: "0.15" } });
+  try {
+    await f.load(source(`        self.count += 1
+        Path("frame.txt").write_text(str(self.count))
+        return {"text": str(self.count), "media": [{"path": "frame.txt", "mediaType": "text/plain"}]}`));
+    expect(f.runtime.status().history?.persistent).toBe(false);
+    expect(f.runtime.status().history?.hotSeconds).toBe(0.15);
+    const delivered = await f.observe();
+    const file = delivered.result.observations![0]!.path;
+    expect(await readFile(file, "utf8")).toBe(delivered.result.stdout);
+    const first = delivered.snapshot!;
+    await f.wait(() => f.samples().length >= 8);
+    const expired = await f.observe({ at: first.recordedAt });
+    expect(expired.error).toContain("expired");
+    expect(expired.availability?.expired).toBe(true);
+    expect(expired.availability?.earliest?.sequence).toBeGreaterThan(first.sequence);
+    expect(await readFile(file, "utf8")).toBe(delivered.result.stdout);
+    const reads = await Promise.all([f.observe(), f.observe(), f.observe()]);
+    for (const read of reads) {
+      expect(read.error).toBeUndefined();
+      expect(await readFile(read.result.observations![0]!.path, "utf8")).toBe(read.result.stdout);
+    }
+  } finally { await f.cleanup(); }
+});
+
+test("cold history remains queryable across segments and worker reload", async () => {
+  const f = await fixture({ env: { RSA_PERCEPTION_HOT_SECONDS: "0.1", RSA_PERCEPTION_SEGMENT_SECONDS: "0.15" } });
+  try {
+    const code = source('        self.count += 1\n        return {"text": str(self.count)}');
+    await f.load(code);
+    const first = (await f.observe()).snapshot!;
+    await f.wait(() => f.samples().length >= 8);
+    expect((await f.observe({ at: first.recordedAt })).snapshot?.id).toBe(first.id);
+    await f.load(code);
+    const cold = await f.observe({ at: first.recordedAt });
+    expect(cold.snapshot?.id).toBe(first.id);
+    expect(cold.availability?.persistent).toBe(true);
+    expect(cold.availability?.expired).toBe(false);
   } finally { await f.cleanup(); }
 });
 

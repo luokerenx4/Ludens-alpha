@@ -113,3 +113,19 @@ test("late controller errors replace sampling notices instead of double-counting
     assert.equal(result.notices[0].type, "execution_error");
   });
 });
+
+test("concurrent readers share one refresh and later appends remain visible", async () => {
+  const event = events();
+  await fixture([event("control", { mode: "auto" })], async (index, path) => {
+    const append = () => appendFile(join(path, "events.jsonl"),
+      JSON.stringify(event("execution", { status: "completed", exitCode: 0 })) + "\n");
+    await append();
+    const readers = Array.from({ length: 10 }, () => refreshRunProjection(index));
+    assert.ok(readers.every(pending => pending === readers[0]));
+    await Promise.all(readers);
+    assert.equal((await readRunProjection(index, "cycle")).summary.actions, 1);
+    await append();
+    await refreshRunProjection(index);
+    assert.equal((await readRunProjection(index, "cycle")).summary.actions, 2);
+  });
+});

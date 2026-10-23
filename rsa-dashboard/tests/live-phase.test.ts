@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { getLivePhase } from "../lib/live-phase";
+import { advanceLivePhase, emptyLivePhase, getLivePhase, livePhaseValue } from "../lib/live-phase";
 import { parseEvents } from "../lib/aggregate";
 import type { Event, LiveStatus } from "../lib/types";
 
@@ -57,7 +57,7 @@ test("each retry starts a fresh wait; late HTTP and model endings cannot clear i
   assert.equal(phase(events)?.kind, "idle");
 });
 
-test("commands, captures and observation processing are nested and joined by their own IDs", () => {
+test("captures end independently of later model input and return to their owning tool", () => {
   const tool = { modelCallId: "model", toolCallId: "tool" };
   const oldCapture = { ...tool, operationId: "old-capture" };
   const capture = { ...tool, operationId: "capture" };
@@ -72,11 +72,11 @@ test("commands, captures and observation processing are nested and joined by the
   assert.equal(phase(events)?.kind, "capture");
   assert.equal(phase(events)?.sourceSeq, 500);
   events.push(event("observation_end", 800, capture, { observations: ["a", "b"] }));
-  assert.equal(phase(events)?.label, "整理观测");
+  assert.equal(phase(events)?.kind, "tool");
   events.push(event("observation_media", 900, tool, { observationId: "a" }));
-  assert.equal(phase(events)?.kind, "observation");
+  assert.equal(phase(events)?.kind, "tool");
   events.push(event("observation_media", 950, { ...tool, modelCallId: "older" }, { observationId: "b" }));
-  assert.equal(phase(events)?.kind, "observation");
+  assert.equal(phase(events)?.kind, "tool");
   events.push(event("observation_context", 1000, tool, { observations: ["a", "b"] }));
   assert.equal(phase(events)?.kind, "tool");
   events.push(event("tool_end", 1100, tool));
@@ -163,7 +163,7 @@ test("manual, disconnected, historical run or historical epoch never has a live 
   assert.equal(phase([]), null);
 });
 
-test("serialized event prefixes retain capture, processing and next HTTP boundaries", () => {
+test("serialized event prefixes retain capture completion and next HTTP boundaries", () => {
   const tool = { modelCallId: "first", toolCallId: "tool", operationId: "capture" };
   const next = { modelCallId: "next", httpId: "http" };
   const entries = [
@@ -178,7 +178,7 @@ test("serialized event prefixes retain capture, processing and next HTTP boundar
   ];
   const events = parseEvents(entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
   for (const [seq, kind] of [
-    [200, "capture"], [300, "observation"], [400, "tool"],
+    [200, "capture"], [300, "tool"], [400, "tool"],
     [500, "idle"], [700, "prepare"], [800, "headers"],
   ] as const) {
     const prefix = events.filter((event) => event.seq <= seq);
@@ -187,6 +187,37 @@ test("serialized event prefixes retain capture, processing and next HTTP boundar
     assert.equal(result?.kind, kind, `event ${seq}`);
     assert.ok(result!.elapsedMs! >= 1000);
   }
+});
+
+test("continuous background captures finish without ever being delivered as model input", () => {
+  let state = emptyLivePhase();
+  const captureEvent = (type: string, seq: number, operationId: string, data = {}): Event => ({
+    ...event(type, seq, {}, data), source: { component: "baseware" }, trace: { operationId },
+  });
+  for (let sample = 0; sample < 10000; sample++) {
+    const top = `top-${sample}`, bottom = `bottom-${sample}`, seq = sample * 4;
+    advanceLivePhase(state, [captureEvent("observation_start", seq, top),
+      captureEvent("observation_start", seq + 1, bottom)]);
+    assert.equal(Object.keys(state.pending).length, 2);
+    // Projection batches may split a capture and reload its persisted state.
+    state = JSON.parse(JSON.stringify(state));
+    advanceLivePhase(state, [captureEvent("observation_end", seq + 2, top, { observations: [top] }),
+      captureEvent("observation_end", seq + 3, bottom, { observations: [bottom] })]);
+    assert.equal(Object.keys(state.pending).length, 0);
+  }
+  assert.equal(livePhaseValue(state)?.kind, "idle");
+  assert.ok(JSON.stringify(state).length < 200);
+});
+
+test("pending and idle phases retain timing rather than tool payloads", () => {
+  const state = emptyLivePhase(), trace = { modelCallId: "model", toolCallId: "tool" };
+  const payload = "x".repeat(1_000_000);
+  advanceLivePhase(state, [event("tool_start", 100, trace, { toolName: "bash", args: { command: payload } })]);
+  assert.equal(livePhaseValue(state, 200)?.elapsedMs, 100);
+  assert.ok(JSON.stringify(state).length < 500);
+  advanceLivePhase(state, [event("tool_end", 300, trace, { result: payload })]);
+  assert.equal(livePhaseValue(state, 500)?.elapsedMs, 200);
+  assert.ok(JSON.stringify(state).length < 200);
 });
 
 test("WS waits from dispatch until the first inbound event without requiring HTTP IDs", () => {

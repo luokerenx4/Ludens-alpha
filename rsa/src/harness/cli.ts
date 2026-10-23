@@ -24,13 +24,16 @@ Range pages follow recording sequence, default to 8 records (maximum 64), and re
 sampledAt, when supplied by the producer, describes the source time separately.
 Default output is JSON with media paths. --images also displays the requested pixels through
 OMP's native terminal image support; use it when reading pictures through bash.
+availability reports the retained range; non-persistent history expires outside its hot window.
 The same command is available as rsa perception observe.`;
 
 const PERCEPTION_HELP = `rsa perception status | reload | stop
 ${OBSERVE_HELP}
 Loads workspace/perception.py:Perception in a resident process and calls sample() continuously.
 Set sample_hz to choose a target rate (default 2 Hz). Reload after editing code or weights.
-History survives reload within this run. Empty or failed perception supplies no default images.`;
+Persistent history survives reload within this run. Defaults: 10-minute hot window, hourly segments.
+Set RSA_PERCEPTION_PERSIST=0 in the host environment for hot-window-only history.
+Empty or failed perception supplies no default images.`;
 
 async function observe(argv: string[], socket: string) {
   if (argv.includes("--help")) { console.log(OBSERVE_HELP); return; }

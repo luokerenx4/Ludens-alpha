@@ -4,6 +4,7 @@ Run: PYTHONPATH=rsa/python python3 rsa/tests/perception-history.test.py
 """
 
 import json
+import gc
 import os
 from pathlib import Path
 import queue
@@ -12,7 +13,9 @@ import sys
 import tempfile
 import threading
 import time
+import tracemalloc
 import unittest
+from unittest.mock import patch
 
 from rsa_tools._observation_history import ObservationHistory
 
@@ -54,16 +57,164 @@ class HistoryTests(unittest.TestCase):
             first = history.append(sample, "one", {})
             second = history.append(sample, "one", {})
             self.assertEqual(first["media"], second["media"])
-            with history.path.open("ab") as stream:
+            records_path = Path(history._active["path"]).with_suffix(".jsonl")
+            # A crash can leave a committed payload without its index/summary,
+            # followed by an incomplete final write. Recover only complete rows.
+            third = {**second, "sequence": 3, "text": "unindexed complete row"}
+            with records_path.open("ab") as stream:
+                stream.write((json.dumps(third) + "\n").encode())
                 stream.write(b'{"unfinished":')
             recovered = ObservationHistory(root)
-            self.assertEqual(recovered.append({"text": "recovered"}, "two", {})["sequence"], 3)
-            self.assertEqual(len(list((root / "observations").iterdir())), 1)
+            self.assertEqual(recovered.append({"text": "recovered"}, "two", {})["sequence"], 4)
+            self.assertEqual(len(list(root.glob("perception/history/segments/*.media/*"))), 1)
+            self.assertEqual([row["sequence"] for row in recovered.observe({"after": 0})["records"]], [1, 2, 3, 4])
             with self.assertRaises(FileNotFoundError):
                 recovered.append({"media": [sample["media"][0], {
                     "path": str(root / "missing.txt"), "mediaType": "text/plain",
                 }]}, "two", {})
-            self.assertEqual(recovered.observe()["records"][0]["sequence"], 3)
+            self.assertEqual(recovered.observe()["records"][0]["sequence"], 4)
+
+    def test_defaults_and_legacy_history_remain_queryable_without_rewriting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            legacy = root / "perception/history/records.jsonl"
+            legacy.parent.mkdir(parents=True)
+            rows = [{"id": str(i), "sequence": i, "generation": "legacy",
+                     "recordedAt": f"2026-10-22T00:00:0{i}Z", "sampling": {},
+                     "text": str(i), "media": []} for i in (1, 2)]
+            original = b"".join((json.dumps(row) + "\n").encode() for row in rows) + b'{"unfinished":'
+            legacy.write_bytes(original)
+            history = ObservationHistory(root)
+            self.assertEqual(history.policy(), {"persistent": True, "hotSeconds": 600,
+                             "hotBytes": 67108864, "segmentSeconds": 3600, "segmentBytes": 268435456})
+            self.assertEqual(len(history._hot), 0)
+            history.append({"text": "new"}, "new", {}, "2026-10-22T00:00:03Z")
+            recovered = ObservationHistory(root)
+            self.assertEqual([row["sequence"] for row in recovered.observe({"after": 0})["records"]], [1, 2, 3])
+            self.assertEqual(recovered.observe({"at": "2026-10-22T00:00:01Z"})["records"][0]["generation"], "legacy")
+            self.assertEqual(legacy.read_bytes(), original)
+
+    def test_hot_expiry_hourly_segments_and_cold_pages_after_reload(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+                "RSA_PERCEPTION_HOT_SECONDS": "10", "RSA_PERCEPTION_SEGMENT_SECONDS": "3600"}):
+            clock = [0.0]
+            with patch("rsa_tools._observation_history.time.monotonic", side_effect=lambda: clock[0]):
+                history = ObservationHistory(directory)
+                for minute in range(0, 180, 15):
+                    clock[0] += 1
+                    history.append({"text": str(minute)}, "one", {},
+                                   f"2026-10-22T{minute // 60:02}:{minute % 60:02}:00Z")
+                self.assertEqual(len(list(history.segment_dir.glob("*.jsonl"))), 3)
+                clock[0] += 11
+                history.prune()  # Also evicts when no further samples arrive.
+                self.assertEqual(history.hot_bytes, 0)
+                self.assertEqual(len(history._hot), 0)
+                point = history.observe({"at": "2026-10-22T00:37:00Z"})
+                self.assertEqual(point["records"][0]["text"], "30")
+                history.close()
+                reloaded = ObservationHistory(directory)
+                self.assertEqual(len(reloaded._hot), 0)
+                result, after = [], 0
+                while True:
+                    page = reloaded.observe({"start": "2026-10-22T00:45:00Z",
+                                             "end": "2026-10-22T02:30:00Z", "after": after, "limit": 3})
+                    result.extend(int(row["text"]) for row in page["records"])
+                    if not page["hasMore"]:
+                        break
+                    after = page["nextAfter"]
+                self.assertEqual(result, list(range(45, 151, 15)))
+                self.assertEqual(reloaded.observe()["records"][0]["text"], "165")
+                self.assertFalse(page["availability"]["expired"])
+
+    def test_window_only_expiry_pins_and_source_media_ownership(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+                "RSA_PERCEPTION_PERSIST": "0", "RSA_PERCEPTION_HOT_SECONDS": "10"}):
+            root, clock = Path(directory), [0.0]
+            source = root / "source.png"
+            source.write_bytes(b"compressed frame")
+            with patch("rsa_tools._observation_history.time.monotonic", side_effect=lambda: clock[0]):
+                history = ObservationHistory(root)
+                saved = history.append({"media": [{"path": str(source), "mediaType": "image/png"}]},
+                                       "one", {}, "2026-10-22T00:00:00Z")
+                copied = Path(saved["media"][0]["path"])
+                self.assertNotEqual(copied, source)
+                history.observe()  # Hold this returned page during the caller's read.
+                clock[0] = 11
+                history.prune()
+                self.assertEqual(history.hot_bytes, 0)
+                self.assertTrue(copied.exists())
+                expired = history.observe({"at": "2026-10-22T00:00:00Z"})
+                self.assertEqual(expired["records"], [])
+                self.assertTrue(expired["availability"]["expired"])
+                self.assertIsNone(expired["availability"]["earliest"])
+                self.assertFalse(copied.exists())
+                self.assertTrue(source.exists())
+                self.assertEqual(list(history.segment_dir.glob("*")), [])
+                saved = history.append({"media": [{"path": str(source), "mediaType": "image/png"}]},
+                                       "one", {}, "2026-10-22T00:00:11Z")
+                copied = Path(saved["media"][0]["path"])
+                history.observe()
+                clock[0] = 22
+                history.prune()
+                self.assertTrue(copied.exists())
+                history.release()  # The caller finishes copying, without another query.
+                self.assertFalse(copied.exists())
+                history.close()
+                self.assertFalse(list((root / "perception/history").glob("window-*")))
+                reloaded = ObservationHistory(root)
+                self.assertEqual(reloaded.append({"text": "new generation"}, "two", {})["sequence"], 3)
+                self.assertEqual(len(reloaded.observe({"after": 0})["records"]), 1)
+                reloaded.close()
+
+    def test_window_cleanup_never_removes_a_live_instances_files(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"RSA_PERCEPTION_PERSIST": "0"}):
+            history = ObservationHistory(directory)
+            live = history._temporary
+            marker = live / "marker"
+            marker.write_text("live")
+            dead = live.parent / "window-999999-abandoned"
+            dead.mkdir()
+            (dead / "marker").write_text("dead")
+            real_kill = os.kill
+
+            def owner_status(pid, signal):
+                if pid == 999999:
+                    raise ProcessLookupError()
+                return real_kill(pid, signal)
+
+            with patch("rsa_tools._observation_history.os.kill", new=owner_status):
+                other = ObservationHistory(directory)
+            self.assertTrue(marker.exists())
+            self.assertFalse(dead.exists())
+            other.close()
+            history.close()
+
+    def test_hot_byte_budget_and_process_allocations_do_not_follow_total_history(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+                "RSA_PERCEPTION_HOT_BYTES": "65536", "RSA_PERCEPTION_SEGMENT_BYTES": "262144"}):
+            history = ObservationHistory(directory)
+            tracemalloc.start()
+            try:
+                for index in range(300):
+                    history.append({"text": "x" * 2048}, "one", {})
+                gc.collect()
+                warm = tracemalloc.get_traced_memory()[0]
+                for index in range(1200):
+                    history.append({"text": "x" * 2048}, "one", {})
+                gc.collect()
+                final, peak = tracemalloc.get_traced_memory()
+                self.assertLessEqual(history.hot_bytes, 65536)
+                self.assertLess(final - warm, 512 * 1024)
+                self.assertLess(peak, 2 * 1024 * 1024)
+                self.assertGreater(len(history._segments), 10)
+                history.close()
+                reloaded = ObservationHistory(directory)
+                self.assertEqual(len(reloaded._hot), 0)
+                page = reloaded.observe({"after": 10, "limit": 2})
+                self.assertEqual([row["sequence"] for row in page["records"]], [11, 12])
+                self.assertEqual(reloaded.observe()["records"][0]["sequence"], 1500)
+            finally:
+                tracemalloc.stop()
 
     def test_optional_tool_fields_and_real_query_conflicts(self):
         with tempfile.TemporaryDirectory() as directory:

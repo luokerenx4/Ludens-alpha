@@ -15,15 +15,17 @@ const labels: Record<LivePhase["kind"], string> = {
   idle: "等待下一步",
 };
 
+type PhaseEvent = Pick<Event, "seq" | "at">;
+const phaseEvent = ({ seq, at }: Event): PhaseEvent => ({ seq, at });
+
 type Pending = {
   kind: LivePhase["kind"];
-  event: Event;
+  event: PhaseEvent;
   order: number;
   owner: string;
   httpId?: string;
   requestId?: string;
   transport?: "websocket" | "sse";
-  images?: string[];
   uncertainStart?: boolean;
 };
 
@@ -31,17 +33,17 @@ type Pending = {
 export interface LivePhaseState {
   pending: Record<string, Pending>;
   compactionCount: number;
-  idle?: Event;
+  idle?: PhaseEvent;
 }
 export const emptyLivePhase = (): LivePhaseState => ({ pending: {}, compactionCount: 0 });
 export function advanceLivePhase(state: LivePhaseState, events: Iterable<Event>) {
   const pending = new Map(Object.entries(state.pending));
   let { compactionCount, idle } = state;
   const start = (key: string, kind: Pending["kind"], event: Event, owner: string) => {
-    pending.set(key, { kind, event, owner, order: event.seq });
+    pending.set(key, { kind, event: phaseEvent(event), owner, order: event.seq });
   };
   const finish = (key: string, event: Event) => {
-    if (pending.delete(key)) idle = event;
+    if (pending.delete(key)) idle = phaseEvent(event);
   };
   for (const event of events) {
     const { type, trace: t, data: d } = event;
@@ -52,10 +54,9 @@ export function advanceLivePhase(state: LivePhaseState, events: Iterable<Event>)
     const perceptionKey = `perception:${t.traceId}:${t.spanId}`;
     const model = pending.get(modelKey);
     const tool = pending.get(toolKey);
-    const capture = pending.get(captureKey);
     switch (type) {
       case "control":
-        if (d.mode === "auto") idle = event;
+        if (d.mode === "auto") idle = phaseEvent(event);
         else {
           pending.clear();
           compactionCount = 0;
@@ -67,7 +68,7 @@ export function advanceLivePhase(state: LivePhaseState, events: Iterable<Event>)
         break;
       case "model_request":
         if (model) {
-          if (model.kind !== "prepare") model.event = event;
+          if (model.kind !== "prepare") model.event = phaseEvent(event);
           model.kind = "prepare";
           model.httpId = undefined;
           model.requestId = t.requestId;
@@ -77,14 +78,14 @@ export function advanceLivePhase(state: LivePhaseState, events: Iterable<Event>)
       case "model_ws_dispatch":
         if (model?.transport === "websocket" && t.requestId && model.requestId === t.requestId) {
           model.kind = "ws-first-event";
-          model.event = event;
+          model.event = phaseEvent(event);
         }
         break;
       case "model_http_dispatch":
         if (model && t.httpId) {
           model.transport = "sse";
           model.kind = "headers";
-          model.event = event;
+          model.event = phaseEvent(event);
           model.httpId = t.httpId;
         }
         break;
@@ -92,7 +93,7 @@ export function advanceLivePhase(state: LivePhaseState, events: Iterable<Event>)
       case "model_http_error":
         if (model?.httpId === t.httpId && t.httpId && model.kind === "headers") {
           model.kind = type === "model_http_end" && d.status < 400 ? "first-stream" : "idle";
-          model.event = event;
+          model.event = phaseEvent(event);
         }
         break;
       case "model_stream_start":
@@ -101,7 +102,7 @@ export function advanceLivePhase(state: LivePhaseState, events: Iterable<Event>)
           (model.kind === "ws-first-event" && t.requestId && model.requestId === t.requestId)
         )) {
           model.kind = "stream";
-          model.event = event;
+          model.event = phaseEvent(event);
         }
         break;
       case "model_end":
@@ -114,7 +115,7 @@ export function advanceLivePhase(state: LivePhaseState, events: Iterable<Event>)
       case "exec_result":
         if (tool && (type === "exec" || tool.kind === "command")) {
           tool.kind = type === "exec" ? "command" : "tool";
-          tool.event = event;
+          tool.event = phaseEvent(event);
         }
         break;
       case "tool_end":
@@ -132,29 +133,11 @@ export function advanceLivePhase(state: LivePhaseState, events: Iterable<Event>)
         finish(perceptionKey, event);
         break;
       case "observation_end":
-        if (capture?.kind === "capture") {
-          if (d.observations?.length) {
-            capture.kind = "observation";
-            capture.event = event;
-            capture.images = d.observations;
-          } else finish(captureKey, event);
-        }
-        break;
       case "observation_error":
+        // A driver capture ends here. Background samples need not become model
+        // input; later encoding/context events belong to their tool or request.
         finish(captureKey, event);
         break;
-      case "observation_media":
-      case "observation_context": {
-        // Media has observationId but no operationId. Keep all images from the
-        // matching capture pending until they finish; this is not encode timing.
-        const ids: string[] = type === "observation_media" ? [d.observationId] : d.observations ?? [];
-        for (const [key, operation] of pending) {
-          if (operation.owner !== owner || !operation.images) continue;
-          operation.images = operation.images.filter(id => !ids.includes(id));
-          if (!operation.images.length) finish(key, event);
-        }
-        break;
-      }
       case "auto_compaction_start":
         // Native lifecycle events have no operation ID. Overlapping starts prove
         // pending work, but cannot identify the remaining operation's start time.
