@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
-import type { Capabilities, ExecutionResult, Observation } from "./contracts.ts";
+import type { Capabilities, ExecutionResult, Observation, ToolArguments } from "./contracts.ts";
+import { argumentValidator, archivedToolResult } from "./tool-contract.ts";
 import type { Catalog, DeviceEvent, RecordEvent, Request, Trace } from "./protocol.ts";
 
 export interface DriverInfo { id: string; version: string }
@@ -31,19 +32,17 @@ export class BasewareCore {
   private lastExecution?: { result: ExecutionResult; trace: Trace };
   private previousObservations = new Map<string, Observation>();
   private sequence = 0;
+  private validators = new Map<string, (value: unknown) => ToolArguments>();
 
   constructor(options: { capabilities: Capabilities; drivers: DriverInfo[]; record?: RecordEvent; serviceId?: string }) {
     this.capabilities = options.capabilities;
     this.drivers = options.drivers;
     this.sink = options.record ?? (() => {});
     this.serviceId = options.serviceId ?? crypto.randomUUID();
-    for (const group of [options.drivers, options.capabilities.controllers]) {
-      const ids = new Set<string>();
-      for (const item of group) {
-        if (ids.has(item.id)) throw new Error(`Duplicate capability or driver ID: ${item.id}`);
-        ids.add(item.id);
-      }
+    for (const ids of [options.drivers.map(d => d.id), options.capabilities.controllers.map(c => c.tool.name)]) {
+      if (new Set(ids).size !== ids.length) throw new Error("Duplicate capability or driver ID");
     }
+    for (const controller of this.capabilities.controllers) this.validators.set(controller.tool.name, argumentValidator(controller.tool));
   }
 
   readonly record: RecordEvent = (type, data, trace = {}) => {
@@ -65,18 +64,15 @@ export class BasewareCore {
 
   list(): Catalog {
     return { drivers: this.drivers,
-      controllers: this.capabilities.controllers.map(c => ({ id: c.id, requiresControl: c.requiresControl,
-        ...(c.mediaTypes ? { mediaTypes: c.mediaTypes } : {}), help: c.help(),
-        ...(c.commands ? { commands: c.commands } : {}), ...(c.stdoutSchema ? { stdoutSchema: c.stdoutSchema } : {}) })) };
+      controllers: this.capabilities.controllers.map(c => ({ ...c.tool, requiresControl: c.requiresControl,
+        ...(c.mediaTypes ? { mediaTypes: c.mediaTypes } : {}) })) };
   }
 
-  private controller(id: string) {
-    const controller = this.capabilities.controllers.find(c => c.id === id);
-    if (!controller) throw new Error(`Unknown controller: ${id}`);
-    return controller;
+  help(id: string) {
+    const tool = this.list().controllers.find(c => c.name === id);
+    if (!tool) throw new Error(`Unknown controller: ${id}`);
+    return tool;
   }
-
-  help(id: string) { return this.controller(id).help(); }
 
   async acquire(epoch: string, seconds: number, client: ClientContext, signal?: AbortSignal) {
     if (!epoch?.trim()) throw new Error("acquire requires an epoch");
@@ -148,9 +144,9 @@ export class BasewareCore {
     await this.release(this.epoch, error.message);
   }
 
-  private recordObservations(observations: Observation[], argv: string[], trace: Trace, origin: string, execution: typeof this.lastExecution) {
+  private recordObservations(observations: Observation[], args: ToolArguments, trace: Trace, origin: string, execution: typeof this.lastExecution) {
     for (const observation of observations) {
-      const key = JSON.stringify([observation.controllerId, argv]);
+      const key = JSON.stringify([observation.controllerId, args]);
       const previous = this.previousObservations.get(key);
       const sameClock = previous?.timing.clock === observation.timing.clock;
       const afterExecution = execution?.result.timing.clock === observation.timing.clock ? {
@@ -168,11 +164,11 @@ export class BasewareCore {
     }
   }
 
-  async execute(id: string, argv: string[], epoch: string | undefined, signal: AbortSignal, parent: Trace = {}, operationId: string = crypto.randomUUID(), origin = "cli") {
+  async execute(id: string, args: ToolArguments, epoch: string | undefined, signal: AbortSignal, parent: Trace = {}, operationId: string = crypto.randomUUID(), origin = "cli") {
     const trace = operationTrace({ ...parent, ...(epoch ? { epoch } : {}) }, operationId);
-    const controller = this.capabilities.controllers.find(c => c.id === id);
+    const controller = this.capabilities.controllers.find(c => c.tool.name === id);
     const previousExecution = this.lastExecution;
-    const operation = { controllerId: id, argv, epoch, requiresControl: controller?.requiresControl, origin };
+    const operation = { controllerId: id, arguments: args, epoch, requiresControl: controller?.requiresControl, origin };
     this.record("command", operation, trace);
     let observing = Boolean(controller?.mediaTypes?.length);
     if (observing) this.record("observation_start", operation, trace);
@@ -184,7 +180,7 @@ export class BasewareCore {
         combined = AbortSignal.any([signal, this.control!.signal]);
       }
       combined.throwIfAborted();
-      const result = await controller.execute(argv, { epoch, signal: combined,
+      const result = await controller.execute(this.validators.get(id)!(args), { epoch, signal: combined,
         controlSignal: controller.requiresControl ? this.control!.signal : undefined,
         record: (type, data) => {
           const outcome = data.status === "interrupted" ? "cancelled" : data.status === "failed" ? "error" : "success";
@@ -198,13 +194,13 @@ export class BasewareCore {
       if (controller.requiresControl && !result.actionId && !result.readOnly && epoch === this.epoch) this.lastExecution = { result, trace };
       const outcome = combined.aborted || result.status === "interrupted" ? "cancelled"
         : result.status === "completed" && result.exitCode === 0 ? "success" : "error";
-      this.record("execution", { ...result, controllerId: id, requiresControl: controller.requiresControl, outcome }, trace);
+      this.record("execution", { ...result, result: archivedToolResult(result.result, result.observations), controllerId: id, requiresControl: controller.requiresControl, outcome }, trace);
       if (result.observations?.length && !observing) {
         observing = true;
         this.record("observation_start", operation, trace);
       }
       if (observing) {
-        this.recordObservations(result.observations ?? [], argv, trace, origin,
+        this.recordObservations(result.observations ?? [], args, trace, origin,
           controller.requiresControl ? { result, trace } : previousExecution);
         this.record("observation_end", { controllerId: id, observations: result.observations?.map(o => o.id) ?? [], outcome }, trace);
       }
@@ -222,8 +218,6 @@ export class BasewareCore {
   async handle(request: Request, client: ClientContext, signal = new AbortController().signal): Promise<unknown> {
     let deviceOperation = false;
     try {
-      const argv = request.argv ?? [];
-      if (!Array.isArray(argv) || argv.some(arg => typeof arg !== "string")) throw new Error("argv must be strings");
       switch (request.kind) {
         case "status": return this.status();
         case "list": return this.list();
@@ -235,7 +229,7 @@ export class BasewareCore {
         case "controller":
           if (!request.id) throw new Error("Missing controller ID");
           deviceOperation = true;
-          return await this.execute(request.id, argv, request.epoch, signal, request.trace, request.operationId, request.origin);
+          return await this.execute(request.id, request.arguments === undefined ? {} : request.arguments, request.epoch, signal, request.trace, request.operationId, request.origin);
         default: throw new Error(`Unknown request kind: ${request.kind}`);
       }
     } catch (error) {

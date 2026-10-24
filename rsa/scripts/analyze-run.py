@@ -367,7 +367,7 @@ def analyze(run, epoch=None):
                 **{key: event.get("trace", {}).get(key) for key in
                    ("epoch", "modelCallId", "requestId", "toolCallId", "operationId")},
                 "commandSeq": command_event["seq"] if command_event else None,
-                "controller": data.get("controllerId", command.get("controllerId", command.get("id"))), "argv": command.get("argv"),
+                "controller": data.get("controllerId", command.get("controllerId", command.get("id"))), "arguments": command.get("arguments"), "argv": command.get("argv"),
                 "error": data.get("error"), "aborted": data.get("aborted", False)})
             continue
         timing = data["timing"]
@@ -376,7 +376,7 @@ def analyze(run, epoch=None):
             "readOnly": data.get("readOnly", False),
             "controller": data.get("controllerId", command.get("controllerId", command.get("id"))),
             "requiresControl": data.get("requiresControl", command.get("requiresControl", True)),
-            "argv": command.get("argv"), "status": data["status"],
+            "arguments": command.get("arguments"), "argv": command.get("argv"), "status": data["status"],
             "durationMs": timing["receivedAtMs"] - timing["requestedAtMs"]})
     observation_starts = {trace_key(event, "operationId"): event for event in events
                           if event["type"] == "observation_start"
@@ -393,7 +393,7 @@ def analyze(run, epoch=None):
         capture_ms = timing["receivedAtMs"] - timing["requestedAtMs"]
         capture_by_origin[data.get("origin") or "unknown"].append(capture_ms)
         observations.append({"seq": event["seq"], "id": data["id"], "controllerId": data.get("controllerId", data.get("sensorId")),
-            "origin": data.get("origin"), "path": data["path"], "argv": request.get("argv"),
+            "origin": data.get("origin"), "path": data["path"], "arguments": request.get("arguments"), "argv": request.get("argv"),
             "captureMs": capture_ms,
             "sourceSequence": data.get("sourceSequence"), "sourceSequenceDelta": data.get("sourceSequenceDelta"),
             "afterExecutionId": after.get("id"), "captureRequestedAfterMs": after.get("captureRequestedAfterMs"),

@@ -1,7 +1,6 @@
-import { parseArgs } from "node:util";
-import type { Clock, ControllerContext, ExecutionResult } from "../contracts.ts";
+import type { Clock, ControllerContext, ExecutionResult, ToolArguments, ToolExecutionResult } from "../contracts.ts";
 import type { Bridge } from "./bridge.ts";
-import { readPlayInputs } from "./timeline.ts";
+import { structuredResult, toolExecution } from "../tool-contract.ts";
 
 type ActionStatus = "running" | ExecutionResult["status"];
 interface Action {
@@ -46,21 +45,14 @@ export function createPadPlayer(options: {
       if (active) throw new Error("BUSY: previous pad action has not finished releasing");
       actions.clear();
     },
-    async execute(argv: readonly string[], context: ControllerContext): Promise<ExecutionResult> {
+    async execute(command: string, args: ToolArguments, context: ControllerContext): Promise<ToolExecutionResult> {
       const { signal, controlSignal, epoch } = context;
       signal.throwIfAborted();
       if (!epoch) throw new Error("STALE_EPOCH");
-      const { values, positionals } = parseArgs({ args: [...argv], allowPositionals: true,
-        options: { inputs: { type: "string" }, file: { type: "string" }, wait: { type: "string" }, action: { type: "string" } } });
-      if (positionals.length !== 1) throw new Error("Expected one pad command; see --help");
-      const command = positionals[0];
       const requestedAtMs = clock.now();
       let action: Action;
       if (command === "play") {
-        if (values.action !== undefined || values.wait !== undefined && !["true", "false"].includes(values.wait)) {
-          throw new Error("play accepts --inputs or --file, and optional --wait true|false");
-        }
-        const sequence = options.encode(await readPlayInputs(values));
+        const sequence = options.encode(args.inputs);
         signal.throwIfAborted();
         controlSignal?.throwIfAborted();
         if (active) throw new Error("BUSY: a pad action is already running");
@@ -95,24 +87,23 @@ export function createPadPlayer(options: {
               timing: { clock: clock.id, requestedAtMs: submitted.requestedAtMs, receivedAtMs: submitted.receivedAtMs } });
           }
         })();
-        if (values.wait === "true") await wait(action, signal);
+        if (args.wait === true) await wait(action, signal);
       } else if (command === "wait" || command === "status" || command === "cancel") {
-        if (!values.action || values.inputs !== undefined || values.file !== undefined || values.wait !== undefined) {
-          throw new Error(`${command} requires only --action <actionId>`);
-        }
-        const found = actions.get(values.action);
+        const found = actions.get(args.actionId as string);
         if (!found || found.epoch !== epoch) throw new Error("Unknown action in this control epoch (only the latest 64 results are retained)");
         action = found;
         if (command === "cancel" && action.status === "running") await bridge.request("STOP", [epoch, action.id]);
         if (command !== "status") await wait(action, signal);
       } else throw new Error("Unknown pad command; see --help");
 
-      const terminal = command === "wait" || command === "cancel" || command === "play" && values.wait === "true";
+      const terminal = command === "wait" || command === "cancel" || command === "play" && args.wait === true;
       const status = terminal && action.status !== "running" ? action.status : "completed";
-      return { id: crypto.randomUUID(), actionId: action.id, status,
+      const result = structuredResult(payload(action));
+      if (status !== "completed") result.isError = true;
+      return toolExecution(clock, requestedAtMs, result, { actionId: action.id, status,
+        readOnly: command === "status" || command === "wait",
         exitCode: status === "completed" ? 0 : status === "interrupted" ? 130 : 1,
-        stdout: JSON.stringify(payload(action)), stderr: terminal ? action.error ?? "" : "",
-        timing: { clock: clock.id, requestedAtMs, receivedAtMs: clock.now() } };
+        stdout: JSON.stringify(payload(action)), stderr: terminal ? action.error ?? "" : "" });
     },
   };
 }

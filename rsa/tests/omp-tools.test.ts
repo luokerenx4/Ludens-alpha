@@ -60,10 +60,10 @@ test("OMP's SDK adapter delivers the abort signal correctly and returns real ima
   const png = "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg==";
   await Bun.write(file, Buffer.from(png, "base64"));
   const runtime = createTestRuntime({ controllers: [{
-    id: "camera-q", requiresControl: false, mediaTypes: ["image/png"], help: () => "sample",
-    async execute(argv, { signal }) {
+    tool: { name: "camera-q", description: "sample", inputSchema: { type: "object" } }, requiresControl: false, mediaTypes: ["image/png"],
+    async execute(args, { signal }) {
       signal.throwIfAborted();
-      if (argv.join() !== "sample") throw new Error("bad sensor command");
+      if (Object.keys(args).length) throw new Error("bad sensor command");
       return { ...captureResult([{ id: "sample", controllerId: "camera-q", mediaType: "image/png", path: file,
         timing: { clock: "test", requestedAtMs: 0, receivedAtMs: 1 } },
         { id: "tree", controllerId: "camera-q", mediaType: "application/json", path: tree,
@@ -109,7 +109,7 @@ test("text-only perception reaches automatic context and explicit reads are not 
   await mkdir(join(workspace, "skills"), { recursive: true });
   let calls = 0;
   const runtime = createTestRuntime({ controllers: [{
-    id: "desktop", requiresControl: false, help: () => "windows",
+    tool: { name: "desktop", description: "windows", inputSchema: { type: "object" } }, requiresControl: false,
     async execute() {
       return { ...captureResult([]), id: `windows-${++calls}`, stdout: JSON.stringify({ title: `Window ${calls}` }) };
     },

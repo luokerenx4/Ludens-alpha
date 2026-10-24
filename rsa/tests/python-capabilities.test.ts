@@ -184,7 +184,7 @@ from baseware import Client
 def inspect(button: str):
     """Read service metadata and execute one controller command."""
     client = Client()
-    return [client.status(), client.list(), client.help("pad"), client.controller("camera", ["capture"]), client.controller(button, ["press", "A"]), client.release(), client.revoke()]
+    return [client.status(), client.list(), client.help("pad"), client.controller("camera", {}), client.controller(button, {"key": "A"}), client.release(), client.revoke()]
 `);
     const registry = new PythonCapabilities(directory);
     const {capabilities: [capability]} = await registry.discover();
@@ -194,7 +194,7 @@ def inspect(button: str):
     expect(requests.map(request => request.kind)).toEqual(["status", "list", "help", "controller", "controller", "release", "revoke"]);
     expect(connections).toBe(7);
     for (const request of requests) expect(request).toMatchObject({epoch: "current-epoch", trace: {toolCallId: "call-1"}});
-    expect(requests[4]).toMatchObject({id: "pad", argv: ["press", "A"]});
+    expect(requests[4]).toMatchObject({id: "pad", arguments: {key: "A"}});
     const disconnected = await registry.invoke(capability!.id, {button: "disconnect"}, {env});
     expect(disconnected).toMatchObject({isError: true, details: {error: {type: "ConnectionError"}}});
     expect(requests.filter(request => request.id === "disconnect")).toHaveLength(1);
@@ -272,21 +272,21 @@ test("Python calls the real Baseware service using the persistent owner's lease 
   const directory = await workspace();
   const socketPath = `/tmp/rsa-py-${crypto.randomUUID()}.sock`;
   const events: {type: string; data: any; trace: any}[] = [];
-  const actions: string[][] = [];
+  const actions: Record<string, unknown>[] = [];
   let acquired = 0;
   const observation = {id: "sample-声", controllerId: "camera", mediaType: "application/json", path: join(directory, "sample.json"),
     timing: {clock: "test-device", requestedAtMs: 20, receivedAtMs: 21}, sourceSequence: 3};
   const core = new BasewareCore({drivers: [{id: "offline", version: "1"}],
     record: (type, data, trace) => events.push({type, data, trace}), capabilities: {
-      controllers: [{id: "motor", requiresControl: true, help: () => "step", async acquire() { acquired++; }, async release() {},
-        async execute(argv, {epoch, signal}) {
+      controllers: [{tool: { name: "motor", description: "step", inputSchema: { type: "object" } }, requiresControl: true,  async acquire() { acquired++; }, async release() {},
+        async execute(args, {epoch, signal}) {
           signal.throwIfAborted();
           expect(epoch).toBe("owner-epoch");
-          actions.push([...argv]);
-          return {id: "execution-1", status: "completed", exitCode: 0, stdout: "完了", stderr: "",
+          actions.push({...args});
+          return {id: "execution-1", status: "completed", exitCode: 0, stdout: "完了", stderr: "", result: { content: [{ type: "text", text: "完了" }] },
             timing: {clock: "test-device", requestedAtMs: 10, receivedAtMs: 11}};
-        }}, {id: "camera", requiresControl: false, mediaTypes: ["application/json"], help: () => "capture",
-        async execute(argv) { expect(argv).toEqual(["capture"]); return captureResult([observation]); }}],
+        }}, {tool: { name: "camera", description: "capture", inputSchema: { type: "object" } }, requiresControl: false, mediaTypes: ["application/json"],
+        async execute(args) { expect(args).toEqual({}); return captureResult([observation]); }}],
     }});
   const close = await listen(socketPath, core);
   const owner = await BasewareClient.connect(socketPath);
@@ -299,8 +299,8 @@ import json, os
 def step(label: str):
     """Execute an action and read the resulting JSON observation."""
     client = Client()
-    execution = client.controller("motor", [label])
-    observations = client.controller("camera", ["capture"])["observations"]
+    execution = client.controller("motor", {"label": label})
+    observations = client.controller("camera", {})["observations"]
     with open(observations[0]["path"], encoding="utf-8") as source:
         data = json.load(source)
     return {"execution": execution, "observations": observations, "data": data,
@@ -316,7 +316,7 @@ def step(label: str):
       execution: {status: "completed", stdout: "完了"}, observations: [observation],
       data: {position: {x: 3, y: 4}, visible: true, label: "地图"}, rsa_context: ["/tmp/current-rsa.sock", null, null],
     }}});
-    expect(actions).toEqual([["前进"]]);
+    expect(actions).toEqual([{label: "前进"}]);
     expect(acquired).toBe(1);
     expect(core.status()).toMatchObject({mode: "auto", epoch: "owner-epoch"});
     expect(events.filter(event => event.type === "execution" || event.type === "observation").map(event => event.trace))

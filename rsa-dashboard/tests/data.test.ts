@@ -622,7 +622,7 @@ test("overlapping observations retain raw requests by operation ID rather than c
     seq: ++seq, type, at: new Date(seq).toISOString(), atMs: seq,
     trace: { epoch, operationId }, data,
   });
-  const first = { controllerId: "screen", argv: ["capture", "--delay-ms", "1500"] };
+  const first = { controllerId: "screen.capture", arguments: { delayMs: 1500 } };
   const second = { controllerId: "audio", argv: ["sample", "2000"] };
   const result = aggregate([
     event("observation_start", "first", first),

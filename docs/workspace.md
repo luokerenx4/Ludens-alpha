@@ -34,9 +34,9 @@ rsa controller controller/<设备能力ID> --help
 rsa controller python/scripts/action.py:perform --help
 ```
 
-`controller/<id>` 来自 Baseware，参数是 driver 定义的 argv；`python/<相对路径.py>:<函数>` 来自工作区装饰器，CLI 用 `--args '<JSON object>'` 传参。以实际目录和 help 为准。
+`controller/<id>` 来自 Baseware，参数是能力 inputSchema 定义的 JSON 对象；`python/<相对路径.py>:<函数>` 来自工作区装饰器；两类能力的 CLI 都用 `--args '<JSON object>'` 或 `--file <参数文件>` 传参。以实际目录和 help 为准。
 
-Host 启动 OMP 前刷新 `baseware.json`，也可用 `baseware export` 刷新。它包含能力、控制要求与结果 schema，`bindings` 描述命名参数到 argv 的转换，可选 `stdoutSchema` 描述输出 JSON；不包含 epoch 或 socket。导出只读目录，不采样。契约见 [catalog.ts](../baseware/src/catalog.ts)。
+Host 启动 OMP 前刷新 `baseware.json`，也可用 `baseware export` 刷新。它包含原生工具名称、inputSchema、可选 outputSchema、注解、控制要求及执行结果信封；不包含 epoch 或 socket。导出只读目录，不采样。契约见 [catalog.ts](../baseware/src/catalog.ts)。
 
 Python 使用统一入口：
 
@@ -44,9 +44,9 @@ Python 使用统一入口：
 from rsa_tools import Client, capability
 
 @capability
-def sample(controller_id: str, argv: list[str]) -> dict:
+def sample(controller_id: str, arguments: dict) -> dict:
     """Read the selected device capability with its documented arguments."""
-    return Client().call(f"controller/{controller_id}", argv)
+    return Client().call(f"controller/{controller_id}", arguments)
 ```
 
 `Client().list()` / `.help(id)` 查询目录，`.call(id, arguments)` 调用设备或本地能力。CLI 与 Python 的区别：
@@ -56,9 +56,9 @@ def sample(controller_id: str, argv: list[str]) -> dict:
 | 普通 import 后调用 | 当前 Python 进程，可直接传模型、数组等对象。 |
 | `Client.call("python/…", {...})` | 当前进程导入并调用，复用模块缓存；嵌套调用不经 Host 重开进程。 |
 | `rsa controller python/… --args …` | Host 启动一次 Python 入口，校验参数与源码版本，跨进程结果为 JSON。独立 CLI 调用不共享内存。 |
-| `Client.call("controller/…", [...])` | 连接 RSA，由 Baseware 执行设备能力；输出和媒体进入运行日志。 |
+| `Client.call("controller/…", {...})` | 连接 RSA，由 Baseware 执行设备能力；输出和媒体进入运行日志。 |
 
-JSON 参数校验发生在 CLI 边界；本地 import 和 `Client.call("python/…")` 保留普通 Python 对象。已加载模块按 Python 规则缓存，编辑代码后需重跑相应程序。
+设备参数由 Baseware 按原生 schema 校验，Python 能力的跨进程 JSON 参数在调用入口校验；本地 import 和 `Client.call("python/…")` 保留普通 Python 对象。已加载模块按 Python 规则缓存，编辑代码后需重跑相应程序。
 
 `@capability` 使顶层同步函数可发现并记录调用；辅助函数无需装饰。发现只读 AST，新增和删除在下次查询可见，跳过日志、Git、依赖与虚拟环境。函数需 docstring 和参数类型，支持标量、列表、字符串键字典与可空类型；不支持的签名返回诊断。详见 [Python 发现与加载](../rsa/python/rsa_tools/_capabilities.py)。
 

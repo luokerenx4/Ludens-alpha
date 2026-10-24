@@ -20,7 +20,7 @@ test("OMP bootstraps empty perception and repairs it through the real reload CLI
   await Bun.write(image, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg==", "base64"));
   const events: { type: string; data: any }[] = [];
   let captures = 0;
-  const runtime = createTestRuntime({ controllers: [{ id: "camera", requiresControl: false, mediaTypes: ["image/png"], help: () => "capture",
+  const runtime = createTestRuntime({ controllers: [{ tool: { name: "camera", description: "capture", inputSchema: { type: "object" } }, requiresControl: false, mediaTypes: ["image/png"],
     async execute() {
       const index = ++captures;
       return { ...captureResult([{ id: `raw-${index}`, controllerId: "camera", mediaType: "image/png", path: image,

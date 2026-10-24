@@ -46,7 +46,7 @@ manifest 记录 Git commit/dirty、continue/consolidate 提示和可选 workspac
 | `python_capabilities_start/python_capabilities` | 静态发现的独立子 span |
 | `python_capability/result` | CLI runner 的函数位置、源码 hash、参数和结果；属于能力 span 的细节 |
 | `python_call_start/end` | 工作区进程内 `@capability` 或本地 `Client.call`；独立 span、PID、实际注册源码 hash、终态和耗时，不序列化原生参数/返回对象 |
-| `command/execution/execution_error` | Baseware Controller 请求生命周期、controllerId、requiresControl；提交或查询完成不代表动作结束 |
+| `command/execution/execution_error` | Baseware Controller 请求生命周期、controllerId、arguments、requiresControl；提交或查询完成不代表动作结束 |
 | `action_start/end` | 已提交手柄动作的独立生命周期、actionId 和终态；沿用原 play 请求的 trace/epoch，异步结束不归到后续 wait/status 请求 |
 | `observation_start/end/error`、`observation` | 同一个设备 span 的采样详情、区间、帧号和媒体；不另算设备操作 |
 
@@ -113,3 +113,5 @@ python3 rsa/scripts/analyze-run.py /path/to/workspace/logs/run-id \
 - Shiori usage 与 model usage、工具耗时与内部设备/能力耗时、能力 span 与 Python 详情是包含关系，不能相加。
 
 帧号变化、exit 0、技能读写均不证明任务推进。Benchmark 故障注入的预期错误不是真实任务故障率；执行、报告、复用证据及其限制统一见 [Benchmark](benchmark.md)。
+
+设备执行返回的 `result` 保留原生工具结果。日志中的同名字段采用归档表示：image/audio 的 `data` 或 embedded resource 的 `blob` 替换为媒体文件 `dataPath/blobPath`，通过 observation 的 `contentIndex` 对应内容位置，避免重复写入 base64。API/MCP 的实际返回仍保留原生内容；日志归档表示不能直接冒充 MCP 返回值。

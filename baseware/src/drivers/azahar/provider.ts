@@ -1,11 +1,12 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { Capabilities, Clock, Controller, ExecutionResult } from "../../contracts.ts";
+import type { Capabilities, Clock, Controller } from "../../contracts.ts";
 import { Bridge } from "../bridge.ts";
+import { structuredResult, toolExecution } from "../../tool-contract.ts";
 import { createPadPlayer } from "../pad.ts";
 import { compileTimeline } from "../timeline.ts";
-import { createTouchController } from "../touch.ts";
-import { MIN_POLL_DURATION_MS, PLAY_HELP, noArguments, padCommands, polledDuration } from "../schema.ts";
+import { createTouchControllers } from "../touch.ts";
+import { MIN_POLL_DURATION_MS, NO_ARGUMENTS, padTools, POLLED_TIMING } from "../schema.ts";
 
 // Order matches the Azahar bridge's device channels, not game actions.
 export const BUTTONS = ["A", "B", "X", "Y", "L", "R", "START", "SELECT", "LEFT", "UP", "RIGHT", "DOWN", "ZL", "ZR"];
@@ -33,11 +34,7 @@ export function encodeSpans(spans: Span[]): string {
   }).join(",");
 }
 
-const PAD_HELP = `Native 3DS controller. LX/LY are the Circle Pad; RX/RY are the C Stick.
-Buttons: ${BUTTONS.join(", ")}. Values: 0=released, 1=pressed.
-Axes: LX, LY, RX, RY in [-1,1]; X positive=right, Y positive=up, 0=center.
-${PLAY_HELP}
-Durations use wall time sampled at input polls, not emulation frames. Every state transition must be at least 16 ms apart.`;
+const PAD_DESCRIPTION = "Native 3DS controller; LX/LY are the Circle Pad and RX/RY the C Stick. Axes are in [-1,1]; X positive=right, Y positive=up, 0=center.";
 
 /** Native pad, single-contact touch and independent hardware screen sources. */
 export async function createAzaharProvider(options: { port: number; artifactsDir: string; clock: Clock }) {
@@ -62,17 +59,16 @@ export async function createAzaharProvider(options: { port: number; artifactsDir
       await bridge.request("DISOWN", [epoch]);
       await player.settle();
     };
-    const touch = await createTouchController({ bridge, clock, acquire, release, owns: epoch => owner === epoch });
+    const touch = await createTouchControllers({ bridge, clock, acquire, release, owns: epoch => owner === epoch });
     let captureTail = Promise.resolve();
     const screens = (["top", "bottom"] as const).map((source): Controller => {
       const controllerId = `screen.${source}`;
       const dimensions = source === "top" ? "400×240" : "320×240";
       return {
-        id: controllerId, requiresControl: false, mediaTypes: ["image/png"],
-        commands: [noArguments("capture", `Capture the independent native ${source} screen (${dimensions}) as PNG.`)],
-        help: () => `capture\nCapture the native ${source} screen (${dimensions}) as one PNG. This is an independent hardware source; no combined layout, cropping, scaling or coordinate conversion. Returns an immutable path, sample interval and captureSequence; this sequence counts captures, not presented frames.`,
-        async execute(argv, { signal }) {
-          if (argv.length !== 1 || argv[0] !== "capture") throw new Error(`Usage: controller ${controllerId} capture`);
+        tool: { name: `${controllerId}.capture`, description: `Capture the independent native ${source} screen (${dimensions}) as PNG. No combined layout, cropping, scaling or coordinate conversion. Both screens share a capture slot and are sampled serially, not simultaneously. captureSequence counts captures, not presented frames.`,
+          inputSchema: NO_ARGUMENTS, annotations: { readOnlyHint: true } },
+        requiresControl: false, mediaTypes: ["image/png"],
+        async execute(_args, { signal }) {
           signal.throwIfAborted();
           const id = crypto.randomUUID();
           const path = join(options.artifactsDir, `${id}.png`);
@@ -87,26 +83,27 @@ export async function createAzaharProvider(options: { port: number; artifactsDir
             const [sequence] = await bridge.request("CAPTURE", [source, path], id);
             signal.throwIfAborted();
             const timing = { clock: clock.id, requestedAtMs, receivedAtMs: clock.now() };
-            return { id, status: "completed", exitCode: 0, stdout: JSON.stringify({ captureSequence: Number(sequence) }), stderr: "", timing,
-              observations: [{ id, controllerId, mediaType: "image/png", path, timing }] };
+            const output = { source: controllerId, width: source === "top" ? 400 : 320, height: 240, captureSequence: Number(sequence), timing };
+            const result = structuredResult(output);
+            result.content.unshift({ type: "image", mimeType: "image/png", data: (await readFile(path)).toString("base64") });
+            return { ...toolExecution(clock, requestedAtMs, result, { id }), timing,
+              observations: [{ id, controllerId: `${controllerId}.capture`, mediaType: "image/png", path, timing, contentIndex: 0 }] };
           } finally { release(); }
         },
       };
     });
-    const pad: Controller = {
-      id: "pad", requiresControl: true, help: () => PAD_HELP,
-      commands: padCommands(BUTTONS, AXES, polledDuration),
-      acquire, release,
-      async execute(argv, context): Promise<ExecutionResult> {
+    const pads: Controller[] = padTools(BUTTONS, AXES, POLLED_TIMING).map(tool => ({
+      tool: { ...tool, description: `${PAD_DESCRIPTION} ${tool.description}` }, requiresControl: true, acquire, release,
+      async execute(args, context) {
         const { epoch, signal } = context;
         signal.throwIfAborted();
         if (!epoch || owner !== epoch) throw new Error("STALE_EPOCH");
-        if (argv[0] !== "state" && argv[0] !== "release") return player.execute(argv, context);
-        if (argv.length !== 1) throw new Error(`${argv[0]} accepts no arguments`);
+        const command = tool.name.slice("pad.".length);
+        if (command !== "state" && command !== "release") return player.execute(command, args, context);
         const id = crypto.randomUUID();
         const requestedAtMs = clock.now();
-        let output: unknown;
-        if (argv[0] === "state") {
+        let output: Record<string, unknown>;
+        if (command === "state") {
           const [mask, lx, ly, rx, ry, actionId] = await bridge.request("STATE", [epoch], id);
           output = { state: { ...Object.fromEntries(BUTTONS.map((key, i) => [key, (Number(mask) >> i) & 1])),
             ...Object.fromEntries(AXES.map((key, i) => [key, Number([lx, ly, rx, ry][i]) / 32767])) }, actionId: actionId === "-" ? null : actionId };
@@ -115,12 +112,11 @@ export async function createAzaharProvider(options: { port: number; artifactsDir
           await player.settle();
           output = { released: true };
         }
-        return { id, readOnly: argv[0] === "state", status: "completed", exitCode: 0, stdout: JSON.stringify(output), stderr: "",
-          timing: { clock: clock.id, requestedAtMs, receivedAtMs: clock.now() } };
+        return toolExecution(clock, requestedAtMs, structuredResult(output), { id, readOnly: command === "state" });
       },
-    };
+    }));
     return {
-      capabilities: { controllers: [pad, touch, ...screens] } satisfies Capabilities,
+      capabilities: { controllers: [...pads, ...touch, ...screens] } satisfies Capabilities,
       version: "2126.2-rsa.3",
       onDisconnect(handler: (error: Error) => void) { bridge.onDisconnect = handler; },
       close() { bridge.close(); },

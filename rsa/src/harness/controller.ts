@@ -1,6 +1,7 @@
 import type { EventTrace, RecordEvent } from "./events.ts";
 import { PythonCapabilities, type PythonCapability } from "./python-capabilities.ts";
 import type { DeviceSession } from "./runtime.ts";
+import { objectArguments } from "@playness/baseware/tool-contract";
 
 interface ControllerOptions {
   workspace: string;
@@ -31,8 +32,7 @@ export class WorkspaceController {
     const { controllers } = this.options.devices.catalog;
     return {
       capabilities: [
-        ...controllers.map(item => ({ id: `controller/${item.id}`, description: summary(item.help),
-          requiresControl: item.requiresControl, ...(item.mediaTypes?.length ? { mediaTypes: item.mediaTypes } : {}) })),
+        ...controllers.map(item => ({ ...item, id: `controller/${item.name}` })),
         ...discovered.capabilities.map(item => ({ id: pythonId(item), description: summary(item.description) })),
       ],
       diagnostics: discovered.diagnostics,
@@ -43,8 +43,7 @@ export class WorkspaceController {
     signal.throwIfAborted();
     const device = this.device(id);
     if (device) {
-      const help = device.help.replaceAll(`baseware controller ${device.id}`, `rsa controller ${id}`);
-      return `Usage: rsa controller ${id} <arguments...>\n\n${help}`;
+      return JSON.stringify({ ...device, id, usage: `rsa controller ${id} [--args '<JSON object>' | --file <arguments.json>]` }, null, 2);
     }
     const capability = await this.pythonCapability(id, signal, trace);
     return JSON.stringify({ id, usage: `rsa controller ${id} --args '<JSON object>'`,
@@ -57,11 +56,7 @@ export class WorkspaceController {
     signal.throwIfAborted();
     const device = this.device(id);
     if (device) {
-      const argv = args === undefined ? [] : args;
-      if (!Array.isArray(argv) || !argv.every(item => typeof item === "string")) {
-        throw new TypeError("Driver capability arguments must be an array of strings");
-      }
-      return this.options.devices.execute(device.id, argv, epoch, signal, trace, "cli");
+      return this.options.devices.execute(device.name, objectArguments(args === undefined ? {} : args), epoch, signal, trace, "cli");
     }
     const capability = await this.pythonCapability(id, signal, trace);
     const result = await this.python.invoke(capability.id, args === undefined ? {} : args, {
@@ -72,7 +67,7 @@ export class WorkspaceController {
   }
 
   private device(id: string) {
-    return this.options.devices.catalog.controllers.find(item => id === `controller/${item.id}`);
+    return this.options.devices.catalog.controllers.find(item => id === `controller/${item.name}`);
   }
 
   requiresControl(id: string) { return this.device(id)?.requiresControl ?? true; }

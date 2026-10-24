@@ -56,19 +56,19 @@ async function fixture() {
   const prefix = `/tmp/rsa-bash-${crypto.randomUUID()}`;
   const basewareSocket = `${prefix}-b.sock`, rsaSocket = `${prefix}-r.sock`;
   const log = new EventLog(runDir, { id: "native-bash-run", now: () => performance.now() });
-  const actions: { argv: string[]; epoch?: string }[] = [];
+  const actions: { args: Record<string, unknown>; epoch?: string }[] = [];
   let held = false, cancelled = 0, released = 0;
   const core = new BasewareCore({ drivers: [{ id: "offline", version: "1" }], capabilities: {
-    controllers: [{ id: "pad", requiresControl: true, help: () => "echo <label> | hold",
+    controllers: [{ tool: { name: "pad.echo", description: "Echo a label or hold for cancellation", inputSchema: { type: "object" } }, requiresControl: true,
       async release() { held = false; released++; },
-      async execute(argv, { epoch, signal }) {
-        actions.push({ argv: [...argv], epoch });
-        if (argv[0] === "hold") {
+      async execute(args, { epoch, signal }) {
+        actions.push({ args: {...args}, epoch });
+        if (args.label === "hold") {
           held = true;
           await new Promise<void>(done => signal.addEventListener("abort", () => { cancelled++; done(); }, { once: true }));
         }
         return { id: crypto.randomUUID(), status: signal.aborted ? "interrupted" as const : "completed" as const,
-          exitCode: signal.aborted ? 130 : 0, stdout: JSON.stringify(argv), stderr: "",
+          exitCode: signal.aborted ? 130 : 0, stdout: JSON.stringify(args), stderr: "", result: { content: [] },
           timing: { clock: "offline", requestedAtMs: 1, receivedAtMs: 2 } };
       },
     }],
@@ -177,7 +177,7 @@ from baseware import Client as Device
 
 @capability
 def act(label: str):
-    return Client().call("controller/pad", ["hold" if label == "hold" else "echo", label])
+    return Client().call("controller/pad.echo", {"label": label})
 
 def attempt(call):
     try: return {"value": call()}
@@ -196,8 +196,8 @@ while True:
     phase = Path("phase").read_text().strip()
     if phase != previous:
         result = {"phase": phase, "pid": os.getpid(), "rsa": attempt(lambda: act(phase))}
-        result["baseware"] = attempt(lambda: Device().controller("pad", ["echo", phase]))
-        cli = subprocess.run(["rsa", "controller", "controller/pad", "echo", phase], text=True, capture_output=True)
+        result["baseware"] = attempt(lambda: Device().controller("pad.echo", {"label": phase}))
+        cli = subprocess.run(["rsa", "controller", "controller/pad.echo", "--args", json.dumps({"label": phase})], text=True, capture_output=True)
         result["cli"] = {"exitCode": cli.returncode, "stdout": cli.stdout, "stderr": cli.stderr}
         Path("result-" + phase + ".json").write_text(json.dumps(result))
         print("PHASE " + phase, flush=True)
@@ -253,7 +253,7 @@ test("native service survives OMP turns while human handback revokes its origina
     // Fresh foreground work gets the new lease; the resident process cannot inherit it.
     await f.nextEpoch();
     await f.prompt(tool("old-service-next-epoch", "write", { path: "phase", content: "next" }),
-      tool("new-foreground", "bash", { command: 'python3 -c \'from rsa_tools import Client; print(Client().call("controller/pad", ["echo", "fresh"])["exitCode"])\'' }));
+      tool("new-foreground", "bash", { command: 'python3 -c \'from rsa_tools import Client; print(Client().call("controller/pad.echo", {"label": "fresh"})["exitCode"])\'' }));
     expect({ path: process.env.PATH, python: process.env.PYTHONPATH }).toEqual(injectedPaths);
     await until(() => Bun.file(join(f.workspace, "result-next.json")).exists());
     expect(await Bun.file(join(f.workspace, "result-next.json")).json()).toMatchObject({
@@ -261,9 +261,9 @@ test("native service survives OMP turns while human handback revokes its origina
       cli: { exitCode: 1, stderr: expect.stringContaining("STALE_EPOCH") },
     });
     expect(f.actions).toEqual([
-      { argv: ["echo", "first"], epoch: firstEpoch }, { argv: ["echo", "first"], epoch: firstEpoch },
-      { argv: ["echo", "first"], epoch: firstEpoch }, { argv: ["hold", "hold"], epoch: firstEpoch },
-      { argv: ["echo", "fresh"], epoch: f.epoch() },
+      { args: {label: "first"}, epoch: firstEpoch }, { args: {label: "first"}, epoch: firstEpoch },
+      { args: {label: "first"}, epoch: firstEpoch }, { args: {label: "hold"}, epoch: firstEpoch },
+      { args: {label: "fresh"}, epoch: f.epoch() },
     ]);
     await f.prompt(tool("stop-service", "write", { path: "proc://offline-controller/kill" }));
     await until(() => !alive(pid!));
@@ -288,7 +288,7 @@ test("native service survives OMP turns while human handback revokes its origina
     const late = events.find(event => event.type === "python_call_end" && event.data.outcome === "error");
     expect(late.trace.epoch).toBe(firstEpoch);
     const driverCall = events.find(event => event.type === "capability_start"
-      && event.data.id === "controller/pad" && event.trace.parentSpanId === calls[0]!.trace.spanId);
+      && event.data.id === "controller/pad.echo" && event.trace.parentSpanId === calls[0]!.trace.spanId);
     expect(driverCall).toBeDefined();
     const device = events.find(event => event.type === "execution" && event.trace.parentSpanId === driverCall.trace.spanId);
     expect(device.trace).toMatchObject({ traceId: calls[0]!.trace.traceId, epoch: firstEpoch });

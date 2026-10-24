@@ -327,10 +327,10 @@ test("real OMP preserves image prefixes and native tool traces while shell IPC r
   await Bun.write(image, Buffer.from(png, "base64"));
   const log = new EventLog(directory, {id: "wire-test", now: () => performance.now()});
   let samples = 0;
-  const core = new BasewareCore({ drivers: [{id: "trace-fixture", version: "1"}], capabilities: {controllers: [{id: "joint-7", requiresControl: true, help: () => "move <n>", acquire: async () => {}, release: async () => {},
-    async execute(argv) { return {id: crypto.randomUUID(), status: "completed", exitCode: 0, stdout: argv.join(" "), stderr: "",
+  const core = new BasewareCore({ drivers: [{id: "trace-fixture", version: "1"}], capabilities: {controllers: [{tool: { name: "joint-7", description: "move <n>", inputSchema: { type: "object" } }, requiresControl: true,  acquire: async () => {}, release: async () => {},
+    async execute(args) { return {id: crypto.randomUUID(), status: "completed", exitCode: 0, stdout: JSON.stringify(args), stderr: "", result: { content: [] },
       timing: {clock: "wire-test", requestedAtMs: performance.now(), receivedAtMs: performance.now()}}; },
-  }, {id: "camera-q", requiresControl: false, help: () => "sample", mediaTypes: ["image/png"], async execute() {
+  }, {tool: { name: "camera-q", description: "sample", inputSchema: { type: "object" } }, requiresControl: false,  mediaTypes: ["image/png"], async execute() {
     return captureResult([{id: `observation-${++samples}`, controllerId: "camera-q", mediaType: "image/png", path: image,
       sourceSequence: samples * 100,
       timing: {clock: "wire-test", requestedAtMs: performance.now(), receivedAtMs: performance.now()}}]);
@@ -341,7 +341,7 @@ test("real OMP preserves image prefixes and native tool traces while shell IPC r
   const runtime = new Runtime(devices, log.record);
   runtime.controller = new WorkspaceController({ workspace, devices, record: log.record, env: {} });
   installTestPerception(runtime, workspace, directory, (signal, trace) =>
-    readTestController(runtime, "camera-q", ["sample"], signal, trace));
+    readTestController(runtime, "camera-q", {}, signal, trace));
   devices.onHandback(reason => { void runtime.stop(reason); });
   devices.onDisconnect(error => { void runtime.disconnected(error); });
   const {epoch} = await runtime.start();
@@ -353,7 +353,7 @@ test("real OMP preserves image prefixes and native tool traces while shell IPC r
   const server = Bun.serve({hostname: "127.0.0.1", port: 0, async fetch(request) {
     received.push(await request.text());
     const delta = received.length === 1 ? {role: "assistant", content: "", reasoning_content: "probe",
-      tool_calls: [1, 2].map((n, index) => ({index, id: `tool-${n}`, type: "function", function: {name: "bash", arguments: JSON.stringify({command: `baseware controller joint-7 move ${n}`})}}))}
+      tool_calls: [1, 2].map((n, index) => ({index, id: `tool-${n}`, type: "function", function: {name: "bash", arguments: JSON.stringify({command: `baseware controller joint-7 --args '{"distance":${n}}'`})}}))}
       : received.length < 7 ? {role: "assistant", content: "", reasoning_content: "probe",
         tool_calls: [{index: 0, id: `round-${received.length}`, type: "function", function: received.length === 6
           ? {name: "read", arguments: JSON.stringify({path: "skills/notes.md:2-3"})}
@@ -493,7 +493,7 @@ test("real OMP preserves image prefixes and native tool traces while shell IPC r
     expect(commands.map(e => e.trace.operationId)).toHaveLength(2);
     expect(events.filter(e => e.type === "command" && e.data.requiresControl === false)).toHaveLength(7);
     expect(new Set(commands.map(e => e.trace.traceId)).size).toBe(2);
-    expect(commands.map(e => e.data.argv).sort()).toEqual([["move", "1"], ["move", "2"]]);
+    expect(commands.map(e => e.data.arguments).sort((a, b) => a.distance - b.distance)).toEqual([{distance: 1}, {distance: 2}]);
     for (const command of commands) {
       expect(command.trace.epoch).toBe(epoch);
       expect(command.trace.traceId).toMatch(/^[a-f0-9]{32}$/);

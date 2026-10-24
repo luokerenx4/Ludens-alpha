@@ -1,6 +1,3 @@
-import { readFile } from "node:fs/promises";
-import { isAbsolute } from "node:path";
-
 export type Span = { state: Record<string, number>; durationMs: number };
 type Interval = { start: number; end: number; value: number };
 type Boundary = { starts: [string, number][]; ends: string[] };
@@ -11,20 +8,6 @@ function object(value: unknown, name: string): Record<string, unknown> {
     throw new Error(`${name} must be an object`);
   }
   return value as Record<string, unknown>;
-}
-
-/** Read the one supported timeline format. File loading belongs to this CLI boundary. */
-export async function readPlayInputs(values: { inputs?: string; file?: string }): Promise<unknown> {
-  if ((values.inputs !== undefined) === (values.file !== undefined)) {
-    throw new Error("play requires exactly one of --inputs or --file");
-  }
-  if (values.inputs !== undefined) return JSON.parse(values.inputs);
-  if (!isAbsolute(values.file!)) throw new Error("--file must be an absolute path");
-  const document = object(JSON.parse(await readFile(values.file!, "utf8")), "play file");
-  if (Object.keys(document).length !== 1 || !Object.hasOwn(document, "inputs")) {
-    throw new Error('play file must contain only {"inputs": [...]}');
-  }
-  return document.inputs;
 }
 
 /** Combine independently timed channels into the native bridge's complete-state spans. */

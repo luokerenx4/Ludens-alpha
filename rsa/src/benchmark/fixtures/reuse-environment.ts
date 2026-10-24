@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { Capabilities, ExecutionResult } from "@playness/baseware/contracts";
+import type { Capabilities, ToolArguments, ToolExecutionResult } from "@playness/baseware/contracts";
+import { structuredResult } from "@playness/baseware/tool-contract";
 import type { EventTrace, RecordEvent } from "../../harness/events.ts";
 import { renderBoard } from "./reuse-board.ts";
 
@@ -24,20 +25,25 @@ export class ReuseEnvironment {
       if (!this.orders.some(order => order.join() === target.join())) this.orders.push(target);
     }
     this.capabilities = {
-      controllers: [{ id: "bench", requiresControl: true, help: () => "Set a dial or submit its current settings.\nset <slot:1..3> <digit:0..9>\nsubmit",
+      controllers: [{ tool: { name: "bench.set", description: "Set one assembly dial.", inputSchema: { type: "object",
+        properties: { slot: { type: "integer", minimum: 1, maximum: 3 }, value: { type: "integer", minimum: 0, maximum: 9 } },
+        required: ["slot", "value"], additionalProperties: false } }, requiresControl: true,
         acquire: async () => {}, release: async () => {},
-        execute: (argv, context) => this.execute(argv, context),
-      }, { id: "screen", requiresControl: false, mediaTypes: ["image/png"], help: () => "capture — read the assembly bench display",
-        execute: async (argv, { signal }) => {
+        execute: (args, context) => this.execute("set", args, context),
+      }, { tool: { name: "bench.submit", description: "Submit the current assembly settings.", inputSchema: { type: "object", additionalProperties: false } },
+        requiresControl: true, execute: (args, context) => this.execute("submit", args, context),
+      }, { tool: { name: "screen.capture", description: "Read the assembly bench display", inputSchema: { type: "object", additionalProperties: false } }, requiresControl: false, mediaTypes: ["image/png"],
+        execute: async (_args, { signal }) => {
           signal.throwIfAborted();
-          if (argv.length !== 1 || argv[0] !== "capture") throw new Error("Usage: capture");
           const started = performance.now(), id = `bench-${++this.captures}`;
           const path = join(this.directory, `${id}.png`);
           await mkdir(this.directory, { recursive: true });
-          await writeFile(path, renderBoard(this.view()));
+          const pixels = renderBoard(this.view());
+          await writeFile(path, pixels);
           const timing = { clock: "benchmark-bench", requestedAtMs: started, receivedAtMs: performance.now() };
           return { id, status: "completed", exitCode: 0, stdout: "", stderr: "", timing,
-            observations: [{ id, controllerId: "screen", mediaType: "image/png", path, sourceSequence: this.captures, timing }] };
+            result: { content: [{ type: "image", mimeType: "image/png", data: pixels.toString("base64") }] },
+            observations: [{ id, controllerId: "screen.capture", mediaType: "image/png", path, contentIndex: 0, sourceSequence: this.captures, timing }] };
         },
       }],
     };
@@ -64,17 +70,17 @@ export class ReuseEnvironment {
       target: waiting || this.done ? undefined : this.orders[this.index], waiting, done: this.done, notice: this.notice };
   }
 
-  private async execute(argv: readonly string[], { epoch, signal }: { epoch?: string; signal: AbortSignal }): Promise<ExecutionResult> {
+  private async execute(action: "set" | "submit", args: ToolArguments, { epoch, signal }: { epoch?: string; signal: AbortSignal }): Promise<ToolExecutionResult> {
     signal.throwIfAborted();
     const id = crypto.randomUUID(), started = performance.now();
     let ok = true, reply: Record<string, unknown>;
     if (this.done || (this.phase === 1 && this.accepted === 3)) {
       ok = false; reply = { accepted: false, message: this.done ? "All orders complete" : "Batch complete; return to receive the next batch" };
-    } else if (argv[0] === "set" && argv.length === 3 && /^[1-3]$/.test(argv[1]!) && /^[0-9]$/.test(argv[2]!)) {
-      this.values[Number(argv[1]) - 1] = Number(argv[2]);
-      this.notice = `SET SLOT ${argv[1]} TO ${argv[2]}`;
-      reply = { slot: Number(argv[1]), value: Number(argv[2]) };
-    } else if (argv.length === 1 && argv[0] === "submit") {
+    } else if (action === "set") {
+      this.values[Number(args.slot) - 1] = Number(args.value);
+      this.notice = `SET SLOT ${args.slot} TO ${args.value}`;
+      reply = { slot: args.slot, value: args.value };
+    } else {
       const target = this.orders[this.index]!;
       if (this.values.every((value, i) => value === target[i])) {
         const orderId = `batch-${this.phase}-order-${this.index % 3 + 1}`;
@@ -85,10 +91,9 @@ export class ReuseEnvironment {
         ok = false; this.notice = "SETTINGS DO NOT MATCH TARGET";
         reply = { accepted: false, message: "Settings do not match the current target" };
       }
-    } else {
-      ok = false; reply = { message: "Usage: set <slot:1..3> <digit:0..9> | submit" };
     }
     return { id, status: ok ? "completed" : "failed", exitCode: ok ? 0 : 2,
+      result: { ...structuredResult(reply), ...(!ok ? { isError: true } : {}) },
       stdout: JSON.stringify(reply), stderr: "", timing: { clock: "benchmark-bench", requestedAtMs: started, receivedAtMs: performance.now() } };
   }
 }

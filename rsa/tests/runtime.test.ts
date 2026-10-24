@@ -10,21 +10,21 @@ import { dispatch, listen, send } from "../src/harness/transport.ts";
 function fixture() {
   let angle = 0, owner: string | undefined;
   const controller: Controller = {
-    id: "joint-7", requiresControl: true, help: () => "rotate <degrees>",
+    tool: { name: "joint-7", description: "rotate <degrees>", inputSchema: { type: "object" } }, requiresControl: true,
     async acquire(epoch) { owner = epoch; },
     async release(epoch) { if (owner === epoch) owner = undefined; },
-    async execute(argv, context) {
+    async execute(args, context) {
       if (owner !== context.epoch) throw new Error("wrong owner");
-      if (argv[0] !== "rotate") throw new Error("unknown operation");
-      angle += Number(argv[1]);
-      return { id: crypto.randomUUID(), status: "completed", exitCode: 0, stdout: String(angle), stderr: "",
+      if (typeof args.degrees !== "number") throw new Error("unknown operation");
+      angle += args.degrees;
+      return { id: crypto.randomUUID(), status: "completed", exitCode: 0, stdout: String(angle), stderr: "", result: { content: [{ type: "text", text: String(angle) }] },
         timing: { clock: "test", requestedAtMs: 0, receivedAtMs: 1 } };
     },
   };
   const capabilities: Capabilities = {
-    controllers: [controller, { id: "thermal-9", requiresControl: false, mediaTypes: ["text/plain"], help: () => "sample",
-      async execute(argv) {
-        if (argv.join() !== "sample") throw new Error("bad sensor arguments");
+    controllers: [controller, { tool: { name: "thermal-9", description: "sample", inputSchema: { type: "object" } }, requiresControl: false, mediaTypes: ["text/plain"],
+      async execute(args) {
+        if (Object.keys(args).length) throw new Error("bad sensor arguments");
         return captureResult([{ id: "temperature", controllerId: "thermal-9", mediaType: "text/plain", path: "/tmp/temperature.txt",
           timing: { clock: "test", requestedAtMs: 0, receivedAtMs: 1 } }]);
       },
@@ -82,10 +82,10 @@ test("Runtime discovers non-game catalog entries and reads through its device se
   const acquire = spyOn(devices, "acquire"), release = spyOn(devices, "release");
   try {
     expect(runtime.list()).toMatchObject({ controllers: [
-      { id: "joint-7", requiresControl: true, help: "rotate <degrees>" },
-      { id: "thermal-9", requiresControl: false, mediaTypes: ["text/plain"], help: "sample" },
+      { name: "joint-7", requiresControl: true, description: "rotate <degrees>" },
+      { name: "thermal-9", requiresControl: false, mediaTypes: ["text/plain"], description: "sample" },
     ] });
-    const result = await readTestController(runtime, "thermal-9", ["sample"], new AbortController().signal);
+    const result = await readTestController(runtime, "thermal-9", {}, new AbortController().signal);
     expect(result).toMatchObject({ status: "completed", observations: [{ controllerId: "thermal-9", mediaType: "text/plain" }] });
     expect(acquire).not.toHaveBeenCalled();
     const { epoch } = await runtime.start();
@@ -103,17 +103,17 @@ test("catalog help is inert and device execution receives literal argument value
   const execute = spyOn(controller, "execute");
   const capture = spyOn(capabilities.controllers[1]!, "execute");
   try {
-    expect(runtime.list().controllers[0]!.help).toBe("rotate <degrees>");
-    expect(runtime.list().controllers[1]!.help).toBe("sample");
+    expect(runtime.list().controllers[0]!.description).toBe("rotate <degrees>");
+    expect(runtime.list().controllers[1]!.description).toBe("sample");
     expect(owner()).toBeUndefined();
     expect(execute).not.toHaveBeenCalled();
     expect(capture).not.toHaveBeenCalled();
-    await expect(readTestController(runtime, "joint-7", ["rotate", "15"], new AbortController().signal))
+    await expect(readTestController(runtime, "joint-7", {degrees: 15}, new AbortController().signal))
       .rejects.toThrow("STALE_EPOCH");
     expect(execute).not.toHaveBeenCalled();
     const { epoch } = await runtime.start();
-    await expect(core.execute("joint-7", ["type", "--text", "--help"], epoch!, new AbortController().signal)).rejects.toThrow("unknown operation");
-    expect(execute.mock.calls[0]![0]).toEqual(["type", "--text", "--help"]);
+    await expect(core.execute("joint-7", {label: "--help"}, epoch!, new AbortController().signal)).rejects.toThrow("unknown operation");
+    expect(execute.mock.calls[0]![0]).toEqual({label: "--help"});
   } finally { await runtime.close(); execute.mockRestore(); capture.mockRestore(); }
 });
 
@@ -149,7 +149,7 @@ test("a blocked background read does not delay handback, the next epoch, or host
     return captureResult([]);
   };
   const first = await runtime.start();
-  const reading = readTestController(runtime, "thermal-9", ["sample"], new AbortController().signal);
+  const reading = readTestController(runtime, "thermal-9", {}, new AbortController().signal);
   try {
     await entered.promise;
     const handedBack = await Promise.race([runtime.stop().then(() => true), Bun.sleep(100).then(() => false)]);
@@ -171,9 +171,9 @@ test("parallel hosts route to independent devices and reject each other's epochs
   const closeA = await listen(socketA, a.runtime), closeB = await listen(socketB, b.runtime);
   try {
     const ownerA = await a.runtime.start(), ownerB = await b.runtime.start();
-    await a.core.execute("joint-7", ["rotate", "15"], ownerA.epoch!, new AbortController().signal);
-    await b.core.execute("joint-7", ["rotate", "30"], ownerB.epoch!, new AbortController().signal);
-    await expect(b.core.execute("joint-7", ["rotate", "100"], ownerA.epoch!, new AbortController().signal))
+    await a.core.execute("joint-7", {degrees: 15}, ownerA.epoch!, new AbortController().signal);
+    await b.core.execute("joint-7", {degrees: 30}, ownerB.epoch!, new AbortController().signal);
+    await expect(b.core.execute("joint-7", {degrees: 100}, ownerA.epoch!, new AbortController().signal))
       .rejects.toThrow("STALE_EPOCH");
     expect([a.angle(), b.angle()]).toEqual([15, 30]);
     await expect(send(socketA, { kind: "auto", argv: ["off"], runId: b.runtime.status().runId })).rejects.toThrow("STALE_RUN");
@@ -182,7 +182,7 @@ test("parallel hosts route to independent devices and reject each other's epochs
     await send(socketA, { kind: "auto", argv: ["off"], runId: a.runtime.status().runId, expectedEpoch: ownerA.epoch });
     expect(a.runtime.status().mode).toBe("manual");
     expect(b.runtime.status().mode).toBe("auto");
-    await b.core.execute("joint-7", ["rotate", "5"], ownerB.epoch!, new AbortController().signal);
+    await b.core.execute("joint-7", {degrees: 5}, ownerB.epoch!, new AbortController().signal);
     expect([a.angle(), b.angle()]).toEqual([15, 35]);
   } finally { await a.runtime.close(); await b.runtime.close(); await closeA(); await closeB(); }
 });

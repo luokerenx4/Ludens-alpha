@@ -28,26 +28,26 @@ from rsa_tools import Client, capability
 def hold():
     """Hold a simulated input until the human takes control."""
     Path("handoff-python.pid").write_text(str(os.getpid()))
-    return Client().call("controller/pad", ["hold", "30000"])
+    return Client().call("controller/pad.hold", {"durationMs": 30000})
 `);
   let held = false, actions = 0, abortedAt = 0, releasedAt = 0, driverInterrupted = false;
   const core = new BasewareCore({ drivers: [{ id: "benchmark-input", version: "1" }], capabilities: {
-    controllers: [{ id: "pad", requiresControl: true, help: () => "hold <milliseconds>",
+    controllers: [{ tool: { name: "pad.hold", description: "Hold simulated input for durationMs", inputSchema: { type: "object", properties: {durationMs: {type: "number", minimum: 0}}, required: ["durationMs"], additionalProperties: false } }, requiresControl: true,
       async acquire() {},
       async release() { held = false; releasedAt = performance.now(); },
-      async execute(argv, { signal }) {
+      async execute(args, { signal }) {
         signal.throwIfAborted();
         const began = performance.now();
         held = true; driverInterrupted = false; actions++;
         await new Promise<void>(done => {
-          const timer = setTimeout(done, Number(argv[1]));
+          const timer = setTimeout(done, Number(args.durationMs));
           signal.addEventListener("abort", () => {
             abortedAt = performance.now(); held = false; clearTimeout(timer); done();
           }, { once: true });
         });
         held = false; driverInterrupted = signal.aborted;
         return { id: crypto.randomUUID(), status: signal.aborted ? "interrupted" : "completed",
-          exitCode: signal.aborted ? 130 : 0, stdout: "", stderr: "",
+          exitCode: signal.aborted ? 130 : 0, stdout: "", stderr: "", result: { content: [] },
           timing: { clock: "benchmark-input", requestedAtMs: began, receivedAtMs: performance.now() } };
       },
     }],
@@ -72,8 +72,8 @@ def hold():
       const beforeActions = actions;
       record("benchmark_scenario", { scenario, phase: "started", requestedDurationMs: 30_000 }, { epoch });
       const pending = send(rsaSocket, { kind: "controller", argv: [], action: "call",
-        id: scenario === "driver" ? "controller/pad" : "python/handoff.py:hold",
-        arguments: scenario === "driver" ? ["hold", "30000"] : {}, epoch })
+        id: scenario === "driver" ? "controller/pad.hold" : "python/handoff.py:hold",
+        arguments: scenario === "driver" ? {durationMs: 30000} : {}, epoch })
         .then(value => ({ value: value as { status?: string }, error: "", at: performance.now() }),
           error => ({ value: undefined, error: String(error), at: performance.now() }));
       await until(() => actions === beforeActions + 1 && held, 5_000, ctx.signal);
@@ -104,8 +104,8 @@ def hold():
     await runtime.start();
     const before = actions;
     try {
-      await send(rsaSocket, { kind: "controller", argv: [], action: "call", id: "controller/pad",
-        arguments: ["hold", "1"], epoch: priorEpoch });
+      await send(rsaSocket, { kind: "controller", argv: [], action: "call", id: "controller/pad.hold",
+        arguments: {durationMs: 1}, epoch: priorEpoch });
     } catch (error) { staleRejected = String(error).includes("STALE_EPOCH"); }
     staleExecuted = actions !== before;
     record("benchmark_stale_epoch", { rejected: staleRejected, driverExecuted: staleExecuted }, { epoch: priorEpoch });

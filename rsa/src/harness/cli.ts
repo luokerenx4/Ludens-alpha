@@ -1,6 +1,8 @@
 import { send, type Request } from "./transport.ts";
 import { parseArgs } from "node:util";
 import type { ObservationQuery, PerceptionRead } from "./perception.ts";
+import { archivedToolResult, readToolArguments } from "@playness/baseware/tool-contract";
+import type { ExecutionResult } from "@playness/baseware/contracts";
 
 export const HELP = `rsa status
 rsa auto on [--message <text>]
@@ -8,7 +10,7 @@ rsa auto off
 rsa consolidate [--seconds <n>]
 rsa perception status | reload | stop
 rsa observe [--at <ISO> | --start <ISO> --end <ISO>] [--limit <n>] [--after <sequence>] [--images]
-rsa controller list | <id> --help | <id> <arguments...>
+rsa controller list | <id> --help | <id> [--args '<JSON object>' | --file <arguments.json>]
 
 Control management is unavailable inside agent cycles carrying BASEWARE_EPOCH.
 The current directory is the workspace; --workspace <path> or RSA_WORKSPACE overrides it.
@@ -60,15 +62,15 @@ async function observe(argv: string[], socket: string) {
 
 export const CONTROLLER_HELP = `rsa controller list
 rsa controller <id> --help
-rsa controller controller/<id> <driver arguments...>
-rsa controller python/<path.py>:<function> [--args '<JSON object>']
+rsa controller controller/<native name> [--args '<JSON object>' | --file <arguments.json>]
+rsa controller python/<path.py>:<function> [--args '<JSON object>' | --file <arguments.json>]
 
 Device controllers (including sensors) and decorated Python functions share this workspace catalog.
 List and help discover capabilities without executing workspace code.
 Calls requiring control use BASEWARE_EPOCH from an existing takeover; they never acquire control.
 Sensor controllers return observations alongside the execution result and can run without takeover.
 Python: from rsa_tools import Client; Client().list(), .help(id), .call(id, arguments).
-Driver arguments are string arrays in the API; Python arguments are objects.`;
+All arguments are objects; --file reads the same complete argument object as --args.`;
 
 async function controller(argv: string[], socket: string) {
   const [id, ...args] = argv;
@@ -81,17 +83,14 @@ async function controller(argv: string[], socket: string) {
     if (args.length === 1 && args[0] === "--help") request.action = "help";
     else {
       request.action = "call";
-      if (id.startsWith("python/") && args[0] === "--args") {
-        if (args.length !== 2) throw new Error("Usage: rsa controller <id> --args '<JSON>'");
-        request.arguments = JSON.parse(args[1]!);
-      } else if (args.length || !id.startsWith("python/")) request.arguments = args;
+      request.arguments = await readToolArguments(args);
     }
   }
   const value = await send(socket, request);
-  console.log(typeof value === "string" ? value : JSON.stringify(value, null, 2));
-  if (request.action === "call" && id.startsWith("controller/") && value && typeof value === "object" && "exitCode" in value) {
-    process.exitCode = Number(value.exitCode);
-  }
+  const execution = request.action === "call" && id.startsWith("controller/") ? value as ExecutionResult : undefined;
+  const display = execution?.result ? { ...execution, result: archivedToolResult(execution.result, execution.observations) } : value;
+  console.log(typeof display === "string" ? display : JSON.stringify(display, null, 2));
+  if (execution) process.exitCode = execution.exitCode;
 }
 
 export async function cli(argv: string[], socket: string) {

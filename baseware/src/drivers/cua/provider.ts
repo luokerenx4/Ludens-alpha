@@ -1,19 +1,32 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
-import type { Capabilities, Clock, Controller, ExecutionResult, Observation } from "../../contracts.ts";
+import { CallToolResultSchema, ListToolsResultSchema, type CallToolResult, type ListToolsResult, type Tool } from "@modelcontextprotocol/sdk/types.js";
+import { z } from "zod";
+import type { Capabilities, Clock, Controller, Observation } from "../../contracts.ts";
+import { objectArguments, toolExecution } from "../../tool-contract.ts";
 
 const REQUEST_TIMEOUT = 2_147_483_647;
 type CuaClient = Pick<Client, "callTool">;
 
-function argumentsFrom(argv: readonly string[]): Record<string, unknown> {
-  if (!argv.length) return {};
-  if (argv.length !== 2 || argv[0] !== "--args") throw new Error("Usage: --args '<JSON object>'");
-  const value = JSON.parse(argv[1]!);
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("--args must be a JSON object");
-  return value;
+// SDK object schemas validate the standard fields but strip native extensions.
+// Validate with those schemas, then retain the original value at every depth.
+const nativeToolsSchema = z.custom<ListToolsResult>(value => ListToolsResultSchema.safeParse(value).success);
+const nativeResultSchema = z.custom<CallToolResult>(value => {
+  const checked = CallToolResultSchema.safeParse(value);
+  return checked.success && Array.isArray((value as CallToolResult).content);
+}) as unknown as typeof CallToolResultSchema; // callTool types only admit the SDK's concrete schema type.
+
+export async function listCuaTools(client: Pick<Client, "request">): Promise<Tool[]> {
+  const tools: Tool[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await client.request({ method: "tools/list", params: { cursor } }, nativeToolsSchema);
+    tools.push(...page.tools);
+    cursor = page.nextCursor;
+  } while (cursor);
+  return tools;
 }
 
 /** Keep upstream tools and schemas intact; Baseware owns admission and the transport session. */
@@ -27,7 +40,7 @@ export function cuaCapabilities(options: { tools: Tool[]; client: CuaClient; art
     if (!pending) {
       pending = (async () => {
         const result = await client.callTool({ name: "start_session", arguments: session === undefined ? {} : { session } },
-          undefined, { signal, timeout: REQUEST_TIMEOUT });
+          nativeResultSchema, { signal, timeout: REQUEST_TIMEOUT });
         if (result.isError) throw new Error(JSON.stringify(result.content));
       })();
       sessions.set(session, pending);
@@ -44,7 +57,7 @@ export function cuaCapabilities(options: { tools: Tool[]; client: CuaClient; art
     const outcomes = await Promise.allSettled(ending.map(async ([session, started]) => {
       await started.catch(() => {});
       return client.callTool({ name: "end_session", arguments: session === undefined ? {} : { session } },
-        undefined, { timeout: REQUEST_TIMEOUT });
+        nativeResultSchema, { timeout: REQUEST_TIMEOUT });
     }));
     for (const outcome of outcomes) {
       if (outcome.status === "rejected") throw outcome.reason;
@@ -52,30 +65,18 @@ export function cuaCapabilities(options: { tools: Tool[]; client: CuaClient; art
     }
   };
   const controllers: Controller[] = options.tools.map(tool => ({
-    id: `cua.${tool.name}`,
+    tool,
     requiresControl: tool.annotations?.readOnlyHint !== true,
-    commands: [{
-      name: "",
-      description: "Pass upstream tool arguments as --args JSON; omitting --args sends an empty object.",
-      parameters: { type: "object", properties: { args: tool.inputSchema }, additionalProperties: false,
-        ...(tool.inputSchema.required?.length ? { required: ["args"] } : {}) },
-      bindings: [{ parameter: "args", flag: "--args", encoding: "json" }],
-    }],
-    ...(tool.outputSchema ? { stdoutSchema: {
-      type: "object", description: "Schema for JSON.parse(result.stdout); binary media is returned separately in observations.",
-      properties: { content: { type: "array" }, structuredContent: tool.outputSchema }, required: ["content"],
-    } } : {}),
     acquire, release,
-    help: () => `${tool.description ?? tool.name}\n--args '<JSON object>' (omit for no arguments)\n${JSON.stringify(tool.inputSchema)}\nCalls the installed Cua Driver. Session state is retained across calls and ended when control is returned.`,
-    async execute(argv, { signal }): Promise<ExecutionResult> {
+    async execute(input, { signal }) {
       signal.throwIfAborted();
-      const args = argumentsFrom(argv);
+      const args = objectArguments(input);
       const session = typeof args.session === "string" ? args.session : undefined;
       const requestedAtMs = clock.now();
       // An ended implicit session also needs explicit revival in current CUA releases.
       if (tool.name !== "start_session" && tool.name !== "end_session") await startSession(session, signal);
       signal.throwIfAborted();
-      const pending = client.callTool({ name: tool.name, arguments: args }, undefined, {
+      const pending = client.callTool({ name: tool.name, arguments: args }, nativeResultSchema, {
         signal, timeout: REQUEST_TIMEOUT,
       });
       if (tool.name === "start_session") {
@@ -85,27 +86,32 @@ export function cuaCapabilities(options: { tools: Tool[]; client: CuaClient; art
       }
       const result = await pending as CallToolResult;
       if (tool.name === "end_session" && !result.isError) sessions.delete(session);
-      const timing = { clock: clock.id, requestedAtMs, receivedAtMs: clock.now() };
+      const execution = toolExecution(clock, requestedAtMs, result);
       const observations: Observation[] = [];
-      const content: CallToolResult["content"] = [];
-      for (const block of result.content) {
+      const archive = async (data: Buffer, mediaType: string, contentIndex?: number) => {
+        const id = crypto.randomUUID();
+        const suffix = mediaType.split("/")[1]?.replace(/[^a-zA-Z0-9]/g, "") || "bin";
+        const path = join(options.artifactsDir, `${id}.${suffix}`);
+        await writeFile(path, data);
+        observations.push({ id, controllerId: tool.name, mediaType, path, timing: execution.timing,
+          ...(contentIndex === undefined ? {} : { contentIndex }) });
+      };
+      for (const [index, block] of result.content.entries()) {
         const payload = block.type === "image" || block.type === "audio" ? block
           : block.type === "resource" && "blob" in block.resource ? {
             data: block.resource.blob, mimeType: block.resource.mimeType ?? "application/octet-stream",
           } : undefined;
-        if (!payload) { content.push(block); continue; }
-        const id = crypto.randomUUID();
-        const suffix = payload.mimeType.split("/")[1]?.replace(/[^a-zA-Z0-9]/g, "") || "bin";
-        const path = join(options.artifactsDir, `${id}.${suffix}`);
-        await writeFile(path, Buffer.from(payload.data, "base64"));
-        observations.push({ id, controllerId: `cua.${tool.name}`, mediaType: payload.mimeType, path, timing });
+        if (payload) await archive(Buffer.from(payload.data, "base64"), payload.mimeType, index);
       }
-      // Keep the upstream text and structured result, but never duplicate binary media in logs.
-      const output = { content, ...(result.structuredContent ? { structuredContent: result.structuredContent } : {}) };
-      return { id: crypto.randomUUID(), status: result.isError ? "failed" : "completed",
-        exitCode: result.isError ? 1 : 0, stdout: JSON.stringify(output),
-        stderr: result.isError ? content.filter(block => block.type === "text").map(block => block.text).join("\n") : "",
-        timing, ...(observations.length ? { observations } : {}) };
+      // Native screenshot_out_file returns a path instead of an image block. Keep
+      // that payload intact and archive a copy before the next capture overwrites it.
+      const screenshot = result.structuredContent?.screenshot_file_path;
+      if (!result.isError && typeof screenshot === "string") {
+        const mediaType = typeof result.structuredContent?.screenshot_mime_type === "string"
+          ? result.structuredContent.screenshot_mime_type : "image/png";
+        await archive(await readFile(screenshot), mediaType);
+      }
+      return { ...execution, ...(observations.length ? { observations } : {}) };
     },
   }));
   return { controllers } satisfies Capabilities;
@@ -120,13 +126,7 @@ export async function createCuaProvider(options: { command?: string; artifactsDi
   client.onclose = () => { if (!closed) onDisconnect?.(new Error("Cua Driver connection closed")); };
   try {
     await client.connect(transport);
-    const tools: Tool[] = [];
-    let cursor: string | undefined;
-    do {
-      const page = await client.listTools({ cursor });
-      tools.push(...page.tools);
-      cursor = page.nextCursor;
-    } while (cursor);
+    const tools = await listCuaTools(client);
     return {
       capabilities: cuaCapabilities({ ...options, tools, client }),
       version: client.getServerVersion()?.version ?? "unknown",

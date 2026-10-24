@@ -1,5 +1,5 @@
 import { BasewareCore } from "@playness/baseware/core";
-import type { Capabilities, ExecutionResult, Observation } from "@playness/baseware/contracts";
+import type { Capabilities, ExecutionResult, Observation, ToolArguments, ToolExecutionResult } from "@playness/baseware/contracts";
 import { childTrace, type EventTrace, type RecordEvent } from "../src/harness/events.ts";
 import { Runtime, type DeviceSession } from "../src/harness/runtime.ts";
 import { PerceptionRuntime } from "../src/harness/perception.ts";
@@ -14,13 +14,13 @@ export function createTestDeviceSession(capabilities: Capabilities, record: Reco
     catalog: core.list(),
     async acquire(epoch) { await core.acquire(epoch, maxSeconds, client); },
     async release(epoch) { await core.release(epoch); },
-    execute: (id, argv, epoch, signal, trace, origin) => core.execute(id, argv, epoch, signal, { ...trace }, undefined, origin),
+    execute: (id, args, epoch, signal, trace, origin) => core.execute(id, args, epoch, signal, { ...trace }, undefined, origin),
   };
   return { core, devices };
 }
 
-export function captureResult(observations: Observation[]): ExecutionResult {
-  return { id: crypto.randomUUID(), status: "completed", exitCode: 0, stdout: "", stderr: "", observations,
+export function captureResult(observations: Observation[]): ToolExecutionResult {
+  return { id: crypto.randomUUID(), status: "completed", exitCode: 0, stdout: "", stderr: "", result: { content: [] }, observations,
     timing: observations[0]?.timing ?? { clock: "test", requestedAtMs: 0, receivedAtMs: 1 } };
 }
 
@@ -31,8 +31,8 @@ export function createTestRuntime(capabilities: Capabilities, record: RecordEven
   return runtime;
 }
 
-export async function readTestController(runtime: Runtime, id: string, argv: string[], signal: AbortSignal, trace: EventTrace = {}) {
-  return await runtime.callController(`controller/${id}`, argv, undefined, signal, trace) as ExecutionResult;
+export async function readTestController(runtime: Runtime, id: string, args: ToolArguments, signal: AbortSignal, trace: EventTrace = {}) {
+  return await runtime.callController(`controller/${id}`, args, undefined, signal, trace) as ExecutionResult;
 }
 
 /** OMP history/telemetry tests supply perception results without starting Python.

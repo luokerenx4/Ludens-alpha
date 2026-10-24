@@ -22,7 +22,7 @@ test.each([1, 26])("OMP persists batches of %i images and reuses the Codex prefi
   const states: string[] = [];
   const events: { type: string; data: any }[] = [];
   const runtime = createTestRuntime({ controllers: [{
-    id: "camera", requiresControl: false, mediaTypes: ["image/png"], help: () => "capture",
+    tool: { name: "camera", description: "capture", inputSchema: { type: "object" } }, requiresControl: false, mediaTypes: ["image/png"],
     async execute() {
       const position = Bun.file(join(workspace, "position"));
       states.push(await position.exists() ? await position.text() : "initial");
@@ -31,7 +31,7 @@ test.each([1, 26])("OMP persists batches of %i images and reuses the Codex prefi
     },
   }] }, (type, data) => { events.push({ type, data }); });
   installTestPerception(runtime, workspace, directory, (signal, trace) =>
-    readTestController(runtime, "camera", [], signal, trace));
+    readTestController(runtime, "camera", {}, signal, trace));
   const control = new AbortController();
   const extension = createRsaExtension({ runtime, workspace: new Workspace(workspace, join(directory, "skill-versions")),
     basewareSocket: "/tmp/unused.sock", binDir: "/tmp",

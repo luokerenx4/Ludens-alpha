@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BasewareClient } from "../src/client.ts";
 import { BasewareCore } from "../src/core.ts";
-import type { ExecutionResult } from "../src/contracts.ts";
+import type { ExecutionResult, ToolArguments } from "../src/contracts.ts";
 import { createAzaharProvider } from "../src/drivers/azahar/provider.ts";
 import type { DeviceEvent } from "../src/protocol.ts";
 import { listen } from "../src/server.ts";
@@ -72,13 +72,13 @@ nativeTest("native pad timeline survives caller exit and wait cancellation; take
     const observer = await BasewareClient.connect(socket);
     const epoch = "native-timeline";
     await owner.request({ kind: "acquire", epoch, seconds: 30 });
-    const command = async (id: string, argv: string[], signal?: AbortSignal) => observer.request({ kind: "controller", id, argv, epoch }, signal) as Promise<ExecutionResult>;
+    const command = async (id: string, args: ToolArguments, signal?: AbortSignal) => observer.request({ kind: "controller", id, arguments: args, epoch }, signal) as Promise<ExecutionResult>;
 
     const begin = samples.length;
-    const played = await command("pad", ["play", "--inputs", JSON.stringify([
+    const played = await command("pad.play", { inputs: [
       { atMs: 0, durationMs: 500, state: { LEFT: 1 } },
       { atMs: 0, durationMs: 300, state: { B: 1 } },
-    ]), "--wait", "true"]);
+    ], wait: true });
     expect(JSON.parse(played.stdout)).toMatchObject({ status: "completed" });
     await until(() => samples.slice(begin).some(s => s.buttons === 256) && samples.at(-1)?.buttons === 0);
     const sampled = samples.slice(begin);
@@ -90,8 +90,8 @@ nativeTest("native pad timeline survives caller exit and wait cancellation; take
     expect(transitions[2].atMs - transitions[0].atMs).toBeGreaterThanOrEqual(500);
     expect(transitions[2].atMs - transitions[0].atMs).toBeLessThan(650);
 
-    const cli = Bun.spawn([process.execPath, "src/main.ts", "controller", "pad", "play", "--inputs",
-      '[{"atMs":0,"durationMs":5000,"state":{"LEFT":1,"B":1}}]'], {
+    const cli = Bun.spawn([process.execPath, "src/main.ts", "controller", "pad.play", "--args",
+      '{"inputs":[{"atMs":0,"durationMs":5000,"state":{"LEFT":1,"B":1}}]}'], {
       cwd: root, env: { ...process.env, BASEWARE_SOCKET: socket, BASEWARE_EPOCH: epoch,
         BASEWARE_TRACE: JSON.stringify({ toolCallId: "native-cli", traceId: "native-timeline" }) }, stdout: "pipe", stderr: "pipe",
     });
@@ -101,13 +101,13 @@ nativeTest("native pad timeline survives caller exit and wait cancellation; take
     await until(() => samples.at(-1)?.buttons === 258);
     expect(core.status().mode).toBe("auto");
     const abort = new AbortController();
-    const waiting = command("pad", ["wait", "--action", submitted.actionId], abort.signal);
+    const waiting = command("pad.wait", { actionId: submitted.actionId }, abort.signal);
     await Bun.sleep(20);
     abort.abort();
     await expect(waiting).rejects.toThrow();
-    expect(JSON.parse((await command("pad", ["status", "--action", submitted.actionId])).stdout).status).toBe("running");
+    expect(JSON.parse((await command("pad.status", { actionId: submitted.actionId })).stdout).status).toBe("running");
     expect(samples.at(-1)?.buttons).toBe(258);
-    await command("touch", ["down", "--x", "20", "--y", "30"]);
+    await command("touch.down", { x: 20, y: 30 });
     await until(() => samples.at(-1)?.touch === 1);
     await observer.request({ kind: "revoke" });
     await until(() => samples.at(-1)?.owned === 0 && samples.at(-1)?.buttons === 0 && samples.at(-1)?.touch === 0);
@@ -121,9 +121,9 @@ nativeTest("native pad timeline survives caller exit and wait cancellation; take
 
     const nextEpoch = "native-owner-disconnect";
     await owner.request({ kind: "acquire", epoch: nextEpoch, seconds: 30 });
-    await observer.request({ kind: "controller", id: "pad", epoch: nextEpoch,
-      argv: ["play", "--inputs", '[{"atMs":0,"durationMs":5000,"state":{"A":1}}]'] });
-    await observer.request({ kind: "controller", id: "touch", epoch: nextEpoch, argv: ["down", "--x", "1", "--y", "1"] });
+    await observer.request({ kind: "controller", id: "pad.play", epoch: nextEpoch,
+      arguments: { inputs: [{ atMs: 0, durationMs: 5000, state: { A: 1 } }] } });
+    await observer.request({ kind: "controller", id: "touch.down", epoch: nextEpoch, arguments: { x: 1, y: 1 } });
     await until(() => samples.at(-1)?.buttons === 1 && samples.at(-1)?.touch === 1);
     owner.close();
     await until(() => core.status().mode === "manual" && samples.at(-1)?.owned === 0 && samples.at(-1)?.buttons === 0 && samples.at(-1)?.touch === 0);

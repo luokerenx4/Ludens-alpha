@@ -61,8 +61,12 @@ class Client:
     def help(self, capability_id):
         return self.request("help", id=capability_id)
 
-    def controller(self, capability_id, argv=()):
-        return self.request("controller", id=capability_id, argv=list(argv))
+    def controller(self, capability_id, arguments=None):
+        if arguments is None:
+            arguments = {}
+        if not isinstance(arguments, dict):
+            raise TypeError("Tool arguments must be a JSON object")
+        return self.request("controller", id=capability_id, arguments=arguments)
 
     def release(self):
         return self.request("release")

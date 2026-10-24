@@ -1,9 +1,7 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { compileTimeline, readPlayInputs } from "../src/drivers/timeline.ts";
-import { padCommands, polledDuration } from "../src/drivers/schema.ts";
+import { compileTimeline } from "../src/drivers/timeline.ts";
+import { padTools, POLLED_TIMING } from "../src/drivers/schema.ts";
+import { argumentValidator } from "../src/tool-contract.ts";
 
 const buttons = ["LEFT", "B"];
 const axes = ["LX"];
@@ -73,37 +71,22 @@ test("timeline validation rejects ambiguous input and unsafe time arithmetic", (
   ]) expect(() => compile(inputs)).toThrow();
 });
 
-test("play accepts exactly one inline timeline or absolute file with the current object format", async () => {
-  const inputs = [{ atMs: 0, durationMs: 500, state: { LEFT: 1 } }];
-  expect(await readPlayInputs({ inputs: JSON.stringify(inputs) })).toEqual(inputs);
-  await expect(readPlayInputs({})).rejects.toThrow("exactly one");
-  await expect(readPlayInputs({ inputs: "[]", file: "/unused" })).rejects.toThrow("exactly one");
-  await expect(readPlayInputs({ file: "relative.json" })).rejects.toThrow("absolute path");
-  const directory = await mkdtemp(join(tmpdir(), "baseware-timeline-"));
-  const path = join(directory, "timeline.json");
-  try {
-    await writeFile(path, JSON.stringify({ inputs }));
-    expect(await readPlayInputs({ file: path })).toEqual(inputs);
-    for (const contents of [inputs, { inputs, extra: true }, { state: {}, durationMs: 100 }]) {
-      await writeFile(path, JSON.stringify(contents));
-      await expect(readPlayInputs({ file: path })).rejects.toThrow();
-    }
-  } finally { await rm(directory, { recursive: true }); }
-});
-
-test("the discoverable command schema exposes only play and explicit action lifecycle commands", () => {
-  const commands = padCommands(buttons, axes, polledDuration);
-  expect(commands.map(command => command.name)).toEqual(["state", "play", "status", "wait", "cancel", "release"]);
-  const play = commands.find(command => command.name === "play")!;
-  expect(play.parameters).toMatchObject({ oneOf: [{ required: ["inputs"] }, { required: ["file"] }],
+test("pad tools expose independent lifecycle schemas with native object arguments", () => {
+  const tools = padTools(buttons, axes, POLLED_TIMING);
+  expect(tools.map(tool => tool.name)).toEqual(["pad.state", "pad.play", "pad.status", "pad.wait", "pad.cancel", "pad.release"]);
+  const play = tools.find(tool => tool.name === "pad.play")!;
+  expect(play.inputSchema).toMatchObject({ required: ["inputs"], additionalProperties: false,
     properties: { inputs: { items: { required: ["atMs", "durationMs", "state"], additionalProperties: false } },
-      wait: { enum: ["true", "false"], default: "false" },
-      file: { "x-fileContentSchema": { required: ["inputs"], additionalProperties: false } } } });
-  expect(play.bindings.map(binding => binding.flag)).toEqual(["--inputs", "--file", "--wait"]);
+      wait: { type: "boolean", default: false } } });
+  const inputs = [{ atMs: 0, durationMs: 500, state: { LEFT: 1 } }];
+  const validate = argumentValidator(play);
+  expect(validate({ inputs, wait: true })).toEqual({ inputs, wait: true });
+  for (const args of [{}, { inputs, wait: "true" }, { inputs: JSON.stringify(inputs) }, { inputs, file: "/unused" }]) {
+    expect(() => validate(args)).toThrow();
+  }
   for (const name of ["status", "wait", "cancel"]) {
-    expect(commands.find(command => command.name === name)).toMatchObject({
-      parameters: { required: ["action"], additionalProperties: false },
-      bindings: [{ parameter: "action", flag: "--action", encoding: "string" }],
+    expect(tools.find(tool => tool.name === `pad.${name}`)).toMatchObject({
+      inputSchema: { required: ["actionId"], additionalProperties: false },
     });
   }
 });

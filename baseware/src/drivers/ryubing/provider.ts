@@ -1,13 +1,13 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { parseArgs } from "node:util";
-import type { Capabilities, Clock, Controller, ExecutionResult } from "../../contracts.ts";
+import type { Capabilities, Clock, Controller } from "../../contracts.ts";
 import { Bridge } from "../bridge.ts";
+import { structuredResult, toolExecution } from "../../tool-contract.ts";
 import { createPadPlayer } from "../pad.ts";
 import { compileTimeline } from "../timeline.ts";
-import { createTouchController } from "../touch.ts";
-import { MAX_CAPTURE_DELAY_MS, MIN_POLL_DURATION_MS, PLAY_HELP, padCommands, polledDuration } from "../schema.ts";
+import { createTouchControllers } from "../touch.ts";
+import { MAX_CAPTURE_DELAY_MS, MIN_POLL_DURATION_MS, padTools, POLLED_TIMING } from "../schema.ts";
 
 // Order matches the physical bits in Ryubing's ControllerKeys, not game actions.
 export const BUTTONS = ["A", "B", "X", "Y", "LSTICK", "RSTICK", "L", "R", "ZL", "ZR", "PLUS", "MINUS", "LEFT", "UP", "RIGHT", "DOWN"];
@@ -36,11 +36,7 @@ export function encodeSpans(spans: Span[]): string {
   }).join(",");
 }
 
-const PAD_HELP = `One controller, player 1.
-Buttons: ${BUTTONS.join(", ")}. Values: 0=released, 1=pressed.
-Axes: LX, LY, RX, RY in [-1,1]; X positive=right, Y positive=up, 0=center.
-${PLAY_HELP}
-Durations use wall time sampled at input polls, not emulation frames. Every state transition must be at least 16 ms apart.`;
+const PAD_DESCRIPTION = "Native controller, player 1. Axes are in [-1,1]; X positive=right, Y positive=up, 0=center.";
 
 export async function createSwitchProvider(options: { port: number; artifactsDir: string; clock: Clock }) {
   const { clock } = options;
@@ -66,19 +62,13 @@ export async function createSwitchProvider(options: { port: number; artifactsDir
     await player.settle();
   }
   const screen: Controller = {
-    id: "screen", requiresControl: false, mediaTypes: ["image/png"],
-    commands: [{ name: "capture", description: "Capture the next presented game frame or the visible system text-entry dialog as PNG after an optional fixed delay.",
-      parameters: { type: "object", properties: { delayMs: { type: "integer", minimum: 0, maximum: MAX_CAPTURE_DELAY_MS, default: 0,
-        description: "Fixed wait before requesting a frame; does not detect whether the scene has settled." } }, additionalProperties: false },
-      bindings: [{ parameter: "delayMs", flag: "--delay-ms", encoding: "string" }] }],
-    help: () => "capture [--delay-ms <milliseconds>]\nWait a fixed delay before requesting the next presented game frame, or the visible system text-entry dialog when it is open, as a PNG. delay-ms defaults to 0 and accepts integer milliseconds from 0 to 2147483647. This delay does not detect whether the scene has settled. Returns an immutable path and sample interval including the delay. sourceSequence is a game presentation sequence, and is omitted for a dialog. No desktop content.",
-    async execute(argv, { signal }) {
-      const { values, positionals } = parseArgs({ args: [...argv], allowPositionals: true,
-        options: { "delay-ms": { type: "string" } } });
-      if (positionals.length !== 1 || positionals[0] !== "capture") throw new Error("Usage: controller screen capture [--delay-ms <milliseconds>]");
-      const delayMs = Number(values["delay-ms"] ?? "0");
-      if (values["delay-ms"]?.trim() === "" || !Number.isInteger(delayMs) || delayMs < 0 || delayMs > MAX_CAPTURE_DELAY_MS) {
-        throw new Error("delay-ms must be an integer from 0 to 2147483647");
+    tool: { name: "screen.capture", description: "Capture the next presented game frame, or visible system text-entry dialog, as PNG after an optional fixed delay. Delay does not detect scene settlement. The sample interval includes delay. sourceSequence is a game presentation sequence and is omitted for a dialog; no desktop content.",
+      inputSchema: { type: "object", properties: { delayMs: { type: "integer", minimum: 0, maximum: MAX_CAPTURE_DELAY_MS, default: 0 } }, additionalProperties: false },
+      annotations: { readOnlyHint: true } }, requiresControl: false, mediaTypes: ["image/png"],
+    async execute(args, { signal }) {
+      const delayMs = args.delayMs ?? 0;
+      if (typeof delayMs !== "number" || !Number.isInteger(delayMs) || delayMs < 0 || delayMs > MAX_CAPTURE_DELAY_MS) {
+        throw new Error("delayMs must be an integer from 0 to 2147483647");
       }
       signal.throwIfAborted();
       const id = crypto.randomUUID();
@@ -89,24 +79,26 @@ export async function createSwitchProvider(options: { port: number; artifactsDir
       const [frame, surface] = await bridge.request("CAPTURE", [path]);
       signal.throwIfAborted();
       const timing = { clock: clock.id, requestedAtMs, receivedAtMs: clock.now() };
-      return { id: crypto.randomUUID(), status: "completed", exitCode: 0, stdout: "", stderr: "", timing, observations: [{ id, controllerId: "screen", mediaType: "image/png", path,
-        timing, ...(surface === "keyboard" ? {} : { sourceSequence: Number(frame) }) }] };
+      const sequence = surface === "keyboard" ? {} : { sourceSequence: Number(frame) };
+      const output = { source: surface === "keyboard" ? "keyboard" : "screen", ...sequence, timing };
+      const result = structuredResult(output);
+      result.content.unshift({ type: "image", mimeType: "image/png", data: (await readFile(path)).toString("base64") });
+      return { ...toolExecution(clock, requestedAtMs, result), timing,
+        observations: [{ id, controllerId: "screen.capture", mediaType: "image/png", path, timing, ...sequence, contentIndex: 0 }] };
     },
   };
-  const pad: Controller = {
-    id: "pad", requiresControl: true, help: () => PAD_HELP,
-    commands: padCommands(BUTTONS, AXES, polledDuration),
-    acquire, release,
-    async execute(argv, context): Promise<ExecutionResult> {
+  const pads: Controller[] = padTools(BUTTONS, AXES, POLLED_TIMING).map(tool => ({
+    tool: { ...tool, description: `${PAD_DESCRIPTION} ${tool.description}` }, requiresControl: true, acquire, release,
+    async execute(args, context) {
       const { epoch, signal } = context;
       signal.throwIfAborted();
       if (!epoch || owner !== epoch) throw new Error("STALE_EPOCH");
-      if (argv[0] !== "state" && argv[0] !== "release") return player.execute(argv, context);
-      if (argv.length !== 1) throw new Error(`${argv[0]} accepts no arguments`);
+      const command = tool.name.slice("pad.".length);
+      if (command !== "state" && command !== "release") return player.execute(command, args, context);
       const id = crypto.randomUUID();
       const requestedAtMs = clock.now();
-      let output: unknown;
-      if (argv[0] === "state") {
+      let output: Record<string, unknown>;
+      if (command === "state") {
         const [mask, lx, ly, rx, ry, actionId] = await bridge.request("STATE", [epoch], id);
         output = { state: { ...Object.fromEntries(BUTTONS.map((key, i) => [key, (Number(mask) >> i) & 1])),
           ...Object.fromEntries(AXES.map((key, i) => [key, Number([lx, ly, rx, ry][i]) / 32767])) }, actionId: actionId === "-" ? null : actionId };
@@ -115,49 +107,32 @@ export async function createSwitchProvider(options: { port: number; artifactsDir
         await player.settle();
         output = { released: true };
       }
-      return { id, readOnly: argv[0] === "state", status: "completed", exitCode: 0, stdout: JSON.stringify(output), stderr: "",
-        timing: { clock: clock.id, requestedAtMs, receivedAtMs: clock.now() } };
+      return toolExecution(clock, requestedAtMs, structuredResult(output), { id, readOnly: command === "state" });
     },
-  };
-  const keyboard: Controller = {
-    id: "keyboard", requiresControl: true, acquire, release,
-    commands: [
-      { name: "type", description: "Insert text at the caret in the visible system text-entry dialog, replacing selected text.",
-        parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"], additionalProperties: false },
-        bindings: [{ parameter: "text", flag: "--text", encoding: "string", style: "joined" }] },
-      { name: "press", description: "Press a key in the visible system text-entry dialog.",
-        parameters: { type: "object", properties: { key: { type: "string", enum: KEYBOARD_KEYS } }, required: ["key"], additionalProperties: false },
-        bindings: [{ parameter: "key", flag: "--key", encoding: "string" }] },
-    ],
-    help: () => `Text-entry keyboard, available while a system text-entry dialog is visible.
-type --text <text>
-press --key ENTER|ESCAPE|BACKSPACE|CTRL+A
-type inserts text at the caret, replacing selected text. CTRL+A selects all text.
-ENTER presses the primary button if the displayed input constraints are satisfied.
-ESCAPE presses the close button. Commands fail NO_TEXT_INPUT when no text surface is open.
-Observe screen capture to see the current dialog and its text. These commands do not control desktop applications.`,
-    async execute(argv, { epoch, signal }) {
+  }));
+  const keyboards: Controller[] = (["type", "press"] as const).map((command): Controller => ({
+    tool: { name: `keyboard.${command}`,
+      description: `${command === "type" ? "Insert text at the caret, replacing selected text." : "Press ENTER (primary button when constraints are satisfied), ESCAPE (close), BACKSPACE, or CTRL+A (select all)."} Only the visible Switch system text-entry dialog is affected; not desktop applications. Fails NO_TEXT_INPUT if absent. Observe screen.capture to see the dialog.`,
+      inputSchema: command === "type" ? { type: "object", properties: { text: { type: "string" } }, required: ["text"], additionalProperties: false }
+        : { type: "object", properties: { key: { type: "string", enum: KEYBOARD_KEYS } }, required: ["key"], additionalProperties: false },
+      annotations: { readOnlyHint: false } }, requiresControl: true, acquire, release,
+    async execute(args, { epoch, signal }) {
       signal.throwIfAborted();
       if (!epoch || owner !== epoch) throw new Error("STALE_EPOCH");
-      const { values, positionals } = parseArgs({ args: [...argv], allowPositionals: true,
-        options: { text: { type: "string" }, key: { type: "string" } } });
-      const [command] = positionals;
-      if (positionals.length !== 1 || (command !== "type" && command !== "press")) throw new Error("Expected type or press; see --help");
-      const value = command === "type" ? values.text : values.key;
-      if (value === undefined) throw new Error(`Missing --${command === "type" ? "text" : "key"}`);
+      const value = command === "type" ? args.text : args.key;
+      if (typeof value !== "string") throw new Error(`Missing ${command === "type" ? "text" : "key"}`);
       if (command === "press" && !KEYBOARD_KEYS.includes(value)) throw new Error("Unknown keyboard key");
       const id = crypto.randomUUID();
       const requestedAtMs = clock.now();
       await bridge.request("KEYBOARD", [epoch, command, Buffer.from(value).toString("base64")], id);
-      return { id, status: "completed", exitCode: 0, stdout: "{}", stderr: "",
-        timing: { clock: clock.id, requestedAtMs, receivedAtMs: clock.now() } };
+      return toolExecution(clock, requestedAtMs, structuredResult({}), { id });
     },
-  };
-  let touch: Controller;
-  try { touch = await createTouchController({ bridge, clock, acquire, release, owns: epoch => owner === epoch }); }
+  }));
+  let touch: Controller[];
+  try { touch = await createTouchControllers({ bridge, clock, acquire, release, owns: epoch => owner === epoch }); }
   catch (error) { bridge.close(); throw error; }
   return {
-    capabilities: { controllers: [pad, keyboard, touch, screen] } satisfies Capabilities,
+    capabilities: { controllers: [...pads, ...keyboards, ...touch, screen] } satisfies Capabilities,
     onDisconnect(handler: (error: Error) => void) { bridge.onDisconnect = handler; },
     close() { bridge.close(); },
   };

@@ -33,7 +33,7 @@ test("analysis counts async input completion once and keeps its lifetime after t
   const timing = { clock: "driver", requestedAtMs: 10, receivedAtMs: 11 };
   const report = await analyze([
     e("control", "one", { mode: "auto", epoch: "one" }),
-    e("command", "one", { controllerId: "pad", requiresControl: true, argv: ["play"] }, trace),
+    e("command", "one", { controllerId: "pad.play", requiresControl: true, arguments: { inputs: [], wait: false } }, trace),
     e("action_start", "one", { actionId: "one", controllerId: "pad", timing: { clock: "driver", submittedAtMs: 10 } }, trace),
     e("execution", "one", { id: "submit", actionId: "one", status: "completed", exitCode: 0, timing }, trace),
     e("execution", "one", { id: "status", actionId: "one", status: "completed", exitCode: 0, timing }, { operationId: "status" }),
@@ -50,6 +50,7 @@ test("analysis counts async input completion once and keeps its lifetime after t
     asyncActionMs: { count: 2, min: 50, median: 275, max: 500, sum: 550 } });
   expect(report.actions[0]).toMatchObject({ actionId: "one", status: "completed", durationMs: 500, startSeq: 3, endSeq: 8 });
   expect(report.executions.map((item: any) => item.actionId)).toEqual(["one", "one", null]);
+  expect(report.executions[0].arguments).toEqual({ inputs: [], wait: false });
 });
 
 test("analysis without speculation events has zero lifecycle counts and no model requests", async () => {
@@ -476,10 +477,10 @@ test("analysis retains controller errors when the shell batch succeeds and isola
     exec: { state: "completed", exitCode: 0 } });
   expect(report.controllerExecutionErrors).toEqual([{
     seq: 11, at: events[10]!.at, atMs: 11_000, epoch: "selected", ...failed,
-    commandSeq: 8, controller: "keyboard", argv: ["press", "--key", "ESC"], error, aborted: false,
+    commandSeq: 8, controller: "keyboard", arguments: null, argv: ["press", "--key", "ESC"], error, aborted: false,
   }, {
     seq: 17, at: events[16]!.at, atMs: 17_000, epoch: "selected", ...failed,
-    commandSeq: 8, controller: "keyboard", argv: ["press", "--key", "ESC"], error: "late error", aborted: true,
+    commandSeq: 8, controller: "keyboard", arguments: null, argv: ["press", "--key", "ESC"], error: "late error", aborted: true,
   }]);
 });
 

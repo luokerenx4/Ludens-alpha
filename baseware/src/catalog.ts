@@ -10,18 +10,19 @@ const timingSchema: JsonSchema = {
 
 export const executionResultSchema: JsonSchema = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
-  type: "object", required: ["id", "status", "exitCode", "stdout", "stderr", "timing"],
+  type: "object", required: ["id", "status", "exitCode", "stdout", "stderr", "timing", "result"],
   properties: {
     id: { type: "string" }, status: { enum: ["completed", "interrupted", "failed"] },
-    actionId: { type: "string", description: "Separately running device action. Command completion does not imply action completion; inspect stdout.status or wait by this ID." },
+    actionId: { type: "string", description: "Separately running device action. Command completion does not imply action completion; inspect result.structuredContent.status or wait by this ID." },
     readOnly: { type: "boolean", description: "State query; does not change device input even when it requires ownership." },
-    exitCode: { type: "integer" }, stdout: { type: "string", description: "Driver output; see controller.stdoutSchema when declared." },
+    exitCode: { type: "integer" }, stdout: { type: "string", description: "Driver output; read result.structuredContent and the tool outputSchema when declared." },
     stderr: { type: "string" }, timing: timingSchema,
+    result: { type: "object", required: ["content"], description: "Unmodified native MCP CallToolResult: content, structuredContent, isError and metadata. Consult each tool outputSchema for structuredContent." },
     observations: { type: "array", items: {
       type: "object", required: ["id", "controllerId", "mediaType", "path", "timing"],
       properties: { id: { type: "string" }, controllerId: { type: "string" }, mediaType: { type: "string" },
         path: { type: "string", description: "Local file containing the observation; read the file to consume its media." },
-        timing: timingSchema, sourceSequence: { type: "number" } },
+        timing: timingSchema, sourceSequence: { type: "number" }, contentIndex: { type: "integer", minimum: 0 } },
     } },
   },
 };
@@ -29,31 +30,23 @@ export const executionResultSchema: JsonSchema = {
 /** A readable snapshot of live discovery, with the same contract for every client. */
 export function capabilityDocument(catalog: Catalog) {
   return {
-    schemaVersion: 1, generatedAt: new Date().toISOString(),
+    schemaVersion: 2, generatedAt: new Date().toISOString(),
     drivers: catalog.drivers, controllers: catalog.controllers,
     invocation: {
       inputSchema: {
         $schema: "https://json-schema.org/draft/2020-12/schema",
-        type: "object", required: ["controllerId", "argv"], additionalProperties: false,
-        properties: { controllerId: { type: "string", enum: catalog.controllers.map(controller => controller.id) },
-          argv: { type: "array", items: { type: "string" } } },
+        type: "object", required: ["controllerId", "arguments"], additionalProperties: false,
+        properties: { controllerId: { type: "string", enum: catalog.controllers.map(controller => controller.name) },
+          arguments: { type: "object", description: "Parameters matching the selected controller inputSchema; no argv conversion." } },
       },
-      python: { import: "from baseware import Client", call: "Client().controller(controllerId, argv)" },
-      cli: "baseware controller <controllerId> <argv...>",
-      mcp: { tool: "baseware_controller_<controllerId>", arguments: "{argv: string[], epoch?: string}",
-        naming: "Characters outside a-z, A-Z, 0-9, _, ., - in controllerId are replaced with _.",
-        result: "content[0].text contains the JSON execution result, followed by image blocks. Errors set isError=true; service errors return an error message instead of an execution result." },
+      python: { import: "from baseware import Client", call: "Client().controller(controllerId, arguments)" },
+      cli: "baseware controller <name> --args '<JSON object>' (or --file <arguments.json>)",
+      mcp: { tool: "<native tool name>", arguments: "Native inputSchema parameter object; no epoch or argv wrapper.",
+        result: "Unmodified native CallToolResult. Baseware timing/control metadata are available in the API envelope and journal.",
+        control: "BASEWARE_EPOCH is inherited by the MCP server process, outside tool arguments; MCP never acquires control automatically." },
+      media: "API/MCP preserve native binary content. CLI display and journal replace binary data/blob with archived dataPath/blobPath; observations.contentIndex maps each file to its native content block.",
       control: "requiresControl=true needs the caller's existing BASEWARE_EPOCH. Clients do not acquire control automatically.",
       errors: "Service/argument errors raise in the API, exit nonzero in the CLI, or set isError in MCP. A returned result can also have a nonzero exitCode or interrupted/failed status.",
-    },
-    commandEncoding: {
-      description: "commands describe named parameter objects, not a new RPC interface. Build argv using the rules below, then call an existing client.",
-      prefix: "Start with command.name unless it is empty.",
-      bindings: "Visit bindings in order. For each supplied parameter, append its flag if present, then one encoded value. style=joined emits flag=value as one token, preserving leading dashes in values. Omit absent optional parameters.",
-      string: "Encode numbers and strings as one string token; do not shell-split it.",
-      json: "Serialize the parameter as one JSON string token.",
-      files: "x-fileContentSchema describes JSON stored in the file named by a path parameter, not the path string itself.",
-      defaults: "An omitted parameter uses the driver default documented in parameters/help.",
     },
     executionResultSchema,
   };

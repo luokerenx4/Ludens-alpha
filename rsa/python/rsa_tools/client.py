@@ -43,13 +43,15 @@ class Client:
         return self._request("help", id=capability_id)
 
     def call(self, capability_id, arguments=None):
-        """Call a driver with argv, or a local Python function with named arguments."""
+        """Call a driver or local Python function with named arguments."""
         if capability_id.startswith("python/"):
             from ._capabilities import call_local
             context = self._context()
             with scope(context):
                 return call_local(Path(context["workspace"]), capability_id, arguments if arguments is not None else {})
-        fields = {"id": capability_id}
-        if arguments is not None:
-            fields["arguments"] = arguments
+        if arguments is None:
+            arguments = {}
+        if not isinstance(arguments, dict):
+            raise TypeError("Driver capability arguments must be a JSON object")
+        fields = {"id": capability_id, "arguments": arguments}
         return self._request("call", **fields)

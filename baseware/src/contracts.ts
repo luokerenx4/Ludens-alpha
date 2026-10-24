@@ -1,3 +1,6 @@
+import type { ToolArguments, ToolDefinition, ToolResult } from "./tool-contract.ts";
+export type { ToolArguments, ToolDefinition, ToolResult, JsonSchema } from "./tool-contract.ts";
+
 export interface Clock {
   id: string;
   now(): number;
@@ -10,6 +13,8 @@ export interface Observation {
   path: string;
   timing: { clock: string; requestedAtMs: number; receivedAtMs: number };
   sourceSequence?: number;
+  /** Position of the original native content block, when this file archives tool media. */
+  contentIndex?: number;
 }
 
 export interface ExecutionResult {
@@ -24,30 +29,19 @@ export interface ExecutionResult {
   stderr: string;
   timing: { clock: string; requestedAtMs: number; receivedAtMs: number };
   observations?: Observation[];
+  /** Native payload; timing and control metadata remain outside its contract. */
+  result?: ToolResult;
 }
 
-/** JSON Schema for named parameters or decoded JSON values; never inferred from help text. */
-export type JsonSchema = Record<string, unknown>;
-
-export interface CommandSchema {
-  /** First argv token; an empty name means no command prefix. */
-  name: string;
-  description?: string;
-  parameters: JsonSchema;
-  /** In order: optional flag, then encoded value; joined emits flag=value as one token. */
-  bindings: { parameter: string; flag?: string; encoding: "string" | "json"; style?: "joined" }[];
-}
+export interface ToolExecutionResult extends ExecutionResult { result: ToolResult }
 
 export interface Controller {
-  id: string;
+  tool: ToolDefinition;
+  /** Independent of readOnlyHint: even state queries may require device ownership. */
   requiresControl: boolean;
   mediaTypes?: readonly string[];
-  commands?: CommandSchema[];
-  /** Schema of JSON.parse(result.stdout), when the driver declares JSON output. */
-  stdoutSchema?: JsonSchema;
-  help(): string;
   acquire?(epoch: string): Promise<void>;
-  execute(argv: readonly string[], context: ControllerContext): Promise<ExecutionResult>;
+  execute(args: ToolArguments, context: ControllerContext): Promise<ToolExecutionResult>;
   release?(epoch: string): Promise<void>;
 }
 
@@ -61,9 +55,4 @@ export interface ControllerContext {
 
 export interface Capabilities {
   controllers: Controller[];
-}
-
-export interface ControllerRequest {
-  controllerId: string;
-  argv: string[];
 }

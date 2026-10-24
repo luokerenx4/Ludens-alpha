@@ -60,7 +60,7 @@ export interface Observation {
   captureMs?: number;
   encodeMs?: number;
   modelCallId?: string;
-  request?: { controllerId: string; argv: string[] };
+  request?: { controllerId: string; arguments?: Record<string, unknown>; argv?: string[] };
 }
 export interface PerceptionStatus {
   state: "unimplemented" | "loading" | "ready" | "stopped" | "error";

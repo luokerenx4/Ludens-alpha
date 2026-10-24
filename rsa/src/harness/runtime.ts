@@ -1,4 +1,4 @@
-import type { ExecutionResult } from "@playness/baseware/contracts";
+import type { ExecutionResult, ToolArguments } from "@playness/baseware/contracts";
 import type { Catalog } from "@playness/baseware/protocol";
 import type { EventTrace, RecordEvent } from "./events.ts";
 import type { PerceptionRuntime } from "./perception.ts";
@@ -17,7 +17,7 @@ export interface DeviceSession {
   readonly catalog: Catalog;
   acquire(epoch: string): Promise<void>;
   release(epoch: string): Promise<void>;
-  execute(id: string, argv: string[], epoch: string | undefined, signal: AbortSignal, trace: EventTrace, origin?: ObservationOrigin): Promise<ExecutionResult>;
+  execute(id: string, args: ToolArguments, epoch: string | undefined, signal: AbortSignal, trace: EventTrace, origin?: ObservationOrigin): Promise<ExecutionResult>;
 }
 
 export class Runtime {

@@ -1,0 +1,54 @@
+{
+  "repository": "https://github.com/trycua/cua",
+  "revision": "6d6c734c127025fb39ad5d585a10382808b39dc1",
+  "tag": "cua-driver-rs-v0.36.0",
+  "driverVersion": "0.36.0",
+  "contractVersion": "0.8.0",
+  "license": "MIT",
+  "scope": "All files are unmodified upstream bytes. contract/manifest.json is the complete published portable contract, not the full native tool catalog. macos-tools.json is the installed macOS binary documentation projection (all tool input schemas, not live outputSchema/_meta). Runtime discovery must preserve every live tools/list entry, including tools absent here.",
+  "generator": "libs/cua-driver/rust/crates/cua-driver-contract/src/bin/cua-contract-gen.rs",
+  "files": [
+    {
+      "path": "LICENSE.md",
+      "upstreamPath": "LICENSE.md",
+      "sha256": "c0779290c1d4783169aa3dbfb55feb505e563ef8a004bbf55298ceffcfbda8d9"
+    },
+    {
+      "path": "contract/README.md",
+      "upstreamPath": "libs/cua-driver/contract/README.md",
+      "sha256": "b72fa2f088b6001b9b1ee6f32b2be9ddedde65c886cd196740af9d8026e2013d"
+    },
+    {
+      "path": "contract/manifest.json",
+      "upstreamPath": "libs/cua-driver/contract/manifest.json",
+      "sha256": "2a59d849ffb8c267fbfd145e2dfee4f13029c6eb880f119e0b5cbe90d50d33f9"
+    },
+    {
+      "path": "contract/fixtures/image-result.json",
+      "upstreamPath": "libs/cua-driver/contract/fixtures/image-result.json",
+      "sha256": "58ddb3bfec33daf589c09effe06ff2f119c5775d6432a1cb0416dca3d4ed45a6"
+    },
+    {
+      "path": "contract/fixtures/session-success.json",
+      "upstreamPath": "libs/cua-driver/contract/fixtures/session-success.json",
+      "sha256": "5bcddd97aab16111ece3fa0dfc8351733b327c040cb668b64d72f6badfc14058"
+    },
+    {
+      "path": "contract/fixtures/tool-refusal.json",
+      "upstreamPath": "libs/cua-driver/contract/fixtures/tool-refusal.json",
+      "sha256": "8803bfe2f05281eea2ceb331a0ced2c9e6a8ae07a359e7629467eb44dfe80796"
+    },
+    {
+      "path": "macos-tools.json",
+      "command": [
+        "cua-driver",
+        "dump-docs",
+        "--type",
+        "mcp"
+      ],
+      "platform": "darwin",
+      "toolCount": 60,
+      "sha256": "d3f6b632dbcb0926d3ba76cf49d9f47359323a02e9c7a80bc2770e110d29d359"
+    }
+  ]
+}

@@ -172,6 +172,7 @@ Current documentation lives in the root `docs/` directory. Component READMEs onl
 
 | Guide | Contents |
 | --- | --- |
+| [Baseware](docs/baseware.md) | CUA native capability contract, driver boundaries, control, media, and upstream snapshots. |
 | [Architecture](docs/architecture.md) | Component boundaries, Shiori, control flow, and extension points. |
 | [Development](docs/development.md) | Installation, device setup, service lifecycle, verification, and WS test provenance. |
 | [Workspace](docs/workspace.md) | Configuration, Python capabilities, perception, and agent-owned programs. |

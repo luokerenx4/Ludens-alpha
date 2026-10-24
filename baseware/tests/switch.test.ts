@@ -1,9 +1,12 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { call } from "./driver-fixture.ts";
 import { AXES, BUTTONS, createSwitchProvider, encodeSpans } from "../src/drivers/ryubing/provider.ts";
+
+const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
 
 test("Switch controls encode complete digital and analog states without game semantics", () => {
   expect(encodeSpans([
@@ -33,7 +36,7 @@ test("Switch accepts long actions and sequences while rejecting invalid or unsaf
 });
 
 async function withSwitchBridge(run: (provider: Awaited<ReturnType<typeof createSwitchProvider>>,
-  captures: { path: string; atMs: number }[], requests: string[], typed: string[]) => Promise<void>) {
+  captures: { path: string; atMs: number }[], requests: string[], typed: string[]) => Promise<void>, surface = "screen") {
   const directory = await mkdtemp(join(tmpdir(), "rsa-switch-capture-"));
   const captures: { path: string; atMs: number }[] = [];
   const requests: string[] = [];
@@ -57,7 +60,7 @@ async function withSwitchBridge(run: (provider: Awaited<ReturnType<typeof create
         }
         else if (op === "CAPTURE") {
           captures.push({ path, atMs: performance.now() });
-          socket.write(`${id}\tOK\t${captures.length}\n`);
+          void writeFile(path, png).then(() => socket.write(`${id}\tOK\t${captures.length}\t${surface}\n`));
         } else socket.write(`${id}\tERROR\tUnexpected operation: ${op}\n`);
       }
     });
@@ -75,14 +78,14 @@ async function withSwitchBridge(run: (provider: Awaited<ReturnType<typeof create
 
 test("Switch capture defaults to zero delay and includes a requested delay in its sampling interval", async () => {
   await withSwitchBridge(async (provider, captures) => {
-    const screen = provider.capabilities.controllers.find(c => c.id === "screen")!;
-    expect(screen.commands).toMatchObject([{ name: "capture", parameters: {
+    const screen = provider.capabilities.controllers.find(c => c.tool.name === "screen.capture")!;
+    expect(screen.tool).toMatchObject({ name: "screen.capture", inputSchema: {
       properties: { delayMs: { type: "integer", minimum: 0, maximum: 2_147_483_647, default: 0 } },
-    }, bindings: [{ parameter: "delayMs", flag: "--delay-ms", encoding: "string" }] }]);
+    } });
     const signal = new AbortController().signal;
-    const first = (await screen.execute(["capture"], { signal })).observations![0];
-    const second = (await screen.execute(["capture", "--delay-ms", "0"], { signal })).observations![0];
-    const delayed = (await screen.execute(["capture", "--delay-ms", "40"], { signal })).observations![0];
+    const first = (await call(screen, {}, { signal })).observations![0];
+    const second = (await call(screen, { delayMs: 0 }, { signal })).observations![0];
+    const delayed = (await call(screen, { delayMs: 40 }, { signal })).observations![0];
     expect(captures).toHaveLength(3);
     expect(captures.map(capture => capture.path)).toEqual([first.path, second.path, delayed.path]);
     expect(first.sourceSequence).toBe(1);
@@ -93,25 +96,33 @@ test("Switch capture defaults to zero delay and includes a requested delay in it
   });
 });
 
+test("Switch keyboard capture preserves its surface without inventing a game-frame sequence", async () => {
+  await withSwitchBridge(async provider => {
+    const screen = provider.capabilities.controllers.find(c => c.tool.name === "screen.capture")!;
+    const capture = await call(screen, {}, { signal: new AbortController().signal });
+    expect(capture.result.structuredContent).toEqual({ source: "keyboard", timing: capture.timing });
+    expect(capture.observations![0].sourceSequence).toBeUndefined();
+    expect(capture.result.content[capture.observations![0].contentIndex!]).toEqual({ type: "image", mimeType: "image/png", data: png.toString("base64") });
+  }, "keyboard");
+});
+
 test("Switch capture rejects invalid delay arguments before contacting the bridge", async () => {
   await withSwitchBridge(async (provider, captures) => {
-    const screen = provider.capabilities.controllers.find(c => c.id === "screen")!;
+    const screen = provider.capabilities.controllers.find(c => c.tool.name === "screen.capture")!;
     const signal = new AbortController().signal;
-    for (const value of ["-1", "1.5", "NaN", "Infinity", "2147483648", "", " "]) {
-      await expect(screen.execute(["capture", `--delay-ms=${value}`], { signal })).rejects.toThrow("delay-ms");
+    for (const delayMs of [-1, 1.5, NaN, Infinity, 2147483648, "", " ", "40"]) {
+      await expect(call(screen, { delayMs }, { signal })).rejects.toThrow();
     }
-    for (const argv of [["capture", "--delay-ms"], ["capture", "--unknown", "1"], ["capture", "extra"], ["wrong"]]) {
-      await expect(screen.execute(argv, { signal })).rejects.toThrow();
-    }
+    await expect(call(screen, { unknown: 1 }, { signal })).rejects.toThrow();
     expect(captures).toHaveLength(0);
   });
 });
 
 test("Switch capture cancellation during the delay never sends CAPTURE", async () => {
   await withSwitchBridge(async (provider, captures) => {
-    const screen = provider.capabilities.controllers.find(c => c.id === "screen")!;
+    const screen = provider.capabilities.controllers.find(c => c.tool.name === "screen.capture")!;
     const abort = new AbortController();
-    const pending = screen.execute(["capture", "--delay-ms", "80"], { signal: abort.signal }).catch(error => error);
+    const pending = call(screen, { delayMs: 80 }, { signal: abort.signal }).catch(error => error);
     await Bun.sleep(10);
     expect(captures).toHaveLength(0);
     abort.abort();
@@ -120,7 +131,7 @@ test("Switch capture cancellation during the delay never sends CAPTURE", async (
     expect(error.name).toBe("AbortError");
     await Bun.sleep(90);
     expect(captures).toHaveLength(0);
-    await expect(screen.execute(["capture"], { signal: abort.signal })).rejects.toThrow();
+    await expect(call(screen, {}, { signal: abort.signal })).rejects.toThrow();
     expect(captures).toHaveLength(0);
   });
 });
@@ -128,45 +139,40 @@ test("Switch capture cancellation during the delay never sends CAPTURE", async (
 
 test("Switch touch and pad share one owner acquisition and release", async () => {
   await withSwitchBridge(async (provider, _captures, requests) => {
-    const pad = provider.capabilities.controllers.find(c => c.id === "pad")!;
-    const touch = provider.capabilities.controllers.find(c => c.id === "touch")!;
+    const pad = provider.capabilities.controllers.find(c => c.tool.name === "pad.play")!;
+    const touch = provider.capabilities.controllers.find(c => c.tool.name === "touch.down")!;
     await pad.acquire!("epoch");
     await touch.acquire!("epoch");
     await touch.release!("epoch");
     await pad.release!("epoch");
     expect(requests.filter(op => op === "OWN")).toHaveLength(1);
     expect(requests.filter(op => op === "DISOWN")).toHaveLength(1);
-    expect(touch.help()).toContain("x=0..1279, y=0..719");
-    expect(touch.commands?.find(c => c.name === "down")?.parameters).toMatchObject({
+    expect(touch.tool.description).toContain("x=0..1279, y=0..719");
+    expect(touch.tool.inputSchema).toMatchObject({
       properties: { x: { maximum: 1279 }, y: { maximum: 719 } },
     });
   });
 });
 
-test("Switch catalog describes actual pad channels, sequence file contents and keyboard keys", async () => {
+test("Switch tools describe actual pad channels and software keyboard keys", async () => {
   await withSwitchBridge(async (provider, _captures, _requests, typed) => {
-    const pad = provider.capabilities.controllers.find(c => c.id === "pad")!;
+    const pad = provider.capabilities.controllers.find(c => c.tool.name === "pad.play")!;
     const state = { type: "object", additionalProperties: false, properties: {
       ...Object.fromEntries(BUTTONS.map(key => [key, { type: "integer", enum: [0, 1] }])),
       ...Object.fromEntries(AXES.map(key => [key, { type: "number", minimum: -1, maximum: 1 }])),
     } };
-    expect(pad.commands?.map(c => c.name)).toEqual(["state", "play", "status", "wait", "cancel", "release"]);
-    expect(pad.commands?.find(c => c.name === "play")?.parameters).toMatchObject({ properties: {
+    expect(provider.capabilities.controllers.filter(c => c.tool.name.startsWith("pad.")).map(c => c.tool.name)).toEqual(["pad.state", "pad.play", "pad.status", "pad.wait", "pad.cancel", "pad.release"]);
+    expect(pad.tool.inputSchema).toMatchObject({ required: ["inputs"], additionalProperties: false, properties: {
       inputs: { type: "array", items: { properties: { state, durationMs: { minimum: 1 }, atMs: { minimum: 0 } }, required: ["atMs", "durationMs", "state"] } },
-      file: { type: "string", "x-fileContentSchema": { type: "object", properties: {
-        inputs: { type: "array", minItems: 1, items: { properties: { state, durationMs: { minimum: 1 } } } },
-      }, required: ["inputs"] } },
-      wait: { type: "string", enum: ["true", "false"], default: "false" },
+      wait: { type: "boolean", default: false },
     } });
-    const keyboard = provider.capabilities.controllers.find(c => c.id === "keyboard")!;
-    expect(keyboard.commands).toMatchObject([
-      { name: "type", parameters: { properties: { text: { type: "string" } }, required: ["text"] } },
-      { name: "press", parameters: { properties: { key: { enum: ["ENTER", "ESCAPE", "BACKSPACE", "CTRL+A"] } }, required: ["key"] } },
+    const keyboard = provider.capabilities.controllers.find(c => c.tool.name === "keyboard.type")!;
+    expect(provider.capabilities.controllers.filter(c => c.tool.name.startsWith("keyboard.")).map(c => c.tool)).toMatchObject([
+      { name: "keyboard.type", inputSchema: { properties: { text: { type: "string" } }, required: ["text"] } },
+      { name: "keyboard.press", inputSchema: { properties: { key: { enum: ["ENTER", "ESCAPE", "BACKSPACE", "CTRL+A"] } }, required: ["key"] } },
     ]);
-    const binding = keyboard.commands![0]!.bindings[0]!;
-    expect(binding.style).toBe("joined");
     await keyboard.acquire!("epoch");
-    await keyboard.execute(["type", `${binding.flag}=--help 文本`], { epoch: "epoch", signal: new AbortController().signal });
+    await call(keyboard, { text: "--help 文本" }, { epoch: "epoch", signal: new AbortController().signal });
     expect(typed).toEqual(["--help 文本"]);
     await keyboard.release!("epoch");
   });
@@ -196,31 +202,32 @@ test("Switch release waits for a late action result before reporting release or 
           if (op === "DISOWN") owner = undefined;
           ok(); // Ryubing schedules the APPLY completion asynchronously, after this acknowledgement.
           acknowledged.resolve();
-        } else if (op === "CAPTURE") ok("1");
+        } else if (op === "CAPTURE") void writeFile(epoch, png).then(() => ok("1"));
       }
     });
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const provider = await createSwitchProvider({ port: (server.address() as AddressInfo).port,
     artifactsDir: directory, clock: { id: "release-order", now: () => performance.now() } });
-  const pad = provider.capabilities.controllers[0];
-  const screen = provider.capabilities.controllers.find(c => c.id === "screen")!;
+  const tool = (name: string) => provider.capabilities.controllers.find(c => c.tool.name === name)!;
+  const pad = tool("pad.play");
+  const screen = provider.capabilities.controllers.find(c => c.tool.name === "screen.capture")!;
   const context = {epoch: "old", signal: new AbortController().signal};
   try {
     await pad.acquire!(context.epoch);
     for (const disown of [false, true]) {
       acknowledged = Promise.withResolvers<void>();
-      const action = JSON.parse((await pad.execute(["play", "--inputs", '[{"atMs":0,"durationMs":30000,"state":{"A":1}}]'], context)).stdout);
+      const action = JSON.parse((await call(pad, { inputs: [{ atMs: 0, durationMs: 30000, state: { A: 1 } }] }, context)).stdout);
       let released = false;
-      const releasing = (disown ? pad.release!(context.epoch) : pad.execute(["release"], context)).then(() => { released = true; });
+      const releasing = (disown ? pad.release!(context.epoch) : call(tool("pad.release"), {}, context)).then(() => { released = true; });
       await acknowledged.promise;
       // This later response on the same socket proves the STOP/DISOWN reply was consumed,
       // without sleeps or depending on thread scheduling for the delayed action result.
-      await screen.execute(["capture"], {signal: context.signal});
+      await call(screen, {}, {signal: context.signal});
       expect(released).toBe(false);
       finishAction!();
       await releasing;
-      if (!disown) expect(JSON.parse((await pad.execute(["wait", "--action", action.actionId], context)).stdout).status).toBe("interrupted");
+      if (!disown) expect(JSON.parse((await call(tool("pad.wait"), { actionId: action.actionId }, context)).stdout).status).toBe("interrupted");
     }
     await pad.acquire!("new");
     expect(owner).toBe("new");

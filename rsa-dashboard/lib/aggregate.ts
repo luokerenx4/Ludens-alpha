@@ -77,7 +77,8 @@ export function aggregate(events: Event[], now = Date.now()) {
     if (event.type === "context")
       contexts.set(t.epoch, { observations: d.observations ?? [], executions: d.executions ?? [] });
     if (event.type === "observation_start" && t.operationId)
-      observationRequests.set(observationKey, { controllerId: d.controllerId ?? d.sensorId, argv: d.argv });
+      observationRequests.set(observationKey, { controllerId: d.controllerId ?? d.sensorId,
+        ...(d.arguments !== undefined ? { arguments: d.arguments } : { argv: d.argv }) });
     if (event.type === "auto_compaction_start") {
       compaction = {
         startedAt: event.at,

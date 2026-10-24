@@ -35,9 +35,22 @@ export async function connectBaseware(options: { socket: string; seconds: number
       } else if (event.type === "execution") {
         const result = event.data as ExecutionResult;
         // The following observation events archive these same immutable files.
-        if (result.observations) event = { ...event, data: { ...result,
-          observations: result.observations.map(observation => ({ ...observation, path: localPath(observation) })),
-        } };
+        if (result.observations) {
+          const observations = result.observations.map(observation => ({ ...observation, path: localPath(observation) }));
+          // Baseware's event payload already replaces native binary data with
+          // files; only relocate those references into this run's archive.
+          const native = result.result;
+          event = { ...event, data: { ...result, observations, ...(native ? { result: { ...native,
+            content: native.content.map((block, index) => {
+              const path = observations.find(observation => observation.contentIndex === index)?.path;
+              if (!path) return block;
+              if (block.type === "image" || block.type === "audio") return { ...block, dataPath: path };
+              if (block.type === "resource" && "blobPath" in block.resource)
+                return { ...block, resource: { ...block.resource, blobPath: path } };
+              return block;
+            }),
+          } } : {}) } };
+        }
       }
       options.record(event.type, event.data, event.trace as EventTrace, { source: event.source, origin: event.origin });
       if (event.type === "baseware_control") {
@@ -76,8 +89,8 @@ export async function connectBaseware(options: { socket: string; seconds: number
     }
     const session: DeviceSession = {
       catalog, acquire, release,
-      async execute(id, argv, epoch, signal, trace, origin) {
-        const result = await client.request({ kind: "controller", id, argv, epoch, trace: { ...trace }, origin }, signal) as ExecutionResult;
+      async execute(id, args, epoch, signal, trace, origin) {
+        const result = await client.request({ kind: "controller", id, arguments: args, epoch, trace: { ...trace }, origin }, signal) as ExecutionResult;
         return { ...result, ...(result.observations ? {
           observations: result.observations.map(observation => ({ ...observation, path: localPath(observation) })),
         } : {}) };

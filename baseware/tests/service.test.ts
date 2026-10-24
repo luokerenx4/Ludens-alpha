@@ -6,7 +6,7 @@ import { BasewareCore } from "../src/core.ts";
 import { BasewareClient } from "../src/client.ts";
 import { EventLog } from "../src/events.ts";
 import { listen } from "../src/server.ts";
-import type { Capabilities, ExecutionResult } from "../src/contracts.ts";
+import type { Capabilities, ExecutionResult, ToolExecutionResult } from "../src/contracts.ts";
 import type { DeviceEvent } from "../src/protocol.ts";
 
 const cleanup: (() => Promise<void>)[] = [];
@@ -24,19 +24,19 @@ async function fixture(execute?: Capabilities["controllers"][number]["execute"])
   let actions = 0, cancelled = 0, sample = 0;
   const events: DeviceEvent[] = [];
   const capabilities: Capabilities = {
-    controllers: [{ id: "motor", requiresControl: true, help: () => "step | wait", async acquire(epoch) { owner = epoch; }, async release() { owner = undefined; },
-      execute: execute ?? (async (argv, { epoch, signal }): Promise<ExecutionResult> => {
+    controllers: [{ tool: { name: "motor", inputSchema: { type: "object", properties: { wait: { type: "boolean" } }, additionalProperties: false } }, requiresControl: true, async acquire(epoch) { owner = epoch; }, async release() { owner = undefined; },
+      execute: execute ?? (async (args, { epoch, signal }): Promise<ToolExecutionResult> => {
         if (owner !== epoch) throw new Error("wrong owner");
         actions++;
-        if (argv[0] === "wait") await new Promise<void>(done => signal.addEventListener("abort", () => { cancelled++; done(); }, { once: true }));
-        return { id: crypto.randomUUID(), status: signal.aborted ? "interrupted" : "completed", exitCode: signal.aborted ? 130 : 0,
+        if (args.wait) await new Promise<void>(done => signal.addEventListener("abort", () => { cancelled++; done(); }, { once: true }));
+        return { result: { content: [] }, id: crypto.randomUUID(), status: signal.aborted ? "interrupted" : "completed", exitCode: signal.aborted ? 130 : 0,
           stdout: String(actions), stderr: "", timing: { clock: "device", requestedAtMs: 0, receivedAtMs: 1 } };
-      }) }, { id: "thermal", requiresControl: false, mediaTypes: ["text/plain"], help: () => "sample",
-      async execute(argv, { signal }) {
-        if (argv[0] === "wait") await new Promise<void>((resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+      }) }, { tool: { name: "thermal", description: "sample", inputSchema: { type: "object", properties: { wait: { type: "boolean" } }, additionalProperties: false } }, requiresControl: false, mediaTypes: ["text/plain"],
+      async execute(args, { signal }) {
+        if (args.wait) await new Promise<void>((resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
         const id = `sample-${++sample}`;
         const timing = { clock: "device", requestedAtMs: sample * 10, receivedAtMs: sample * 10 + 1 };
-        return { id: `capture-${sample}`, status: "completed", exitCode: 0, stdout: "", stderr: "", timing,
+        return { result: { content: [] }, id: `capture-${sample}`, status: "completed", exitCode: 0, stdout: "", stderr: "", timing,
           observations: [{ id, controllerId: "thermal", path: "/tmp/fake-observation.txt", mediaType: "text/plain", timing, sourceSequence: sample }] };
       } }],
   };
@@ -53,31 +53,34 @@ async function fixture(execute?: Capabilities["controllers"][number]["execute"])
 
 test("client API and CLI use the same catalog, epoch checks and device journal", async () => {
   const f = await fixture();
-  expect(await f.client.request({ kind: "list" })).toMatchObject({ drivers: [{ id: "fake", version: "1" }], controllers: [{ id: "motor", requiresControl: true }, { id: "thermal", requiresControl: false, help: "sample" }] });
+  expect(await f.client.request({ kind: "list" })).toMatchObject({ drivers: [{ id: "fake", version: "1" }], controllers: [{ name: "motor", requiresControl: true }, { name: "thermal", requiresControl: false, description: "sample" }] });
   await f.client.request({ kind: "acquire", epoch: f.epoch, seconds: 30 });
-  const cli = Bun.spawn([process.execPath, "src/main.ts", "controller", "motor", "step"], {
+  const cli = Bun.spawn([process.execPath, "src/main.ts", "controller", "motor", "--args", "{}"], {
     cwd: join(import.meta.dir, ".."), env: { ...process.env, BASEWARE_SOCKET: f.socket, BASEWARE_EPOCH: f.epoch, BASEWARE_TRACE: JSON.stringify({ toolCallId: "cli-call" }) },
     stdout: "pipe", stderr: "pipe",
   });
   const text = await new Response(cli.stdout).text();
   expect(await cli.exited).toBe(0);
   expect(JSON.parse(text)).toMatchObject({ status: "completed", stdout: "1" });
+  // Explicit JSON null must not become an empty argument object on the wire.
+  await expect(f.client.request({ kind: "controller", id: "motor", arguments: JSON.parse("null"), epoch: f.epoch })).rejects.toThrow("JSON object");
+  expect(f.actions()).toBe(1);
   expect(f.core.status().mode).toBe("auto");
   expect(f.events.find(e => e.type === "execution")?.trace.toolCallId).toBe("cli-call");
-  await f.client.request({ kind: "controller", id: "thermal", argv: ["sample"], trace: { toolCallId: "observe-call" } });
+  await f.client.request({ kind: "controller", id: "thermal", arguments: {}, trace: { toolCallId: "observe-call" } });
   expect(f.events.find(e => e.type === "observation")?.data).toMatchObject({ afterExecution: { toolCallId: "cli-call" } });
   await f.client.request({ kind: "release", epoch: f.epoch });
-  await expect(f.client.request({ kind: "controller", id: "motor", argv: ["step"], epoch: f.epoch })).rejects.toThrow("STALE_EPOCH");
+  await expect(f.client.request({ kind: "controller", id: "motor", arguments: {}, epoch: f.epoch })).rejects.toThrow("STALE_EPOCH");
 });
 
 test("sensing uses the same controller call without a lease and preserves the last action", async () => {
   const f = await fixture();
-  const sample = () => f.client.request({ kind: "controller", id: "thermal", argv: ["sample"] }) as Promise<ExecutionResult>;
+  const sample = () => f.client.request({ kind: "controller", id: "thermal", arguments: {} }) as Promise<ExecutionResult>;
   const first = await sample();
   expect(first).toMatchObject({ status: "completed", observations: [{ controllerId: "thermal", sourceSequence: 1 }] });
   expect(f.core.status().mode).toBe("manual");
   await f.client.request({ kind: "acquire", epoch: f.epoch, seconds: 30 });
-  await f.client.request({ kind: "controller", id: "motor", argv: ["step"], epoch: f.epoch, trace: { toolCallId: "action" } });
+  await f.client.request({ kind: "controller", id: "motor", arguments: {}, epoch: f.epoch, trace: { toolCallId: "action" } });
   await sample();
   await sample();
   const observations = f.events.filter(e => e.type === "observation");
@@ -95,21 +98,21 @@ test("AbortSignal cancels one long call while keeping its owner's lease", async 
   const f = await fixture();
   await f.client.request({ kind: "acquire", epoch: f.epoch, seconds: 30 });
   const signal = new AbortController();
-  const action = f.client.request({ kind: "controller", id: "motor", argv: ["wait"], epoch: f.epoch }, signal.signal);
+  const action = f.client.request({ kind: "controller", id: "motor", arguments: { wait: true }, epoch: f.epoch }, signal.signal);
   await until(() => f.actions() === 1);
   signal.abort();
   await expect(action).rejects.toThrow();
   await until(() => f.cancelled() === 1);
   expect(f.owner()).toBe(f.epoch);
   expect(f.core.status().mode).toBe("auto");
-  expect(await f.client.request({ kind: "controller", id: "motor", argv: ["step"], epoch: f.epoch })).toMatchObject({ status: "completed" });
+  expect(await f.client.request({ kind: "controller", id: "motor", arguments: {}, epoch: f.epoch })).toMatchObject({ status: "completed" });
 });
 
 test("closing an ordinary caller cancels its operation but closing the owner restores manual control", async () => {
   const f = await fixture();
   await f.client.request({ kind: "acquire", epoch: f.epoch, seconds: 30 });
   const caller = await BasewareClient.connect(f.socket);
-  const action = caller.request({ kind: "controller", id: "motor", argv: ["wait"], epoch: f.epoch });
+  const action = caller.request({ kind: "controller", id: "motor", arguments: { wait: true }, epoch: f.epoch });
   await until(() => f.actions() === 1);
   caller.close();
   await expect(action).rejects.toThrow("disconnected");
@@ -122,7 +125,7 @@ test("closing an ordinary caller cancels its operation but closing the owner res
 });
 
 test("human revoke releases devices without waiting for an uncooperative action", async () => {
-  const done = Promise.withResolvers<ExecutionResult>();
+  const done = Promise.withResolvers<ToolExecutionResult>();
   let started = false;
   const f = await fixture(async () => { started = true; return done.promise; });
   await f.client.request({ kind: "acquire", epoch: f.epoch, seconds: 30 });
@@ -130,7 +133,7 @@ test("human revoke releases devices without waiting for an uncooperative action"
   await until(() => started);
   expect(await f.client.request({ kind: "revoke" })).toMatchObject({ mode: "manual" });
   expect(f.owner()).toBeUndefined();
-  done.resolve({ id: "late", status: "interrupted", exitCode: 130, stdout: "", stderr: "", timing: { clock: "device", requestedAtMs: 0, receivedAtMs: 1 } });
+  done.resolve({ result: { content: [] }, id: "late", status: "interrupted", exitCode: 130, stdout: "", stderr: "", timing: { clock: "device", requestedAtMs: 0, receivedAtMs: 1 } });
   expect(await action).toMatchObject({ status: "interrupted" });
 });
 
@@ -166,7 +169,7 @@ test("owner disconnect during acquisition releases a late acquisition", async ()
 });
 
 test("duplicate capability IDs fail registration", () => {
-  const controller = { id: "same", requiresControl: false, help: () => "", execute: async (): Promise<ExecutionResult> => {
+  const controller = { tool: { name: "same", inputSchema: { type: "object" as const } }, requiresControl: false, execute: async (): Promise<ToolExecutionResult> => {
     throw new Error("unused");
   } };
   expect(() => new BasewareCore({ drivers: [], capabilities: { controllers: [controller, controller] } })).toThrow("Duplicate");
@@ -198,13 +201,13 @@ test("device operations have distinct child spans and terminal events for succes
   const f = await fixture();
   const parent = { traceId: "a".repeat(32), spanId: "b".repeat(16), toolCallId: "parent-tool" };
   await f.client.request({ kind: "acquire", epoch: f.epoch, seconds: 30 });
-  await f.client.request({ kind: "controller", id: "motor", argv: ["step"], epoch: f.epoch, trace: parent });
+  await f.client.request({ kind: "controller", id: "motor", arguments: {}, epoch: f.epoch, trace: parent });
   await f.client.request({ kind: "controller", id: "thermal", trace: parent });
   await expect(f.client.request({ kind: "controller", id: "motor", epoch: "stale", trace: parent })).rejects.toThrow("STALE_EPOCH");
   await expect(f.client.request({ kind: "controller", id: "absent", trace: parent })).rejects.toThrow("Unknown controller");
   const abort = new AbortController();
   abort.abort();
-  await expect(f.core.execute("thermal", [], undefined, abort.signal, parent)).rejects.toThrow();
+  await expect(f.core.execute("thermal", {}, undefined, abort.signal, parent)).rejects.toThrow();
   const starts = f.events.filter(event => event.type === "command");
   expect(starts).toHaveLength(5);
   expect(new Set(starts.map(event => event.trace.spanId)).size).toBe(5);
@@ -224,4 +227,20 @@ test("device operations have distinct child spans and terminal events for succes
   expect(rejected.trace.traceId).toMatch(/^[0-9a-f]{32}$/);
   expect(rejected.trace.spanId).toMatch(/^[0-9a-f]{16}$/);
   expect(rejected.data).toMatchObject({ outcome: "error" });
+});
+
+test("native media stays in RPC while event subscribers and journal receive file references", async () => {
+  const native = { content: [{ type: "image" as const, data: "AAAA", mimeType: "image/png", _meta: { frame: 7 } }],
+    structuredContent: { sequence: 7 }, _meta: { source: "native" } };
+  const f = await fixture(async () => ({ result: native, id: "media", status: "completed", exitCode: 0, stdout: "", stderr: "",
+    timing: { clock: "device", requestedAtMs: 0, receivedAtMs: 1 }, observations: [{ id: "frame", controllerId: "motor", path: "/tmp/frame.png",
+      mediaType: "image/png", contentIndex: 0, timing: { clock: "device", requestedAtMs: 0, receivedAtMs: 1 } }] }));
+  await f.client.request({ kind: "acquire", epoch: f.epoch, seconds: 30 });
+  const returned = await f.client.request({ kind: "controller", id: "motor", arguments: {}, epoch: f.epoch }) as ToolExecutionResult;
+  expect(returned.result).toEqual(native);
+  const logged = (f.events.find(e => e.type === "execution")!.data as any).result;
+  expect(logged).toMatchObject({ structuredContent: { sequence: 7 }, _meta: { source: "native" }, content: [{ dataPath: "/tmp/frame.png", _meta: { frame: 7 } }] });
+  expect(logged.content[0].data).toBeUndefined();
+  expect(native.content[0].data).toBe("AAAA");
+  await expect(f.client.request({ kind: "controller", id: "motor", arguments: { wait: "false" }, epoch: f.epoch })).rejects.toThrow("Invalid arguments");
 });

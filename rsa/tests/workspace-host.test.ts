@@ -151,9 +151,9 @@ test("hosts route by workspace, resume only its selected session, and can start 
       expect(manifest.provenance.workspaceInstructionsSHA256).toBe(state === first
         ? new Bun.SHA256().update("Keep these task instructions.\n").digest("hex") : null);
       const catalog = JSON.parse(await readFile(join(state.workspace, "baseware.json"), "utf8"));
-      expect(catalog.schemaVersion).toBe(1);
+      expect(catalog.schemaVersion).toBe(2);
       expect(Number.isNaN(Date.parse(catalog.generatedAt))).toBe(false);
-      expect(catalog.controllers.map((item: { id: string }) => item.id)).toContain("pad");
+      expect(catalog.controllers.map((item: { name: string }) => item.name)).toContain("pad.play");
       expect(catalog.stale).toBeUndefined();
       expect(JSON.parse(await readFile(join(result.runDir, "test-driver.json"), "utf8"))).toEqual({
         workspace: state.workspace, resume: join(state.sessionsDir, "selected.jsonl"), cwd: state.workspace,

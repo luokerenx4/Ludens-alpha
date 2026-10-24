@@ -21,14 +21,14 @@ test("consolidation uses the same session with file tools, records memory reads,
   let captures = 0;
   const events: { type: string; data: any; epoch?: string }[] = [];
   const runtime = createTestRuntime({ controllers: [{
-    id: "camera", requiresControl: false, mediaTypes: ["image/png"], help: () => "capture",
+    tool: { name: "camera", description: "capture", inputSchema: { type: "object" } }, requiresControl: false, mediaTypes: ["image/png"],
     async execute() {
       return captureResult([{ id: `sample-${++captures}`, controllerId: "camera", mediaType: "image/png", path: image,
         timing: { clock: "test", requestedAtMs: captures, receivedAtMs: captures } }]);
     },
   }] }, (type, data, trace) => events.push({ type, data, epoch: trace?.epoch }));
   installTestPerception(runtime, workspace, directory, (signal, trace) =>
-    readTestController(runtime, "camera", [], signal, trace));
+    readTestController(runtime, "camera", {}, signal, trace));
   const control = new AbortController();
   let cycle: Cycle = { epoch: "play-before", signal: control.signal };
   const extension = createRsaExtension({ runtime, workspace: new Workspace(workspace, join(directory, "skill-versions")),

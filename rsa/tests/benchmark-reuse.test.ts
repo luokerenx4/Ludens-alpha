@@ -30,22 +30,22 @@ test("the environment rejects wrong values and holds the next batch until the cu
   const directory = await mkdtemp(join(tmpdir(), "rsa-bench-board-"));
   const events: { type: string; data: any }[] = [];
   const environment = new ReuseEnvironment(11, directory, (type, data) => events.push({ type, data }));
-  const controller = environment.capabilities.controllers[0]!;
+  const [set, submit] = environment.capabilities.controllers;
   const context = { epoch: "fixture", signal: new AbortController().signal };
   let random = 11;
   const digit = () => { random = (Math.imul(random, 1664525) + 1013904223) >>> 0; return random % 9 + 1; };
   try {
-    expect((await controller.execute(["submit"], context)).exitCode).toBe(2);
+    expect((await submit!.execute({}, context)).exitCode).toBe(2);
     for (let order = 0; order < 3; order++) {
-      for (let slot = 1; slot <= 3; slot++) await controller.execute(["set", String(slot), String(digit())], context);
-      expect((await controller.execute(["submit"], context)).exitCode).toBe(0);
+      for (let slot = 1; slot <= 3; slot++) await set!.execute({slot, value: digit()}, context);
+      expect((await submit!.execute({}, context)).exitCode).toBe(0);
     }
     expect(environment.summary()).toEqual({ completed: 3, expected: 6, phase: 1 });
-    expect((await controller.execute(["set", "1", "1"], context)).exitCode).toBe(2);
+    expect((await set!.execute({slot: 1, value: 1}, context)).exitCode).toBe(2);
     environment.afterExec({ epoch: "fixture" });
     expect(environment.summary()).toEqual({ completed: 3, expected: 6, phase: 2 });
     expect(events.filter(event => event.type === "benchmark_reuse_phase")).toHaveLength(1);
-    expect((await controller.execute(["set", "1", "1"], context)).exitCode).toBe(0);
+    expect((await set!.execute({slot: 1, value: 1}, context)).exitCode).toBe(0);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -95,7 +95,7 @@ for (const route of ["controller", "local", "import"] as const) test(`evaluator 
   const cli = (...args: string[]) => exec([join(import.meta.dir, "../bin/rsa"), "controller", ...args]);
   try {
     const initial = JSON.parse(await cli("list"));
-    expect(initial.capabilities.map((item: any) => item.id)).toEqual(["controller/bench", "controller/screen"]);
+    expect(initial.capabilities.map((item: any) => item.id)).toEqual(["controller/bench.set", "controller/bench.submit", "controller/screen.capture"]);
     // Test-only agent fixture. The live case never supplies this code or solves orders.
     await mkdir(join(workspace, "scripts"));
     const source = `from rsa_tools import Client, capability
@@ -104,8 +104,8 @@ def configure(values: list[int]) -> dict:
     """Set all three dials and submit the assembled order."""
     client = Client()
     for slot, value in enumerate(values, 1):
-        client.call("controller/bench", ["set", str(slot), str(value)])
-    return client.call("controller/bench", ["submit"])
+        client.call("controller/bench.set", {"slot": slot, "value": value})
+    return client.call("controller/bench.submit", {})
 `;
     // The import route is an ordinary helper, with no registry decorator.
     if (route === "import") log.record("tool_start", { toolName: "write", args: { path: "scripts/bench.py", content: source } },

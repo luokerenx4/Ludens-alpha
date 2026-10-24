@@ -1,3 +1,5 @@
+import type { ToolExecutionResult } from "./contracts.ts";
+import { archivedToolResult, readToolArguments } from "./tool-contract.ts";
 import { BasewareClient } from "./client.ts";
 import { writeCapabilityDocument } from "./catalog.ts";
 import type { Catalog, Request } from "./protocol.ts";
@@ -9,7 +11,7 @@ baseware status
 baseware list
 baseware export [--output <path>]
 baseware driver list
-baseware controller list | <id> --help | <id> <arguments...>
+baseware controller list | <id> --help | <name> [--args '<JSON object>' | --file <arguments.json>]
 baseware revoke
 baseware mcp
 
@@ -35,12 +37,12 @@ export async function cli(argv: string[], socket: string) {
       select = kind === "driver" ? "drivers" : "controllers";
       request = { kind: "list" };
     } else if (kind === "controller" && id) {
-      request = args.length >= 1 && args.length <= 2 && args.at(-1) === "--help"
+      request = args.length === 1 && args[0] === "--help"
         ? { kind: "help", id }
-        : { kind, id, argv: args, epoch: process.env.BASEWARE_EPOCH,
+        : { kind, id, arguments: await readToolArguments(args), epoch: process.env.BASEWARE_EPOCH,
           trace: process.env.BASEWARE_TRACE ? JSON.parse(process.env.BASEWARE_TRACE) : undefined, origin: "cli" };
     } else throw new Error("Missing capability ID; see baseware --help");
-  } else if (kind === "help" && id) request = { kind: "help", id, argv: args };
+  } else if (kind === "help" && id) request = { kind: "help", id };
   else throw new Error("Unknown command; see baseware --help");
   const client = await BasewareClient.connect(socket);
   try {
@@ -51,7 +53,9 @@ export async function cli(argv: string[], socket: string) {
       return output;
     }
     if (select) value = (value as Record<string, unknown>)[select];
-    console.log(typeof value === "string" ? value : JSON.stringify(value, null, 2));
+    const execution = request.kind === "controller" ? value as ToolExecutionResult : undefined;
+    const printed = execution?.result ? { ...execution, result: archivedToolResult(execution.result, execution.observations) } : value;
+    console.log(typeof printed === "string" ? printed : JSON.stringify(printed, null, 2));
     if (value && typeof value === "object" && "exitCode" in value) process.exitCode = Number(value.exitCode);
     return value;
   } finally { client.close(); }

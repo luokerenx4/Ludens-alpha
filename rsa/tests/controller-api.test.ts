@@ -36,9 +36,9 @@ from rsa_tools import Client, RSAError, capability
 def probe():
     return "registered"
 client = Client()
-values = [client.list(), client.help("controller/pad"),
-          client.call("controller/pad", ["play", "--inputs", '[{"atMs":0,"durationMs":100,"state":{"A":1}}]']),
-          client.call("controller/screen")]
+values = [client.list(), client.help("controller/pad.play"),
+          client.call("controller/pad.play", {"inputs": [{"atMs":0,"durationMs":100,"state":{"A":1}}]}),
+          client.call("controller/screen.capture")]
 errors = []
 for capability_id in ["rejected", "disconnect"]:
     try:
@@ -46,7 +46,7 @@ for capability_id in ["rejected", "disconnect"]:
     except (RSAError, ConnectionError) as error:
         errors.append({"type": type(error).__name__, "message": str(error)})
 explicit = Client(${JSON.stringify(socketPath)}, epoch="explicit-epoch", trace={"source": "explicit"}, timeout=1)
-values.append(explicit.help("controller/screen"))
+values.append(explicit.help("controller/screen.capture"))
 print(json.dumps({"values": values, "errors": errors, "marked": probe.__rsa_capability__}))
 `], { env: { ...process.env, PYTHONPATH: join(import.meta.dir, "../python"), RSA_SOCKET: socketPath,
       BASEWARE_EPOCH: "active-epoch", BASEWARE_TRACE: JSON.stringify({toolCallId: "parent-call"}) }, stdout: "pipe", stderr: "pipe" });
@@ -57,8 +57,8 @@ print(json.dumps({"values": values, "errors": errors, "marked": probe.__rsa_capa
     expect(result.marked).toBe(true);
     expect(result.values).toEqual([
       {action: "list", arguments: null}, {action: "help", arguments: null},
-      {action: "call", arguments: ["play", "--inputs", '[{"atMs":0,"durationMs":100,"state":{"A":1}}]']},
-      {action: "call", arguments: null}, {action: "help", arguments: null},
+      {action: "call", arguments: {inputs: [{atMs: 0, durationMs: 100, state: {A: 1}}]}},
+      {action: "call", arguments: {}}, {action: "help", arguments: null},
     ]);
     expect(result.errors).toEqual([
       {type: "RSAError", message: "STALE_EPOCH: caller no longer owns control"},
@@ -69,8 +69,8 @@ print(json.dumps({"values": values, "errors": errors, "marked": probe.__rsa_capa
     for (const request of requests.slice(0, 6)) {
       expect(request).toMatchObject({kind: "controller", argv: [], epoch: "active-epoch", trace: {toolCallId: "parent-call"}});
     }
-    expect(requests[3]).not.toHaveProperty("arguments");
-    expect(requests[6]).toMatchObject({action: "help", id: "controller/screen", epoch: "explicit-epoch", trace: {source: "explicit"}});
+    expect(requests[3].arguments).toEqual({});
+    expect(requests[6]).toMatchObject({action: "help", id: "controller/screen.capture", epoch: "explicit-epoch", trace: {source: "explicit"}});
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));
   }
@@ -102,7 +102,7 @@ model = Model()
 @capability
 def step(value):
     value.calls += 1
-    client.call("controller/pad", ["play", "--inputs", '[{"atMs":0,"durationMs":100,"state":{"A":1}}]'])
+    client.call("controller/pad.play", {"inputs": [{"atMs":0,"durationMs":100,"state":{"A":1}}]})
     return value
 @capability
 def loop(value):
@@ -138,7 +138,7 @@ print(json.dumps({"shared": first is model and second is model, "calls": model.c
     expect(result).toMatchObject({shared: true, calls: 2, originalError: true, loggingIndependent: true});
     const calls = requests.filter(request => request.kind === "controller");
     expect(calls).toHaveLength(2);
-    for (const call of calls) expect(call).toMatchObject({action: "call", id: "controller/pad", epoch: "active-epoch"});
+    for (const call of calls) expect(call).toMatchObject({action: "call", id: "controller/pad.play", epoch: "active-epoch"});
     const events = requests.filter(request => request.kind === "workspace_event");
     expect(events).toHaveLength(8);
     for (const request of events) {

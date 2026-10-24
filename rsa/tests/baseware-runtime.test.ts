@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { BasewareCore } from "@playness/baseware/core";
 import { BasewareClient } from "@playness/baseware/client";
 import { listen } from "@playness/baseware/server";
-import type { Capabilities, ExecutionResult } from "@playness/baseware/contracts";
+import type { Capabilities, ToolExecutionResult } from "@playness/baseware/contracts";
 import type { EventMetadata } from "@playness/baseware/protocol";
 import { connectBaseware } from "../src/harness/baseware.ts";
 import { Runtime } from "../src/harness/runtime.ts";
@@ -40,22 +40,27 @@ async function fixture(seconds = 60, acquisition?: Promise<void>, releaseFailure
   const events: ({ type: string; data: any; trace: any } & EventMetadata)[] = [];
   const deviceEvents: ({ type: string; data: any; trace: any } & EventMetadata)[] = [];
   const capabilities: Capabilities = {
-    controllers: [{ id: "motor", requiresControl: true, help: () => "wait",
+    controllers: [{ tool: { name: "motor", description: "wait", inputSchema: { type: "object" } }, requiresControl: true,
       async acquire(epoch) { acquiring.resolve(); await acquisition; owner = epoch; },
       async release() { if (releaseFailure) throw new Error("release failed"); owner = undefined; },
-      async execute(_argv, { signal }): Promise<ExecutionResult> {
+      async execute(_argv, { signal }): Promise<ToolExecutionResult> {
         acting.resolve();
         await new Promise<void>(resolve => signal.addEventListener("abort", () => { cancellations++; resolve(); }, { once: true }));
-        return { id: "action", status: "interrupted", exitCode: 130, stdout: "", stderr: "",
+        return { id: "action", status: "interrupted", exitCode: 130, stdout: "", stderr: "", result: { content: [] },
           timing: { clock: "fixture", requestedAtMs: 1, receivedAtMs: 2 } };
       },
-    }, { id: "screen", requiresControl: false, mediaTypes: ["image/png"], help: () => "capture",
-      async execute() { return captureResult(sources.map((path, index) => ({ id: `frame-${index}`, controllerId: "screen", path, mediaType: "image/png",
-        timing: { clock: "fixture", requestedAtMs: 3, receivedAtMs: 4 } }))); },
+    }, { tool: { name: "screen", description: "capture", inputSchema: { type: "object" } }, requiresControl: false, mediaTypes: ["image/png"],
+      async execute() {
+        const result = captureResult(sources.map((path, index) => ({ id: `frame-${index}`, controllerId: "screen", path, mediaType: "image/png", contentIndex: index,
+          timing: { clock: "fixture", requestedAtMs: 3, receivedAtMs: 4 } })));
+        result.result = { content: pixels.map(data => ({ type: "image", mimeType: "image/png", data: data.toString("base64") })),
+          structuredContent: { screens: 2 }, _meta: { provenance: "native" } };
+        return result;
+      },
     }],
   };
   capabilities.controllers = [
-    ...Array.from({ length: controllerCount }, (_, index) => ({ ...capabilities.controllers[0]!, id: index ? `motor-${index}` : "motor" })),
+    ...Array.from({ length: controllerCount }, (_, index) => ({ ...capabilities.controllers[0]!, tool: { ...capabilities.controllers[0]!.tool, name: index ? `motor-${index}` : "motor" } })),
     capabilities.controllers[1]!,
   ];
   const core = new BasewareCore({ capabilities, drivers: [{ id: "fake", version: "1" }],
@@ -110,7 +115,7 @@ test("remote lease matches the configured budget and human revoke cancels a sepa
     const state = await f.runtime.start();
     expect(state).toMatchObject({ mode: "auto", maxSeconds: 7, remainingSeconds: 7 });
     expect(await f.external.request({ kind: "status" })).toMatchObject({ mode: "auto", epoch: state.epoch, remainingSeconds: 7 });
-    const action = f.external.request({ kind: "controller", id: "motor", argv: ["wait"], epoch: state.epoch! });
+    const action = f.external.request({ kind: "controller", id: "motor", arguments: {}, epoch: state.epoch! });
     await f.acting;
     await f.external.request({ kind: "revoke" });
     expect(await action).toMatchObject({ status: "interrupted", exitCode: 130 });
@@ -124,7 +129,7 @@ test("RSA stop cancels a direct Baseware client operation and releases the servi
   const f = await fixture();
   try {
     const { epoch } = await f.runtime.start();
-    const action = f.external.request({ kind: "controller", id: "motor", argv: ["wait"], epoch: epoch! });
+    const action = f.external.request({ kind: "controller", id: "motor", arguments: {}, epoch: epoch! });
     await f.acting;
     await f.runtime.stop();
     expect(await action).toMatchObject({ status: "interrupted", exitCode: 130 });
@@ -139,7 +144,7 @@ test("owner connection loss revokes a separate caller and disconnects RSA", asyn
   const f = await fixture();
   try {
     const { epoch } = await f.runtime.start();
-    const action = f.external.request({ kind: "controller", id: "motor", argv: ["wait"], epoch: epoch! });
+    const action = f.external.request({ kind: "controller", id: "motor", arguments: {}, epoch: epoch! });
     await f.acting;
     f.adapter.close();
     expect(await action).toMatchObject({ status: "interrupted", exitCode: 130 });
@@ -152,13 +157,19 @@ test("owner connection loss revokes a separate caller and disconnects RSA", asyn
 test("remote observations and event paths keep distinct durable files inside the RSA run", async () => {
   const f = await fixture();
   try {
-    const result = await readTestController(f.runtime, "screen", ["capture"], new AbortController().signal,
+    const result = await readTestController(f.runtime, "screen", {}, new AbortController().signal,
       { toolCallId: "capture-call" });
     const observations = result.observations!;
+    expect(result.result).toMatchObject({ structuredContent: { screens: 2 }, _meta: { provenance: "native" },
+      content: f.pixels.map(data => ({ type: "image", mimeType: "image/png", data: data.toString("base64") })) });
     expect(new Set(observations.map(observation => observation.path)).size).toBe(2);
     const recorded = f.events.filter(event => event.type === "observation");
     expect(recorded).toHaveLength(2);
-    expect(f.events.find(event => event.type === "execution")!.data.observations).toEqual(observations);
+    const execution = f.events.find(event => event.type === "execution")!.data;
+    expect(execution.observations).toEqual(observations);
+    expect(execution.result.content).toEqual(observations.map((observation, index) => ({ type: "image", mimeType: "image/png",
+      dataPath: observation.path, encodedBytes: f.pixels[index]!.toString("base64").length })));
+    expect(JSON.stringify(f.events)).not.toContain(f.pixels[0]!.toString("base64"));
     for (const [index, observation] of observations.entries()) {
       expect(observation.path.startsWith(join(f.runDir, "observations") + "/")).toBe(true);
       expect(recorded[index]).toMatchObject({ data: { id: observation.id, path: observation.path }, trace: { toolCallId: "capture-call" } });

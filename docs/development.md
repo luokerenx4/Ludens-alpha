@@ -54,7 +54,7 @@ baseware/src/drivers/ryubing/launch.sh /absolute/path/to/game.nsp
 
 [launch.sh](../baseware/src/drivers/ryubing/launch.sh) 显式设置 `RSA_BRIDGE_PORT`（默认 47663）；从 Finder 正常打开不启用桥。固件、密钥、设置和存档沿用本机 Ryujinx 数据目录，不要并发启动两个使用同一数据目录的模拟器。重新构建后必须退出旧进程并启动新 bundle，运行中的模拟器不会加载新桥。
 
-能力为 `pad`、`screen`、`touch`、`keyboard`。screen 采集游戏 framebuffer 或前台系统键盘的真实弹窗；touch 范围 x=0..1279、y=0..719。参数与状态契约见各 controller 的 help。没有游戏内存读取、音频或模拟器存读档命令；连通不等于游戏兼容。
+能力包括 `pad.play/state/status/wait/cancel/release`、`screen.capture`、`touch.down/move/up` 和 `keyboard.type/press`。screen 采集游戏 framebuffer 或前台系统键盘的真实弹窗；touch 范围 x=0..1279、y=0..719。参数与状态契约见各 controller 的 help。没有游戏内存读取、音频或模拟器存读档命令；连通不等于游戏兼容。
 
 ### Azahar
 
@@ -72,13 +72,13 @@ baseware/src/drivers/azahar/launch.sh /absolute/path/to/game.3ds
 
 [launch.sh](../baseware/src/drivers/azahar/launch.sh) 默认使用 `/Applications/Azahar.app`、桥端口 47673；独立启动时可用 `RSA_AZAHAR_APP` 选择 bundle。整套 `rsa up` 检查默认安装路径。所需系统数据由用户自行准备，空窗口或桥已连接不表示游戏能正常运行。
 
-原生能力为 `pad`、`touch`、`screen.top`、`screen.bottom`，无 Cua 依赖。独立屏幕输出为 400×240 左眼画面和 320×240 下屏；touch 范围 x=0..319、y=0..239。两种模拟器均只提供 down/move/up，坐标含端点、原点左上，点按/拖拽/融合/坐标转换由 workspace 实现。契约见 [provider.ts](../baseware/src/drivers/azahar/provider.ts) 和 [原生桥](../baseware/src/drivers/azahar/rsa_bridge.cpp)。
+原生能力为 `pad.*`、`touch.down/move/up`、`screen.top.capture`、`screen.bottom.capture`，无 Cua 依赖。独立屏幕输出为 400×240 左眼画面和 320×240 下屏；touch 范围 x=0..319、y=0..239。两种模拟器均只提供 down/move/up，坐标含端点、原点左上，点按/拖拽/融合/坐标转换由 workspace 实现。契约见 [provider.ts](../baseware/src/drivers/azahar/provider.ts) 和 [原生桥](../baseware/src/drivers/azahar/rsa_bridge.cpp)。
 
 ### Cua
 
 安装上游 [Cua Driver](https://github.com/trycua/cua/tree/main/libs/cua-driver)，macOS 为 CuaDriver.app 授予**辅助功能**和**屏幕录制**权限。Baseware 通过持久的 `cua-driver mcp` 子进程连接原装驱动，不改上游代码或应用设置。可用 `cuaCommand` / `--cua-command` 指定 CLI 绝对路径。
 
-Cua 不使用 `game` 或桥端口；原始工具以 `cua.<tool-name>` 暴露，例如 `rsa controller controller/cua.get_desktop_state`。参数看 `--help`，不默认注入 OMP 工具列表。
+Cua 不使用 `game` 或桥端口；原始工具保持上游名称，例如 `rsa controller controller/get_desktop_state --args '{}'`。参数看 `--help`；CLI 的 `--args/--file`、Python/API 和 MCP 共用原生 JSON 对象，不默认注入 OMP 工具列表。契约来源与边界见 [Baseware 设计](baseware.md)。
 
 交还控制会拒绝新输入并请求取消，已运行的原生调用可能先完成；清理结束后才报告 manual。`down` 不关闭共享 CuaDriver.app 或用户应用。不同 workspace 仍共享真实桌面，独立桌面需 OS session 或 VM。NDS/melonDS 当前走此桌面通道，没有独立 NDS driver。
 
@@ -159,6 +159,7 @@ rsa run --model openai-codex/gpt-6.1-sol --seconds 300 --requests 50
 
 ```sh
 (cd baseware && bun run check && bun test)
+python3 baseware/scripts/sync-cua-contract.py --check
 (cd rsa && bun run check && bun test)
 (cd rsa-dashboard && npm test && npm run typecheck && npm run build)
 (cd rsa-companion && pnpm typecheck && pnpm test)

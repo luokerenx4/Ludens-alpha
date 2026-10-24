@@ -1,10 +1,11 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { Capabilities, Clock, Controller, ExecutionResult } from "../../contracts.ts";
+import type { Capabilities, Clock, Controller } from "../../contracts.ts";
 import { Bridge } from "../bridge.ts";
+import { structuredResult, toolExecution } from "../../tool-contract.ts";
 import { createPadPlayer } from "../pad.ts";
 import { compileTimeline } from "../timeline.ts";
-import { noArguments, PLAY_HELP, padCommands } from "../schema.ts";
+import { NO_ARGUMENTS, padTools } from "../schema.ts";
 
 const KEYS = ["A", "B", "SELECT", "START", "RIGHT", "LEFT", "UP", "DOWN", "R", "L"];
 type Span = { state: Record<string, number>; durationMs: number };
@@ -32,9 +33,7 @@ export function encodeSpans(spans: Span[], fps: number): string {
   }).join(",");
 }
 
-const PAD_HELP = `Digital controller: ${KEYS.join(", ")}. Values: 0=released, 1=pressed.
-${PLAY_HELP}
-Durations use integer emulation milliseconds, rounded cumulatively to frame boundaries. Every state span must occupy at least one frame.`;
+const PAD_DESCRIPTION = "Digital controller.";
 
 export async function createGbaProvider(options: { port: number; artifactsDir: string; clock: Clock }) {
   const { clock } = options;
@@ -51,12 +50,10 @@ export async function createGbaProvider(options: { port: number; artifactsDir: s
   let owner: string | undefined;
 
   const screen: Controller = {
-    id: "screen", requiresControl: false,
-    mediaTypes: ["image/png"],
-    commands: [noArguments("capture", "Capture a new native 240×160 PNG image.")],
-    help: () => "capture\nCapture a new 240×160 PNG image. Returns immutable path, sample interval and source sequence.",
-    async execute(argv, { signal }) {
-      if (argv.length !== 1 || argv[0] !== "capture") throw new Error("Usage: controller screen capture");
+    tool: { name: "screen.capture", description: "Capture a new native 240×160 PNG. Returns the frame's source sequence and request/receive sample interval.",
+      inputSchema: NO_ARGUMENTS, annotations: { readOnlyHint: true } },
+    requiresControl: false, mediaTypes: ["image/png"],
+    async execute(_args, { signal }) {
       signal.throwIfAborted();
       const id = crypto.randomUUID();
       const path = join(options.artifactsDir, `${id}.png`);
@@ -66,36 +63,37 @@ export async function createGbaProvider(options: { port: number; artifactsDir: s
       if (!data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) throw new Error("Capture did not produce a PNG");
       signal.throwIfAborted();
       const timing = { clock: clock.id, requestedAtMs, receivedAtMs: clock.now() };
-      return { id: crypto.randomUUID(), status: "completed", exitCode: 0, stdout: "", stderr: "", timing, observations: [{ id, controllerId: "screen", mediaType: "image/png", path,
-        timing, sourceSequence: Number(frame) }] };
+      const output = { source: "screen", width: 240, height: 160, sourceSequence: Number(frame), timing };
+      const result = structuredResult(output);
+      result.content.unshift({ type: "image", mimeType: "image/png", data: data.toString("base64") });
+      return { ...toolExecution(clock, requestedAtMs, result), timing,
+        observations: [{ id, controllerId: "screen.capture", mediaType: "image/png", path, timing,
+          sourceSequence: Number(frame), contentIndex: 0 }] };
     },
   };
 
-  const pad: Controller = {
-    id: "pad", requiresControl: true,
-    help: () => PAD_HELP,
-    commands: padCommands(KEYS, [], { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER,
-      description: `Safe integer emulation milliseconds, rounded cumulatively at ${fps} frames per second. Each span must occupy at least one frame and the total frame count must be a safe integer.` }),
-    async acquire(epoch) {
-      if (owner === epoch) return;
-      player.reset(); await bridge.request("OWN", [epoch]); owner = epoch;
-    },
-    async release(epoch) {
-      if (owner !== epoch) return;
-      owner = undefined;
-      await bridge.request("DISOWN", [epoch]);
-      await player.settle();
-    },
-    async execute(argv, context): Promise<ExecutionResult> {
+  const acquire = async (epoch: string) => {
+    if (owner === epoch) return;
+    player.reset(); await bridge.request("OWN", [epoch]); owner = epoch;
+  };
+  const release = async (epoch: string) => {
+    if (owner !== epoch) return;
+    owner = undefined;
+    await bridge.request("DISOWN", [epoch]);
+    await player.settle();
+  };
+  const pads: Controller[] = padTools(KEYS, [], `Integer emulation milliseconds, rounded cumulatively at ${fps} frames per second. Every state span must occupy at least one frame; total frames must be a safe integer.`).map(tool => ({
+    tool: { ...tool, description: `${PAD_DESCRIPTION} ${tool.description}` }, requiresControl: true, acquire, release,
+    async execute(args, context) {
       const { epoch, signal } = context;
       signal.throwIfAborted();
       if (!epoch || owner !== epoch) throw new Error("STALE_EPOCH");
-      if (argv[0] !== "state" && argv[0] !== "release") return player.execute(argv, context);
-      if (argv.length !== 1) throw new Error(`${argv[0]} accepts no arguments`);
+      const command = tool.name.slice("pad.".length);
+      if (command !== "state" && command !== "release") return player.execute(command, args, context);
       const id = crypto.randomUUID();
       const requestedAtMs = clock.now();
-      let output: unknown;
-      if (argv[0] === "state") {
+      let output: Record<string, unknown>;
+      if (command === "state") {
         const [mask, actionId] = await bridge.request("STATE", [epoch], id);
         output = { state: Object.fromEntries(KEYS.map((key, i) => [key, (Number(mask) >> i) & 1])), actionId: actionId === "-" ? null : actionId };
       } else {
@@ -103,12 +101,11 @@ export async function createGbaProvider(options: { port: number; artifactsDir: s
         await player.settle();
         output = { released: true };
       }
-      return { id, readOnly: argv[0] === "state", status: "completed", exitCode: 0, stdout: JSON.stringify(output), stderr: "",
-        timing: { clock: clock.id, requestedAtMs, receivedAtMs: clock.now() } };
+      return toolExecution(clock, requestedAtMs, structuredResult(output), { id, readOnly: command === "state" });
     },
-  };
+  }));
   return {
-    capabilities: { controllers: [pad, screen] } satisfies Capabilities,
+    capabilities: { controllers: [...pads, screen] } satisfies Capabilities,
     onDisconnect(handler: (error: Error) => void) { bridge.onDisconnect = handler; },
     close() { bridge.close(); },
   };
