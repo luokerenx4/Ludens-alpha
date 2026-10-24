@@ -59,6 +59,31 @@ if (values.help) {
       const navigation = (event: Electron.Event, url: string) => { if (!isDashboardUrl(url, dashboard.origin)) event.preventDefault() }
       owner.webContents.on('will-navigate', navigation)
       owner.webContents.on('will-redirect', navigation)
+      const initial = new URL(dashboard.origin)
+      initial.searchParams.set('view', 'live')
+      let dashboardTarget = initial.href
+      let loadingDashboard = false, dashboardReady = false
+      const rememberDashboard = (_event: Electron.Event, url: string) => {
+        if (isDashboardUrl(url, dashboard.origin)) dashboardTarget = url
+      }
+      owner.webContents.on('did-navigate', (event, url, status) => {
+        rememberDashboard(event, url)
+        if (status > 0 && isDashboardUrl(url, dashboard.origin)) dashboardReady = true
+      })
+      owner.webContents.on('did-navigate-in-page', (event, url, isMainFrame) => {
+        if (isMainFrame) rememberDashboard(event, url)
+      })
+      owner.webContents.on('did-fail-load', (_event, code, description, url, isMainFrame) => {
+        // Aborted/superseded navigation and subresources must not replace a healthy page.
+        if (!isMainFrame || code === -3 || !isDashboardUrl(url, dashboard.origin)) return
+        dashboardTarget = url
+        dashboardReady = false
+        console.error(`[alice-pet] dashboard load failed: ${description} (${code})`)
+      })
+      owner.webContents.on('render-process-gone', (_event, details) => {
+        dashboardReady = false
+        console.error(`[alice-pet] dashboard renderer exited: ${details.reason}`)
+      })
       owner.on('close', event => { if (!quitting) { event.preventDefault(); owner?.hide() } })
       const trusted = (event: Electron.IpcMainInvokeEvent) => !!owner && dashboardSender(owner, dashboard.origin, event)
       const openDetails = (url: string) => {
@@ -100,16 +125,15 @@ if (values.help) {
         { role: 'editMenu' },
         { role: 'windowMenu' },
       ]))
-      const initial = new URL(dashboard.origin)
-      initial.searchParams.set('view', 'live')
-      let loadingDashboard = false, dashboardReady = false
       const loadDashboard = async () => {
-        if (loadingDashboard || dashboardReady || quitting || !owner || owner.isDestroyed()) return
+        if (loadingDashboard || dashboardReady || quitting || !owner || owner.isDestroyed() || owner.webContents.isLoadingMainFrame()) return
         loadingDashboard = true
         try {
-          await owner.loadURL(initial.href)
+          await owner.loadURL(dashboardTarget)
           dashboardReady = true
-        } catch {
+        } catch (error) {
+          const failure = error as { code?: string; errno?: number }
+          if (failure.code === 'ERR_ABORTED' || failure.errno === -3) return
           if (owner && !owner.isDestroyed() && !quitting) {
             const offline = '<!doctype html><html lang="zh"><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'"><title>Playness · 等待日志服务</title><body style="background:#202321;color:#f0f2ee;font:16px system-ui;padding:64px"><h1>等待本地日志服务</h1><p>卢登斯正在重新连接。服务恢复后，这个窗口会自动打开。</p></body></html>'
             await owner.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(offline)}`).catch(() => {})
