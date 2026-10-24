@@ -120,12 +120,8 @@ async function scanCatalog(root: string, includeEmpty: boolean): Promise<Project
 }
 export async function loadRun(project: string, run: string, root = artifactRoot) {
   const path = await resolveRun(project, run, root);
-  const [manifest, indexed] = await Promise.all([
-    readFile(join(path, "manifest.json"), "utf8").then(
-      (s) => JSON.parse(s) as Manifest,
-    ),
-    loadIndexedEvents(path),
-  ]);
+  const manifest = JSON.parse(await readFile(join(path, "manifest.json"), "utf8")) as Manifest;
+  const indexed = await loadIndexedEvents(path);
   return { path, manifest, ...indexed };
 }
 export function hostRequest(
@@ -192,10 +188,9 @@ export async function getRun(
   epoch?: string,
   page: RunPage = {},
 ): Promise<RunData> {
-  const [{ manifest, index }, projects] = await Promise.all([
-    loadRun(project, run),
-    catalog(),
-  ]);
+  const { manifest, index, release } = await loadRun(project, run);
+  try {
+  const projects = await catalog();
   await refreshRunProjection(index);
   const cycle = await selectIndexedCycle(index, manifest, epoch);
   const { phase, ...projection } = await readRunProjection(index, cycle.selectedEpoch, page, cycle.wholeRun);
@@ -235,6 +230,7 @@ export async function getRun(
                 : "已连接当前 Host",
     updatedAt: new Date().toISOString(),
   };
+  } finally { release(); }
 }
 export async function stopRun(
   project: string,
@@ -260,7 +256,8 @@ export async function stopRun(
   });
 }
 export async function mediaFile(project: string, run: string, id: string, root = artifactRoot) {
-  const { path, index } = await loadRun(project, run, root);
+  const { path, index, release } = await loadRun(project, run, root);
+  try {
   const observation = await indexedObservation(index, id);
   const textMedia = observation?.mediaType.startsWith("text/") || observation?.mediaType === "application/json";
   if (
@@ -278,6 +275,7 @@ export async function mediaFile(project: string, run: string, id: string, root =
     // Text media (including HTML source) is model input, never executable page content.
     mediaType: textMedia ? "text/plain; charset=utf-8" : observation.mediaType,
   };
+  } finally { release(); }
 }
 export function localRequest(request: Request, mutation = false) {
   const host = request.headers.get("host")?.split(":")[0];

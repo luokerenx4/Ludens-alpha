@@ -162,3 +162,50 @@ test("concurrent readers share one refresh and later appends remain visible", as
     assert.equal((await readRunProjection(index, "cycle")).summary.actions, 2);
   });
 });
+
+test("paged telemetry keeps the selected call's descendants and ancestors without unrelated trace siblings", async () => {
+  const event = events();
+  const trace = (spanId: string, extra: Record<string, string> = {}) => ({ traceId: "shared", spanId, ...extra });
+  const values = [event("control", { mode: "auto" }),
+    event("shiori_span_start", { name: "root" }, trace("root")),
+    event("shiori_span_start", { name: "call" }, trace("call", { parentSpanId: "root", modelCallId: "model" })),
+    event("model_start", {}, trace("call", { parentSpanId: "root", modelCallId: "model" })),
+    event("capability_start", { name: "child" }, trace("child", { parentSpanId: "call" })),
+    event("command", { controllerId: "pad.play", arguments: {} }, trace("grandchild", { parentSpanId: "child" })),
+    event("execution", { outcome: "success", exitCode: 0, durationMs: 7 }, trace("grandchild", { parentSpanId: "child" })),
+    event("capability_end", { outcome: "success", durationMs: 11 }, trace("child", { parentSpanId: "call" })),
+  ];
+  for (let i = 0; i < 50; i++) values.push(
+    event("command", { controllerId: "screen.capture", arguments: {} }, trace(`sibling-${i}`, { parentSpanId: "root" })),
+    event("execution", { outcome: "success", readOnly: true, exitCode: 0, durationMs: i + 1 }, trace(`sibling-${i}`, { parentSpanId: "root" })),
+  );
+  values.push(event("model_end", { durationMs: 50, stopReason: "stop" }, trace("call", { modelCallId: "model" })),
+    event("shiori_span_end", { outcome: "success", durationMs: 55 }, trace("call")),
+    event("shiori_span_end", { outcome: "success", durationMs: 60 }, trace("root")));
+  await fixture(values, async index => {
+    const actual = await readRunProjection(index, "cycle");
+    assert.deepEqual(actual.telemetry.spans.map(span => span.spanId).sort(), ["call", "child", "grandchild", "root"]);
+    assert.equal(actual.telemetry.devices.started, 51);
+    assert.equal(actual.telemetry.devices.durationMs.median, 25);
+    assert.equal(actual.telemetry.devices.durationMs.p95, 48);
+    assert.equal(actual.telemetry.devices.outcomes.success, 51);
+  });
+});
+
+test("image lookup uses epoch keys and still selects the latest archive across cycles", async () => {
+  const event = events();
+  const capture = (path: string) => ({ status: { state: "ready" }, result: {
+    id: path, status: "completed", exitCode: 0, observations: [
+      { id: "shared-image", controllerId: "perception", mediaType: "image/png", path },
+    ],
+  } });
+  await fixture([
+    event("perception_observe_end", capture("/old.png")),
+    event("perception_observe_end", capture("/new.png"), { epoch: "next" }),
+  ], async index => {
+    const store = index.store("run-observations"), entries = store.entries;
+    store.entries = () => { throw new Error("Image lookup must not scan all recorded frames"); };
+    try { assert.equal((await indexedObservation(index, "shared-image"))?.path, "/new.png"); }
+    finally { store.entries = entries; }
+  });
+});

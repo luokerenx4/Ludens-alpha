@@ -303,10 +303,11 @@ async function projectEvents(index: LogIndex) {
       if (event.type === "model_start") state!.error = null;
       if (event.type === "tool_start" && event.data.intent) state!.intent = event.data.intent;
       for (const observation of eventObservations(event)) {
-        if (observation.mediaType?.startsWith("image/")) index.setMeta(`image:${observation.id}`, "1");
+        if (observation.mediaType?.startsWith("image/") && !index.store("images").meta(observation.id))
+          await index.store("images").put(observation.id, true);
       }
       if (event.type === "model_start") {
-        const images = (event.data.observations ?? []).filter((id: string) => index.meta(`image:${id}`));
+        const images = (event.data.observations ?? []).filter((id: string) => index.store("images").meta(id));
         state!.observationId = images.at(-1) ?? null;
       }
       if (event.type.endsWith("_error")) state!.error = event.data.error ? String(event.data.error) : null;
@@ -394,6 +395,34 @@ const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("
 function decode(value?: string): any { try { return value ? JSON.parse(Buffer.from(value, "base64url").toString()) : null; } catch { return null; } }
 const lexical = (left: string, right: string) => left === right ? 0 : left < right ? -1 : 1;
 const ascending = (blocks: LogBlock[]) => blocks.sort((a, b) => lexical(a.at, b.at) || lexical(a.id, b.id));
+const byPosition = (a: RecordPointer, b: RecordPointer) => lexical(String(a.at), String(b.at)) || lexical(a.id, b.id);
+/** Retain only a page of pointers, with the oldest selected pointer at the root. */
+function newestPointers(limit: number) {
+  const heap: RecordPointer[] = [];
+  return {
+    add(pointer: RecordPointer) {
+      if (heap.length < limit) {
+        let child = heap.push(pointer) - 1;
+        while (child) {
+          const parent = (child - 1) >>> 1;
+          if (byPosition(heap[parent], heap[child]) <= 0) break;
+          [heap[parent], heap[child]] = [heap[child], heap[parent]]; child = parent;
+        }
+      } else if (byPosition(pointer, heap[0]) > 0) {
+        heap[0] = pointer;
+        let parent = 0;
+        for (;;) {
+          let child = parent * 2 + 1;
+          if (child >= heap.length) break;
+          if (child + 1 < heap.length && byPosition(heap[child + 1], heap[child]) < 0) child++;
+          if (byPosition(heap[parent], heap[child]) <= 0) break;
+          [heap[parent], heap[child]] = [heap[child], heap[parent]]; parent = child;
+        }
+      }
+    },
+    values: () => heap.sort((a, b) => byPosition(b, a)),
+  };
+}
 function selectedEpoch(index: LogIndex, requested?: string) {
   const epochs: string[] = JSON.parse(index.meta("activityEpochs") ?? "[]");
   if (requested && !epochs.includes(requested)) throw new Error("未找到接管轮次");
@@ -409,13 +438,18 @@ export async function queryActivity(index: LogIndex, scope: ActivityScope, query
   const token = (extra: object) => encode({ scope, generation, ...extra });
   const bound = (value: any) => value?.generation === generation && JSON.stringify(value.scope) === JSON.stringify(scope);
   const inEpoch = (pointer: RecordPointer) => !scope.epoch || pointer.epoch === scope.epoch;
+  const epochFilter = scope.epoch ? { epoch: scope.epoch } : {};
   const latest: Event | null = JSON.parse(index.meta(scope.epoch ? `latest:${scope.epoch}` : "activityLatest") ?? "null");
-  const pointers = [...store.entries()].filter(inEpoch);
   const projection = { source: { component: "dashboard" }, throughSeq: latest?.seq ?? 0,
     latestEventAt: latest?.at ?? null, latestSourceAt: latest?.origin?.at ?? latest?.at ?? null,
-    generatedAt: new Date().toISOString(), durationMs: 0, blockCount: pointers.length, revision: head, generation };
+    generatedAt: new Date().toISOString(), durationMs: 0,
+    blockCount: store.count(epochFilter), revision: head, generation };
   const read = (items: RecordPointer[]) => Promise.all(items.map(item => store.read<LogBlock>(item)));
-  const byNewest = (a: RecordPointer, b: RecordPointer) => lexical(String(b.at), String(a.at)) || lexical(b.id, a.id);
+  let examined = 0;
+  const yieldRead = async () => {
+    await new Promise<void>(resolve => setImmediate(resolve));
+    signal?.throwIfAborted();
+  };
   if (query.mode === "block") {
     const pointer = store.meta(query.id ?? "");
     return { scope, mode: "block" as const, blocks: pointer && inEpoch(pointer) ? await read([pointer]) : [], hasMore: false, projection };
@@ -423,46 +457,51 @@ export async function queryActivity(index: LogIndex, scope: ActivityScope, query
   if (query.mode === "history") {
     const kind = query.kind ?? "all", q = (query.q ?? "").trim().toLocaleLowerCase();
     if (!["all", "thinking", "text", "tool", "system", "diagnostic"].includes(kind)) throw new Error("无效的日志类型");
-    const candidates = pointers.filter(pointer => kind === "all" ? pointer.kind !== "diagnostic" : pointer.kind === kind).sort(byNewest);
     const before = decode(query.before);
     const validBefore = bound(before) && before.kind === kind && before.q === q && typeof before.at === "string" && typeof before.id === "string";
-    const page: LogBlock[] = [];
-    let total = 0, hasMore = false;
-    let examined = 0;
-    for (const pointer of candidates) {
-      if (++examined % 250 === 0) {
-        await new Promise<void>(resolve => setImmediate(resolve));
-        signal?.throwIfAborted();
-      }
-      // Search is on demand. Only a page and one examined block are retained.
+    const selected = newestPointers(limit);
+    let total = 0, eligible = 0;
+    for (const pointer of store.entries({ where: { ...epochFilter, ...(kind === "all" ? {} : { kind }) } })) {
+      if (++examined % 250 === 0) await yieldRead();
+      if (!inEpoch(pointer) || (kind === "all" ? pointer.kind === "diagnostic" : pointer.kind !== kind)) continue;
+      // Search scans disk lazily. Neither all pointers nor matching bodies are retained.
       const block = q ? await store.read<LogBlock>(pointer) : undefined;
       if (q && !activitySearchText(block!).includes(q)) continue;
       total++;
       if (validBefore && !(String(pointer.at) < before.at || (pointer.at === before.at && pointer.id < before.id))) continue;
-      if (page.length >= limit) { hasMore = true; continue; }
-      page.push(block ?? await store.read<LogBlock>(pointer));
+      eligible++; selected.add(pointer);
     }
+    const page = await read(selected.values()), hasMore = eligible > limit;
     const oldest = page.at(-1);
     return { scope, mode: "history" as const, blocks: ascending(page), total, hasMore,
       before: hasMore && oldest ? token({ kind, q, at: oldest.at, id: oldest.id }) : null, projection };
   }
   const cursor = decode(query.cursor);
   if (bound(cursor) && Number.isSafeInteger(cursor.revision) && cursor.revision >= 0 && cursor.revision <= head) {
-    const versions = store.versions();
-    // Revisions are monotonic; finding the next delta never scans old bodies.
-    let low = 0, high = versions.length;
-    while (low < high) { const mid = (low + high) >>> 1; if (Number(versions[mid].revision) <= cursor.revision) low = mid + 1; else high = mid; }
     const page: RecordPointer[] = [];
-    for (let i = low; i < versions.length && page.length <= limit; i++) if (inEpoch(versions[i])) page.push(versions[i]);
+    // The store seeks the first relevant revision page; old versions stay on disk.
+    for (const pointer of store.versions({ after: cursor.revision, before: head + 1, where: epochFilter })) {
+      if (++examined % 250 === 0) await yieldRead();
+      if (Number(pointer.revision) > head) break;
+      if (inEpoch(pointer)) page.push(pointer);
+      if (page.length > limit) break;
+    }
     const hasMore = page.length > limit;
     if (hasMore) page.pop();
     const revision = hasMore ? Number(page.at(-1)!.revision) : head;
     return { scope, mode: "delta" as const, blocks: await read(page), cursor: token({ revision }), hasMore,
       projection: { ...projection, revision } };
   }
-  const recent = pointers.sort(byNewest).slice(0, limit);
-  const running = pointers.filter(pointer => pointer.status === "running");
-  const selected = new Map([...recent, ...running].map(pointer => [pointer.id, pointer]));
+  const recent = newestPointers(limit), running = newestPointers(500);
+  for (const pointer of store.entries({ where: epochFilter })) {
+    if (++examined % 250 === 0) await yieldRead();
+    if (!inEpoch(pointer)) continue;
+    recent.add(pointer);
+    // Preserve live tools outside the recent page, without an unbounded response
+    // if a damaged log contains thousands of never-completed blocks.
+    if (pointer.status === "running") running.add(pointer);
+  }
+  const selected = new Map([...recent.values(), ...running.values()].map(pointer => [pointer.id, pointer]));
   return { scope, mode: "snapshot" as const, blocks: ascending(await read([...selected.values()])),
     cursor: token({ revision: head }), hasMore: false, projection };
 }
@@ -480,7 +519,8 @@ export async function getActivity(project: string, run?: string, epoch?: string,
       generatedAt: new Date().toISOString(), durationMs: performance.now() - started, blockCount: 0, revision: 0, generation: "empty" },
     current: { workspace: selected.workspace ?? null, runId: null, epoch: null, activity: "idle", phase: "工作区尚无运行记录",
       intent: null, observationId: null, updatedAt: null, error: null } };
-  const { manifest, index } = await loadRun(project, runId);
+  const { manifest, index, release } = await loadRun(project, runId);
+  try {
   await refreshActivity(index);
   // Readers may leave; shared projection work remains available to other consumers.
   signal?.throwIfAborted();
@@ -505,4 +545,5 @@ export async function getActivity(project: string, run?: string, epoch?: string,
       : live?.runId === runId && live.mode === "auto" && live.epoch !== result.scope.epoch ? "历史运行，仅供回放"
       : live?.runId === runId && !live.connected ? "设备连接已断开" : "Host 离线",
     intent: state.intent, observationId: state.observationId, updatedAt: state.updatedAt, error: state.error } };
+  } finally { release(); }
 }
