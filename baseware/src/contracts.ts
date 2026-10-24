@@ -14,6 +14,10 @@ export interface Observation {
 
 export interface ExecutionResult {
   id: string;
+  /** A command concerning a separately running device action, not its completion. */
+  actionId?: string;
+  /** A state query can require ownership without changing device input. */
+  readOnly?: boolean;
   status: "completed" | "interrupted" | "failed";
   exitCode: number;
   stdout: string;
@@ -43,8 +47,16 @@ export interface Controller {
   stdoutSchema?: JsonSchema;
   help(): string;
   acquire?(epoch: string): Promise<void>;
-  execute(argv: readonly string[], context: { epoch?: string; signal: AbortSignal }): Promise<ExecutionResult>;
+  execute(argv: readonly string[], context: ControllerContext): Promise<ExecutionResult>;
   release?(epoch: string): Promise<void>;
+}
+
+export interface ControllerContext {
+  epoch?: string;
+  signal: AbortSignal;
+  /** Lifetime of device ownership, independent of an individual caller/waiter. */
+  controlSignal?: AbortSignal;
+  record?(type: "action_start" | "action_end", data: Record<string, unknown>): void;
 }
 
 export interface Capabilities {

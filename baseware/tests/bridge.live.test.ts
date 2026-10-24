@@ -13,13 +13,14 @@ test.skipIf(process.env.RSA_BRIDGE_TEST !== "1")("bridge survives repeated disco
       const epoch = crypto.randomUUID();
       await controller.acquire!(epoch);
       if (i === 0) {
-        const action = controller.execute(["apply", "--state", '{"LEFT":1}', "--for-ms", "30000"], { epoch, signal: new AbortController().signal });
-        const outcome = action.then((value) => value, (error: Error) => error);
+        const context = { epoch, signal: new AbortController().signal };
+        const action = JSON.parse((await controller.execute(["play", "--inputs", '[{"atMs":0,"durationMs":30000,"state":{"LEFT":1}}]'], context)).stdout);
+        const outcome = controller.execute(["wait", "--action", action.actionId], context);
         await Bun.sleep(50);
         provider.close();
         const result = await outcome;
-        expect(result).toBeInstanceOf(Error);
-        expect(String(result)).toContain("disconnected");
+        expect(result.status).toBe("failed");
+        expect(result.stderr).toContain("disconnected");
       } else {
         const result = await controller.execute(["state"], { epoch, signal: new AbortController().signal });
         expect(Object.values(JSON.parse(result.stdout).state).every((v) => v === 0)).toBe(true);

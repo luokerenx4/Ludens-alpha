@@ -43,9 +43,12 @@ test("GBA catalog exposes digital states and emulation-time durations without an
     artifactsDir: directory, clock: { id: "test", now: () => performance.now() } });
   try {
     const [pad, screen] = provider.capabilities.controllers;
-    expect(pad.commands?.find(c => c.name === "apply")?.parameters).toMatchObject({ properties: {
-      state: { additionalProperties: false, properties: { A: { type: "integer", enum: [0, 1] }, SELECT: { enum: [0, 1] } } },
-      durationMs: { type: "number", exclusiveMinimum: 0, description: expect.stringContaining("60 frames per second") },
+    expect(pad.commands?.some(c => c.name === "apply")).toBe(false);
+    expect(pad.commands?.find(c => c.name === "play")?.parameters).toMatchObject({ properties: {
+      inputs: { type: "array", description: expect.stringContaining("60 frames per second"), items: { properties: {
+        state: { additionalProperties: false, properties: { A: { type: "integer", enum: [0, 1] }, SELECT: { enum: [0, 1] } } },
+        durationMs: { type: "integer", minimum: 1 },
+      } } },
     } });
     expect(screen.commands).toMatchObject([{ name: "capture", parameters: { properties: {}, additionalProperties: false }, bindings: [] }]);
     expect(encodeSpans([{ state: { A: 1 }, durationMs: 30_000 }], 60)).toBe("1:1800");

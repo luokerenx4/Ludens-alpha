@@ -6,6 +6,12 @@ export function parseEvents(text: string): Event[] {
   if (!text.endsWith("\n")) lines.pop(); // An append in progress is not a malformed event.
   return lines.filter(Boolean).map((line) => JSON.parse(line));
 }
+/** A play RPC reports submission/query completion; the action terminal reports the input. */
+export function isCompletedControllerAction(event: Event): boolean {
+  const d = event.data;
+  return (event.type === "action_end" || event.type === "execution" && !d.actionId)
+    && d.requiresControl !== false && d.readOnly !== true && d.status === "completed" && d.exitCode === 0;
+}
 const median = (xs: number[]) => {
   const a = [...xs].sort((x, y) => x - y);
   return a.length
@@ -252,12 +258,7 @@ export function aggregate(events: Event[], now = Date.now()) {
         evidence.ok = !d.isError;
       }
     }
-    if (
-      event.type === "execution" &&
-      d.requiresControl !== false &&
-      d.status === "completed" &&
-      d.exitCode === 0
-    ) {
+    if (isCompletedControllerAction(event)) {
       actions++;
       if (call) call.actions++;
     }
@@ -300,6 +301,7 @@ export function aggregate(events: Event[], now = Date.now()) {
       event.type.startsWith("auto_compaction") ||
       event.type.startsWith("compaction_http_") ||
       (event.type === "perception_observe_end" && d.status?.state === "error") ||
+      (event.type === "action_end" && d.status === "failed") ||
       event.type === "disconnected"
     ) {
       let text =
@@ -370,6 +372,7 @@ export function aggregate(events: Event[], now = Date.now()) {
         failed:
           (event.type.includes("error") && !d.aborted) ||
           (event.type === "perception_observe_end" && d.status?.state === "error" && d.outcome !== "cancelled") ||
+          (event.type === "action_end" && d.status === "failed") ||
           (event.type === "compaction_http_end" && d.status >= 400),
       });
     }

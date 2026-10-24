@@ -1,9 +1,10 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { parseArgs } from "node:util";
 import type { Capabilities, Clock, Controller, ExecutionResult } from "../../contracts.ts";
 import { Bridge } from "../bridge.ts";
-import { noArguments, padCommands } from "../schema.ts";
+import { createPadPlayer } from "../pad.ts";
+import { compileTimeline } from "../timeline.ts";
+import { noArguments, PLAY_HELP, padCommands } from "../schema.ts";
 
 const KEYS = ["A", "B", "SELECT", "START", "RIGHT", "LEFT", "UP", "DOWN", "R", "L"];
 type Span = { state: Record<string, number>; durationMs: number };
@@ -32,18 +33,8 @@ export function encodeSpans(spans: Span[], fps: number): string {
 }
 
 const PAD_HELP = `Digital controller: ${KEYS.join(", ")}. Values: 0=released, 1=pressed.
-state
-apply --state '<JSON object>' --for-ms <milliseconds>
-play --file <absolute JSON file path>
-release
-apply replaces the entire state; omitted channels are 0. play accepts
-[{"state":{"A":1},"durationMs":100}, ...]. Adjacent spans preserve held keys.
-Choose finite positive durations in emulation time, rounded to frame boundaries.
-Each span must occupy at least one frame; total frames must be a safe integer.
-Commands wait for completion. All keys return to 0 at completion or cancellation.
-Only one action may run; a concurrent action fails BUSY.
-release interrupts the current action, retaining ownership. Human auto off returns ownership.
-state reports applied channel values and the active action ID, never game memory.`;
+${PLAY_HELP}
+Durations use integer emulation milliseconds, rounded cumulatively to frame boundaries. Every state span must occupy at least one frame.`;
 
 export async function createGbaProvider(options: { port: number; artifactsDir: string; clock: Clock }) {
   const { clock } = options;
@@ -53,6 +44,10 @@ export async function createGbaProvider(options: { port: number; artifactsDir: s
   try { [frequency, cycles] = await bridge.request("HELLO"); }
   catch (error) { bridge.close(); throw error; }
   const fps = Number(frequency) / Number(cycles);
+  const player = createPadPlayer({ bridge, clock,
+    encode: inputs => encodeSpans(compileTimeline(inputs, KEYS, [], 1), fps),
+    decode: ([startFrame, endFrame]) => ({ startFrame: Number(startFrame), endFrame: Number(endFrame), frames: Number(endFrame) - Number(startFrame) }),
+  });
   let owner: string | undefined;
 
   const screen: Controller = {
@@ -79,47 +74,36 @@ export async function createGbaProvider(options: { port: number; artifactsDir: s
   const pad: Controller = {
     id: "pad", requiresControl: true,
     help: () => PAD_HELP,
-    commands: padCommands(KEYS, [], { type: "number", exclusiveMinimum: 0,
-      description: `Finite positive emulation milliseconds, rounded cumulatively at ${fps} frames per second. Each span must occupy at least one frame and the total frame count must be a safe integer.` }),
-    async acquire(epoch) { await bridge.request("OWN", [epoch]); owner = epoch; },
+    commands: padCommands(KEYS, [], { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER,
+      description: `Safe integer emulation milliseconds, rounded cumulatively at ${fps} frames per second. Each span must occupy at least one frame and the total frame count must be a safe integer.` }),
+    async acquire(epoch) {
+      if (owner === epoch) return;
+      player.reset(); await bridge.request("OWN", [epoch]); owner = epoch;
+    },
     async release(epoch) {
       if (owner !== epoch) return;
       owner = undefined;
       await bridge.request("DISOWN", [epoch]);
+      await player.settle();
     },
-    async execute(argv, { epoch, signal }): Promise<ExecutionResult> {
+    async execute(argv, context): Promise<ExecutionResult> {
+      const { epoch, signal } = context;
       signal.throwIfAborted();
       if (!epoch || owner !== epoch) throw new Error("STALE_EPOCH");
-      const { values, positionals } = parseArgs({ args: [...argv], allowPositionals: true,
-        options: { state: { type: "string" }, "for-ms": { type: "string" }, file: { type: "string" } } });
-      const [command] = positionals;
-      if (positionals.length !== 1) throw new Error("Expected one controller command; see --help");
+      if (argv[0] !== "state" && argv[0] !== "release") return player.execute(argv, context);
+      if (argv.length !== 1) throw new Error(`${argv[0]} accepts no arguments`);
       const id = crypto.randomUUID();
       const requestedAtMs = clock.now();
-      let status: ExecutionResult["status"] = "completed";
       let output: unknown;
-      if (command === "state") {
-        const [mask, actionId] = await bridge.request("STATE", [epoch]);
+      if (argv[0] === "state") {
+        const [mask, actionId] = await bridge.request("STATE", [epoch], id);
         output = { state: Object.fromEntries(KEYS.map((key, i) => [key, (Number(mask) >> i) & 1])), actionId: actionId === "-" ? null : actionId };
-      } else if (command === "release") {
-        await bridge.request("STOP", [epoch]);
+      } else {
+        await bridge.request("STOP", [epoch], id);
+        await player.settle();
         output = { released: true };
-      } else if (command === "apply" || command === "play") {
-        const spans: Span[] = command === "apply"
-          ? [{ state: JSON.parse(values.state ?? "null"), durationMs: Number(values["for-ms"]) }]
-          : JSON.parse(await readFile(values.file ?? "", "utf8"));
-        const sequence = encodeSpans(spans, fps);
-        signal.throwIfAborted();
-        const pending = bridge.request("APPLY", [epoch, sequence], id);
-        const abort = () => { void bridge.request("STOP", [epoch, id]).catch(() => {}); };
-        signal.addEventListener("abort", abort, { once: true });
-        try {
-          const [outcome, startFrame, endFrame] = await pending;
-          status = outcome as "completed" | "interrupted";
-          output = { startFrame: Number(startFrame), endFrame: Number(endFrame), frames: Number(endFrame) - Number(startFrame) };
-        } finally { signal.removeEventListener("abort", abort); }
-      } else throw new Error("Unknown controller command; see --help");
-      return { id, status, exitCode: status === "completed" ? 0 : 130, stdout: JSON.stringify(output), stderr: "",
+      }
+      return { id, readOnly: argv[0] === "state", status: "completed", exitCode: 0, stdout: JSON.stringify(output), stderr: "",
         timing: { clock: clock.id, requestedAtMs, receivedAtMs: clock.now() } };
     },
   };

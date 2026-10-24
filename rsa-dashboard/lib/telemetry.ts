@@ -44,6 +44,7 @@ const operations: {
     ends: ["execution", "execution_error"],
     operation: "execute",
   },
+  { kind: "device", start: "action_start", ends: ["action_end"], name: "执行输入时间表", operation: "play" },
   {
     kind: "device",
     start: "observation_start",
@@ -144,6 +145,8 @@ export function projectTelemetry(
     allEvents.filter((event) => event.type === "command" && identified(event)).map(key),
   );
   for (const definition of operations) {
+    const operationKey = (event: Event) => definition.start === "action_start"
+      ? JSON.stringify([key(event), event.data.actionId]) : key(event);
     const finishes = new Map<string, Event>();
     for (const event of allEvents)
       if (
@@ -151,9 +154,9 @@ export function projectTelemetry(
         definition.ends.includes(event.type) &&
         (!definition.endStages ||
           definition.endStages.includes(event.data.stage)) &&
-        !finishes.has(key(event))
+        !finishes.has(operationKey(event))
       )
-        finishes.set(key(event), event);
+        finishes.set(operationKey(event), event);
     for (const start of selected) {
       if (
         start.type !== definition.start ||
@@ -164,7 +167,7 @@ export function projectTelemetry(
       // New controller calls also emit observation details on the same span.
       // Only historical captures without a command need a separate projection.
       if (start.type === "observation_start" && deviceCommands.has(key(start))) continue;
-      const finish = finishes.get(key(start));
+      const finish = finishes.get(operationKey(start));
       const trace = { ...related.get(key(start)), ...start.trace };
       const result = finish?.data;
       let outcome: SpanOutcome = !finish
@@ -173,6 +176,9 @@ export function projectTelemetry(
           ? result!.outcome
           : "unknown";
       if (finish && outcome === "unknown") {
+        if (definition.start === "action_start")
+          outcome = result?.status === "completed" ? "success"
+            : result?.status === "interrupted" ? "cancelled" : result?.status === "failed" ? "error" : "unknown";
         if (definition.kind === "perception")
           outcome = result?.error || result?.status?.state === "error" ? "error" : "success";
         if (definition.kind === "compaction") {
@@ -203,6 +209,8 @@ export function projectTelemetry(
                 : "unknown";
       }
       let durationMs = duration(result?.durationMs);
+      if (definition.start === "action_start" && start.data.timing?.clock === result?.timing?.clock)
+        durationMs = duration(result?.timing?.receivedAtMs - start.data.timing?.submittedAtMs);
       // Device events are forwarded by RSA. Only the original clock measures
       // the device span; receipt timestamps include transport and scheduling.
       if (
@@ -215,7 +223,7 @@ export function projectTelemetry(
         durationMs = duration(finish.origin.atMs - start.origin.atMs);
       }
       spans.push({
-        id: `${definition.kind}:${trace.traceId}:${trace.spanId}`,
+        id: `${definition.kind}:${trace.traceId}:${trace.spanId}${definition.start === "action_start" ? `:action:${start.data.actionId}` : ""}`,
         kind: definition.kind,
         traceId: trace.traceId,
         spanId: trace.spanId,

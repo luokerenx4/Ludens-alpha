@@ -13,6 +13,8 @@ export const executionResultSchema: JsonSchema = {
   type: "object", required: ["id", "status", "exitCode", "stdout", "stderr", "timing"],
   properties: {
     id: { type: "string" }, status: { enum: ["completed", "interrupted", "failed"] },
+    actionId: { type: "string", description: "Separately running device action. Command completion does not imply action completion; inspect stdout.status or wait by this ID." },
+    readOnly: { type: "boolean", description: "State query; does not change device input even when it requires ownership." },
     exitCode: { type: "integer" }, stdout: { type: "string", description: "Driver output; see controller.stdoutSchema when declared." },
     stderr: { type: "string" }, timing: timingSchema,
     observations: { type: "array", items: {

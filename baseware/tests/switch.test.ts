@@ -147,16 +147,16 @@ test("Switch catalog describes actual pad channels, sequence file contents and k
   await withSwitchBridge(async (provider, _captures, _requests, typed) => {
     const pad = provider.capabilities.controllers.find(c => c.id === "pad")!;
     const state = { type: "object", additionalProperties: false, properties: {
-      ...Object.fromEntries(BUTTONS.map(key => [key, { type: "integer", enum: [0, 1], default: 0 }])),
-      ...Object.fromEntries(AXES.map(key => [key, { type: "number", minimum: -1, maximum: 1, default: 0 }])),
+      ...Object.fromEntries(BUTTONS.map(key => [key, { type: "integer", enum: [0, 1] }])),
+      ...Object.fromEntries(AXES.map(key => [key, { type: "number", minimum: -1, maximum: 1 }])),
     } };
-    expect(pad.commands?.map(c => c.name)).toEqual(["state", "apply", "play", "release"]);
-    expect(pad.commands?.find(c => c.name === "apply")).toMatchObject({
-      parameters: { properties: { state, durationMs: { type: "integer", minimum: 16, maximum: Number.MAX_SAFE_INTEGER } }, required: ["state", "durationMs"] },
-      bindings: [{ parameter: "state", flag: "--state", encoding: "json" }, { parameter: "durationMs", flag: "--for-ms", encoding: "string" }],
-    });
+    expect(pad.commands?.map(c => c.name)).toEqual(["state", "play", "status", "wait", "cancel", "release"]);
     expect(pad.commands?.find(c => c.name === "play")?.parameters).toMatchObject({ properties: {
-      file: { type: "string", "x-fileContentSchema": { type: "array", minItems: 1, items: { properties: { state, durationMs: { minimum: 16 } }, required: ["state", "durationMs"] } } },
+      inputs: { type: "array", items: { properties: { state, durationMs: { minimum: 1 }, atMs: { minimum: 0 } }, required: ["atMs", "durationMs", "state"] } },
+      file: { type: "string", "x-fileContentSchema": { type: "object", properties: {
+        inputs: { type: "array", minItems: 1, items: { properties: { state, durationMs: { minimum: 1 } } } },
+      }, required: ["inputs"] } },
+      wait: { type: "string", enum: ["true", "false"], default: "false" },
     } });
     const keyboard = provider.capabilities.controllers.find(c => c.id === "keyboard")!;
     expect(keyboard.commands).toMatchObject([
@@ -170,4 +170,65 @@ test("Switch catalog describes actual pad channels, sequence file contents and k
     expect(typed).toEqual(["--help 文本"]);
     await keyboard.release!("epoch");
   });
+});
+
+test("Switch release waits for a late action result before reporting release or reacquiring", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "baseware-release-order-"));
+  let owner: string | undefined;
+  let finishAction: (() => void) | undefined;
+  let acknowledged = Promise.withResolvers<void>();
+  const server = createServer(socket => {
+    let buffer = "";
+    socket.on("data", chunk => {
+      buffer += chunk;
+      while (buffer.includes("\n")) {
+        const end = buffer.indexOf("\n");
+        const [id, op, epoch] = buffer.slice(0, end).split("\t");
+        buffer = buffer.slice(end + 1);
+        const ok = (...fields: string[]) => socket.write([id, "OK", ...fields].join("\t") + "\n");
+        if (op === "HELLO") ok("ryubing-rsa-3");
+        else if (op === "TOUCH_INFO") ok("0", "0", "1279", "719");
+        else if (op === "OWN") {
+          if (owner) socket.write(`${id}\tERROR\tOWNED\n`);
+          else { owner = epoch; ok(); }
+        } else if (op === "APPLY") finishAction = () => { ok("interrupted", "10", "2"); finishAction = undefined; };
+        else if (op === "STOP" || op === "DISOWN") {
+          if (op === "DISOWN") owner = undefined;
+          ok(); // Ryubing schedules the APPLY completion asynchronously, after this acknowledgement.
+          acknowledged.resolve();
+        } else if (op === "CAPTURE") ok("1");
+      }
+    });
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const provider = await createSwitchProvider({ port: (server.address() as AddressInfo).port,
+    artifactsDir: directory, clock: { id: "release-order", now: () => performance.now() } });
+  const pad = provider.capabilities.controllers[0];
+  const screen = provider.capabilities.controllers.find(c => c.id === "screen")!;
+  const context = {epoch: "old", signal: new AbortController().signal};
+  try {
+    await pad.acquire!(context.epoch);
+    for (const disown of [false, true]) {
+      acknowledged = Promise.withResolvers<void>();
+      const action = JSON.parse((await pad.execute(["play", "--inputs", '[{"atMs":0,"durationMs":30000,"state":{"A":1}}]'], context)).stdout);
+      let released = false;
+      const releasing = (disown ? pad.release!(context.epoch) : pad.execute(["release"], context)).then(() => { released = true; });
+      await acknowledged.promise;
+      // This later response on the same socket proves the STOP/DISOWN reply was consumed,
+      // without sleeps or depending on thread scheduling for the delayed action result.
+      await screen.execute(["capture"], {signal: context.signal});
+      expect(released).toBe(false);
+      finishAction!();
+      await releasing;
+      if (!disown) expect(JSON.parse((await pad.execute(["wait", "--action", action.actionId], context)).stdout).status).toBe("interrupted");
+    }
+    await pad.acquire!("new");
+    expect(owner).toBe("new");
+    await pad.release!("new");
+  } finally {
+    finishAction?.();
+    provider.close();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    await rm(directory, {recursive: true, force: true});
+  }
 });

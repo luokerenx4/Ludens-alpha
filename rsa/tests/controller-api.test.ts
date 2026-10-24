@@ -37,7 +37,7 @@ def probe():
     return "registered"
 client = Client()
 values = [client.list(), client.help("controller/pad"),
-          client.call("controller/pad", ["apply", "A", "100"]),
+          client.call("controller/pad", ["play", "--inputs", '[{"atMs":0,"durationMs":100,"state":{"A":1}}]']),
           client.call("controller/screen")]
 errors = []
 for capability_id in ["rejected", "disconnect"]:
@@ -57,7 +57,7 @@ print(json.dumps({"values": values, "errors": errors, "marked": probe.__rsa_capa
     expect(result.marked).toBe(true);
     expect(result.values).toEqual([
       {action: "list", arguments: null}, {action: "help", arguments: null},
-      {action: "call", arguments: ["apply", "A", "100"]},
+      {action: "call", arguments: ["play", "--inputs", '[{"atMs":0,"durationMs":100,"state":{"A":1}}]']},
       {action: "call", arguments: null}, {action: "help", arguments: null},
     ]);
     expect(result.errors).toEqual([
@@ -102,7 +102,7 @@ model = Model()
 @capability
 def step(value):
     value.calls += 1
-    client.call("controller/pad", ["apply", "A", "10"])
+    client.call("controller/pad", ["play", "--inputs", '[{"atMs":0,"durationMs":100,"state":{"A":1}}]'])
     return value
 @capability
 def loop(value):

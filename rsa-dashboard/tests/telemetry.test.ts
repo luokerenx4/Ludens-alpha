@@ -22,6 +22,31 @@ function fixture() {
   });
 }
 
+test("async play has a distinct execution lifetime and submission/query RPCs are not extra actions", () => {
+  const e = fixture();
+  const events = [
+    e("command", "play", { controllerId: "pad", argv: ["play"] }),
+    e("action_start", "play", { actionId: "movement", status: "running", timing: { clock: "baseware", submittedAtMs: 10 } }),
+    e("execution", "play", { actionId: "movement", status: "completed", exitCode: 0, durationMs: 2 }),
+    e("command", "query", { controllerId: "pad", argv: ["status", "--action", "movement"] }),
+    e("execution", "query", { actionId: "movement", status: "completed", exitCode: 0 }),
+    e("action_end", "play", { actionId: "movement", status: "completed", exitCode: 0,
+      timing: { clock: "baseware", requestedAtMs: 10, receivedAtMs: 510 } }),
+    e("command", "wait", { controllerId: "pad", argv: ["wait", "--action", "movement"] }),
+    e("execution", "wait", { actionId: "movement", status: "completed", exitCode: 0 }),
+    e("execution", "state", { readOnly: true, status: "completed", exitCode: 0 }),
+    e("action_start", "cancelled", { actionId: "cancelled", timing: { clock: "baseware", submittedAtMs: 600 } }),
+    e("action_end", "cancelled", { actionId: "cancelled", status: "interrupted", exitCode: 130,
+      timing: { clock: "baseware", requestedAtMs: 600, receivedAtMs: 650 } }),
+  ];
+  const result = projectTelemetry(events);
+  const played = result.spans.filter(span => span.operation === "play");
+  assert.deepEqual(played.map(span => [span.outcome, span.durationMs]), [["success", 500], ["cancelled", 50]]);
+  assert.equal(result.spans.find(span => span.spanId === "play" && span.operation === "execute")?.durationMs, 2);
+  assert.equal(new Set(result.spans.map(span => span.id)).size, result.spans.length);
+  assert.equal(aggregate(events).summary.actions, 1);
+});
+
 test("trace projection preserves nested and concurrent capability identities without double-counting Python details", () => {
   const e = fixture();
   const events = [

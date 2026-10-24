@@ -65,9 +65,13 @@ test("Azahar offers native pad, touch and two independent screens with a shared 
     expect(provider.version).toBe("2126.2-rsa.3");
     expect(provider.capabilities.controllers.map(c => c.id)).toEqual(["pad", "touch", "screen.top", "screen.bottom"]);
     const [pad, touch] = provider.capabilities.controllers;
-    expect(pad.commands?.find(c => c.name === "apply")?.parameters).toMatchObject({ properties: {
-      state: { properties: { ZL: { enum: [0, 1] }, RY: { minimum: -1, maximum: 1 } }, additionalProperties: false },
-      durationMs: { type: "integer", minimum: 16, maximum: Number.MAX_SAFE_INTEGER },
+    expect(pad.commands?.some(c => c.name === "apply")).toBe(false);
+    expect(pad.commands?.find(c => c.name === "play")?.parameters).toMatchObject({ properties: {
+      inputs: { type: "array", items: { properties: {
+        state: { properties: { ZL: { enum: [0, 1] }, RY: { minimum: -1, maximum: 1 } }, additionalProperties: false },
+        durationMs: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+      } } },
+      wait: { type: "string", enum: ["true", "false"], default: "false" },
     } });
     await pad.acquire!("epoch");
     await touch.acquire!("epoch");
@@ -76,8 +80,8 @@ test("Azahar offers native pad, touch and two independent screens with a shared 
     expect(state.state).toMatchObject({ A: 1, ZL: 1, LX: 1, RY: -1 });
     expect(state.actionId).toBeNull();
     await touch.execute(["down", "--x", "319", "--y", "239"], context);
-    const applied = await pad.execute(["apply", "--state", '{"RIGHT":1}', "--for-ms", "30000"], context);
-    expect(JSON.parse(applied.stdout)).toEqual({ elapsedMs: 30000, inputPolls: 1800 });
+    const applied = await pad.execute(["play", "--inputs", '[{"atMs":0,"durationMs":30000,"state":{"RIGHT":1}}]', "--wait", "true"], context);
+    expect(JSON.parse(applied.stdout)).toMatchObject({ status: "completed", elapsedMs: 30000, inputPolls: 1800 });
     expect(requests.find(r => r.op === "APPLY")!.args).toEqual(["epoch", "1024:0:0:0:0:30000"]);
     await pad.release!("epoch");
     await touch.release!("epoch");
@@ -151,26 +155,37 @@ test("Azahar serializes concurrent source captures without merging their observa
   });
 });
 
-test("Azahar cancels a long pad action by request ID without discarding ownership", async () => {
+test("Azahar submits overlapping inputs asynchronously and cancels by action ID", async () => {
   let pending: Request | undefined;
   await fixture(async (provider, requests) => {
     const pad = provider.capabilities.controllers.find(c => c.id === "pad")!;
     await pad.acquire!("epoch");
     const abort = new AbortController();
-    const action = pad.execute(["apply", "--state", '{"A":1}', "--for-ms", "30000"],
-      { epoch: "epoch", signal: abort.signal });
+    const context = { epoch: "epoch", signal: abort.signal };
+    const submitted = await pad.execute(["play", "--inputs", JSON.stringify([
+      { atMs: 0, durationMs: 500, state: { LEFT: 1 } },
+      { atMs: 0, durationMs: 300, state: { B: 1 } },
+    ])], context);
+    const action = JSON.parse(submitted.stdout);
+    expect(action.status).toBe("running");
     while (!pending) await Bun.sleep(1);
+    expect(action.actionId).toBe(pending!.id);
+    expect(pending!.args).toEqual(["epoch", "258:0:0:0:0:300,256:0:0:0:0:200"]);
     abort.abort();
-    const result = await action;
-    expect(result.status).toBe("interrupted");
-    expect(result.exitCode).toBe(130);
-    const stop = requests.find(r => r.op === "STOP")!;
-    expect(stop.args).toEqual(["epoch", pending.id]);
-    expect(stop.id).not.toBe(pending.id);
+    await Bun.sleep(5);
+    expect(requests.some(r => r.op === "STOP")).toBe(false);
+    const nextContext = { epoch: "epoch", signal: new AbortController().signal };
+    const cancelled = await pad.execute(["cancel", "--action", action.actionId], nextContext);
+    expect(JSON.parse(cancelled.stdout)).toMatchObject({ actionId: action.actionId, status: "interrupted" });
+    expect(requests.find(r => r.op === "STOP")!.args).toEqual(["epoch", action.actionId]);
     expect(requests.some(r => r.op === "DISOWN")).toBe(false);
-    await pad.execute(["state"], { epoch: "epoch", signal: new AbortController().signal });
+    await pad.execute(["state"], nextContext);
+    for (const argv of [["apply", "--state", '{"A":1}', "--for-ms", "100"], ["state", "--inputs", "[]"], ["release", "extra"]]) {
+      await expect(pad.execute(argv, nextContext)).rejects.toThrow();
+    }
   }, request => {
     if (request.op === "APPLY") { pending = request; return true; }
+    if (request.op === "STATE" && pending) { reply(request, ["258", "0", "0", "0", "0", pending.id]); return true; }
     if (request.op === "STOP") {
       reply(pending!, ["interrupted", "1", "1"]); reply(request); return true;
     }

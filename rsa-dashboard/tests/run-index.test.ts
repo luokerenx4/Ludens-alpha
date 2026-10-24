@@ -25,6 +25,39 @@ async function fixture(values: Event[], check: (index: LogIndex, path: string) =
   } finally { closeLogIndexes(); await rm(path, { recursive: true, force: true }); }
 }
 
+test("incremental action terminals update execution time and counts after an async submission returns", async () => {
+  const e = events();
+  const trace = { traceId: "trace", spanId: "play", modelCallId: "model" };
+  const values = [e("control", { mode: "auto" }), e("model_start", {}, trace),
+    e("command", { controllerId: "pad", argv: ["play"] }, trace),
+    e("action_start", { actionId: "one", timing: { clock: "driver", submittedAtMs: 100 } }, trace),
+    e("execution", { actionId: "one", status: "completed", exitCode: 0, durationMs: 1 }, trace),
+  ];
+  await fixture(values, async (index, path) => {
+    const before = await readRunProjection(index, "cycle");
+    assert.equal(before.summary.actions, 0);
+    assert.equal(before.telemetry.spans.find(span => span.operation === "play")?.outcome, "pending");
+    const after = [e("control", { mode: "manual" }),
+      e("action_end", { actionId: "one", status: "completed", exitCode: 0,
+        timing: { clock: "driver", requestedAtMs: 100, receivedAtMs: 600 } }, trace),
+      e("execution", { actionId: "one", status: "completed", exitCode: 0 }, { ...trace, spanId: "wait" }),
+      e("execution", { readOnly: true, status: "completed", exitCode: 0 }, { ...trace, spanId: "state" }),
+      e("action_start", { actionId: "failed", timing: { clock: "driver", submittedAtMs: 700 } }, { ...trace, spanId: "failed" }),
+      e("action_end", { actionId: "failed", status: "failed", exitCode: 1, error: "bridge disconnected",
+        timing: { clock: "driver", requestedAtMs: 700, receivedAtMs: 800 } }, { ...trace, spanId: "failed" }),
+    ];
+    await appendFile(join(path, "events.jsonl"), after.map(value => JSON.stringify(value)).join("\n") + "\n");
+    await refreshRunProjection(index);
+    const result = await readRunProjection(index, "cycle");
+    assert.equal(result.summary.actions, 1);
+    assert.equal(result.calls[0].actions, 1);
+    assert.equal(result.summary.errors, 1);
+    assert.equal(result.telemetry.spans.find(span => span.operation === "play" && span.spanId === "play")?.durationMs, 500);
+    assert.equal(result.telemetry.spans.find(span => span.operation === "execute" && span.spanId === "play")?.durationMs, 1);
+    assert.equal(result.summary.actions, aggregate([...values, ...after]).summary.actions);
+  });
+});
+
 test("run pages read 100 requests and retain whole-cycle metrics and off-page deep links", async () => {
   const event = events(), values = [event("control", { mode: "auto" })];
   for (let i = 1; i <= 205; i++) values.push(

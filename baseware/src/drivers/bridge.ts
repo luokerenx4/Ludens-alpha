@@ -44,7 +44,7 @@ export class Bridge {
     return bridge;
   }
 
-  request(op: string, args: (string | number)[] = [], id = crypto.randomUUID()): Promise<string[]> {
+  request(op: string, args: (string | number)[] = [], id: string = crypto.randomUUID()): Promise<string[]> {
     if (this.failure) return Promise.reject(this.failure);
     if ([op, ...args].some((field) => /[\t\r\n]/.test(String(field)))) {
       return Promise.reject(new Error("Bridge fields cannot contain tabs or newlines"));

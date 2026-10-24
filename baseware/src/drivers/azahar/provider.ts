@@ -1,10 +1,11 @@
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { parseArgs } from "node:util";
 import type { Capabilities, Clock, Controller, ExecutionResult } from "../../contracts.ts";
 import { Bridge } from "../bridge.ts";
+import { createPadPlayer } from "../pad.ts";
+import { compileTimeline } from "../timeline.ts";
 import { createTouchController } from "../touch.ts";
-import { MIN_POLL_DURATION_MS, noArguments, padCommands, polledDuration } from "../schema.ts";
+import { MIN_POLL_DURATION_MS, PLAY_HELP, noArguments, padCommands, polledDuration } from "../schema.ts";
 
 // Order matches the Azahar bridge's device channels, not game actions.
 export const BUTTONS = ["A", "B", "X", "Y", "L", "R", "START", "SELECT", "LEFT", "UP", "RIGHT", "DOWN", "ZL", "ZR"];
@@ -35,18 +36,8 @@ export function encodeSpans(spans: Span[]): string {
 const PAD_HELP = `Native 3DS controller. LX/LY are the Circle Pad; RX/RY are the C Stick.
 Buttons: ${BUTTONS.join(", ")}. Values: 0=released, 1=pressed.
 Axes: LX, LY, RX, RY in [-1,1]; X positive=right, Y positive=up, 0=center.
-state
-apply --state '<JSON object>' --for-ms <milliseconds>
-play --file <absolute JSON file path>
-release
-apply replaces the entire state; omitted channels are 0. play accepts
-[{"state":{"A":1},"durationMs":100}, ...]. Adjacent spans preserve held controls.
-Durations use wall time sampled at input polls, not emulation frames. Each span
-has a caller-chosen safe integer duration >= 16 ms; total must be a safe integer.
-Commands wait for completion.
-All controls return to 0 at completion or cancellation. One action at a time; BUSY otherwise.
-release interrupts current pad and touch input but retains ownership. Human auto off restores human input.
-state reports the bridge's current controls and action ID, never game memory.`;
+${PLAY_HELP}
+Durations use wall time sampled at input polls, not emulation frames. Every state transition must be at least 16 ms apart.`;
 
 /** Native pad, single-contact touch and independent hardware screen sources. */
 export async function createAzaharProvider(options: { port: number; artifactsDir: string; clock: Clock }) {
@@ -56,15 +47,20 @@ export async function createAzaharProvider(options: { port: number; artifactsDir
   try {
     const [version] = await bridge.request("HELLO");
     if (version !== "azahar-rsa-3") throw new Error(`Unexpected bridge: ${version}`);
+    const player = createPadPlayer({ bridge, clock,
+      encode: inputs => encodeSpans(compileTimeline(inputs, BUTTONS, AXES, MIN_POLL_DURATION_MS)),
+      decode: ([elapsedMs, polls]) => ({ elapsedMs: Number(elapsedMs), inputPolls: Number(polls) }),
+    });
     let owner: string | undefined;
     const acquire = async (epoch: string) => {
       if (owner === epoch) return;
-      await bridge.request("OWN", [epoch]); owner = epoch;
+      player.reset(); await bridge.request("OWN", [epoch]); owner = epoch;
     };
     const release = async (epoch: string) => {
       if (owner !== epoch) return;
       owner = undefined;
       await bridge.request("DISOWN", [epoch]);
+      await player.settle();
     };
     const touch = await createTouchController({ bridge, clock, acquire, release, owns: epoch => owner === epoch });
     let captureTail = Promise.resolve();
@@ -101,43 +97,25 @@ export async function createAzaharProvider(options: { port: number; artifactsDir
       id: "pad", requiresControl: true, help: () => PAD_HELP,
       commands: padCommands(BUTTONS, AXES, polledDuration),
       acquire, release,
-      async execute(argv, { epoch, signal }): Promise<ExecutionResult> {
+      async execute(argv, context): Promise<ExecutionResult> {
+        const { epoch, signal } = context;
         signal.throwIfAborted();
         if (!epoch || owner !== epoch) throw new Error("STALE_EPOCH");
-        const { values, positionals } = parseArgs({ args: [...argv], allowPositionals: true,
-          options: { state: { type: "string" }, "for-ms": { type: "string" }, file: { type: "string" } } });
-        if (positionals.length !== 1) throw new Error("Expected one controller command; see --help");
+        if (argv[0] !== "state" && argv[0] !== "release") return player.execute(argv, context);
+        if (argv.length !== 1) throw new Error(`${argv[0]} accepts no arguments`);
         const id = crypto.randomUUID();
         const requestedAtMs = clock.now();
-        let status: ExecutionResult["status"] = "completed";
         let output: unknown;
-        switch (positionals[0]) {
-          case "state": {
-            const [mask, lx, ly, rx, ry, actionId] = await bridge.request("STATE", [epoch], id);
-            output = { state: { ...Object.fromEntries(BUTTONS.map((key, i) => [key, (Number(mask) >> i) & 1])),
-              ...Object.fromEntries(AXES.map((key, i) => [key, Number([lx, ly, rx, ry][i]) / 32767])) }, actionId: actionId === "-" ? null : actionId };
-            break;
-          }
-          case "release": await bridge.request("STOP", [epoch], id); output = { released: true }; break;
-          case "apply": case "play": {
-            const spans: Span[] = positionals[0] === "apply"
-              ? [{ state: JSON.parse(values.state ?? "null"), durationMs: Number(values["for-ms"]) }]
-              : JSON.parse(await readFile(values.file ?? "", "utf8"));
-            const sequence = encodeSpans(spans);
-            signal.throwIfAborted();
-            const pending = bridge.request("APPLY", [epoch, sequence], id);
-            const abort = () => { void bridge.request("STOP", [epoch, id], crypto.randomUUID()).catch(() => {}); };
-            signal.addEventListener("abort", abort, { once: true });
-            try {
-              const [outcome, elapsedMs, polls] = await pending;
-              status = outcome as "completed" | "interrupted";
-              output = { elapsedMs: Number(elapsedMs), inputPolls: Number(polls) };
-            } finally { signal.removeEventListener("abort", abort); }
-            break;
-          }
-          default: throw new Error("Unknown controller command; see --help");
+        if (argv[0] === "state") {
+          const [mask, lx, ly, rx, ry, actionId] = await bridge.request("STATE", [epoch], id);
+          output = { state: { ...Object.fromEntries(BUTTONS.map((key, i) => [key, (Number(mask) >> i) & 1])),
+            ...Object.fromEntries(AXES.map((key, i) => [key, Number([lx, ly, rx, ry][i]) / 32767])) }, actionId: actionId === "-" ? null : actionId };
+        } else {
+          await bridge.request("STOP", [epoch], id);
+          await player.settle();
+          output = { released: true };
         }
-        return { id, status, exitCode: status === "completed" ? 0 : 130, stdout: JSON.stringify(output), stderr: "",
+        return { id, readOnly: argv[0] === "state", status: "completed", exitCode: 0, stdout: JSON.stringify(output), stderr: "",
           timing: { clock: clock.id, requestedAtMs, receivedAtMs: clock.now() } };
       },
     };

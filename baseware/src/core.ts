@@ -184,9 +184,18 @@ export class BasewareCore {
         combined = AbortSignal.any([signal, this.control!.signal]);
       }
       combined.throwIfAborted();
-      const result = await controller.execute(argv, { epoch, signal: combined });
+      const result = await controller.execute(argv, { epoch, signal: combined,
+        controlSignal: controller.requiresControl ? this.control!.signal : undefined,
+        record: (type, data) => {
+          const outcome = data.status === "interrupted" ? "cancelled" : data.status === "failed" ? "error" : "success";
+          if (type === "action_end" && epoch === this.epoch) {
+            this.lastExecution = { result: data as unknown as ExecutionResult, trace };
+          }
+          this.record(type, { ...data, controllerId: id, requiresControl: controller.requiresControl,
+            ...(type === "action_end" ? { outcome } : {}) }, trace);
+        } });
       // Read-only calls must not displace the last action; revoked calls cannot attach to a new owner.
-      if (controller.requiresControl && epoch === this.epoch) this.lastExecution = { result, trace };
+      if (controller.requiresControl && !result.actionId && !result.readOnly && epoch === this.epoch) this.lastExecution = { result, trace };
       const outcome = combined.aborted || result.status === "interrupted" ? "cancelled"
         : result.status === "completed" && result.exitCode === 0 ? "success" : "error";
       this.record("execution", { ...result, controllerId: id, requiresControl: controller.requiresControl, outcome }, trace);

@@ -27,6 +27,31 @@ async function analyze(events: unknown[], epoch?: string) {
   }
 }
 
+test("analysis counts async input completion once and keeps its lifetime after the submitting RPC", async () => {
+  const e = fixture();
+  const trace = { traceId: "trace", spanId: "play", operationId: "play" };
+  const timing = { clock: "driver", requestedAtMs: 10, receivedAtMs: 11 };
+  const report = await analyze([
+    e("control", "one", { mode: "auto", epoch: "one" }),
+    e("command", "one", { controllerId: "pad", requiresControl: true, argv: ["play"] }, trace),
+    e("action_start", "one", { actionId: "one", controllerId: "pad", timing: { clock: "driver", submittedAtMs: 10 } }, trace),
+    e("execution", "one", { id: "submit", actionId: "one", status: "completed", exitCode: 0, timing }, trace),
+    e("execution", "one", { id: "status", actionId: "one", status: "completed", exitCode: 0, timing }, { operationId: "status" }),
+    e("control", "one", { mode: "manual" }),
+    e("control", "next", { mode: "auto", epoch: "next" }),
+    e("action_end", "one", { actionId: "one", status: "completed", exitCode: 0,
+      timing: { clock: "driver", requestedAtMs: 10, receivedAtMs: 510 } }, trace),
+    e("action_start", "one", { actionId: "cancelled", timing: { clock: "driver", submittedAtMs: 600 } }, { ...trace, spanId: "cancelled" }),
+    e("action_end", "one", { actionId: "cancelled", status: "interrupted", exitCode: 130,
+      timing: { clock: "driver", requestedAtMs: 600, receivedAtMs: 650 } }, { ...trace, spanId: "cancelled" }),
+    e("execution", "one", { id: "state", readOnly: true, status: "completed", exitCode: 0, timing }, { operationId: "state" }),
+  ], "one");
+  expect(report.summary).toMatchObject({ controllerActions: 1, asyncActionStatuses: { completed: 1, interrupted: 1 },
+    asyncActionMs: { count: 2, min: 50, median: 275, max: 500, sum: 550 } });
+  expect(report.actions[0]).toMatchObject({ actionId: "one", status: "completed", durationMs: 500, startSeq: 3, endSeq: 8 });
+  expect(report.executions.map((item: any) => item.actionId)).toEqual(["one", "one", null]);
+});
+
 test("analysis without speculation events has zero lifecycle counts and no model requests", async () => {
   const event = fixture();
   const report = await analyze([

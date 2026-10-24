@@ -1,11 +1,11 @@
 import type { LogIndex, RecordPointer } from "./log-index";
-import { aggregate } from "./aggregate";
+import { aggregate, isCompletedControllerAction } from "./aggregate";
 import { projectTelemetry, p95 } from "./telemetry";
 import { eventObservations, observationExecution, type ArchivedObservation } from "./observation-events";
 import { advanceLivePhase, emptyLivePhase, livePhaseValue, type LivePhaseState } from "./live-phase";
 import type { Call, Event, Manifest, NativeLoop, Observation, RunData, SpanStats, TraceSpan } from "./types";
 
-const VERSION = "files-1";
+const VERSION = "files-2";
 const PAGE_SIZE = 100;
 type Meta = Record<string, any> & { id: string };
 type CycleState = { phase: LivePhaseState; lastControl: Record<string, any> | null; autoStarted?: number;
@@ -70,7 +70,7 @@ async function projectSpan(index: LogIndex, key: string, source: RecordPointer[]
   const events = await Promise.all(source.map(entry => index.store("events").read<Event>(entry)));
   const telemetry = projectTelemetry(events);
   const target = index.store("run-spans");
-  // Both device forms share the stable kind/trace/span ID, so later facts upsert it.
+  // RPC and asynchronous input lifetimes have separate stable IDs on the same trace.
   for (const item of telemetry.spans) await target.put(identity(epoch, item.id), item, {
     epoch, trace: item.traceId, span: item.spanId, parent: item.parentSpanId ?? null, model: item.modelCallId ?? null,
     kind: item.kind, outcome: item.outcome, duration: item.durationMs, position: item.startSeq,
@@ -132,7 +132,7 @@ async function projectRun(index: LogIndex) {
         if (!state) { state = await index.store("run-states").get<CycleState>(epoch) ?? blankState(); states.set(epoch, state); }
         const increment = (name: string) => state!.counts[name] = (state!.counts[name] ?? 0) + 1;
         increment(`source:${event.source?.component ?? "unlabelled"}`);
-        if (event.type === "execution" && d.requiresControl !== false && d.status === "completed" && d.exitCode === 0) increment("actions");
+        if (isCompletedControllerAction(event)) increment("actions");
         if (event.type === "auto_compaction_end") increment("compactions");
         if (event.type === "model_start") {
           await index.store("run-starts").put(event.trace.modelCallId, null, { epoch, position, number: ++state.callCount });
@@ -161,7 +161,7 @@ async function projectRun(index: LogIndex) {
             if (notice.epoch === epoch && notice.type === "observation_error" && notice.trace === event.trace.traceId && notice.span === event.trace.spanId)
               await index.store("run-notices").delete(notice.id);
         }
-        if (event.type.includes("error") || event.type.includes("compaction") || event.type === "disconnected" || event.type === "perception_observe_end") {
+        if (event.type.includes("error") || event.type.includes("compaction") || event.type === "disconnected" || event.type === "perception_observe_end" || event.type === "action_end") {
           let context: Event[] = [];
           if (event.type.startsWith("compaction_http_")) context = await relatedEvents(index, item => (item.epoch ?? "") === epoch
             && item.position < position && ["auto_compaction_start", "auto_compaction_end", "compaction_http_start"].includes(item.type));

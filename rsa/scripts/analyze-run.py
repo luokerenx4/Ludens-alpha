@@ -87,6 +87,34 @@ def span_summary(spans):
             "durationMs": stats(span["durationMs"] for span in spans)}
 
 
+def input_actions(inside, events):
+    """Async input execution has its own lifetime after the play RPC returns."""
+    def key(event):
+        return (*trace_key(event, "traceId", "spanId"), event["data"].get("actionId"))
+    finishes = {key(event): event for event in events if event["type"] == "action_end"}
+    actions = []
+    for start in inside:
+        if start["type"] != "action_start":
+            continue
+        finish = finishes.get(key(start))
+        result = finish["data"] if finish else {}
+        timing = result.get("timing", {})
+        started = start["data"].get("timing", {})
+        elapsed = None
+        if (started.get("clock") is not None and started.get("clock") == timing.get("clock")
+                and isinstance(started.get("submittedAtMs"), (int, float))
+                and isinstance(timing.get("receivedAtMs"), (int, float))):
+            measured = timing["receivedAtMs"] - started["submittedAtMs"]
+            if math.isfinite(measured) and measured >= 0:
+                elapsed = measured
+        actions.append({"actionId": start["data"].get("actionId"), "trace": start.get("trace", {}),
+                        "controller": start["data"].get("controllerId"),
+                        "startSeq": start["seq"], "endSeq": finish["seq"] if finish else None,
+                        "status": result.get("status", "pending"), "exitCode": result.get("exitCode"),
+                        "durationMs": elapsed, "stdout": result.get("stdout"), "error": result.get("error")})
+    return actions
+
+
 def sample_age_ms(sampled_at, received_at):
     """Age at read completion only when both timestamps include a timezone."""
     try:
@@ -344,6 +372,8 @@ def analyze(run, epoch=None):
             continue
         timing = data["timing"]
         executions.append({"seq": event["seq"], "id": data["id"],
+            "actionId": data.get("actionId"),
+            "readOnly": data.get("readOnly", False),
             "controller": data.get("controllerId", command.get("controllerId", command.get("id"))),
             "requiresControl": data.get("requiresControl", command.get("requiresControl", True)),
             "argv": command.get("argv"), "status": data["status"],
@@ -463,7 +493,10 @@ def analyze(run, epoch=None):
                    if (attempt["error"] and not attempt["aborted"]) or (attempt["status"] or 0) >= 400]
     active_end_ms = stopped["atMs"] if stopped else inside[-1]["atMs"] if inside else None
     elapsed_ms = active_end_ms - enabled["atMs"] if enabled and active_end_ms is not None else None
-    successful_actions = sum(execution["status"] == "completed" and execution["requiresControl"] for execution in executions)
+    actions = input_actions(inside, events)
+    successful_actions = sum(execution["status"] == "completed" and execution["requiresControl"]
+                             and not execution["actionId"] and not execution["readOnly"] for execution in executions)
+    successful_actions += sum(action["status"] == "completed" and action["exitCode"] == 0 for action in actions)
     capabilities = operation_spans(inside, events, "capability_start", "capability_end")
     python_calls = operation_spans(inside, events, "python_capability", "python_capability_result")
     local_python_calls = operation_spans(inside, events, "python_call_start", "python_call_end")
@@ -506,6 +539,8 @@ def analyze(run, epoch=None):
                           for name in tool_counts},
         "execCommandMs": stats(tool["exec"]["durationMs"] for tool in tool_details if tool["exec"]),
         "controllerActions": successful_actions,
+        "asyncActionStatuses": dict(Counter(action["status"] for action in actions)),
+        "asyncActionMs": stats(action["durationMs"] for action in actions),
         "controllerExecutionErrors": len(execution_errors),
         "controllerExecutionStatuses": dict(Counter(execution["status"] for execution in executions)),
         "controllerActionsPerMinute": ratio(successful_actions * 60000, elapsed_ms),
@@ -566,7 +601,7 @@ def analyze(run, epoch=None):
                    "controlModeAtLastEvent": (stopped or enabled or controls[-1])["data"]["mode"] if controls else None,
                    "observedElapsedMs": elapsed_ms},
         "summary": summary, "firstRequest": calls[0] if calls else None,
-        "calls": calls, "tools": tool_details, "executions": executions, "observations": observations,
+        "calls": calls, "tools": tool_details, "executions": executions, "actions": actions, "observations": observations,
         "controllerExecutionErrors": execution_errors,
         "skills": skills, "compactions": compactions, "compactionMaintenance": compaction_maintenance,
         "compactionSpeculation": speculation,
@@ -591,7 +626,7 @@ def analyze(run, epoch=None):
             "WS wireBytes come from model_ws_dispatch after the size check, immediately before send; HTTP wireBytes are prepared request bodies. Neither proves bytes fully uploaded. builtBodyBytes describes construction only. Payload and stream artifacts are never opened; old WS logs are not inferred.",
             "firstInboundMs and dispatchToFirstInboundMs describe the first inbound stream event, not the first token. Only the event's matching attempt gets that timing; later fallback attempts may have no first-event record. WS has no HTTP fetch/header timing, so those fields remain null.",
             "Cache denominator is usage.input + cacheRead + cacheWrite. Warm excludes request index 1, not later post-compaction cache resets.",
-            "controllerActions counts completed controller executions that require control; sampling calls with requiresControl=false are excluded. Older execution events without this field retain their original action meaning. Inspect argv for state queries/releases or multi-step sequences. independentObserveRequests counts completed requests whose sole executed tool is observe.",
+            "controllerActions counts completed asynchronous action lifetimes and control-requiring executions without actionId or readOnly=true. Submission/status/wait/cancel RPCs with actionId do not count as additional input; actions retains their actual execution lifetime, including late endings and pending actions. asyncActionMs measures submission to terminal on the same Baseware clock, not game frames or successful task progress. Sampling calls with requiresControl=false are excluded. Older executions retain their original action meaning; inspect argv for state queries/releases. independentObserveRequests counts completed requests whose sole executed tool is observe.",
             "controllerExecutionErrors counts explicit execution_error events belonging to the selected epoch, including late events and those marked aborted. Details retain the original error and match command by epoch/operationId. This is independent of toolErrors: a shell batch can finish successfully after an inner controller command fails. Stderr is not parsed to infer errors.",
             "toolExecution measures tool_start to tool_end, including result preparation. Native bash/background tool completion is not the lifetime or exit status of a background process. Tool args and result artifact references are retained without opening payloads; execCommandMs only measures historical exec to exec_result events. These durations overlap and must not be added. Pending spans have no duration, and command text is not parsed to infer waiting or action time.",
             "Skill read/write/edit counts use successful tool completion and named SKILL.md paths. They do not prove the quality of learned content or that an edit changed its hash.",

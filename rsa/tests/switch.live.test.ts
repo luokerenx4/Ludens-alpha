@@ -25,52 +25,60 @@ test.skipIf(process.env.RSA_SWITCH_TEST !== "1")("Ryubing captures frames, inter
     expect(second.sourceSequence!).toBeGreaterThan(first.sourceSequence!);
     const epoch = crypto.randomUUID();
     await pad.acquire!(epoch);
+    const context = {epoch, signal};
+    const action = JSON.parse((await pad.execute(["play", "--inputs", '[{"atMs":0,"durationMs":30000,"state":{"RIGHT":1,"LX":0.5}}]'], context)).stdout);
+    expect(action.status).toBe("running");
     const abort = new AbortController();
-    const action = pad.execute(["apply", "--state", '{"RIGHT":1,"LX":0.5}', "--for-ms", "30000"], { epoch, signal: abort.signal });
+    const waiting = pad.execute(["wait", "--action", action.actionId], { epoch, signal: abort.signal }).catch(error => error);
     await Bun.sleep(80);
-    const state = JSON.parse((await pad.execute(["state"], { epoch, signal })).stdout);
+    const state = JSON.parse((await pad.execute(["state"], context)).stdout);
     expect(state.state.RIGHT).toBe(1);
     expect(state.state.LX).toBeCloseTo(0.5, 4);
-    await expect(pad.execute(["apply", "--state", '{}', "--for-ms", "100"], { epoch, signal })).rejects.toThrow("BUSY");
-    const started = performance.now();
+    await expect(pad.execute(["play", "--inputs", '[{"atMs":0,"durationMs":100,"state":{}}]'], context)).rejects.toThrow("BUSY");
     abort.abort();
-    expect((await action).status).toBe("interrupted");
+    expect(await waiting).toBeInstanceOf(Error);
+    expect(JSON.parse((await pad.execute(["status", "--action", action.actionId], context)).stdout).status).toBe("running");
+    const started = performance.now();
+    const cancelled = await pad.execute(["cancel", "--action", action.actionId], context);
+    expect(JSON.parse(cancelled.stdout).status).toBe("interrupted");
     expect(performance.now() - started).toBeLessThan(500);
-    const neutral = JSON.parse((await pad.execute(["state"], { epoch, signal })).stdout);
+    const neutral = JSON.parse((await pad.execute(["state"], context)).stdout);
     expect(Object.values(neutral.state).every(value => value === 0)).toBe(true);
     expect(neutral.actionId).toBeNull();
     const sequenceFile = join(directory, "long-sequence.json");
-    await Bun.write(sequenceFile, JSON.stringify([
-      { state: {}, durationMs: 5_000 },
-      { state: {}, durationMs: 25_000 },
-    ]));
-    const sequenceAbort = new AbortController();
-    const sequence = pad.execute(["play", "--file", sequenceFile], { epoch, signal: sequenceAbort.signal });
-    await Bun.sleep(2_100); // Neutral controls let us cross the former limit without navigating the game.
-    const active = JSON.parse((await pad.execute(["state"], { epoch, signal })).stdout);
+    await Bun.write(sequenceFile, JSON.stringify({inputs: [
+      { atMs: 0, state: {}, durationMs: 5_000 },
+      { atMs: 5_000, state: {}, durationMs: 25_000 },
+    ]}));
+    const sequence = JSON.parse((await pad.execute(["play", "--file", sequenceFile], context)).stdout);
+    await Bun.sleep(2_100); // Neutral controls cross the former duration limit without navigating the game.
+    const active = JSON.parse((await pad.execute(["state"], context)).stdout);
     expect(active.actionId).not.toBeNull();
     expect(Object.values(active.state).every(value => value === 0)).toBe(true);
     const sequenceStop = performance.now();
-    sequenceAbort.abort();
-    const interrupted = await sequence;
+    await pad.execute(["cancel", "--action", sequence.actionId], context);
+    const interrupted = await pad.execute(["wait", "--action", sequence.actionId], context);
     expect(interrupted.status).toBe("interrupted");
     expect(JSON.parse(interrupted.stdout).elapsedMs).toBeGreaterThan(2_000);
     expect(performance.now() - sequenceStop).toBeLessThan(500);
-    const afterSequence = JSON.parse((await pad.execute(["state"], { epoch, signal })).stdout);
+    const afterSequence = JSON.parse((await pad.execute(["state"], context)).stdout);
     expect(afterSequence.actionId).toBeNull();
     expect(Object.values(afterSequence.state).every(value => value === 0)).toBe(true);
-    const finished = await pad.execute(["apply", "--state", '{}', "--for-ms", "100"], { epoch, signal });
+    const finished = await pad.execute(["play", "--inputs", '[{"atMs":0,"durationMs":100,"state":{}}]', "--wait", "true"], context);
     expect(finished.status).toBe("completed");
     expect(JSON.parse(finished.stdout).elapsedMs).toBeGreaterThanOrEqual(100);
     expect(JSON.parse(finished.stdout).inputPolls).toBeGreaterThan(0);
-    const lost = pad.execute(["apply", "--state", '{"LEFT":1}', "--for-ms", "30000"], { epoch, signal }).catch(error => error);
+    const disconnectedAction = JSON.parse((await pad.execute(["play", "--inputs", '[{"atMs":0,"durationMs":30000,"state":{"LEFT":1}}]'], context)).stdout);
+    const lost = pad.execute(["wait", "--action", disconnectedAction.actionId], context);
     await Bun.sleep(50);
     provider.close();
-    expect(await lost).toBeInstanceOf(Error);
+    const lostResult = await lost;
+    expect(lostResult.status).toBe("failed");
+    expect(lostResult.stderr).toContain("disconnected");
     provider = await connect();
     pad = provider.capabilities.controllers[0];
     const nextEpoch = crypto.randomUUID();
-    await pad.acquire!(nextEpoch); // Confirms the actual emulator cleared its previous owner on disconnect.
+    await pad.acquire!(nextEpoch); // Confirms the emulator cleared its previous owner on disconnect.
     const afterReconnect = JSON.parse((await pad.execute(["state"], { epoch: nextEpoch, signal })).stdout);
     expect(Object.values(afterReconnect.state).every(value => value === 0)).toBe(true);
     await pad.release!(nextEpoch);
@@ -80,13 +88,13 @@ test.skipIf(process.env.RSA_SWITCH_TEST !== "1")("Ryubing captures frames, inter
     try {
       const takeover = await runtime.start(); // Agent lifecycle around the device service: no model request.
       const runtimeEpoch = takeover.epoch!;
-      const longAction = execute(["apply", "--state", '{}', "--for-ms", "30000"], runtimeEpoch);
+      const longAction = JSON.parse((await execute(["play", "--inputs", '[{"atMs":0,"durationMs":30000,"state":{}}]'], runtimeEpoch)).stdout);
+      expect(longAction.status).toBe("running");
       await Bun.sleep(80);
       const beforeHandback = JSON.parse((await execute(["state"], runtimeEpoch)).stdout);
       expect(beforeHandback.actionId).not.toBeNull();
       const handback = performance.now();
       await runtime.stop("human");
-      expect((await longAction).status).toBe("interrupted");
       expect(performance.now() - handback).toBeLessThan(500);
       expect(runtime.status()).toMatchObject({ mode: "manual", epoch: null, reason: "human" });
       await expect(execute(["state"], runtimeEpoch)).rejects.toThrow("STALE_EPOCH");

@@ -46,7 +46,8 @@ manifest 记录 Git commit/dirty、continue/consolidate 提示和可选 workspac
 | `python_capabilities_start/python_capabilities` | 静态发现的独立子 span |
 | `python_capability/result` | CLI runner 的函数位置、源码 hash、参数和结果；属于能力 span 的细节 |
 | `python_call_start/end` | 工作区进程内 `@capability` 或本地 `Client.call`；独立 span、PID、实际注册源码 hash、终态和耗时，不序列化原生参数/返回对象 |
-| `command/execution/execution_error` | Baseware Controller 生命周期、controllerId、requiresControl |
+| `command/execution/execution_error` | Baseware Controller 请求生命周期、controllerId、requiresControl；提交或查询完成不代表动作结束 |
+| `action_start/end` | 已提交手柄动作的独立生命周期、actionId 和终态；沿用原 play 请求的 trace/epoch，异步结束不归到后续 wait/status 请求 |
 | `observation_start/end/error`、`observation` | 同一个设备 span 的采样详情、区间、帧号和媒体；不另算设备操作 |
 
 嵌套 Python 和 `rsa_tools.Client` 继承父 span/epoch，普通 helper 不追踪。无运行上下文时装饰函数仍可运行。日志失败只记诊断，不改结果、不重试动作；缺 end 保留 pending。trace 不授予操作权，epoch 校验独立执行。
@@ -107,7 +108,7 @@ python3 rsa/scripts/analyze-run.py /path/to/workspace/logs/run-id \
 ```
 
 - 模型延迟统计完成请求，p95 用 nearest-rank。缓存率按 token 加权，分母为 `input + cacheRead + cacheWrite`；warm 仅去掉首请求，不排除后续压缩造成的缓存重置。
-- 动作频率只计需要控制权的成功执行；`requiresControl=false` 的采样不算动作。一次调用可以含多个按键步骤，不代表单个按钮次数。独立 observe 是该请求唯一执行的工具为 observe。
+- 动作频率计成功的 `action_end`，以及不带 actionId、需要控制权且非 readOnly 的成功 execution；提交、查询和等待不重复算动作，采样也不算动作。已提交动作按 `action_start/end` 与 actionId 核查。旧日志缺少这些标记时保留原统计，需查看 argv 区分状态查询。一次 play 可以含多个输入片段，不代表单个按钮次数。独立 observe 是该请求唯一执行的工具为 observe。
 - 能力、discovery、本地 Python、Shiori 分层统计，依显式 span 配对，保留 late/pending；本地 Python 不并入设备动作数。
 - Shiori usage 与 model usage、工具耗时与内部设备/能力耗时、能力 span 与 Python 详情是包含关系，不能相加。
 
