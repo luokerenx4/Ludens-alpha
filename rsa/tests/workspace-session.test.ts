@@ -1,13 +1,101 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdtemp, mkdir, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 import { AuthStorage, ModelRegistry, SessionManager, Settings } from "@oh-my-pi/pi-coding-agent";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { createOmpSession } from "../src/harness/omp/session.ts";
-import { openWorkspaceSession, selectWorkspaceSession, validateSessionWorkspace } from "../src/harness/omp/workspace-session.ts";
+import { migrateWorkspaceSessions, openWorkspaceSession, selectWorkspaceSession, validateSessionWorkspace } from "../src/harness/omp/workspace-session.ts";
 import { readCurrentSession, resolveWorkspaceState } from "../src/harness/workspace-state.ts";
+
+test("legacy sessions move with artifacts, retain history and old links, and resume at their canonical workspace path", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "rsa-session-move-"));
+  const state = await resolveWorkspaceState(join(directory, "workspace"), join(directory, "state"));
+  const oldDir = join(state.dir, "sessions");
+  const legacy = SessionManager.create(state.workspace, oldDir);
+  legacy.appendMessage({ role: "user", content: "Keep the full original context.", timestamp: Date.now() });
+  await legacy.ensureOnDisk();
+  await legacy.close();
+  const oldFile = legacy.getSessionFile()!;
+  const file = join(state.sessionsDir, basename(oldFile));
+  const bytes = await readFile(oldFile);
+  const artifact = join(oldFile.replace(/\.jsonl$/, ""), "0.bash.log");
+  await mkdir(oldFile.replace(/\.jsonl$/, ""), { recursive: true });
+  await writeFile(artifact, "Full tool output");
+  await writeFile(join(state.dir, "current-session.json"), JSON.stringify({ sessionFile: oldFile }));
+  // A second historical session must move too, not just the selected transcript.
+  await writeFile(join(oldDir, "older.jsonl"), bytes);
+  let manager: SessionManager | undefined;
+  try {
+    await migrateWorkspaceSessions(state);
+    expect(await readCurrentSession(state)).toBe(file);
+    expect(await realpath(oldDir)).toBe(state.sessionsDir);
+    expect(await readFile(file)).toEqual(bytes);
+    expect(await readFile(join(state.sessionsDir, "older.jsonl"))).toEqual(bytes);
+    expect(await readFile(artifact, "utf8")).toBe("Full tool output");
+    expect(await Bun.file(join(state.dir, "current-session.json")).exists()).toBe(false);
+    await migrateWorkspaceSessions(state);
+    manager = await openWorkspaceSession(state, oldFile);
+    expect(manager.getSessionFile()).toBe(file);
+    expect(manager.getSessionId()).toBe(legacy.getSessionId());
+    expect(manager.buildSessionContext().messages).toHaveLength(1);
+    expect(JSON.stringify(manager.buildSessionContext().messages)).toContain("Keep the full original context.");
+    await selectWorkspaceSession(state, manager);
+    expect(await readCurrentSession(state)).toBe(file);
+  } finally {
+    await manager?.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("migration refuses conflicting histories and recovers a move interrupted before writing its index", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "rsa-session-move-recovery-"));
+  const state = await resolveWorkspaceState(join(directory, "workspace"), join(directory, "state"));
+  const oldDir = join(state.dir, "sessions");
+  const oldFile = join(oldDir, "original.jsonl");
+  const newFile = join(state.sessionsDir, "new.jsonl");
+  const header = JSON.stringify({ type: "session", cwd: state.workspace }) + "\n";
+  try {
+    await mkdir(oldDir);
+    await writeFile(oldFile, header);
+    await writeFile(newFile, "Do not overwrite");
+    await writeFile(join(state.dir, "current-session.json"), JSON.stringify({ sessionFile: oldFile }));
+    await expect(migrateWorkspaceSessions(state)).rejects.toThrow("non-empty");
+    expect(await readFile(oldFile, "utf8")).toBe(header);
+    expect(await readFile(newFile, "utf8")).toBe("Do not overwrite");
+    await rm(state.sessionsDir, { recursive: true });
+    await writeFile(join(state.dir, ".sessions-migrating"), "");
+    await rename(oldDir, state.sessionsDir); // Crash between rename and alias/index writes.
+    await migrateWorkspaceSessions(state);
+    expect(await realpath(oldFile)).toBe(join(state.sessionsDir, "original.jsonl"));
+    expect(await readCurrentSession(state)).toBe(join(state.sessionsDir, "original.jsonl"));
+    await migrateWorkspaceSessions(state);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("a stale selection does not block explicit recovery; an interrupted directory move needs no selection", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "rsa-session-move-stale-"));
+  const state = await resolveWorkspaceState(join(directory, "workspace"), join(directory, "state"));
+  const oldDir = join(state.dir, "sessions");
+  let manager: SessionManager | undefined;
+  try {
+    await writeFile(join(state.sessionsDir, "tool-output.log"), "History without a current selection");
+    await writeFile(join(state.dir, ".sessions-migrating"), "");
+    await migrateWorkspaceSessions(state);
+    expect(await readFile(join(oldDir, "tool-output.log"), "utf8")).toBe("History without a current selection");
+    await writeFile(join(state.dir, "current-session.json"), JSON.stringify({ sessionFile: join(oldDir, "missing.jsonl") }));
+    await migrateWorkspaceSessions(state);
+    manager = await openWorkspaceSession(state); // --new-session bypasses the stale default.
+    const fresh = await selectWorkspaceSession(state, manager);
+    await writeFile(join(state.dir, "current-session.json"), JSON.stringify({ sessionFile: join(oldDir, "missing.jsonl") }));
+    await migrateWorkspaceSessions(state);
+    expect(await readCurrentSession(state)).toBe(fresh);
+  } finally {
+    await manager?.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("a new workspace session survives idle shutdown, resumes, and can start fresh without deleting learned files", async () => {
   const directory = await mkdtemp(join(tmpdir(), "rsa-workspace-session-"));
@@ -113,10 +201,10 @@ test("explicit old sessions stay in place; foreign workspace resumes are rejecte
     await symlink(first.workspace, alias);
     await validateSessionWorkspace(file, alias);
     selected = await openWorkspaceSession(first, file);
-    expect(selected.getSessionFile()).toBe(file);
+    expect(selected.getSessionFile()).toBe(await realpath(file));
     expect(selected.getSessionDir()).toBe(first.sessionsDir);
     await selectWorkspaceSession(first, selected);
-    expect(await readCurrentSession(first)).toBe(file);
+    expect(await readCurrentSession(first)).toBe(await realpath(file));
     expect(await readCurrentSession(second)).toBe(previous);
     expect(await readFile(file, "utf8")).toBe(original);
   } finally {

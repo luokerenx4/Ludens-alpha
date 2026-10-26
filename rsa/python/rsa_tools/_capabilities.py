@@ -12,7 +12,7 @@ import re
 import sys
 
 
-EXCLUDED = {"logs", ".git", "node_modules", ".venv", "venv", "__pycache__"}
+EXCLUDED = {"logs", ".rsa", ".git", "node_modules", ".venv", "venv", "__pycache__"}
 
 
 def annotation_schema(node):

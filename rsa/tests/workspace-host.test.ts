@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type AddressInfo, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -196,12 +196,17 @@ test("a starting host owns the workspace before readiness even when another addr
     }
     await expect(send(state.socket, { kind: "status", argv: [] })).rejects.toThrow("Host is starting or closing");
     await expect(send(firstAlias, { kind: "status", argv: [] })).rejects.toThrow("Host is starting or closing");
+    const legacyDir = join(state.dir, "sessions");
+    await mkdir(legacyDir);
+    await writeFile(join(legacyDir, "still-owned.jsonl"), "Do not move a live host's files");
     const duplicate = testbed.launch(state.workspace, [], { RSA_SOCKET: secondAlias });
     expect(await duplicate.child.exited).toBe(1);
     expect(await duplicate.stderr).toContain("Host already running");
     expect(testbed.operations).toEqual(["HELLO"]);
     expect((await readFile(testbed.driverCalls, "utf8")).trim().split("\n")).toHaveLength(1);
     expect(await Bun.file(secondAlias).exists()).toBe(false);
+    expect((await lstat(legacyDir)).isSymbolicLink()).toBe(false);
+    expect(await readFile(join(legacyDir, "still-owned.jsonl"), "utf8")).toBe("Do not move a live host's files");
     await writeFile(gate, "continue");
     const result = await ready(firstHost);
     expect(result.socket).toBe(firstAlias);

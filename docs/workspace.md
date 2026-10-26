@@ -14,13 +14,18 @@ workspace/
   perception.py            Agent 实现的常驻感知入口
   skills/<name>/SKILL.md    可复用方法，可附带代码
   memory/current.md        当前状态与下一步
+  .rsa/shiori/
+    sessions/              OMP 会话及其同名资源目录
+    current-session.json   默认续接指针
   logs/                    运行、评测与后台服务记录
   ...                      自行组织脚本、数据、模型、实验
 ```
 
 `rsa init` 写入缺失的 [AGENTS 模板](../rsa/templates/AGENTS.md) 和 [感知模板](../rsa/templates/perception.py)。`AGENTS.md` 可修改或删除，普通启动不补回；Host 启动时按原生项目上下文加载它，保留 OMP 默认系统提示词。修改后需重启 Host。
 
-Workspace 的 canonical path 决定独立身份与默认 socket。日志在 `logs/<run-id>/`；会话索引、OMP session 和经验版本在仓库同级的 `../artifacts/rsa/ws-<name>-<hash>/`，由 [workspace-state](../rsa/src/harness/workspace-state.ts) 管理。默认重启恢复当前 session；`rsa run --new-session` 新建会话但保留文件，`--resume <session.jsonl>` 只接受同工作区会话。新目录不继承经验，改名或移动也会改变身份。
+Workspace 的 canonical path 决定独立身份与默认 socket，改名或移动会改变身份。OMP 会话与默认续接指针在 `.rsa/shiori/`，日志在 `logs/<run-id>/`；技能版本和供 Dashboard 发现 workspace 的注册信息仍在仓库同级的 `../artifacts/rsa/ws-<name>-<hash>/`，由 [workspace-state](../rsa/src/harness/workspace-state.ts) 管理。默认重启续接当前会话；`rsa run --new-session` 按原生语义新建上下文并保留工作区文件，`--resume <session.jsonl>` 选择同工作区的已有会话文件，路径经 realpath 规范化并校验归属。
+
+旧 managed 布局在新 Host 取得 workspace socket 独占权后一次性迁移：整个 `sessions/`（含资源）和当前会话指针进入 `.rsa/shiori/`，旧 `sessions/` 留符号链接，保护历史绝对资源路径。迁移不清空上下文。OMP 全局 blob 存储本次不迁，因此不能仅复制 workspace 就视为完整、独立的会话导出。
 
 `SKILL.md` 使用 `name`、`description` frontmatter。循环只注入技能和记忆索引，Agent 按需读写正文，版本关联到日志。
 
@@ -60,7 +65,7 @@ def sample(controller_id: str, arguments: dict) -> dict:
 
 设备参数由 Baseware 按原生 schema 校验，Python 能力的跨进程 JSON 参数在调用入口校验；本地 import 和 `Client.call("python/…")` 保留普通 Python 对象。已加载模块按 Python 规则缓存，编辑代码后需重跑相应程序。
 
-`@capability` 使顶层同步函数可发现并记录调用；辅助函数无需装饰。发现只读 AST，新增和删除在下次查询可见，跳过日志、Git、依赖与虚拟环境。函数需 docstring 和参数类型，支持标量、列表、字符串键字典与可空类型；不支持的签名返回诊断。详见 [Python 发现与加载](../rsa/python/rsa_tools/_capabilities.py)。
+`@capability` 使顶层同步函数可发现并记录调用；辅助函数无需装饰。发现只读 AST，新增和删除在下次查询可见，跳过日志、`.rsa/` 会话数据、Git、依赖与虚拟环境。函数需 docstring 和参数类型，支持标量、列表、字符串键字典与可空类型；不支持的签名返回诊断。详见 [Python 发现与加载](../rsa/python/rsa_tools/_capabilities.py)。
 
 评测函数使用 `@benchmark`，通过 `rsa bench` 及现有看板管理，不进入 Controller 目录；完整接口见 [Benchmark](benchmark.md)。
 

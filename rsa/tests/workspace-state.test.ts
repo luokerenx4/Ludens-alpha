@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Workspace } from "../src/harness/workspace.ts";
 import { readCurrentSession, resolveWorkspaceState, writeCurrentSession } from "../src/harness/workspace-state.ts";
 
-test("sibling workspaces have separate external state and session selection survives reopening", async () => {
+test("sessions and their selection live in each workspace; registry and versions stay external", async () => {
   const directory = await mkdtemp(join(tmpdir(), "rsa-workspace-state-"));
   try {
     const artifacts = join(directory, "artifacts");
@@ -15,6 +15,7 @@ test("sibling workspaces have separate external state and session selection surv
     expect(first.sessionsDir).not.toBe(second.sessionsDir);
     expect(first.versionsDir).not.toBe(second.versionsDir);
     expect(first.socket).not.toBe(second.socket);
+    expect(first.sessionsDir).toBe(join(first.workspace, ".rsa", "shiori", "sessions"));
     expect(await readCurrentSession(first)).toBeUndefined();
     expect(await readCurrentSession(second)).toBeUndefined();
 
@@ -31,10 +32,10 @@ test("sibling workspaces have separate external state and session selection surv
     await writeCurrentSession(first, replacement);
     expect(await readCurrentSession(first)).toBe(replacement);
     expect(await readCurrentSession(second)).toBe(secondSession);
-    expect(JSON.parse(await readFile(join(first.dir, "current-session.json"), "utf8"))).toEqual({ sessionFile: replacement });
-    expect((await readdir(first.dir)).some(name => name.endsWith(".tmp"))).toBe(false);
-    expect(await readdir(first.workspace)).toEqual([]);
-    expect(await readdir(second.workspace)).toEqual([]);
+    expect(JSON.parse(await readFile(join(first.shioriDir, "current-session.json"), "utf8"))).toEqual({ sessionFile: replacement });
+    expect((await readdir(first.shioriDir)).some(name => name.endsWith(".tmp"))).toBe(false);
+    expect(await readdir(first.workspace)).toEqual([".rsa"]);
+    expect(await readdir(second.workspace)).toEqual([".rsa"]);
   } finally { await rm(directory, { recursive: true }); }
 });
 
@@ -64,7 +65,7 @@ test("skill and memory snapshots are written outside the task workspace", async 
     const index = await new Workspace(state.workspace, state.versionsDir).snapshot();
     expect(await Bun.file(join(state.versionsDir, `${index.version}.json`)).exists()).toBe(true);
     expect(await Bun.file(join(state.versionsDir, `${index.memory.version}.json`)).exists()).toBe(true);
-    expect((await readdir(state.workspace)).sort()).toEqual(["memory", "skills"]);
+    expect((await readdir(state.workspace)).sort()).toEqual([".rsa", "memory", "skills"]);
     expect(await readdir(join(directory, "tasks"))).toEqual(["workspace"]);
   } finally { await rm(directory, { recursive: true }); }
 });

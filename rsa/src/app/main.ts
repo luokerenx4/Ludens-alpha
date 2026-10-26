@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { resolve, join, delimiter } from "node:path";
 import { parseArgs } from "node:util";
 import { cli, HELP } from "../harness/cli.ts";
@@ -13,15 +13,15 @@ import { EventLog, EVENT_SCHEMA_VERSION } from "../harness/events.ts";
 import { runProvenance } from "../harness/provenance.ts";
 import { PerceptionRuntime } from "../harness/perception.ts";
 import { readCurrentSession, resolveWorkspaceState } from "../harness/workspace-state.ts";
-import { validateSessionWorkspace } from "../harness/omp/workspace-session.ts";
+import { migrateWorkspaceSessions, validateSessionWorkspace } from "../harness/omp/workspace-session.ts";
 import perceptionTemplate from "../../templates/perception.py" with { type: "text" };
 import { WORKSPACE_HELP, workspaceCommand } from "./workspace.ts";
 
-// Runtime state lives beside the monorepo, outside its component directories.
+// Workspace registry and experience versions live outside the monorepo.
 const artifactRoot = resolve(import.meta.dir, "../../../../artifacts/rsa");
 let exit: (code: number) => void | Promise<void> = code => process.exit(code);
 const RUN_HELP = `rsa [--workspace <path>] run [--baseware-socket <path>] [--workspace <path>] [--device-only] [--model <provider/model>] [--resume <session.jsonl> | --new-session] [--seconds <n>] [--requests <n>] [--compaction-threshold <tokens>]
-Each workspace keeps its own session; --new-session starts fresh without deleting workspace files.
+Each workspace keeps its sessions in .rsa/shiori/; --new-session starts fresh without deleting workspace files.
 The current directory is the default workspace. Run logs go to <workspace>/logs/<run-id>/.
 --resume selects an existing session from the same workspace, then remembers it for future starts.
 --compaction-threshold configures OMP's native compaction trigger; default is 256000 tokens.
@@ -96,8 +96,9 @@ async function main() {
     };
     closeServers.push(await listen(state.socket, getRuntime));
     if (socket !== state.socket) closeServers.push(await listen(socket, getRuntime));
+    if (!values["device-only"]) await migrateWorkspaceSessions(state);
     const resume = values["device-only"] || values["new-session"] ? undefined
-      : values.resume ? resolve(values.resume) : await readCurrentSession(state);
+      : values.resume ? await realpath(resolve(values.resume)) : await readCurrentSession(state);
     if (resume) await validateSessionWorkspace(resume, workspace);
     process.chdir(workspace);
     await mkdir(join(workspace, "skills"), { recursive: true });

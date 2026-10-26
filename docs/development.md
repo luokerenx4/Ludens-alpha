@@ -124,7 +124,9 @@ rsa auto on
 - `rsa down --keep-emulator`：保留模拟器现场，用于修改预算、模型或加载 Host/Baseware 代码；随后 `rsa up`、`rsa services`、`rsa auto on`。
 - `down` 默认保留共享 Dashboard/Alice；`--pet` 关闭受管理的共享 Pet，单独打开的实例仍由应用退出；`--dashboard` 只关闭本 workspace 启动的 Dashboard，会影响其他消费者。
 
-重复 `up` 不加载新配置。重启默认续接原 workspace 的 OMP 会话，日志另写新 run。`rsa run --new-session` 开新上下文并保留工作区文件，`--resume /absolute/path/to/session.jsonl` 选择同一 workspace 历史；会话路径见旧 run 的 `session` 事件，不手工拼接。
+重复 `up` 不加载新配置。重启默认续接原 workspace 的 OMP 会话，日志另写新 run。会话默认存放于 `.rsa/shiori/sessions/`，当前路径见 `.rsa/shiori/current-session.json` 或 run 的 `session` 事件。`rsa run --new-session` 按原生语义开新上下文并保留工作区文件；`--resume /absolute/path/to/session.jsonl` 选择同一 workspace 的已有会话，经 realpath 规范化并校验归属。
+
+新 Host 取得 workspace socket 独占权后，会一次性迁移旧 managed sessions 整目录和当前指针，保留旧目录符号链接以维持历史绝对资源引用，不清空会话。技能版本与 workspace 注册信息仍在 `../artifacts/rsa/ws-<name>-<hash>/`；OMP 全局 blob 不迁移，workspace 尚非独立导出包。存储边界见 [workspace.md](workspace.md#文件与会话)。
 
 [launch-background.py](../rsa/scripts/launch-background.py) 将工作区日志/job 写到 `logs/background/`；共享 Alice 在 `../artifacts/rsa/alice/background/`，label 为 `dev.playness.alice.pet`。服务脱离终端，不自动重启/开机启动。故障先看 `rsa services` 和对应日志，避免重复启动。
 
