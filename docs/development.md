@@ -25,7 +25,7 @@ export PATH="$PWD/baseware/bin:$PWD/rsa/bin:$PWD/rsa-companion/bin:$PATH"
 
 ### mGBA
 
-已适配 mGBA 0.10.5。打开游戏，在 **Tools → Scripting** 输入：
+已适配 mGBA 0.10.5，并实机验证官方开发版 `0.11-9161-1509d8602`（[固定下载](https://s3.amazonaws.com/mgba/build/mGBA-build-2026-10-25-macos-9161-1509d86028c7df2d844b590723a80b2978f49e7c.dmg)）的采集、输入、断线释放和重连。升级前退出模拟器，备份应用、配置与 `.sav`。打开游戏，在 **Tools → Scripting** 输入：
 
 ```lua
 dofile("/absolute/path/to/repo/baseware/src/drivers/mgba/bridge.lua")
@@ -34,6 +34,10 @@ dofile("/absolute/path/to/repo/baseware/src/drivers/mgba/bridge.lua")
 路径可在仓库根用 `realpath baseware/src/drivers/mgba/bridge.lua` 获取。看到 `RSA bridge listening on 127.0.0.1:47653 (manual)` 后即可连接。重复执行会关闭旧桥并加载新代码；脚本窗口可关闭，游戏必须继续运行，模拟器暂停也会暂停帧回调、采集和交接。
 
 mGBA 始终手动加载 ROM/桥，配置不接受 `game`。另开实例时先设置 `RSA_BRIDGE_PORT = 47654` 再加载脚本，workspace 的 `port` 同样改为 47654。同一桥只由一个 Baseware 持有。实现见 [bridge.lua](../baseware/src/drivers/mgba/bridge.lua)。
+
+部分中文绿宝石改版使用 **SRAM 64 KiB**，自动识别为 Flash 1Mb 会导致游戏内保存失败。上述开发版包含[用户 override 优先级修复](https://github.com/mgba-emu/mgba/commit/5337ae7ae14daaf0aecd4d2c40429fc31440b245)；为确认使用此硬件的 ROM 保存 `savetype=SRAM512`，并用游戏内保存、完全退出、冷启动读档验证。macOS 配置在 `~/.config/mgba/config.ini`，对应节为 `[override.<四字节游戏编号>]`；空编号为 `[override.]`，所有空编号 ROM 会共用它，不能将该设置套到所有 GBA 游戏。
+
+已验证的一份中文改版能自动应用此配置并保存、冷启动读取最新进度，但仍显示“记录破损”。其存档布局与双槽在 64 KiB 地址空间内重叠一致；备用副本恢复能力未经保证，应保留独立备份。这个残留兼容限制不通过 Baseware 改写 ROM 或截断存档来掩盖。
 
 ### Ryubing
 
