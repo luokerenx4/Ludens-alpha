@@ -188,6 +188,47 @@ test("explicit failed outcomes are visible system blocks while cancellations rem
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("Python raises are diagnostics grouped only by explicit parents, while command failures remain visible", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "rsa-raised-")));
+  try {
+    const local = (type: string, seq: number, spanId: string, parentSpanId?: string, outcome?: string): Event => ({
+      ...event(type, seq, { id: `python/actions.py:${spanId}`, ...(outcome ? { outcome, error: outcome === "error" ? "Pause did not stabilize" : undefined } : {}) }),
+      trace: { epoch: "cycle", traceId: "python-trace", spanId, ...(parentSpanId ? { parentSpanId } : {}) },
+    });
+    const events = [local("python_call_start", 1, "outer"), local("python_call_start", 2, "inner", "outer"),
+      local("python_call_end", 3, "inner", "outer", "error"), local("python_call_end", 4, "outer", undefined, "error"),
+      local("python_call_start", 5, "caught"), local("python_call_start", 6, "negative-test", "caught"),
+      local("python_call_end", 7, "negative-test", "caught", "error"), local("python_call_end", 8, "caught", undefined, "success"),
+      event("tool_start", 9, { toolName: "bash", args: { command: "tests" } }, "cycle", "test"),
+      event("tool_end", 10, { toolName: "bash", isError: false }, "cycle", "test"),
+      event("background_result", 11, { jobId: "actual-failure", status: "failed", isError: true })];
+    const blocks = await activityBlocks(root, events);
+    const groups = blocks.filter(block => block.id.startsWith("python:"));
+    assert.equal(groups.length, 2);
+    assert.deepEqual(groups.map(block => [block.data?.calls, block.data?.raised, block.data?.rootOutcome]), [[2, 2, "error"], [2, 1, "success"]]);
+    assert.ok(groups.every(block => block.kind === "diagnostic" && block.outcome === "raised"));
+    assert.equal(blocks.filter(block => block.title === "python_call_end").length, 4, "raw events are still searchable");
+    assert.ok(blocks.filter(block => block.title === "python_call_end").every(block => block.status !== "error"));
+    assert.equal(blocks.find(block => block.kind === "tool")?.status, "complete", "caught exceptions do not override the test runner result");
+    assert.equal(blocks.find(block => block.title === "background_result")?.status, "error");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("assessment failure is distinct from execution/report errors and missing verdict stays unknown", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "rsa-assessment-")));
+  try {
+    const blocks = await activityBlocks(root, [
+      event("benchmark_report", 1, { executionStatus: "completed", reportStatus: "valid", verdict: "failed" }),
+      event("benchmark_end", 2, { executionStatus: "error", reportStatus: "missing", verdict: null }),
+      event("benchmark_report", 3, { executionStatus: "completed", reportStatus: "invalid", verdict: null }),
+      event("benchmark_report", 4, { valid: true }),
+    ]);
+    assert.deepEqual(blocks.map(block => [block.kind, block.status, block.outcome]), [
+      ["system", "complete", "unmet"], ["system", "error", undefined], ["system", "error", undefined], ["system", "complete", undefined],
+    ]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("model cancellation closes partial output without inventing a failure or completing an executing tool", async () => {
   const temporary = await mkdtemp(join(tmpdir(), "rsa-activity-abort-"));
   const root = await realpath(temporary);

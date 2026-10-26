@@ -87,6 +87,97 @@ def span_summary(spans):
             "durationMs": stats(span["durationMs"] for span in spans)}
 
 
+def local_python_exceptions(calls, events):
+    """A decorated function raising is not an execution failure or a known expected exception."""
+    def key(trace, parent=False):
+        span = trace.get("parentSpanId" if parent else "spanId")
+        return (trace.get("epoch"), trace["traceId"], span) if trace.get("traceId") and span else None
+
+    parents, nodes = {}, {}
+    for event in events:
+        trace = event.get("trace", {})
+        if key(trace):
+            parents.setdefault(key(trace), key(trace, parent=True))
+    for kind, start, end in (("python-local", "python_call_start", "python_call_end"),
+                             ("python-execution", "python_capability", "python_capability_result")):
+        for span in operation_spans(events, events, start, end):
+            if key(span["trace"]):
+                nodes[key(span["trace"])] = {"kind": kind, **{field: span[field] for field in
+                    ("trace", "name", "startSeq", "endSeq", "outcome")}}
+
+    # A successful asynchronous bash response only submitted the work. Its child
+    # background span supplies the eventual execution outcome, including late results.
+    backgrounds = defaultdict(list)
+    for kind, start_type, end_type in (("tool", "tool_start", "tool_end"),
+                                      ("background", "background_start", "background_result")):
+        ends = {key(event.get("trace", {})): event for event in events if event["type"] == end_type
+                and key(event.get("trace", {}))}
+        for event in events:
+            trace = event.get("trace", {})
+            identity = key(trace)
+            if event["type"] != start_type or not identity:
+                continue
+            end = ends.get(identity)
+            data = end["data"] if end else {}
+            if not end:
+                outcome = "pending"
+            elif kind == "tool":
+                outcome = {True: "error", False: "success"}.get(data.get("isError"), "unknown")
+            else:
+                outcome = {"completed": "success", "failed": "error", "cancelled": "cancelled"}.get(
+                    data.get("status", data.get("state")), "unknown")
+            node = {"kind": kind, "trace": trace, "name": event["data"].get("toolName", event["data"].get("name")),
+                    "startSeq": event["seq"], "endSeq": end["seq"] if end else None, "outcome": outcome}
+            nodes[identity] = node
+            if kind == "background" and key(trace, parent=True):
+                backgrounds[key(trace, parent=True)].append(node)
+
+    def effective(node):
+        children = backgrounds.get(key(node["trace"]), []) if node["kind"] == "tool" else []
+        if len(children) == 1:
+            return children[0]
+        return {**node, "outcome": "unknown"} if children else node
+
+    def ancestor(trace, execution=False):
+        identity, seen = key(trace, parent=True), {key(trace)}
+        while identity and identity not in seen:
+            seen.add(identity)
+            node = nodes.get(identity)
+            if node and (not execution or node["kind"] != "python-local"):
+                return effective(node)
+            identity = parents.get(identity)
+        return None
+
+    raised = [call for call in calls if call["outcome"] == "error"]
+    grouped = {}
+    for call in raised:
+        root, seen = call, {key(call["trace"])}
+        while True:
+            identity = key(root["trace"], parent=True)
+            parent = nodes.get(identity)
+            if identity in seen or not parent or parent["kind"] != "python-local" or parent["outcome"] != "error":
+                break
+            seen.add(identity)
+            root = parent
+        # Untraced raises remain separate; shared PID, text or successful ancestor
+        # cannot establish that two branches propagated the same exception.
+        identity = key(root["trace"]) or ("untraced", root["startSeq"])
+        if identity not in grouped:
+            grouped[identity] = {"root": {field: root[field] for field in ("trace", "name", "startSeq", "endSeq")},
+                                 "raisedCalls": [], "ancestor": ancestor(root["trace"]),
+                                 "execution": ancestor(root["trace"], execution=True)}
+        grouped[identity]["raisedCalls"].append({field: call[field] for field in ("trace", "name", "startSeq", "endSeq")})
+    groups = sorted(grouped.values(), key=lambda group: group["root"]["startSeq"])
+
+    def outcomes(field):
+        counts = Counter(group[field]["outcome"] if group[field] else "unassociated" for group in groups)
+        return {outcome: counts[outcome] for outcome in ("success", "error", "cancelled", "pending", "unknown", "unassociated")}
+
+    return {"raised": len(raised), "rootRaised": len(groups), "nestedRaised": len(raised) - len(groups),
+            "ancestorOutcomes": outcomes("ancestor"), "executionOutcomes": outcomes("execution"),
+            "expected": None}, groups
+
+
 def input_actions(inside, events):
     """Async input execution has its own lifetime after the play RPC returns."""
     def key(event):
@@ -500,6 +591,7 @@ def analyze(run, epoch=None):
     capabilities = operation_spans(inside, events, "capability_start", "capability_end")
     python_calls = operation_spans(inside, events, "python_capability", "python_capability_result")
     local_python_calls = operation_spans(inside, events, "python_call_start", "python_call_end")
+    python_exceptions, python_exception_groups = local_python_exceptions(local_python_calls, events)
     discovery = operation_spans(inside, events, "python_capabilities_start", "python_capabilities")
     shiori_spans = operation_spans(inside, events, "shiori_span_start", "shiori_span_end")
     perception_summary, perception = perception_report(inside, events)
@@ -589,6 +681,7 @@ def analyze(run, epoch=None):
         "sources": dict(Counter(event.get("source", {}).get("component", "unlabelled") for event in inside)),
         "capabilities": span_summary(capabilities), "pythonCapabilities": span_summary(python_calls),
         "localPythonCalls": span_summary(local_python_calls),
+        "localPythonExceptions": python_exceptions,
         "capabilityDiscovery": span_summary(discovery),
         "perception": perception_summary,
         "shiori": {"spans": span_summary(shiori_spans), "nativeLoops": len(native_runs)}}
@@ -609,6 +702,7 @@ def analyze(run, epoch=None):
         "compactionHttpAttempts": compaction_http,
         "capabilities": capabilities, "pythonCapabilities": python_calls, "capabilityDiscovery": discovery,
         "localPythonCalls": local_python_calls,
+        "localPythonExceptionGroups": python_exception_groups,
         "perception": perception,
         "shiori": {"spans": shiori_spans, "runs": native_runs},
         "notes": [
@@ -636,6 +730,7 @@ def analyze(run, epoch=None):
             "P95 uses the nearest-rank percentile. Capability and Shiori spans pair only by explicit epoch/traceId/spanId; older untraced calls are not inferred.",
             "Native Shiori run summaries cover one agent loop, not a whole takeover. They overlap existing model/tool metrics and must not be added to token/cost totals. Python detail spans overlap their enclosing capability calls; durations are inclusive, not additive.",
             "localPythonCalls measures decorated functions executing in the workspace Python process, separate from pythonCapabilities (external runner). Nested calls retain their own spans and overlap enclosing durations; neither counts as additional controller actions. Function origin/codeSHA identify loaded code, while origin/endOrigin retain the Python event clock.",
+            "localPythonCalls.outcomes.error counts function-boundary raises, not task failures. localPythonExceptions groups consecutive raised local parent spans using explicit epoch/traceId/spanId/parentSpanId only; rootRaised counts these chains, not proven unique exception objects. A successful ancestor separates branches and can have caught a raise, but does not prove it was expected. expected stays null without explicit test evidence. Missing execution ancestry stays unassociated; neither PID, error text, command text nor proximity is used to guess an association. Execution outcomes use a traced Python runner, tool, or background terminal; async submission success is replaced by the associated background outcome (pending until delivered), and does not prove application success.",
             "Event atMs belongs to the recording host; origin retains the source clock and identity. Do not subtract monotonic timestamps from different clocks. Macro execution success does not prove task success or learning."]}
 
 

@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { EventLog } from "../harness/events.ts";
 import type { WorkerInput } from "./runner.ts";
-import type { CaseMetadata } from "./contract.ts";
+import { benchmarkEventSummary, type CaseMetadata } from "./contract.ts";
 import { saveReport, writeResult } from "./store.ts";
 
 const input: WorkerInput = JSON.parse(await readFile(process.argv[2]!, "utf8"));
@@ -30,11 +30,12 @@ try {
   process.removeListener("SIGINT", cancel); process.removeListener("SIGTERM", cancel);
   Object.assign(result, metadata, { limitations: [...(result.limitations ?? []), ...(metadata.limitations ?? [])] });
   result.endedAt = new Date().toISOString(); result.durationMs = performance.now() - started;
-  record("benchmark_end", { benchmarkId: result.definition.id, status: result.status }, result.trace);
+  record("benchmark_end", { ...benchmarkEventSummary(result), status: result.status }, result.trace);
   await writeResult(runDir, result);
 }
 if (result.status === "completed") {
   const report = await saveReport(runDir, result, raw ?? {});
-  record("benchmark_report", { reportId: report.id, protocolVersion: report.protocolVersion, errors: report.errors }, result.trace);
+  record("benchmark_report", { ...benchmarkEventSummary(result, report), protocolVersion: report.protocolVersion,
+    reason: report.reason, valid: !report.errors.length, errors: report.errors }, result.trace);
 }
 process.exit(result.status === "completed" ? 0 : 1);

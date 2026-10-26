@@ -63,6 +63,18 @@ export class LogIndex {
     this.metadata = { format: FORMAT, generation: randomUUID(), revision: "0", eventPosition: "0" };
     this.files = {}; this.eventPosition = 0; this.relationRefresh.clear(); this.dirty = false; this.markDirty();
   }
+  /** Re-project presentation while retaining raw-event pointers, images and other readers' caches. */
+  resetActivity() {
+    this.markDirty();
+    for (const name of ["blocks", "streams", "python-groups"]) {
+      this.stores.get(name)?.close(); this.stores.delete(name);
+      rmSync(join(this.directory, name), { recursive: true, force: true });
+    }
+    for (const key of Object.keys(this.metadata))
+      if (key.startsWith("activity") || key.startsWith("current:") || key.startsWith("latest:")) delete this.metadata[key];
+    for (const file of Object.keys(this.files)) if (file.startsWith("streams/")) delete this.files[file];
+    this.metadata.generation = randomUUID(); this.metadata.revision = "0";
+  }
   flush() {
     for (const store of this.stores.values()) store.flush();
     if (!this.dirty) return;

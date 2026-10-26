@@ -163,7 +163,7 @@ function ActivityBlock({
             {at}
           </time>
           <span className={`block-status block-status-${block.status}`}>
-            {statusNames[block.status]}
+            {block.outcome === "raised" ? "函数抛异常" : block.outcome === "unmet" ? "目标未达成" : statusNames[block.status]}
           </span>
         </div>
         <div className="block-title-row">

@@ -49,6 +49,18 @@ export function outcomeVerdict(outcome: CaseOutcome): BenchmarkVerdict {
   if (outcome.checks.some(check => check.passed === null)) return "inconclusive";
   return outcome.checks.length ? "passed" : null;
 }
+/** Lifecycle events distinguish execution from the selected report's assessment. */
+export interface BenchmarkEventSummary {
+  benchmarkId: string; benchmarkRunId: string; executionStatus: BenchmarkStatus;
+  reportStatus: "missing" | "valid" | "invalid"; verdict: BenchmarkVerdict;
+  reportId: string | null; previousReportId: string | null;
+}
+export function benchmarkEventSummary(execution: BenchmarkExecution, report?: BenchmarkReport | null): BenchmarkEventSummary {
+  return { benchmarkId: execution.definition.id, benchmarkRunId: execution.runId,
+    executionStatus: execution.status, reportStatus: !report ? "missing" : report.outcome ? "valid" : "invalid",
+    verdict: execution.status === "completed" && report?.outcome ? outcomeVerdict(report.outcome) : null,
+    reportId: report?.id ?? null, previousReportId: report?.previousReportId ?? null };
+}
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 const nonempty = (value: unknown): value is string => typeof value === "string" && value.length > 0;
 export function validateDefinition(definition: BenchmarkDefinition): void {

@@ -5,7 +5,7 @@ import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { pythonModulePaths } from "../src/harness/python-capabilities.ts";
 import { resolveWorkspaceState } from "../src/harness/workspace-state.ts";
-import { projectResult, validateExecution, validateResult, type BenchmarkDefinition, type BenchmarkExecution } from "../src/benchmark/contract.ts";
+import { benchmarkEventSummary, projectResult, validateExecution, validateResult, type BenchmarkDefinition, type BenchmarkExecution } from "../src/benchmark/contract.ts";
 
 const bridgePath = fileURLToPath(new URL("../python/rsa_tools/_bridge.py", import.meta.url));
 async function fixture() {
@@ -162,6 +162,7 @@ print(json.dumps({"values": [first["metrics"]["count"]["value"], second["metrics
       expect(events.filter(event => event.type === "benchmark_start")).toHaveLength(1);
       expect(events.filter(event => event.type === "benchmark_end")).toHaveLength(1);
       expect(events.map(event => event.type)).toEqual(["benchmark_start", "python_call_start", "python_call_end", "benchmark_end", "benchmark_report"]);
+      expect(events.at(-1).data).toMatchObject(benchmarkEventSummary(result, result.report));
       expect(events[1].trace.parentSpanId).toBe(result.trace.spanId);
       expect(events.map(event => event.seq)).toEqual([1, 2, 3, 4, 5]);
       const manifest = JSON.parse(await readFile(join(directory, "manifest.json"), "utf8"));
@@ -234,6 +235,8 @@ print(json.dumps(evaluation.calls))
     for (const { result, events, directory } of runs) {
       expect(events.filter(event => event.type === "benchmark_start")).toHaveLength(1);
       expect(events.slice(-2).map(event => event.type)).toEqual(["benchmark_end", "benchmark_report"]);
+      expect(events.at(-2).data).toMatchObject(benchmarkEventSummary(result));
+      expect(events.at(-1).data).toMatchObject(benchmarkEventSummary(result, result.report));
       const raw = JSON.parse(await readFile(join(directory, "reports", result.report!.id + ".raw.json"), "utf8"));
       expect(raw.raw).toEqual(result.report!.raw);
       expect(raw.rawText).toBe(result.report!.rawText);
@@ -300,6 +303,7 @@ print(json.dumps(seen))
     for (const { result, events } of runs) {
       expect(result.endedAt).not.toBeNull();
       expect(events.some(event => event.type === "benchmark_end")).toBe(true);
+      expect(events.find(event => event.type === "benchmark_end").data).toMatchObject(benchmarkEventSummary(result));
     }
   } finally { await rm(root, { recursive: true, force: true }); }
 });

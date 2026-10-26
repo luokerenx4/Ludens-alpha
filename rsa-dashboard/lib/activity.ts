@@ -10,6 +10,7 @@ import { activitySearchText } from "../components/activity-feed-model";
 import { advanceLivePhase, emptyLivePhase, livePhaseValue, type LivePhaseState } from "./live-phase";
 import { eventObservations } from "./observation-events";
 import type { Event } from "./types";
+import { projectPythonCall } from "./python-activity";
 
 export interface LogBlock {
   id: string;
@@ -18,6 +19,7 @@ export interface LogBlock {
   title: string;
   text: string;
   status: "running" | "complete" | "error";
+  outcome?: "raised" | "unmet";
   tool?: { intent?: string; args?: unknown; result?: unknown };
   data?: Record<string, unknown>;
   source?: Event["source"];
@@ -206,11 +208,13 @@ export async function activityBlocks(path: string, events: Event[]): Promise<Log
   return [...blocks.values()].sort((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id));
 }
 async function overlayEvents(path: string, events: Event[], blocks: Map<string, LogBlock>, index?: LogIndex) {
+  const pythonMembers = new Map<string, { group: string; root: boolean }>();
   const executingTools = new Set(events.filter(event => event.type === "tool_start" && event.trace.modelCallId && event.trace.toolCallId)
     .map(event => toolId(event.trace.modelCallId, event.trace.toolCallId)));
   const tools = new Map<string, { name: string; intent: string; args: string; result: string }>();
   for (const event of events) {
     const { data, trace } = event;
+    await projectPythonCall(event, blocks, pythonMembers, index);
     const id = trace.modelCallId && trace.toolCallId ? toolId(trace.modelCallId, trace.toolCallId) : null;
     if (id && ["tool_start", "tool_update", "tool_end", "exec", "exec_result"].includes(event.type)) {
       const previous = blocks.get(id);
@@ -230,8 +234,12 @@ async function overlayEvents(path: string, events: Event[], blocks: Map<string, 
         status: data.isError || previous?.status === "error" || (event.type === "exec_result" && data.exitCode !== 0) ? "error" : event.type === "tool_end" ? "complete" : "running" });
       continue;
     }
-    const failed = data.outcome === "error" || (event.type === "perception_status" && data.state === "error") || (data.outcome !== "cancelled" && !data.aborted
-      && (event.type.endsWith("_error") || data.isError === true || data.stopReason === "error"));
+    const raised = event.type === "python_call_end" && data.outcome === "error";
+    const assessment = ["benchmark_end", "benchmark_report", "benchmark_supervisor_end"].includes(event.type);
+    const unmet = assessment && data.executionStatus === "completed" && data.reportStatus === "valid" && data.verdict === "failed";
+    const failed = !raised && ((assessment && (data.executionStatus === "error" || data.reportStatus === "invalid"))
+      || data.outcome === "error" || (event.type === "perception_status" && data.state === "error") || (data.outcome !== "cancelled" && !data.aborted
+      && (event.type.endsWith("_error") || data.isError === true || data.stopReason === "error")));
     if (event.type === "model_end") {
       for (const block of blocks.values()) {
         if (!block.id.startsWith(`${trace.modelCallId}:`) || block.status !== "running") continue;
@@ -243,13 +251,15 @@ async function overlayEvents(path: string, events: Event[], blocks: Map<string, 
         }
       }
     }
-    const system = failed || event.type === "control" || event.type === "perception_status"
+    const system = failed || assessment || event.type === "control" || event.type === "perception_status"
       || event.type.startsWith("background_") || event.type.includes("compaction") || event.type === "run_end";
     blocks.set(`event:${path.split("/").at(-1)}:${event.seq}`, {
       id: `event:${path.split("/").at(-1)}:${event.seq}`, kind: system ? "system" : "diagnostic",
       at: event.at, title: event.type, text: readable(data), data: structuredText(readable(data)) as Record<string, unknown>,
       ...provenance(event),
       status: failed ? "error" : "complete",
+      ...(raised ? { outcome: "raised" as const } : {}),
+      ...(unmet ? { outcome: "unmet" as const } : {}),
     });
   }
 }
@@ -367,6 +377,8 @@ export function refreshActivity(index: LogIndex) {
     pending = index.exclusive(async () => {
       for (let attempt = 0; ; attempt++) {
         try {
+          // Presentation changes invalidate only the disposable index, never source logs.
+          if (index.meta("activitySemantics") !== "3") { index.resetActivity(); index.setMeta("activitySemantics", "3"); }
           await index.appendEvents();
           const dirty = await projectEvents(index);
           // Checking file metadata also notices a late stream append or replacement

@@ -52,6 +52,8 @@ manifest 记录 Git commit/dirty、continue/consolidate 提示和可选 workspac
 
 嵌套 Python 和 `rsa_tools.Client` 继承父 span/epoch，普通 helper 不追踪。无运行上下文时装饰函数仍可运行。日志失败只记诊断，不改结果、不重试动作；缺 end 保留 pending。trace 不授予操作权，epoch 校验独立执行。
 
+`python_call_end.outcome=error` 只证明函数抛出异常，外层可能捕获它（例如负向测试）。Dashboard 将它保留为“函数抛异常”诊断，按显式 Python 父关系归组，展示外层返回状态、调用/抛出次数及最近异常；原始事件仍可完整搜索。异常不会覆写工具或后台任务的最终结果，也不按错误文案推断“预期”。缺少原生 bash 父 trace 的直接 import 调用保持未关联，不按 PID 或时间拼接。离线分析保留原始 span 统计，另给 `localPythonExceptions` / `localPythonExceptionGroups`：相邻异常父子调用归为一条异常链，成功祖先截断；异常链数不是任务失败次数。
+
 原生 bash 的 `tool_start/update/end` 保存参数、进度、结果 artifact，Dashboard/Pet 与流中工具调用合并展示。当前不生成自定义 exec/exec_result。插件通过 OMP 缓存注入 workspace/socket/run/epoch；并行 shell 共用环境，不注入单个工具 span，未知父工具/模型轮次不推断。
 
 `details.async/service` 产生 background_start，冻结启动 trace；原生完成通知按 jobId 或 service name+PID 产生 background_result，晚到仍属于原周期。启动成功不等于进程结束，不合并同名不同 PID，不代管后台；缺通知不伪造完成，Agent 可用原生 proc 查询。
@@ -117,5 +119,7 @@ python3 rsa/scripts/analyze-run.py /path/to/workspace/logs/run-id \
 - Shiori usage 与 model usage、工具耗时与内部设备/能力耗时、能力 span 与 Python 详情是包含关系，不能相加。
 
 帧号变化、exit 0、技能读写均不证明任务推进。Benchmark 故障注入的预期错误不是真实任务故障率；执行、报告、复用证据及其限制统一见 [Benchmark](benchmark.md)。
+
+Benchmark 终态与报告事件携带 `benchmarkRunId/executionStatus/reportStatus/verdict/reportId/previousReportId`。执行完成而评分失败显示“目标未达成”；执行异常和无效报告分别保留错误。修订报告只更新评分，不增加执行次数。CLI 非零退出仍如实记录，它可能表示检查未通过；不能仅凭退出码归因为 Python 崩溃。评测事件位于独立 run，通过 `parentRunId` 关联宿主，不靠 shell 文本关联具体工具；旧事件缺少评分时不推断结果。
 
 设备执行返回的 `result` 保留原生工具结果。日志中的同名字段采用归档表示：image/audio 的 `data` 或 embedded resource 的 `blob` 替换为媒体文件 `dataPath/blobPath`，通过 observation 的 `contentIndex` 对应内容位置，避免重复写入 base64。API/MCP 的实际返回仍保留原生内容；日志归档表示不能直接冒充 MCP 返回值。

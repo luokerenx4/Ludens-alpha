@@ -26,6 +26,32 @@ async function fixture(work: (path: string) => Promise<void>) {
   } finally { await closeLogIndexes(); await rm(path, { recursive: true, force: true }); }
 }
 
+test("Python groups survive page boundaries, restart and late outer completion without losing raw exceptions", async () => fixture(async path => {
+  const local = (seq: number, type: string, spanId: string, parentSpanId?: string, outcome?: string): Event => ({
+    ...event(seq, type, { id: `python/run.py:${spanId}`, outcome, ...(outcome === "error" ? { error: "expected failure" } : {}) }),
+    trace: { epoch: "cycle", traceId: "trace", spanId, ...(parentSpanId ? { parentSpanId } : {}) },
+  });
+  const append = async (events: Event[]) => appendFile(join(path, "events.jsonl"), events.map(row => JSON.stringify(row)).join("\n") + "\n");
+  let index = getLogIndex(path);
+  await append([local(3, "python_call_start", "outer")]); await refreshActivity(index);
+  const initial = await queryActivity(index, scope);
+  await closeLogIndexes(); index = getLogIndex(path);
+  await append([local(4, "python_call_start", "inner", "outer"), local(5, "python_call_end", "inner", "outer", "error")]);
+  await refreshActivity(index);
+  await append([local(6, "python_call_end", "outer", undefined, "success")]); await refreshActivity(index);
+  const diagnostic = await queryActivity(index, scope, { mode: "history", kind: "diagnostic", q: "trace" });
+  const group = diagnostic.blocks.find(block => block.id.startsWith("python:"))!;
+  assert.equal(diagnostic.blocks.filter(block => block.id.startsWith("python:")).length, 1);
+  assert.deepEqual([group.data?.calls, group.data?.raised, group.data?.pending, group.data?.rootOutcome], [2, 1, 0, "success"]);
+  assert.equal(group.status, "complete"); assert.equal(group.outcome, "raised");
+  assert.equal(diagnostic.blocks.filter(block => block.title === "python_call_end").length, 2);
+  const delta = await queryActivity(index, scope, { cursor: initial.cursor! });
+  assert.ok(delta.blocks.some(block => block.id === group.id && block.data?.rootOutcome === "success"));
+  await refreshActivity(index);
+  const again = await queryActivity(index, scope, { mode: "block", id: group.id });
+  assert.deepEqual(again.blocks[0].data, group.data, "re-reading must not count calls again");
+}));
+
 test("activity indexes stream-only appends and defers incomplete UTF-8 JSONL records", async () => fixture(async path => {
   const index = await getLogIndex(path);
   await refreshActivity(index);

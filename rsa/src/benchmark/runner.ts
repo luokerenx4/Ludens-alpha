@@ -10,7 +10,7 @@ import { runProvenance } from "../harness/provenance.ts";
 import { reportSchema, validateAuthorReport } from "./report.ts";
 import { builtinDefinitions } from "./builtins.ts";
 import { discoverBenchmarks, pythonBridge, pythonEnv } from "./catalog.ts";
-import { compareResults, type BenchmarkDefinition, type BenchmarkExecution, type BenchmarkResult } from "./contract.ts";
+import { benchmarkEventSummary, compareResults, type BenchmarkDefinition, type BenchmarkExecution, type BenchmarkResult } from "./contract.ts";
 import { appendBenchmarkEvent, atomicJson, history, indexWorkspace, readExecution, readResult, recordSupervisorEnd, saveReport, writeResult } from "./store.ts";
 
 export const BENCH_HELP = `rsa bench list
@@ -189,8 +189,8 @@ export async function benchmarkCommand(args: string[], artifactRoot: string, wor
     const runDir = join(execution.workspace, "logs", execution.runId);
     const report = await saveReport(runDir, execution, JSON.parse(await readFile(resolve(workspace, values.file), "utf8")),
       { reason: values.reason, protocolVersion: values.protocol });
-    await appendBenchmarkEvent(runDir, execution, "benchmark_report", { reportId: report.id, previousReportId: report.previousReportId,
-      protocolVersion: report.protocolVersion, errors: report.errors, reason: report.reason });
+    await appendBenchmarkEvent(runDir, execution, "benchmark_report", { ...benchmarkEventSummary(execution, report),
+      protocolVersion: report.protocolVersion, valid: !report.errors.length, errors: report.errors, reason: report.reason });
     print(await readResult(workspace, execution.runId, report.id));
     if (report.errors.length) process.exitCode = 2; return;
   }

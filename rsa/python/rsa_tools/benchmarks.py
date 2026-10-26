@@ -32,6 +32,20 @@ def _json(value):
     return json.dumps(value, allow_nan=False, ensure_ascii=False)
 
 
+def _event_summary(execution, report=None):
+    outcome = report["outcome"] if report else None
+    verdict = None
+    if execution["status"] == "completed" and outcome is not None:
+        checks = outcome["checks"]
+        verdict = ("failed" if any(check["passed"] is False for check in checks) else
+                   "inconclusive" if any(check["passed"] is None for check in checks) else
+                   "passed" if checks else None)
+    return {"benchmarkId": execution["definition"]["id"], "benchmarkRunId": execution["runId"],
+            "executionStatus": execution["status"], "reportStatus": "missing" if report is None else "valid" if outcome is not None else "invalid",
+            "verdict": verdict, "reportId": report["id"] if report else None,
+            "previousReportId": report["previousReportId"] if report else None}
+
+
 def _write(path, value):
     path = Path(path)
     temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
@@ -230,8 +244,8 @@ class BenchmarkContext:
 
     def _report(self, raw):
         report = write_report(self.run_dir, self.result, raw)
-        self.record("benchmark_report", {"benchmarkId": self.result["definition"]["id"],
-                    "reportId": report["id"], "previousReportId": report["previousReportId"],
+        self.record("benchmark_report", {**_event_summary(self.result, report),
+                    "protocolVersion": report["protocolVersion"], "reason": report["reason"],
                     "valid": not report["errors"], "errors": report["errors"]})
         if report["errors"]:
             issues = "\n".join("  %s: %s" % (item["path"], item["message"]) for item in report["errors"])
@@ -340,7 +354,7 @@ def _finish(context, started):
     result = context.result
     result["endedAt"] = _now()
     result["durationMs"] = (time.monotonic() - started) * 1000
-    context.record("benchmark_end", {"benchmarkId": result["definition"]["id"], "status": result["status"]})
+    context.record("benchmark_end", {**_event_summary(result), "status": result["status"]})
     context._save()
 
 

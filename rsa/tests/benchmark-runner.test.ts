@@ -27,6 +27,11 @@ test("built-in evaluations share workspace/history but isolate fixture work", as
     const events = (await readFile(join(first.runDir, "events.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
     expect(events[0].type).toBe("benchmark_start"); expect(events.at(-1).type).toBe("benchmark_report");
     expect(events.filter(event => event.type === "benchmark_end")).toHaveLength(1);
+    expect(events.find(event => event.type === "benchmark_end").data).toMatchObject({
+      executionStatus: "completed", reportStatus: "missing", verdict: null, reportId: null });
+    expect(events.at(-1).data).toMatchObject({ benchmarkRunId: first.result.runId, executionStatus: "completed",
+      reportStatus: "valid", verdict: "passed", reportId: first.result.report!.id,
+      previousReportId: null, valid: true, protocolVersion: first.result.report!.protocolVersion });
     expect(events.at(-1).source.component).toBe("benchmark");
     expect(first.result.checks.every(check => check.evidenceSeq.every(seq => events.some(event => event.seq === seq)))).toBe(true);
     const records = await history(options.workspace, "control-handoff");

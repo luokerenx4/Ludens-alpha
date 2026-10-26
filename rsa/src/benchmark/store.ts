@@ -3,7 +3,7 @@ import { appendFile, mkdir, readFile, readdir, realpath, rename, writeFile } fro
 import { join } from "node:path";
 import { inspect } from "node:util";
 import { resolveWorkspaceState } from "../harness/workspace-state.ts";
-import { projectResult, validateExecution, validateReport, type BenchmarkExecution, type BenchmarkReport, type BenchmarkResult } from "./contract.ts";
+import { benchmarkEventSummary, projectResult, validateExecution, validateReport, type BenchmarkExecution, type BenchmarkReport, type BenchmarkResult } from "./contract.ts";
 import { jsonIssues, validateAuthorReport } from "./report.ts";
 
 export async function atomicJson(path: string, value: unknown) {
@@ -121,5 +121,6 @@ export async function appendBenchmarkEvent(runDir: string, result: BenchmarkExec
 }
 
 export async function recordSupervisorEnd(runDir: string, result: BenchmarkExecution) {
-  await appendBenchmarkEvent(runDir, result, "benchmark_supervisor_end", { status: result.status, error: result.error, phase: result.errorPhase });
+  await appendBenchmarkEvent(runDir, result, "benchmark_supervisor_end", { ...benchmarkEventSummary(result),
+    status: result.status, error: result.error, phase: result.errorPhase });
 }

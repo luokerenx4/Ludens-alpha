@@ -507,8 +507,9 @@ function TraceList({ data, call }: { data: RunData; call?: Call }) {
                   </small>
                 </span>
                 <span className="mono">{seconds(s.durationMs)}</span>
-                <span className={"outcome " + s.outcome}>
-                  {s.outcome === "success" && s.kind === "compaction"
+                <span className={"outcome " + (s.kind === "python-local" && s.outcome === "error" ? "unknown" : s.outcome)}>
+                  {s.kind === "python-local" && s.outcome === "error" ? "抛出异常"
+                    : s.outcome === "success" && s.kind === "compaction"
                     ? s.operation === "maintenance"
                       ? "维护结束"
                       : "候选就绪"
@@ -544,7 +545,8 @@ function TraceList({ data, call }: { data: RunData; call?: Call }) {
                   </dd>
                 </div>
               </dl>
-              {s.error && <pre className="error-text">{s.error}</pre>}
+              {s.kind === "python-local" && s.outcome === "error" && <p className="help-text">记录函数抛出的异常；外层可能捕获它，不能据此判定命令或测试失败。</p>}
+              {s.error && <pre className={s.kind === "python-local" ? "help-text" : "error-text"}>{s.error}</pre>}
               {spans
                 .filter(
                   (p) =>

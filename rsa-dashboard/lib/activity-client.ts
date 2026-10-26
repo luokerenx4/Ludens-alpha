@@ -7,6 +7,8 @@ export interface LogBlock {
   title: string;
   text: string;
   status: "running" | "complete" | "error";
+  /** A completed diagnostic/assessment is not necessarily an execution failure. */
+  outcome?: "raised" | "unmet";
   tool?: { intent?: string; args?: unknown; result?: unknown };
   data?: Record<string, unknown>;
   source?: EventSource;

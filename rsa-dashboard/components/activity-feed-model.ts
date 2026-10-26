@@ -22,7 +22,7 @@ export function printable(value: unknown): string {
 /** Shared by the server projection and incremental UI, never a full-run filter. */
 export function activitySearchText(block: LogBlock): string {
   return [block.title, block.text, blockLabels[block.kind],
-    block.source?.component, block.source?.implementation, printable(block.tool), block.id]
+    block.source?.component, block.source?.implementation, printable(block.tool), printable(block.trace), block.id]
     .filter(Boolean).join("\n").toLocaleLowerCase();
 }
 

@@ -200,6 +200,102 @@ test("analysis separates local Python calls from runners and actions, retaining 
   expect(next.summary.controllerActions).toBe(0);
 });
 
+test("42 negative-test raises remain local diagnostics without guessing an execution or test expectation", async () => {
+  // Regression shape from the 2026-10-26 Mario run: direct imports did not carry
+  // the native bash span. Test provenance was established by reviewing payloads,
+  // and cannot be recovered just from these function-boundary events.
+  const event = fixture();
+  const shell = { traceId: "shell", spanId: "bash", modelCallId: "model", toolCallId: "tool" };
+  const events = [
+    event("control", "one", { mode: "auto", epoch: "one" }),
+    event("tool_start", "one", { toolName: "bash", args: { command: "python3 -m unittest" } }, shell),
+  ];
+  for (let index = 0; index < 42; index++) {
+    const trace = { traceId: `independent-${index}`, spanId: "call" };
+    events.push(event("python_call_start", "one", { id: "python/actions.py:step", pid: 42 }, trace));
+    events.push(event("python_call_end", "one", { outcome: "error", error: "RuntimeError: expected failure", pid: 42 }, trace));
+  }
+  events.push(event("tool_end", "one", { toolName: "bash", isError: false }, shell));
+  const report = await analyze(events);
+  expect(report.summary.localPythonCalls).toMatchObject({ started: 42, outcomes: { error: 42 } });
+  expect(report.summary.localPythonExceptions).toMatchObject({ raised: 42, rootRaised: 42, nestedRaised: 0,
+    ancestorOutcomes: { success: 0, unassociated: 42 }, executionOutcomes: { success: 0, unassociated: 42 }, expected: null });
+  expect(report.localPythonExceptionGroups).toHaveLength(42);
+  expect(report.localPythonExceptionGroups.every((group: any) => group.ancestor === null && group.execution === null)).toBe(true);
+});
+
+test("analysis groups two raised local boundaries by parent trace and retains a late execution failure", async () => {
+  const event = fixture();
+  const trace = (spanId: string, parentSpanId?: string) => ({ traceId: "trace", spanId, parentSpanId });
+  const events = [
+    event("control", "one", { mode: "auto", epoch: "one" }),
+    event("python_capability", "one", { capabilityId: "python/actions.py:outer" }, trace("runner")),
+    event("python_call_start", "one", { id: "python/actions.py:outer" }, trace("outer", "runner")),
+    event("python_call_start", "one", { id: "python/actions.py:inner" }, trace("inner", "outer")),
+    event("python_call_end", "one", { outcome: "error", error: "failure" }, trace("inner", "outer")),
+    event("python_call_end", "one", { outcome: "error", error: "failure" }, trace("outer", "runner")),
+    event("control", "one", { mode: "manual" }),
+    event("control", "two", { mode: "auto", epoch: "two" }),
+    event("python_capability", "two", { capabilityId: "python/actions.py:outer" }, trace("runner")),
+    event("python_capability_result", "two", { outcome: "success" }, trace("runner")),
+    event("python_capability_result", "one", { outcome: "error" }, trace("runner")),
+  ];
+  const report = await analyze(events, "one");
+  expect(report.summary.localPythonExceptions).toMatchObject({ raised: 2, rootRaised: 1, nestedRaised: 1,
+    ancestorOutcomes: { error: 1 }, executionOutcomes: { error: 1, success: 0 }, expected: null });
+  expect(report.localPythonExceptionGroups[0]).toMatchObject({ root: { startSeq: 3, trace: { spanId: "outer" } },
+    ancestor: { kind: "python-execution", startSeq: 2, endSeq: 11, outcome: "error" },
+    execution: { kind: "python-execution", outcome: "error" } });
+  expect(report.localPythonExceptionGroups[0].raisedCalls).toHaveLength(2);
+});
+
+test("a successful enclosing call separates raised branches and does not label them expected", async () => {
+  const event = fixture();
+  const trace = (spanId: string, parentSpanId?: string) => ({ traceId: "trace", spanId, parentSpanId });
+  const shell = { ...trace("shell"), modelCallId: "model", toolCallId: "tool" };
+  const events = [
+    event("control", "one", { mode: "auto", epoch: "one" }),
+    event("tool_start", "one", { toolName: "bash" }, shell),
+    event("shiori_span_start", "one", { operation: "bridge" }, trace("bridge", "shell")),
+    event("python_call_start", "one", { id: "python/actions.py:catching_caller" }, trace("caller", "bridge")),
+    event("python_call_start", "one", { id: "python/actions.py:step" }, trace("first", "caller")),
+    event("python_call_end", "one", { outcome: "error", error: "failure" }, trace("first", "caller")),
+    event("python_call_start", "one", { id: "python/actions.py:step" }, trace("second", "caller")),
+    event("python_call_end", "one", { outcome: "error", error: "failure" }, trace("second", "caller")),
+    event("python_call_end", "one", { outcome: "success" }, trace("caller", "bridge")),
+    event("tool_end", "one", { toolName: "bash", isError: false }, shell),
+  ];
+  const report = await analyze(events);
+  expect(report.summary.localPythonExceptions).toMatchObject({ raised: 2, rootRaised: 2, nestedRaised: 0,
+    ancestorOutcomes: { success: 2 }, executionOutcomes: { success: 2 }, expected: null });
+  expect(report.localPythonExceptionGroups.map((group: any) => group.root.trace.spanId)).toEqual(["first", "second"]);
+  expect(report.localPythonExceptionGroups[0]).toMatchObject({ ancestor: { kind: "python-local", name: "python/actions.py:catching_caller" },
+    execution: { kind: "tool", outcome: "success" } });
+});
+
+test("Python execution attribution waits for the traced background result instead of accepting submission success", async () => {
+  const event = fixture();
+  const shell = { traceId: "trace", spanId: "shell", modelCallId: "model", toolCallId: "tool" };
+  const background = { traceId: "trace", spanId: "background", parentSpanId: "shell" };
+  const call = { traceId: "trace", spanId: "call", parentSpanId: "shell" };
+  const events = [
+    event("control", "one", { mode: "auto", epoch: "one" }),
+    event("tool_start", "one", { toolName: "bash" }, shell),
+    event("tool_end", "one", { toolName: "bash", isError: false }, shell),
+    event("background_start", "one", { kind: "job", jobId: "job" }, background),
+    event("python_call_start", "one", { id: "python/actions.py:step" }, call),
+    event("python_call_end", "one", { outcome: "error", error: "failure" }, call),
+  ];
+  const pending = await analyze(events);
+  expect(pending.summary.localPythonExceptions.executionOutcomes).toMatchObject({ pending: 1, success: 0 });
+  expect(pending.localPythonExceptionGroups[0].execution).toMatchObject({ kind: "background", endSeq: null });
+  events.push(event("control", "one", { mode: "manual" }), event("control", "two", { mode: "auto", epoch: "two" }),
+    event("background_result", "one", { kind: "job", jobId: "job", status: "failed", isError: true }, background));
+  const completed = await analyze(events, "one");
+  expect(completed.summary.localPythonExceptions.executionOutcomes).toMatchObject({ error: 1, success: 0, pending: 0 });
+  expect(completed.localPythonExceptionGroups[0].execution).toMatchObject({ kind: "background", startSeq: 4, endSeq: 9, outcome: "error" });
+});
+
 test("analysis retains ready and applied boundaries and reports candidate duration separately from waiting", async () => {
   const event = fixture();
   const events = [

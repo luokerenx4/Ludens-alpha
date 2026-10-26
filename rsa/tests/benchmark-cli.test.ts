@@ -16,14 +16,15 @@ test("workspace catalog, CLI run/history/compare and the shared Python result co
 def accuracy(value: int = 5):
     """Measure a deterministic value."""
     current_benchmark().conditions(dataset="fixed")
-    return {"metrics": {"accuracy": {"value": value, "unit": "points", "direction": "higher"}}}
+    return {"metrics": {"accuracy": {"value": value, "unit": "points", "direction": "higher"}},
+            "checks": {"nonnegative": {"passed": False}} if value < 0 else {}}
 `);
   const runner = resolve(import.meta.dir, "../src/benchmark/runner.ts");
-  const command = async (args: string[]) => {
+  const command = async (args: string[], expectedCode = 0) => {
     const child = Bun.spawn([process.execPath, "-e", `import { benchmarkCommand } from ${JSON.stringify(runner)}; await benchmarkCommand(${JSON.stringify(args)}, ${JSON.stringify(artifactRoot)}, ${JSON.stringify(workspace)});`],
       { cwd: root, env: { ...process.env, RSA_RUN_ID: "", RSA_SOCKET: "", RSA_WORKSPACE: workspace }, stdout: "pipe", stderr: "pipe" });
     const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
-    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    expect({ code, stderr }).toEqual({ code: expectedCode, stderr: "" });
     return JSON.parse(stdout);
   };
   try {
@@ -36,7 +37,16 @@ def accuracy(value: int = 5):
     validateResult(first); validateResult(second);
     expect(first).toMatchObject({ status: "completed", verdict: null, parameters: { value: 5 } });
     expect(second.metrics[0].value).toBe(8);
-    expect((await command(["history", definition.id])).results).toHaveLength(2);
+    // A failed assessment preserves successful execution even though CLI exits 1.
+    const failed = await command(["run", definition.id, "--args", '{"value":-1}'], 1);
+    expect(failed).toMatchObject({ status: "completed", verdict: "failed" });
+    const failedEvents = (await readFile(join(workspace, "logs", failed.runId, "events.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    expect(failedEvents.find(event => event.type === "benchmark_end").data).toMatchObject({
+      executionStatus: "completed", reportStatus: "missing", verdict: null, reportId: null });
+    expect(failedEvents.at(-1).data).toMatchObject({ benchmarkId: definition.id, benchmarkRunId: failed.runId,
+      executionStatus: "completed", reportStatus: "valid", verdict: "failed", reportId: failed.report.id,
+      previousReportId: null, valid: true, protocolVersion: "1", reason: "initial" });
+    expect((await command(["history", definition.id])).results).toHaveLength(3);
     expect(await command(["compare", second.runId, first.runId])).toMatchObject({ compatible: false, changes: ["参数"], metrics: [{ delta: 3 }] });
     expect((await readFile(join(workspace, "logs", first.runId, "events.jsonl"), "utf8")).match(/"type":\s*"benchmark_start"/g)).toHaveLength(1);
   } finally { await rm(root, { recursive: true, force: true }); }
@@ -74,6 +84,8 @@ def wait():
     const events = lines.filter(line => line !== '{"seq":').map(line => JSON.parse(line));
     expect(events.map(event => event.seq)).toEqual(events.map((_, i) => i + 1));
     expect(events.at(-1).type).toBe("benchmark_supervisor_end");
+    expect(events.at(-1).data).toMatchObject({ benchmarkRunId: result.runId,
+      executionStatus: "cancelled", reportStatus: "missing", verdict: null, reportId: null });
     expect((await history(workspace)).results).toHaveLength(1);
   } finally { abort.abort(); await rm(root, { recursive: true, force: true }); }
 }, 10_000);
@@ -127,8 +139,10 @@ def jump():
     expect(corrected.reports).toHaveLength(2);
     expect(corrected.report.protocolVersion).toBe("jump-v1");
     report.metrics.height.value = 25;
+    report.checks.landed.passed = false;
     await writeFile(reportPath, JSON.stringify(report));
     const rescored = await command(["report", first.runId, "--file", "report.json", "--protocol", "jump-v2", "--reason", "updated scoring"]);
+    expect(rescored.verdict).toBe("failed");
     const comparison = await command(["compare", `${first.runId}@${rescored.report.id}`, `${first.runId}@${corrected.report.id}`]);
     expect(comparison).toMatchObject({ sameExecution: true, compatible: false, changes: ["评测口径"], metrics: [{ baseline: 24, value: 25, delta: 1 }] });
     const reformatted = await command(["report", first.runId, "--file", "report.json"]);
@@ -143,6 +157,13 @@ def jump():
     expect(events.filter(event => event.type === "benchmark_start")).toHaveLength(1);
     expect(events.filter(event => event.type === "benchmark_end")).toHaveLength(1);
     expect(events.filter(event => event.type === "benchmark_report")).toHaveLength(4);
+    const reports = events.filter(event => event.type === "benchmark_report").map(event => event.data);
+    expect(reports.map(data => [data.executionStatus, data.reportStatus, data.verdict])).toEqual([
+      ["completed", "invalid", null], ["completed", "valid", "passed"],
+      ["completed", "valid", "failed"], ["completed", "valid", "failed"],
+    ]);
+    expect(reports[2]).toMatchObject({ benchmarkRunId: first.runId, reportId: rescored.report.id,
+      previousReportId: corrected.report.id, protocolVersion: "jump-v2", reason: "updated scoring", valid: true });
     expect(events.map(event => event.seq)).toEqual(events.map((_, i) => i + 1));
   } finally { await rm(root, { recursive: true, force: true }); }
 }, 30_000);

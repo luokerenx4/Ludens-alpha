@@ -101,6 +101,8 @@ rsa bench compare <run-id>@<report-id> <baseline-run-id>@<baseline-report-id>
 
 report 只追加报告和 benchmark_report 事件，保留 previousReportId/reason，不导入评测、不调用设备、不改执行。异常补报告仍异常，修十次仍一次试验；新测量才再 run。history 默认最新报告，可固定报告 ID；读取不自动改写旧文件。
 
+终态和报告日志统一携带 `benchmarkRunId/executionStatus/reportStatus/verdict/reportId/previousReportId`，报告状态为 missing/valid/invalid。Dashboard 据此区分执行异常、报告无效和目标未达成；CLI 的非零退出码本身不等于执行崩溃。
+
 Python 本地写生命周期，保留 parentRunId/trace；能力事件可转发父 Host，origin 不变，不重复计数。内置隔离 workspace 在 run 内，成绩归调用方；离线无接管不伪造 control，看板读完整 run。详见 [日志](logging.md)。
 
 ## 比较和看板
