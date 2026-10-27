@@ -45,12 +45,12 @@ test("OMP bootstraps empty perception and repairs it through the real reload CLI
   const model = modelRegistry.find("openai-codex", "gpt-6.1-sol")!;
   const manager = SessionManager.create(workspace, join(directory, "session"));
   const baseTools = ["read", "write", "edit", "bash", "observe"];
-  const source = (text: string, broken = false) => `from rsa_tools import perception, record
+  const source = (text: string, broken = false) => `from rsa_tools import capability, record
 class Perception:
     def start(self, context): pass
     def close(self): pass
     @record
-    @perception
+    @capability
     def sample(self):
         ${broken ? 'raise RuntimeError("observer needs repair")' : `return {"text": "${text}", "media": [{"path": "raw.png", "mediaType": "image/png"}]}`}
 `;

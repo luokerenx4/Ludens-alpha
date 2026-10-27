@@ -120,13 +120,17 @@ def combined(label: str) -> dict:
     expect(manualCapture.exitCode).toBe(0);
     expect(JSON.parse(manualCapture.stdout)).toMatchObject({ status: "completed", observations: [{ controllerId: "screen" }] });
     expect(f.events.find(event => event.type === "execution")?.trace.epoch).toBeUndefined();
-    for (const argv of [["controller/pad.echo", "--args", '{"label":"manual"}'], ["python/scripts/actions.py:echo"]]) {
+    for (const argv of [["controller/pad.echo", "--args", '{"label":"manual"}'], ["python/scripts/actions.py:combined", "--args", '{"label":"manual"}']]) {
       const denied = await f.cli(argv);
       expect(denied.exitCode).toBe(1);
       expect(denied.stderr).toContain("STALE_EPOCH");
     }
     expect(f.actions).toHaveLength(0);
-    expect(await Bun.file(join(f.workspace, "imported")).exists()).toBe(false);
+    // A Python capability may run computation while manual; nested driver input is still denied.
+    expect(await Bun.file(join(f.workspace, "imported")).exists()).toBe(true);
+    const manualPython = await f.cli(["python/scripts/actions.py:echo"]);
+    expect(manualPython.exitCode).toBe(0);
+    expect(manualPython.stdout.trim()).toBe("v1:hello");
 
     const epoch = (await f.runtime.start()).epoch!;
     const argsFile = join(f.workspace, "arguments.json");
@@ -141,7 +145,7 @@ print(json.dumps(Client().call("python/scripts/actions.py:combined", {"label": "
     expect(combined.exitCode).toBe(0);
     expect(JSON.parse(combined.stdout)).toMatchObject({label: "v1:前进", motion: {status: "completed", stdout: '{"label":"前进"}', result: { structuredContent: {label: '前进'}, _meta: {native: true} }}});
     expect(f.actions).toEqual([{args: {label: "--args literal --help"}, epoch}, {args: {label: "前进"}, epoch}]);
-    const nested = f.events.filter(event => event.type === "python_call_start");
+    const nested = f.events.filter(event => event.type === "python_call_start" && event.trace.epoch === epoch);
     expect(nested).toHaveLength(2);
     expect(nested[0]!.trace).toMatchObject({traceId: f.parentTrace.traceId, parentSpanId: f.parentTrace.spanId});
     expect(nested[1]!.trace).toMatchObject({traceId: f.parentTrace.traceId, parentSpanId: nested[0]!.trace.spanId});
@@ -153,7 +157,7 @@ print(json.dumps(Client().call("python/scripts/actions.py:combined", {"label": "
       expect(f.events.filter(item => item.type === "python_call_end" && item.trace.spanId === event.trace.spanId)).toHaveLength(1);
       expect(f.events.find(item => item.type === "python_call_end" && item.trace.spanId === event.trace.spanId)?.data).toMatchObject({outcome: "success"});
     }
-    expect(f.events.filter(event => event.type === "python_capability")).toHaveLength(0);
+    expect(f.events.filter(event => event.type === "python_capability" && event.trace.epoch === epoch)).toHaveLength(0);
     const nestedDriver = f.events.find(event => event.type === "capability_start" && event.data.id === "controller/pad.echo"
       && event.trace.parentSpanId === nested[0]!.trace.spanId)!;
     expect(nestedDriver).toBeDefined();
@@ -196,7 +200,7 @@ print(json.dumps(Client().call("python/scripts/actions.py:combined", {"label": "
     await expect(send(f.rsaSocket, {kind: "controller", argv: [], action: "call", id: "controller/pad.echo", arguments: {label: 3}, epoch})).rejects.toThrow("Invalid arguments");
     expect(f.actions).toHaveLength(actionsBeforeInvalid);
     const completed = f.events.filter(event => event.type === "capability_end");
-    expect(completed.filter(event => event.data.outcome === "error")).toHaveLength(6);
+    expect(completed.filter(event => event.data.outcome === "error")).toHaveLength(7);
     expect(completed.find(event => event.data.exitCode === 17)?.data).toMatchObject({outcome: "error", status: "failed"});
     for (const started of f.events.filter(event => event.type === "capability_start")) {
       expect(completed.filter(event => event.trace.spanId === started.trace.spanId)).toHaveLength(1);

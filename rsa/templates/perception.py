@@ -1,6 +1,6 @@
 """Workspace-owned perception. Implement this class, then run rsa perception reload."""
 
-from rsa_tools import perception, record
+from rsa_tools import capability, record
 
 
 class Perception:
@@ -11,7 +11,7 @@ class Perception:
         self.context = context
 
     @record
-    @perception
+    @capability
     def sample(self):
         """Return an observation: optional text, JSON data, media, space and sources.
 
@@ -20,7 +20,7 @@ class Perception:
         The instance stays alive; choose continuous or on-demand work as useful.
         @record adds this result to the workspace timeline and returns a timeline
         reference. observe() reads that history, across runs, without resampling.
-        Plain @perception functions do not record; add @record only where useful.
+        Plain @capability functions do not record; add @record only where useful.
         """
         raise NotImplementedError("Implement workspace perception, then reload it.")
 

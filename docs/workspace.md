@@ -12,9 +12,10 @@ workspace/
   AGENTS.md                可选的工作区约定
   baseware.json            当前设备能力与调用契约快照
   perception.py            Agent 实现的常驻感知入口
+  action.py                Agent 实现的常驻动作入口
   skills/<name>/SKILL.md    可复用方法，可附带代码
   memory/current.md        当前状态与下一步
-  .rsa/timeline/           跨 run 的感知记录与唯一媒体原件
+  .rsa/timeline/           跨 run 的能力记录与唯一媒体原件
   .rsa/archive/            模型/工具日志的共享文本对象，媒体引用时空轴
   .rsa/shiori/
     sessions/              OMP 会话及其同名资源目录
@@ -23,7 +24,7 @@ workspace/
   ...                      自行组织脚本、数据、模型、实验
 ```
 
-`rsa init` 写入缺失的 [AGENTS 模板](../rsa/templates/AGENTS.md) 和 [感知模板](../rsa/templates/perception.py)。`AGENTS.md` 可修改或删除，普通启动不补回；Host 启动时按原生项目上下文加载它，保留 OMP 默认系统提示词。修改后需重启 Host。
+`rsa init` 写入缺失的 [AGENTS 模板](../rsa/templates/AGENTS.md)、[感知模板](../rsa/templates/perception.py) 和 [动作模板](../rsa/templates/action.py)。`AGENTS.md` 可修改或删除，普通启动不补回；Host 启动时按原生项目上下文加载它，保留 OMP 默认系统提示词。修改后需重启 Host。
 
 Workspace 的 canonical path 决定独立身份与默认 socket，改名或移动会改变身份。OMP 会话与默认续接指针在 `.rsa/shiori/`，日志在 `logs/<run-id>/`；技能版本和供 Dashboard 发现 workspace 的注册信息仍在仓库同级的 `../artifacts/rsa/ws-<name>-<hash>/`，由 [workspace-state](../rsa/src/harness/workspace-state.ts) 管理。默认重启续接当前会话；`rsa run --new-session` 按原生语义新建上下文并保留工作区文件，`--resume <session.jsonl>` 选择同工作区的已有会话文件，路径经 realpath 规范化并校验归属。
 
@@ -63,40 +64,40 @@ def sample(controller_id: str, arguments: dict) -> dict:
 | 普通 import 后调用 | 当前 Python 进程，可直接传模型、数组等对象。 |
 | `Client.call("python/…", {...})` | 当前进程导入并调用，复用模块缓存；嵌套调用不经 Host 重开进程。 |
 | `rsa controller python/… --args …` | Host 启动一次 Python 入口，校验参数与源码版本，跨进程结果为 JSON。独立 CLI 调用不共享内存。 |
-| `Client.call("controller/…", {...})` | 连接 RSA，由 Baseware 执行设备能力；返回完整原生 JSON / 媒体字节；只有显式标记记录的感知能力才永久归档。 |
+| `Client.call("controller/…", {...})` | 连接 RSA，由 Baseware 执行设备能力；返回完整原生 JSON / 媒体字节；只有显式标记记录的能力结果才永久归档。 |
 
 设备参数由 Baseware 按原生 schema 校验，Python 能力的跨进程 JSON 参数在调用入口校验；本地 import 和 `Client.call("python/…")` 保留普通 Python 对象。已加载模块按 Python 规则缓存，编辑代码后需重跑相应程序。
 
-`@capability` 使顶层同步函数可发现并记录调用；辅助函数无需装饰。发现只读 AST，新增和删除在下次查询可见，跳过日志、`.rsa/` 会话数据、Git、依赖与虚拟环境。函数需 docstring 和参数类型，支持标量、列表、字符串键字典与可空类型；不支持的签名返回诊断。详见 [Python 发现与加载](../rsa/python/rsa_tools/_capabilities.py)。
+`@capability` 是感知和动作共用的能力声明，记录实际调用；类方法可标注，只有带参数类型的顶层同步函数进入 Controller 目录。辅助函数无需装饰。发现只读 AST，新增和删除在下次查询可见，跳过日志、`.rsa/` 会话数据、Git、依赖与虚拟环境。函数需 docstring 和参数类型，支持标量、列表、字符串键字典与可空类型；不支持的签名返回诊断。详见 [Python 发现与加载](../rsa/python/rsa_tools/_capabilities.py)。
 
 评测函数使用 `@benchmark`，通过 `rsa bench` 及现有看板管理，不进入 Controller 目录；完整接口见 [Benchmark](benchmark.md)。
 
-## 感知能力与 workspace 时空轴
+## 能力留档与 workspace 时空轴
 
-`@perception` 声明感知能力，隐含 `@capability` 的发现和调用追踪。加 `@record` 后，成功结果进入 workspace 的 `.rsa/timeline/`；未标记记录的调用没有隐式永久存档。两种装饰顺序均可，类方法可以标注，只有顶层函数进入 Controller 目录。
+`@capability` 声明能力；加 `@record` 后，成功结果进入 workspace 的 `.rsa/timeline/`。两种装饰顺序均可，但 `@record` 必须配合 `@capability`。未标记记录的函数保留普通 Python 返回值，包括模型、数组或 None，没有隐式永久存档。
 
 ```python
-from rsa_tools import perception, record
+from rsa_tools import capability, record
 
 @record
-@perception
+@capability
 def temperature() -> dict:
     """Read a temperature sensor."""
     return {"data": {"value": 22.5, "unit": "C"},
             "space": {"frame": "room"}}
 ```
 
-感知信封支持 `text`、`data`（任意 JSON）、`media`、`sampledAt`、`sources`、`space`。字段可省略，未知字段明确报错。媒体为 `{mediaType, path}` 或 `{mediaType, data}`（base64）；路径可相对 workspace。设备原生图片可把其 `data/mimeType` 放入信封，不必自己先存文件。`sampledAt` 只填写已知来源时刻，`space` 按设备/算法实际坐标系描述，Harness 不推断空间含义。
+记录信封支持 `text`、`data`（任意 JSON）、`media`、`sampledAt`、`sources`、`space`。字段可省略，未知字段明确报错。媒体为 `{mediaType, path}` 或 `{mediaType, data}`（base64）；路径可相对 workspace。设备原生图片可把其 `data/mimeType` 放入信封，不必自己先存文件。`sampledAt` 只填写已知来源时刻，`space` 按设备/算法实际坐标系描述，Harness 不推断空间含义。
 
 记录后返回信封附 `timeline: {recordId, sequence}`，媒体带同轴 `asset` 引用。图像持续编码至 `video/` 短 MP4 段，并由 `timeline.video` 的 `pts/timeBase/width/height` 定位；当前原图通过有界热缓存的内联 `data` 交付，历史冷帧按需解码，不保证存在图片 `path`。其他媒体按 SHA-256 在 `objects/` 共享一份，观测时间点仍独立。嵌套能力按各自标记记录，可在 `sources` 引用内层结果；不会自动保存所有中间数据。
 
-普通 import、`Client.call("python/…")` 和 CLI 都经过同一装饰器。用户函数仍在原 Python 进程运行；只有结果通过 RSA socket 交给已有感知 worker 的单一写入者。没有可用 writer 或记录失败会报错，不会自动重试采样/动作。声明感知不授予设备输入权限，动作仍受 epoch 控制。
+普通 import、`Client.call("python/…")` 和 CLI 都经过同一装饰器。用户函数仍在原 Python 进程运行；只有结果通过 RSA socket 交给已有感知 worker 的单一写入者。没有可用 writer 或记录失败会报错，不会自动重试采样/动作。声明能力不授予设备输入权限，动作仍受 epoch 控制。
 
 ## 常驻感知与历史读取
 
-`perception.py:Perception` 在专用 Python 进程中运行：`start(context)` 初始化一次；`sample()` 按 `sample_hz` 连续执行（默认 30 Hz）；`close()` 释放自建资源。AI 可修改类上的 `sample_hz`，执行 `rsa perception reload` 生效。context 含 `workspace/runDir/generation`。在 `sample()` 上使用 `@perception` 和 `@record`；sampler 不再隐式保存结果。类实例、模块和模型跨模型轮次保留，慢采样不重叠、不补跑。模板见 [perception.py](../rsa/templates/perception.py)。
+`perception.py:Perception` 在专用 Python 进程中运行：`start(context)` 初始化一次；`sample()` 按 `sample_hz` 连续执行（默认 30 Hz）；`close()` 释放自建资源。AI 可修改类上的 `sample_hz`，执行 `rsa perception reload` 生效。context 含 `workspace/runDir/generation`。在 `sample()` 上使用 `@capability` 和 `@record`；sampler 不再隐式保存结果。类实例、模块和模型跨模型轮次保留，慢采样不重叠、不补跑。模板见 [perception.py](../rsa/templates/perception.py)。
 
-装饰器标记的是任意感知能力，不限定屏幕数量或媒体类型；`@record` 在能力实际调用成功时记录。自动定频调度只调用主 `Perception.sample()`，不会为每个被标记的能力另开循环。录像编码器共用 `sample_hz` 作为名义频率，缺省也是 30；没有独立 FPS 配置。独立能力仍按实际调用时间记录，视频不按名义频率重采样；频率改变后开启新视频段。
+装饰器标记的是任意能力，不限定屏幕数量或媒体类型；`@record` 在能力实际调用成功时记录。自动定频调度只调用主 `Perception.sample()`，不会为每个被标记的能力另开循环。录像编码器共用 `sample_hz` 作为名义频率，缺省也是 30；没有独立 FPS 配置。独立能力仍按实际调用时间记录，视频不按名义频率重采样；频率改变后开启新视频段。
 
 ```sh
 rsa perception status
@@ -134,7 +135,25 @@ rsa perception stop
 
 CLI 默认返回 JSON，`--images` 用 OMP 原生终端图像通道交付所选图像，一页最多 32 张/40 MiB；超限需缩小分页，不静默丢图。时空轴可以保存音频/二进制等媒体，但当前模型适配仅直接消费图像及文本/JSON，不宣称支持所有模型模态。普通原生工具图片没有隐式永久归档；若字节与轴中已有媒体相同，Dashboard 可以复用其引用，不猜采集时间。
 
-旧 run 的图片和日志仍可由 Dashboard 查看，不自动导入新轴、不删除旧数据。旧 `Perception.sample()` 和依赖 driver 永久截图路径的脚本需按上述契约适配，Harness 不改写 Agent 的工作区程序。
+旧 run 的图片和日志仍可由 Dashboard 查看，不自动导入新轴、不删除旧数据。旧装饰器、`Perception.sample()` 和依赖 driver 永久截图路径的脚本需按上述契约适配，Harness 不改写 Agent 的工作区程序。
+
+## 常驻动作
+
+`action.py:Action` 在独立 Python 进程中运行：`start(context)` 初始化一次；`step()` 按 `step_hz` 执行（默认 30 Hz，可调）；`close()` 释放资源。`step()` 使用 `@capability`，需要记录决策或结果时再加 `@record`，返回同一记录信封。context 含 `workspace/runDir/generation/epoch`；实例、模块和模型跨 Shiori 轮次保留，慢步骤不重叠、不补跑。模板见 [action.py](../rsa/templates/action.py)，没有预设控制策略。
+
+动作通过 `Client().observe(query)` 读取同一时空轴，返回与 `rsa observe` 相同的查询结果；默认取感知主通道最新记录。动作留档仍交给感知 writer，不另存一套媒体。感知进程停止时查询和记录明确失败。
+
+```sh
+rsa action status
+rsa action reload
+rsa action stop
+```
+
+manual 时不运行动作 worker，`reload` 只启用待加载状态；成功接管后启动。auto 时 `reload` 收尾旧代并加载新代码、helper 与模型。`stop` 禁用本宿主内的动作自动启动，直到显式 `reload`。步骤异常会停循环，避免下一帧自动重做已经部分执行的动作；错误可在 status 和日志查看，修复后 reload。
+
+动作 worker 固定持有启动时的 epoch 和 inputGeneration。人接管、预算结束、断连或 Host 退出会停止 worker 并释放输入；下次接管使用新 worker，不保证跨 epoch 保存内存状态。旧代不能凭同一 epoch 继续输入。
+
+**动作 stop/reload/故障会重置本 workspace 的全部设备输入，包括同轮并发 CLI 已提交的输入。** 重置取消旧动作、释放按键/触点并等待收尾，保持当前控制 epoch、OMP 会话和剩余预算；无法确认释放则交还控制。感知进程独立继续运行。
 
 ## 后台程序与人工交还
 

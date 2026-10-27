@@ -155,7 +155,7 @@ def discover(workspace):
     capabilities, diagnostics = [], []
     for relative, raw, tree in workspace_sources(workspace, diagnostics):
         declarations = {}
-        for kind in ("capability", "perception", "record"):
+        for kind in ("capability", "record"):
             for node, markers in marked_functions(tree, kind):
                 declarations.setdefault(node, {})[kind] = markers
         parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
@@ -163,15 +163,15 @@ def discover(workspace):
             try:
                 markers = [marker for items in kinds.values() for marker in items]
                 if any(len(items) != 1 for items in kinds.values()) or len(markers) != len(node.decorator_list):
-                    raise ValueError("Use capability, perception and record decorators once each; other decorators are unsupported")
-                if "record" in kinds and "perception" not in kinds:
-                    raise ValueError("@record requires @perception on the same function")
+                    raise ValueError("Use capability and record decorators once each; other decorators are unsupported")
+                if "record" in kinds and "capability" not in kinds:
+                    raise ValueError("@record requires @capability on the same function")
                 for marker in markers:
                     if isinstance(marker, ast.Call) and (marker.args or marker.keywords):
-                        raise ValueError("Use capability/perception/record without decorator arguments")
+                        raise ValueError("Use capability/record without decorator arguments")
                 if node not in tree.body:
-                    if "perception" in kinds and isinstance(parents.get(node), ast.ClassDef):
-                        # Bound perception methods (including the resident sample)
+                    if isinstance(parents.get(node), ast.ClassDef):
+                        # Bound capability methods (including resident entry points)
                         # are instrumented locally, never exposed as CLI functions.
                         continue
                     raise ValueError("CLI capabilities must be top-level functions, not methods or nested functions")
@@ -183,7 +183,7 @@ def discover(workspace):
                 name += "_" + hashlib.sha256(identity.encode()).hexdigest()[:10]
                 capabilities.append({"id": name, "name": name, "description": description, "parameters": parameters,
                     "origin": {"path": relative, "function": node.name, "line": node.lineno}, "codeSHA": hashlib.sha256(raw).hexdigest(),
-                    "perception": "perception" in kinds, "recorded": "record" in kinds})
+                    "recorded": "record" in kinds})
             except (ValueError, SyntaxError) as error:
                 diagnostics.append({"path": relative, "function": node.name, "line": node.lineno, "message": str(error)})
     return {"capabilities": capabilities, "diagnostics": diagnostics}

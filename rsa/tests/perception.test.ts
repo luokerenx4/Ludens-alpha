@@ -41,14 +41,14 @@ function source(body: string, start = "", close = "", hz = 20) {
   return `from pathlib import Path
 import os, time
 from rsa_tools._context import current
-from rsa_tools import perception, record
+from rsa_tools import capability, record
 class Perception:
     sample_hz = ${hz}
     def start(self, context):
         self.count = 0
 ${start || "        pass"}
     @record
-    @perception
+    @capability
     def sample(self):
 ${body}
     def close(self):

@@ -1,17 +1,19 @@
 # 日志与调用链
 
-分析器、Dashboard、Alice Pet 和 Benchmark 读取同一组事实来源。**连续感知存数据，主动行为存事件，内部过程按需追踪。** 函数返回、模型成功、文件写入不等于任务成功，评测见 [Benchmark](benchmark.md)，施工依据见 [记录方案](event-recording-plan.md)。
+分析器、Dashboard、Alice Pet 和 Benchmark 读取同一组事实来源。**连续能力按需存数据，主动行为存事件，内部过程按需追踪。** 函数返回、模型成功、文件写入不等于任务成功，评测见 [Benchmark](benchmark.md)，施工依据见 [记录方案](event-recording-plan.md)。
 
 ## 记录模式
 
 `rsa.json` 的 `logging.diagnostics` 在启动时选择 `normal`（默认）或 `full`，有效值写入 manifest；Python 继承 `RSA_LOG_DIAGNOSTICS`。连接已运行的 Baseware 不会改变它的模式，`rsa status` 的 `logging.diagnostics/basewareDiagnostics` 分别报告两个进程的实际值。
 
-- **normal**：保留模型/工具、主动能力调用、输入动作及终态、控制变化、感知生命周期与故障区间。常驻采样入口设置 `trace.recordingPurpose="continuous-perception"`，沿嵌套 Python、RSA 转发和 Baseware 传播；成功采样子树不写逐次调用事件，也不发逐次 Python 日志 RPC。结果仍由 `@record` 写入 Timeline。
+- **normal**：保留模型/工具、主动能力调用、输入动作及终态、控制变化、常驻能力生命周期与故障区间。常驻入口设置 `trace.recordingPurpose="continuous-perception"` 或 `"continuous-action"`，沿嵌套 Python、RSA 转发和 Baseware 传播；连续只读调用子树不写逐次调用事件，也不发逐次 Python 日志 RPC。结果仍由 `@record` 写入 Timeline。
 - **full**：额外保存上述内部调用的逐次诊断，写入独立 `diagnostics.jsonl` 或 Baseware 的 `diagnostics/` 分段，不复制已有经历事件和媒体。回放与 Pet 不依赖这一路。
 
-Baseware 只对明确声明只读的查询采用减量；未知能力、有副作用的调用、实际输入、取消、释放和控制变化始终记录。主动 CLI/import 的调用边界也保留，普通后台循环不会仅因频率高被判成感知采样器。日志策略不改变权限、参数或真实返回。
+Baseware 只对明确声明只读的查询采用减量；未知能力、有副作用的调用、实际输入、取消、释放和控制变化始终记录。主动 CLI/import 的调用边界也保留，普通后台循环不会仅因频率高被判成常驻调度入口。日志策略不改变权限、参数或真实返回。
 
 连续感知每 5 秒写 `perception_stats`，按能力 ID 与实际 codeSHA 汇总调用/异常次数、耗时 total/min/max，并记录采样尝试、完成、失败、录制数；Baseware 独立写 `device_sampling_stats`。正常停止补尾段，不保留逐次耗时数组。Python 的 `sample/capabilities` 是窗口增量，`video` 是编码器进程累计计数及当前队列快照，`fault.count` 是故障区间累计，不能跨窗口相加。
+
+动作循环同样每 5 秒写 `action_stats`，以 `stepHz/step` 记录频率与窗口增量，其余能力、故障统计口径相同。`action_fault/action_fault_end` 描述故障区间；步骤异常立即停循环，不自动重试。统计是调度与执行证据，不等于设备动作成功。正常循环不逐 tick 刷日志，真实输入及 `action_start/end` 始终保留。
 
 首次错误立即产生 `perception_fault` / `device_sampling_error`，同类重试累加；成功与失败交替不会每帧开关故障。Python 在完整统计窗口无同类错误后结束区间；设备侧还需观察到后续成功，正常停止也会关闭区间。根采样健康通过瞬时状态通知立即更新，不等持久故障恢复。normal 不保存每次重复错误堆栈，full 可查逐次细节；区间内可以有成功尝试，不能解释为全程失败。
 
@@ -26,7 +28,7 @@ Baseware 只对明确声明只读的查询采用减量；未知能力、有副�
 | `diagnostics.jsonl` | full 模式的内部调用诊断，按需读取 |
 | `streams/` | 模型流事件及 source/trace；新版正文使用内容引用，小事件内联 |
 | `payloads/` | 旧版 gzip 请求、响应和工具正文；保留可读，新宿主不再写此副本 |
-| `perception/<generation>/` | 感知入口、实际导入的工作区源码清单 `sources.json`、stderr |
+| `perception/<generation>/` / `action/<generation>/` | 对应入口、实际导入的工作区源码清单 `sources.json`、stderr |
 
 设备事实由 Baseware 独立保存：每个服务实例有 `source.json`、`events/` 与 `diagnostics/`，按一小时或 256 MiB 分段，配小型摘要。RSA 不再把订阅正文抄进 run；manifest 的 `eventSources` 登记 `sourceId/root/format/recordingId/windows`。`recordingId` 是不透明的运行身份，动作开始时冻结，晚到终态仍属于原运行。窗口 `afterSeq/throughSeq` 用于定位和限定无归属背景；显式 `recordingId` 才决定所属 run，晚到已归属事实可以越过窗口。
 
@@ -52,7 +54,7 @@ manifest 记录 Git commit/dirty、continue/consolidate 提示和可选 workspac
 
 - `source`：职责组件及独立的 implementation/version。
 - `origin`：源进程产生一次的 `eventId/clockId/seq/at/atMs`，转发和落盘不改身份。
-- `trace`：`traceId/spanId/parentSpanId` 表示调用关系；`epoch/modelCallId/requestId/httpId/toolCallId/operationId` 保留业务身份；`recordingId/recordingPurpose` 表达归属与调用用途。
+- `trace`：`traceId/spanId/parentSpanId` 表示调用关系；`epoch/modelCallId/requestId/httpId/toolCallId/operationId` 保留业务身份；`recordingId/recordingPurpose` 表达归属与调用用途；动作 worker 的 `inputGeneration` 区分同 epoch 内的重载代次。
 - `type/data`：事件语义和内容。
 
 | source.component | 事实来源 |
@@ -77,6 +79,7 @@ manifest 记录 Git commit/dirty、continue/consolidate 提示和可选 workspac
 | `python_capability/result` | CLI runner 的函数位置、源码 hash、参数和结果；属于能力 span 的细节 |
 | `python_call_start/end` | 主动装饰器函数调用保留独立 span、PID、实际源码 hash、终态和耗时，不序列化原生参数/返回对象；连续采样仅 full 保存逐次诊断 |
 | `command/execution/execution_error` | Baseware 有副作用操作的请求与终态；只读查询逐次记录属于 full，主动查询失败仍保留。`execution.observations` 携带同次返回的观测详情；提交或查询完成不代表动作结束 |
+| `action_status` / `action_fault` / `action_fault_end` / `action_stats` | 动作 worker 生命周期、故障区间和固定窗口统计；不同于设备动作终态。生命周期状态进入 Activity/Pet；故障详情和统计保留在诊断分类，避免同一次失败重复弹泡 |
 | `action_start/end` | 已提交手柄动作的独立生命周期、actionId 和终态；沿用原 play 请求的 trace/epoch，异步结束不归到后续 wait/status 请求 |
 | `observation` | 模型/工具交付的观测事实；旧设备 `observation_start/end/error` 与独立 `observation` 仍可读，新设备详情归入 execution，不另算操作 |
 
@@ -88,13 +91,15 @@ manifest 记录 Git commit/dirty、continue/consolidate 提示和可选 workspac
 
 `details.async/service` 产生 background_start，冻结启动 trace；原生完成通知按 jobId 或 service name+PID 产生 background_result，晚到仍属于原周期。启动成功不等于进程结束，不合并同名不同 PID，不代管后台；缺通知不伪造完成，Agent 可用原生 proc 查询。
 
+动作 stop/reload/故障触发输入重置，释放本 workspace 包括并发 CLI 在内的当前输入，保留 epoch 与预算；worker 生命周期不能替代具体 action/execution 的终态。分析器的 `actionRuntime` 保留显式 epoch 下的状态、故障和统计，包括晚到收尾；故障状态不重复计作故障区间，统计不计作 controllerActions。
+
 ## 感知与模型真实输入
 
-`perception_status` 保存感知启动、替换、停止等生命周期；即时采样健康只更新内存，统计与故障按前述窗口保存。`perception_observe_start/end` 记录主动历史查询及读取结果/耗时。`@perception` 声明感知能力，`@record` 把成功结果交给常驻 writer 留档；未标记记录的调用不隐式保存。采样器持续调用 `Perception.sample()`；普通 import、CLI 和后台程序也能调用被标记的能力，写入同一 workspace 时空轴。
+`perception_status` 保存感知启动、替换、停止等生命周期；即时采样健康只更新内存，统计与故障按前述窗口保存。`perception_observe_start/end` 记录主动历史查询及读取结果/耗时。`@capability` 统一声明感知和动作能力，`@record` 把成功结果交给常驻 writer 留档；未标记记录的调用不隐式保存。采样器持续调用 `Perception.sample()`，独立动作进程调用 `Action.step()`；普通 import、CLI 和后台程序也能调用被标记的能力，写入同一 workspace 时空轴。
 
 每条记录有 ID、递增 sequence、能力身份及实际加载源码 hash、runId、`recordedAt` 和 `sampling` 区间，以及适用时的 generation、`sampledAt/sources/space`。`recordedAt` 是记录墙钟；`sampling.clock/startedAtMs/finishedAtMs` 是同一进程单调时钟区间；`sampledAt` 由 workspace 提供，表示已知的来源时刻，不能用记录时间伪造设备帧时间。观测可包含文字、任意 JSON 数据和多种媒体，时间与空间信息不局限于视频。记录失败属于能力失败，会抛错；不重试感知调用或动作，也不伪造成功记录。
 
-持久化开启时，媒体按内容哈希保存一次，记录携带 `timeline: {recordId, sequence, asset}` 引用，`asset` 是时空轴根内的相对路径；之后的历史读取不复制或覆盖原件。默认热窗口 600 秒、分段 3600 秒，并受字节预算约束；完整配置见 [Workspace](workspace.md#常驻感知)。关闭持久化时记录和媒体只存在于有限窗口，选中媒体交付期间受保护，必要时随响应携带字节，不另建永久审计副本。窗口淘汰或进程关闭后，对应媒体可以过期。
+持久化开启时，媒体按内容哈希保存一次，记录携带 `timeline: {recordId, sequence, asset}` 引用，`asset` 是时空轴根内的相对路径；之后的历史读取不复制或覆盖原件。默认热窗口 600 秒、分段 3600 秒，并受字节预算约束；完整配置见 [Workspace](workspace.md#常驻感知与历史读取)。关闭持久化时记录和媒体只存在于有限窗口，选中媒体交付期间受保护，必要时随响应携带字节，不另建永久审计副本。窗口淘汰或进程关闭后，对应媒体可以过期。
 
 查询开始记录原参数；查询结果返回 `records`、规范化后的 `query` 和分页字段 `hasMore/nextAfter`；`snapshot` 是本页最后一条。默认读取主 `Perception.sample` 能力，可通过 `capability` 筛选其他能力、`capability: "*"` 查询全轴或 `id` 定位记录。`reused` 表示与上一次读取返回相同的一组记录，不代表采样器停止。持久历史跨 reload 和 run 保留，默认最新主观测仍校验当前 generation 与采样健康，不将旧记录冒充当前采样。
 

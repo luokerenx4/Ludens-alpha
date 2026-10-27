@@ -1,6 +1,7 @@
 export interface Trace extends Record<string, unknown> {
   traceId?: string; spanId?: string; parentSpanId?: string;
-  recordingId?: string; recordingPurpose?: "continuous-perception";
+  recordingId?: string; recordingPurpose?: "continuous-perception" | "continuous-action";
+  inputGeneration?: string;
 }
 export interface EventSource { component: string; implementation?: string; implementationVersion?: string }
 export interface EventOrigin { eventId: string; clockId: string; seq: number; at: string; atMs: number }
@@ -15,11 +16,12 @@ export interface Catalog {
   controllers: (ToolDefinition & { requiresControl: boolean; mediaTypes?: readonly string[] })[];
 }
 export interface Request {
-  kind: "status" | "list" | "help" | "acquire" | "release" | "revoke" | "controller" | "cancel" | "subscribe";
+  kind: "status" | "list" | "help" | "acquire" | "release" | "revoke" | "input_generation" | "controller" | "cancel" | "subscribe";
   id?: string;
   arguments?: ToolArguments;
   epoch?: string;
   seconds?: number;
+  generation?: string | null;
   trace?: Trace;
   origin?: string;
   operationId?: string;

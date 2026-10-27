@@ -331,14 +331,14 @@ class HistoryTests(unittest.TestCase):
 import json, time
 from pathlib import Path
 from rsa_tools._context import current
-from rsa_tools import perception, record
+from rsa_tools import capability, record
 class Perception:
     sample_hz = 20
     def start(self, context):
         self.context = context
         self.count = 0
     @record
-    @perception
+    @capability
     def sample(self):
         Path('sampling').write_text('yes')
         time.sleep(0.3)

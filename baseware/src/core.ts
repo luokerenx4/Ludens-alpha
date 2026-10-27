@@ -29,6 +29,11 @@ export class BasewareCore {
   private connected = true;
   private reason = "startup";
   private control?: AbortController;
+  private inputGeneration: string | null = null;
+  private inputReset?: Promise<void>;
+  private inputResetting = false;
+  private writes = new Set<Promise<void>>();
+  private readonly inputResetTimeoutMs: number;
   private opening?: Promise<void>;
   private stopping?: Promise<ReturnType<BasewareCore["status"]>>;
   private acquired: Capabilities["controllers"] = [];
@@ -43,13 +48,14 @@ export class BasewareCore {
   private logFailure?: { firstSeq: number; lastSeq: number; count: number; error: string };
 
   constructor(options: { capabilities: Capabilities; drivers: DriverInfo[]; record?: RecordEvent; serviceId?: string;
-    source?: EventSourceDescriptor; diagnostics?: "normal" | "full" }) {
+    source?: EventSourceDescriptor; diagnostics?: "normal" | "full"; inputResetTimeoutMs?: number }) {
     this.capabilities = options.capabilities;
     this.drivers = options.drivers;
     this.sink = options.record ?? (() => {});
     this.serviceId = options.serviceId ?? crypto.randomUUID();
     this.source = options.source;
     this.diagnostics = options.diagnostics ?? "normal";
+    this.inputResetTimeoutMs = options.inputResetTimeoutMs ?? 10_000;
     if (this.source && this.source.sourceId !== this.serviceId) throw new Error("Event source identity mismatch");
     for (const ids of [options.drivers.map(d => d.id), options.capabilities.controllers.map(c => c.tool.name)]) {
       if (new Set(ids).size !== ids.length) throw new Error("Duplicate capability or driver ID");
@@ -91,6 +97,7 @@ export class BasewareCore {
   status() {
     return { serviceId: this.serviceId, source: this.source, seq: this.sequence, diagnostics: this.diagnostics,
       storageError: this.logFailure ?? null, mode: this.mode, epoch: this.mode === "auto" ? this.epoch ?? null : null,
+      inputGeneration: this.inputGeneration, inputResetting: this.inputResetting,
       connected: this.connected, reason: this.reason,
       remainingSeconds: this.mode === "auto" ? Math.max(0, Math.ceil((this.deadline - performance.now()) / 1000)) : null };
   }
@@ -114,6 +121,7 @@ export class BasewareCore {
     if (!this.connected) throw new Error("Driver disconnected; restart Baseware");
     signal?.throwIfAborted();
     this.epoch = epoch;
+    this.inputGeneration = null;
     this.controlTrace = { ...trace, epoch };
     this.owner = client;
     this.lastExecution = undefined;
@@ -146,13 +154,19 @@ export class BasewareCore {
     if (this.stopping) return this.stopping;
     if (this.mode === "manual") return this.status();
     this.mode = "releasing";
+    this.inputGeneration = null;
     this.reason = reason;
     this.control?.abort();
     clearTimeout(this.timer);
     this.stopping = (async () => {
       // Acquisition may finish after revocation. Release whatever it actually acquired.
       await this.opening?.catch(() => {});
-      const outcomes = await Promise.allSettled(this.acquired.map(c => c.release?.(this.epoch!)));
+      // A reset may already be reacquiring native ownership. It must finish or
+      // fail before the final release, and can never resume after mode changed.
+      await this.inputReset?.catch(() => {});
+      let outcomes: PromiseSettledResult<void | undefined>[];
+      try { outcomes = await this.withInputTimeout(Promise.allSettled(this.acquired.map(c => c.release?.(this.epoch!)))); }
+      catch (error) { outcomes = [{ status: "rejected", reason: error }]; }
       this.acquired = [];
       for (const outcome of outcomes) if (outcome.status === "rejected") {
         this.connected = false;
@@ -166,6 +180,84 @@ export class BasewareCore {
       return this.status();
     })().finally(() => { this.stopping = undefined; });
     return this.stopping;
+  }
+
+  private withInputTimeout<T>(pending: Promise<T>): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("Input cleanup timed out; device state is uncertain")), this.inputResetTimeoutMs);
+      pending.then(value => { clearTimeout(timer); resolve(value); }, error => { clearTimeout(timer); reject(error); });
+    });
+  }
+
+  /** Replace a resident input program without restarting the parent control lease. */
+  async setInputGeneration(epoch: string, generation: string | null, client: ClientContext, trace: Trace = {}): Promise<void> {
+    if (generation !== null && (typeof generation !== "string" || !generation.trim())) throw new Error("generation must be a non-empty string or null");
+    if (this.owner?.id !== client.id) throw new Error("Only the control owner may change input generation");
+    if (this.mode !== "auto" || this.epoch !== epoch) throw new Error("STALE_EPOCH");
+    if (this.inputResetting) throw new Error("BUSY: input reset is in progress");
+    if (generation === this.inputGeneration) return;
+    const previous = this.inputGeneration;
+    if (previous === null) {
+      this.inputGeneration = generation;
+      this.record("input_generation", { generation }, { ...trace, epoch });
+      return;
+    }
+
+    // Closing a program is an explicit whole-input boundary. An async play and
+    // native held keys/touch may outlive their submitting RPC or Python child.
+    this.inputGeneration = null;
+    this.inputResetting = true;
+    this.lastExecution = undefined;
+    this.control!.abort();
+    this.record("input_reset_start", { previousGeneration: previous, generation }, { ...trace, epoch });
+    const controls = [...this.acquired];
+    const stillOwned = () => this.mode === "auto" && this.epoch === epoch && this.owner?.id === client.id && this.connected
+      && performance.now() < this.deadline;
+    const revoked = new Error("STALE_EPOCH: input reset was revoked");
+    const assertOwned = () => { if (!stillOwned()) throw revoked; };
+    const work = (async () => {
+      // Release first to unblock native waits; also drain all admitted writers,
+      // including transports whose cancellation does not immediately stop work.
+      const releases = controls.map(c => c.release?.(epoch));
+      const outcomes = await Promise.allSettled([...releases, ...this.writes]);
+      const failed = outcomes.find(outcome => outcome.status === "rejected");
+      if (failed?.status === "rejected") throw failed.reason;
+      assertOwned();
+      this.control = new AbortController();
+      for (const controller of controls) {
+        assertOwned();
+        await controller.acquire?.(epoch);
+        // A timed-out native acquisition can finish after handback. Undo that
+        // late ownership instead of ever admitting another input with it.
+        if (!stillOwned()) {
+          await controller.release?.(epoch);
+          assertOwned();
+        }
+      }
+      assertOwned();
+      this.inputGeneration = generation;
+    })();
+    const operation = this.withInputTimeout(work);
+    this.inputReset = operation;
+    try {
+      await operation;
+      this.record("input_reset_end", { previousGeneration: previous, generation, outcome: "completed" }, { ...trace, epoch });
+    } catch (error) {
+      this.record("input_reset_end", { previousGeneration: previous, generation, outcome: "error", error: String(error) }, { ...trace, epoch });
+      if (error !== revoked) this.connected = false;
+      if (this.mode === "auto" && this.epoch === epoch) {
+        if (performance.now() >= this.deadline) await this.release(epoch, "lease expired");
+        else {
+          await this.release(epoch, "input reset failed");
+        }
+      }
+      throw error;
+    } finally {
+      if (this.inputReset === operation) {
+        this.inputReset = undefined;
+        this.inputResetting = false;
+      }
+    }
   }
 
   async disconnectClient(id: string) {
@@ -206,7 +298,7 @@ export class BasewareCore {
     const trace = operationTrace({ ...parent, ...(epoch ? { epoch } : {}) }, operationId);
     const controller = this.capabilities.controllers.find(c => c.tool.name === id);
     const readOnly = controller?.tool.annotations?.readOnlyHint === true;
-    const continuous = trace.recordingPurpose === "continuous-perception";
+    const continuous = trace.recordingPurpose === "continuous-perception" || trace.recordingPurpose === "continuous-action";
     if (continuous && this.diagnostics === "normal" && trace.parentSpanId) trace.parentOmitted = true;
     const metadata: EventMetadata = readOnly ? { channel: "diagnostic" } : {};
     const detailed = !readOnly || this.diagnostics === "full";
@@ -215,25 +307,37 @@ export class BasewareCore {
     if (detailed) this.record("command", operation, trace, metadata);
     const startedAtMs = performance.now();
     let combined = signal;
+    let settled: (() => void) | undefined;
+    let admittedWrite: Promise<void> | undefined;
+    let inputControl: AbortController | undefined;
     try {
       if (!controller) throw new Error(`Unknown controller: ${id}`);
+      if (trace.inputGeneration !== undefined && (typeof trace.inputGeneration !== "string" || !trace.inputGeneration
+        || trace.inputGeneration !== this.inputGeneration || this.mode !== "auto" || epoch !== this.epoch)) {
+        throw new Error("STALE_INPUT_GENERATION: resident action program was replaced or stopped");
+      }
       if (controller.requiresControl) {
         if (this.mode !== "auto" || !epoch || epoch !== this.epoch) throw new Error("STALE_EPOCH: acquire control and use its original epoch");
-        combined = AbortSignal.any([signal, this.control!.signal]);
+        if (this.inputResetting) throw new Error("BUSY: input reset is in progress");
+        inputControl = this.control!;
+        combined = AbortSignal.any([signal, inputControl.signal]);
+        admittedWrite = new Promise<void>(resolve => { settled = resolve; });
+        this.writes.add(admittedWrite);
       }
       combined.throwIfAborted();
       const result = await controller.execute(this.validators.get(id)!(args), { epoch, signal: combined,
-        controlSignal: controller.requiresControl ? this.control!.signal : undefined,
+        controlSignal: inputControl?.signal,
         record: (type, data) => {
           const outcome = data.status === "interrupted" ? "cancelled" : data.status === "failed" ? "error" : "success";
-          if (type === "action_end" && epoch === this.epoch) {
+          if (type === "action_end" && epoch === this.epoch && inputControl === this.control && !inputControl?.signal.aborted) {
             this.lastExecution = { result: data as unknown as ExecutionResult, trace };
           }
           this.record(type, { ...data, controllerId: id, requiresControl: controller.requiresControl,
             ...(type === "action_end" ? { outcome } : {}) }, trace);
         } });
       // Read-only calls must not displace the last action; revoked calls cannot attach to a new owner.
-      if (controller.requiresControl && !result.actionId && !result.readOnly && epoch === this.epoch) this.lastExecution = { result, trace };
+      if (controller.requiresControl && !result.actionId && !result.readOnly && epoch === this.epoch
+        && inputControl === this.control && !inputControl?.signal.aborted) this.lastExecution = { result, trace };
       const outcome = combined.aborted || result.status === "interrupted" ? "cancelled"
         : result.status === "completed" && result.exitCode === 0 ? "success" : "error";
       if (readOnly) this.sampling.observe(id, trace, performance.now() - startedAtMs, outcome === "success" ? undefined : `${result.status}: ${result.stderr}`);
@@ -257,6 +361,9 @@ export class BasewareCore {
         outcome: aborted ? "cancelled" : "error" };
       if (detailed || !continuous) this.record("execution_error", data, trace, !continuous ? {} : metadata);
       throw error;
+    } finally {
+      if (admittedWrite) this.writes.delete(admittedWrite);
+      settled?.();
     }
   }
 
@@ -270,6 +377,10 @@ export class BasewareCore {
         case "help": if (!request.id) throw new Error("Missing capability ID"); return this.help(request.id);
         case "acquire": return await this.acquire(request.epoch!, request.seconds!, client, signal, request.trace);
         case "release": if (!request.epoch) throw new Error("release requires an epoch"); return await this.release(request.epoch);
+        case "input_generation":
+          if (!request.epoch) throw new Error("input_generation requires an epoch");
+          if (request.generation === undefined) throw new Error("input_generation requires generation or null");
+          return await this.setInputGeneration(request.epoch, request.generation, client, request.trace);
         case "revoke": return await this.release(undefined, "human");
         case "controller":
           if (!request.id) throw new Error("Missing controller ID");

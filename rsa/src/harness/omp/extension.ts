@@ -97,7 +97,7 @@ export function createRsaExtension(options: {
 
   const observe: CustomTool<typeof observeParameters> = {
     name: "observe", label: "Observe", loadMode: "essential", approval: "read",
-    description: "Read the workspace timeline: latest main perception by default, a record by id, at a timestamp, or a start/end range. Select another perception capability when needed. Mark Perception.sample with @perception and @record, then rsa perception reload. Discover devices through rsa controller.",
+    description: "Read the workspace timeline: latest main perception by default, a record by id, at a timestamp, or a start/end range. Select another recorded capability when needed. Mark Perception.sample with @capability and @record, then rsa perception reload. Discover devices through rsa controller.",
     parameters: observeParameters,
     async execute(id, params, _onUpdate, _ctx, signal) {
       const cycle = options.cycle();

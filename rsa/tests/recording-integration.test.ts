@@ -63,24 +63,24 @@ test("resident sampling records data without per-frame audit across Python, RSA 
       registerMedia: media => { mediaRegistrations++; log.registerMedia(media); } });
     const closeHost = await listen(hostSocket, () => { rsaRpcCalls++; return runtime; });
     try {
-      await writeFile(join(workspace, "senses.py"), `from rsa_tools import Client, perception
+      await writeFile(join(workspace, "senses.py"), `from rsa_tools import Client, capability
 device = Client()
-@perception
+@capability
 def view(name):
     result = device.call("controller/" + name)
     block = result["result"]["content"][0]
     return {"media": [{"data": block["data"], "mediaType": block["mimeType"]}]}
-@perception
+@capability
 def pair():
     return {"media": view("top")["media"] + view("bottom")["media"], "data": {"screens": 2}}
 `);
-      await writeFile(join(workspace, "perception.py"), `from rsa_tools import perception, record
+      await writeFile(join(workspace, "perception.py"), `from rsa_tools import capability, record
 from senses import pair
 class Perception:
     sample_hz = ${hz}
     def start(self, context): pass
     @record
-    @perception
+    @capability
     def sample(self): return pair()
     def close(self): pass
 `);

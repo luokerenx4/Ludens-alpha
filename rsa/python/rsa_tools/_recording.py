@@ -27,8 +27,9 @@ class RecordingWindow:
     Only the sampler thread uses this object.
     """
 
-    def __init__(self, send, trace, generation, sample_hz, *, clock=time.monotonic, interval=5):
+    def __init__(self, send, trace, generation, sample_hz, *, clock=time.monotonic, interval=5, role="perception"):
         self.send = send
+        self.role = role
         self.trace = trace
         self.generation = generation
         self.sample_hz = sample_hz
@@ -78,7 +79,7 @@ class RecordingWindow:
         fault["lastAt"] = origin["at"]
         fault["window"] = self.window
         if fault["count"] == 1:
-            self.event("perception_fault", self._fault_data(fault), context["trace"])
+            self.event(f"{self.role}_fault", self._fault_data(fault), context["trace"])
 
     @staticmethod
     def _fault_data(fault):
@@ -98,10 +99,11 @@ class RecordingWindow:
             return
         ended_at = _now()
         if self.sample["attempted"] or self.capabilities:
-            self.event("perception_stats", {
+            self.event(f"{self.role}_stats", {
                 "window": {"startedAt": self.started_at, "endedAt": ended_at,
                            "durationMs": (ended - self.started) * 1000},
-                "sampleHz": self.sample_hz, "sample": self.sample,
+                ("stepHz" if self.role == "action" else "sampleHz"): self.sample_hz,
+                ("step" if self.role == "action" else "sample"): self.sample,
                 "capabilities": list(self.capabilities.values()),
                 "faults": [self._fault_data(fault) for fault in self.faults.values()],
                 **({"video": video} if video is not None else {}),
@@ -109,7 +111,7 @@ class RecordingWindow:
             })
         for key, fault in list(self.faults.items()):
             if reason is not None or fault["window"] < self.window:
-                self.event("perception_fault_end", {
+                self.event(f"{self.role}_fault_end", {
                     **self._fault_data(fault), "endedAt": ended_at,
                     "reason": reason or "recovered",
                 })

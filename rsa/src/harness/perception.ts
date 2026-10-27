@@ -1,13 +1,11 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash } from "node:crypto";
-import { createWriteStream } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, delimiter, join, resolve } from "node:path";
-import { createInterface } from "node:readline";
 import type { Clock, ExecutionResult, Observation } from "@playness/baseware/contracts";
 import { childTrace, type EventTrace, type RecordEvent, type RegisterMedia, type DiagnosticsMode, type EventMetadata } from "./events.ts";
 import { pythonModulePaths } from "./python-capabilities.ts";
 import { pythonExecutable } from "../../../shared/python.ts";
+import { PythonWorker, type WorkerReply } from "./python-worker.ts";
 import type { VideoFrameReference } from "../../../shared/timeline-types.ts";
 
 export interface PerceptionStatus {
@@ -72,23 +70,10 @@ export interface PerceptionRead {
     earliest: { sequence: number; recordedAt: string } | null;
     latest: { sequence: number; recordedAt: string } | null; expired: boolean };
 }
-interface Reply {
-  id: string;
-  ok: boolean;
-  result?: unknown;
-  error?: { type: string; message: string; traceback?: string };
-}
-interface Worker {
-  process: ChildProcessWithoutNullStreams;
-  pending: Map<string, { resolve: (reply: Reply) => void; reject: (error: Error) => void }>;
-  exited: Promise<void>;
-  expectedExit: boolean;
-  generation: string;
-}
 /** One workspace process owns perception. Only explicit reload replaces it. */
 export class PerceptionRuntime {
   private current: PerceptionStatus = { state: "unimplemented", generation: null };
-  private worker?: Worker;
+  private worker?: PythonWorker;
   private lastReadIds: string[] = [];
   private transition: Promise<unknown> = Promise.resolve();
   private reading: Promise<unknown> = Promise.resolve();
@@ -250,54 +235,27 @@ export class PerceptionRuntime {
       BASEWARE_TRACE: JSON.stringify(backgroundTrace) };
     for (const key of ["RSA_EPOCH", "RSA_TRACE", "BASEWARE_EPOCH"]) delete (env as NodeJS.ProcessEnv)[key];
     env.PYTHONPATH = [...pythonModulePaths(), ...(env.PYTHONPATH ? [env.PYTHONPATH] : [])].join(delimiter);
-    const child = spawn(pythonExecutable(env), ["-u", "-m", "rsa_tools._perception"], {
-      cwd: this.workspace, env, detached: true, stdio: ["pipe", "pipe", "pipe"],
-    });
-    const stderr = createWriteStream(join(directory, "stderr.log"));
-    child.stderr.pipe(stderr);
-    let tail = "";
-    child.stderr.on("data", data => { tail = (tail + data.toString()).slice(-2000); });
-    let onExit!: () => void;
-    const worker: Worker = { process: child, pending: new Map(), generation, expectedExit: false,
-      exited: new Promise(resolve => { onExit = resolve; }) };
-    this.worker = worker;
-    child.stdin.on("error", () => {});
-    const lines = createInterface({ input: child.stdout });
-    lines.on("line", line => {
-      let reply: Reply & { event?: string; state?: PerceptionStatus["state"]; snapshot?: PerceptionSnapshot; mediaCount?: number;
-        mediaReferences?: TimelineMedia[]; trace?: EventTrace; transient?: boolean; type?: string; data?: unknown;
-        channel?: "diagnostic"; origin?: EventMetadata["origin"] };
-      try { reply = JSON.parse(line); }
-      catch { return; }
-      // Shutdown flushes recording windows too; an expected exit must not lose
-      // the final summary/fault closure, while a replacement cannot update health.
-      if (reply.event && this.worker === worker) {
+    const worker = new PythonWorker(generation, {
+      executable: pythonExecutable(env), module: "rsa_tools._perception", workspace: this.workspace, env,
+      stderrPath: join(directory, "stderr.log"),
+      onEvent: reply => {
+        // Expected exits still flush statistics and media registrations.
+        if (this.worker !== worker) return;
         for (const media of reply.mediaReferences ?? []) this.options.registerMedia?.(media);
-        if (reply.event === "status" && this.isCurrent(worker)) this.setStatus({ ...this.current, state: reply.state!,
+        if (reply.event === "status" && this.isCurrent(worker)) this.setStatus({ ...this.current, state: reply.state,
           error: typeof reply.error === "string" ? reply.error : undefined }, backgroundTrace, !reply.transient);
         if (reply.event === "recording" && reply.type) this.record(reply.type, reply.data, reply.trace ?? backgroundTrace, reply.channel, reply.origin);
-        return;
-      }
-      const pending = worker.pending.get(reply.id);
-      if (pending) { worker.pending.delete(reply.id); pending.resolve(reply); }
-    });
-    const closed = (error: Error) => {
-      for (const pending of worker.pending.values()) pending.reject(error);
-      worker.pending.clear();
-      if (this.worker === worker) {
+      },
+      onExit: error => {
+        if (this.worker !== worker) return;
         this.worker = undefined;
         if (!worker.expectedExit) this.setStatus({ ...this.current, state: "error", pid: undefined, error: error.message });
-      }
-      onExit();
-    };
-    child.once("error", closed);
-    child.once("close", (code, signal) => {
-      lines.close();
-      closed(new Error(`Perception process exited (${signal ?? code})${tail ? `: ${tail.trim()}` : ""}`));
+      },
     });
+    this.worker = worker;
     // Background reads are rooted at this generation, not at the model call
     // that happened to reload it. Its status event makes that root discoverable.
-    this.setStatus({ ...this.current, pid: child.pid }, backgroundTrace);
+    this.setStatus({ ...this.current, pid: worker.process.pid }, backgroundTrace);
     try {
       const reply = await this.request(worker, { action: "start", workspace: this.workspace,
         runDir: this.options.runDir, generation, source: source?.toString("utf8"), sourceError, trace: backgroundTrace,
@@ -314,46 +272,16 @@ export class PerceptionRuntime {
     return this.status();
   }
 
-  private request(worker: Worker, message: Record<string, unknown>, timeoutMs: number, signal?: AbortSignal): Promise<Reply> {
-    return new Promise((resolve, reject) => {
-      const id = crypto.randomUUID();
-      const abort = () => { worker.pending.delete(id); cleanup(); reject(signal?.reason ?? new Error("Observation wait cancelled")); };
-      const timer = setTimeout(() => {
-        worker.pending.delete(id);
-        cleanup();
-        reject(new Error(`Perception ${message.action} timed out after ${timeoutMs} ms; repair the implementation and reload it.`));
-      }, timeoutMs);
-      const cleanup = () => { clearTimeout(timer); signal?.removeEventListener("abort", abort); };
-      worker.pending.set(id, { resolve: reply => { cleanup(); resolve(reply); }, reject: error => { cleanup(); reject(error); } });
-      signal?.addEventListener("abort", abort, { once: true });
-      if (signal?.aborted) { abort(); return; }
-      worker.process.stdin.write(JSON.stringify({ ...message, id }) + "\n", error => {
-        if (error) {
-          const pending = worker.pending.get(id);
-          worker.pending.delete(id);
-          pending?.reject(error);
-        }
-      });
-    });
+  private request(worker: PythonWorker, message: Record<string, unknown>, timeoutMs: number, signal?: AbortSignal): Promise<WorkerReply> {
+    return worker.request(message, timeoutMs, signal);
   }
 
   private async closeWorker() {
     const worker = this.worker;
-    if (!worker) return;
-    worker.expectedExit = true;
-    const kill = (signal: NodeJS.Signals) => {
-      if (!worker.process.pid) return;
-      try { process.kill(-worker.process.pid, signal); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
-    };
-    kill("SIGTERM");
-    // A bounded encoding queue must be flushed before the writer releases its lock.
-    const timer = setTimeout(() => kill("SIGKILL"), 10_000);
-    try { await worker.exited; }
-    finally { clearTimeout(timer); }
+    if (worker) await worker.stop();
   }
 
-  private isCurrent(worker: Worker) {
+  private isCurrent(worker: PythonWorker) {
     return this.worker === worker && !worker.expectedExit && this.current.generation === worker.generation;
   }
 
@@ -389,6 +317,7 @@ export class PerceptionRuntime {
   }
 
   private record(type: string, data: unknown, trace?: EventTrace, channel?: "diagnostic", origin?: EventMetadata["origin"]) {
+    if (type.startsWith("perception_observe_") && (trace?.recordingPurpose === "continuous-action" || trace?.recordingPurpose === "continuous-perception")) channel = "diagnostic";
     if (channel === "diagnostic" && this.options.diagnostics !== "full") return;
     this.options.record(type, data, trace, { source: { component: "perception", implementation: "python" },
       ...(origin ? { origin } : {}), ...(channel ? { channel } : {}) });

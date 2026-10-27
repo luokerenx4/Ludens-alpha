@@ -76,12 +76,12 @@ class Worker:
             self.stderr.close()
 
 
-SOURCE = '''from rsa_tools import perception, record
+SOURCE = '''from rsa_tools import capability, record
 class Perception:
     sample_hz = 50
     def start(self, context): self.count = 0
     @record
-    @perception
+    @capability
     def sample(self):
         self.count += 1
         return {"data": {"tick": self.count}}
@@ -117,7 +117,7 @@ class TimelineTests(unittest.TestCase):
     def test_decorators_discovery_direct_import_local_client_nested_and_loaded_revision(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            source = '''from rsa_tools import perception as sense, record, capability
+            source = '''from rsa_tools import capability as sense, record, capability
 MODEL = object()
 @record
 @sense
@@ -139,7 +139,6 @@ class Reader:
     @sense
     def sample(self): return {"data": 1}
 @record
-@capability
 def invalid():
     """An invalid standalone recording declaration."""
     return {}
@@ -149,9 +148,9 @@ def invalid():
             catalog = discover(root)
             self.assertEqual(len(catalog["capabilities"]), 3)
             self.assertEqual(len(catalog["diagnostics"]), 1)
-            self.assertIn("requires @perception", catalog["diagnostics"][0]["message"])
+            self.assertIn("requires @capability", catalog["diagnostics"][0]["message"])
             entries = {entry["origin"]["function"]: entry for entry in catalog["capabilities"]}
-            self.assertTrue(entries["leaf"]["perception"])
+            self.assertNotIn("perception", entries["leaf"])
             self.assertTrue(entries["parent"]["recorded"])
             self.assertFalse(entries["plain"]["recorded"])
             history = ObservationHistory(root)
@@ -169,7 +168,7 @@ def invalid():
                 module.Reader().sample()
                 path.write_text(source + "\n# Edited after import; not loaded.\n")
                 parent()
-                with self.assertRaisesRegex(ValueError, "requires @perception"):
+                with self.assertRaisesRegex(ValueError, "requires @capability"):
                     module.invalid()
             records = history.observe({"after": 0, "capability": "*"})["records"]
             self.assertEqual(len(records), 6)
@@ -306,9 +305,9 @@ def invalid():
             server.messages = []
             serving = threading.Thread(target=server.serve_forever, daemon=True)
             serving.start()
-            (root / "external.py").write_text('''from rsa_tools import perception, record
+            (root / "external.py").write_text('''from rsa_tools import capability, record
 @record
-@perception
+@capability
 def sensor(value: int) -> dict:
     """Read an independent sensor."""
     return {"data": value}

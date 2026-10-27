@@ -99,9 +99,9 @@ class VideoHistoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for generation, configured, expected in (("one", "", 30), ("two", "    sample_hz = 12.5\n", 12.5)):
-                source = ("from rsa_tools import perception, record\nclass Perception:\n" + configured +
+                source = ("from rsa_tools import capability, record\nclass Perception:\n" + configured +
                           "    def start(self, context):\n        self.sample()\n"
-                          "    @record\n    @perception\n    def sample(self):\n"
+                          "    @record\n    @capability\n    def sample(self):\n"
                           "        return " + repr(sample(png())) + "\n"
                           "    def close(self):\n        pass\n")
                 with (root / "stderr.log").open("w") as stderr:

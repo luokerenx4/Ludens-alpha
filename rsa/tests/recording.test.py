@@ -20,7 +20,7 @@ from rsa_tools._context import current, scope
 from rsa_tools._recording import RecordingWindow
 
 
-SOURCE = '''from rsa_tools import capability, perception, record, benchmark
+SOURCE = '''from rsa_tools import capability, record, benchmark
 from rsa_tools._context import current
 seen = []
 @capability
@@ -30,7 +30,7 @@ def helper(fail=False):
         raise ValueError("flapping " + str(len(seen)))
     return "frame"
 @record
-@perception
+@capability
 def sample(nested=True, fail=False):
     return {"text": helper(fail) if nested else "frame"}
 @benchmark(targets=["python/fixture.py:helper"])
@@ -58,7 +58,7 @@ def load(workspace, call_context):
 
 class RecordingTests(unittest.TestCase):
     def test_worker_health_is_immediate_while_durable_faults_are_coalesced(self):
-        source = '''from rsa_tools import capability, perception, record
+        source = '''from rsa_tools import capability, record
 @capability
 def frame(count):
     if count % 2:
@@ -68,7 +68,7 @@ class Perception:
     sample_hz = 30
     def start(self, context): self.count = 0
     @record
-    @perception
+    @capability
     def sample(self):
         self.count += 1
         return frame(self.count)
@@ -146,10 +146,9 @@ class Perception:
 
                     def append(**message):
                         records.append(message)
-                        recorder.recorded()
                         return message["sample"]
 
-                    base.update(recording_observer=recorder.observe, timeline_append=append)
+                    base.update(recording_observer=recorder.observe, recording_window=recorder, timeline_append=append)
                     functions = load(directory, base)
                     with patch("rsa_tools._context.request") as rpc, redirect_stderr(io.StringIO()) as stderr, scope(base):
                         for index in range(hz * 10):

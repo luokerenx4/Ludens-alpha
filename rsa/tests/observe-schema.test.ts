@@ -29,7 +29,7 @@ print(json.dumps(records))`, workspace], {env: {...process.env, PYTHONPATH: join
   const [seeded, seedError, code] = await Promise.all([new Response(seed.stdout).text(), new Response(seed.stderr).text(), seed.exited]);
   expect({code, seedError}).toEqual({code: 0, seedError: ""});
   const records = JSON.parse(seeded) as {id: string}[];
-  await writeFile(join(workspace, "perception.py"), 'from rsa_tools import perception, record\nclass Perception:\n    def start(self, context): pass\n    @record\n    @perception\n    def sample(self): return {"text": "live"}\n    def close(self): pass\n');
+  await writeFile(join(workspace, "perception.py"), 'from rsa_tools import capability, record\nclass Perception:\n    def start(self, context): pass\n    @record\n    @capability\n    def sample(self): return {"text": "live"}\n    def close(self): pass\n');
   const runtime = createTestRuntime({ controllers: [] });
   runtime.perception = new PerceptionRuntime({ workspace, runDir, record: runtime.record });
   const signal = new AbortController().signal;

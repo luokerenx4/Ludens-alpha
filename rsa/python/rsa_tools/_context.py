@@ -65,8 +65,8 @@ def scope(context):
 
 
 def continuous(context):
-    return (context.get("recording_purpose") == "continuous-perception"
-            or context.get("trace", {}).get("recordingPurpose") == "continuous-perception")
+    return (context.get("recording_purpose") in ("continuous-perception", "continuous-action")
+            or context.get("trace", {}).get("recordingPurpose") in ("continuous-perception", "continuous-action"))
 
 
 def diagnostic_channel(context):
@@ -127,7 +127,7 @@ def invocation(identity):
     if parent["epoch"] is not None:
         trace["epoch"] = parent["epoch"]
     if continuous(parent):
-        trace["recordingPurpose"] = "continuous-perception"
+        trace["recordingPurpose"] = parent.get("recording_purpose") or parent["trace"]["recordingPurpose"]
     context = {**parent, "trace": trace}
     data = {**identity, "pid": os.getpid()}
     with scope(context):

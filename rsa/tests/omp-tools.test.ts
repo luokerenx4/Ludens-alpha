@@ -72,12 +72,12 @@ test("OMP's SDK adapter delivers the abort signal correctly and returns real ima
   }] }, () => {});
   const work = join(directory, "workspace");
   if (await Bun.file(join(directory, "sample.png")).exists()) {
-    await Bun.write(join(work, "perception.py"), `from rsa_tools import perception, record
+    await Bun.write(join(work, "perception.py"), `from rsa_tools import capability, record
 class Perception:
     def start(self, context): pass
     def close(self): pass
     @record
-    @perception
+    @capability
     def sample(self):
         return {"text": "active-window:Document", "media": [{"path": "../sample.png", "mediaType": "image/png"}, {"path": "../tree.json", "mediaType": "application/json"}]}
 `);
@@ -117,12 +117,12 @@ test("text-only perception reaches automatic context and explicit reads are not 
       return { ...captureResult([]), id: `windows-${++calls}`, stdout: JSON.stringify({ title: `Window ${calls}` }) };
     },
   }] }, () => {});
-  await Bun.write(join(workspace, "perception.py"), `from rsa_tools import perception, record
+  await Bun.write(join(workspace, "perception.py"), `from rsa_tools import capability, record
 class Perception:
     def start(self, context): self.count = 0
     def close(self): pass
     @record
-    @perception
+    @capability
     def sample(self):
         self.count += 1
         return {"text": "Window " + str(self.count)}

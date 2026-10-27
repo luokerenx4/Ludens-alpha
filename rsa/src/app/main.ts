@@ -12,9 +12,11 @@ import { writeCapabilityDocument } from "@playness/baseware/catalog";
 import { EventLog, EVENT_SCHEMA_VERSION } from "../harness/events.ts";
 import { runProvenance } from "../harness/provenance.ts";
 import { PerceptionRuntime } from "../harness/perception.ts";
+import { ActionRuntime } from "../harness/action.ts";
 import { readCurrentSession, resolveWorkspaceState } from "../harness/workspace-state.ts";
 import { migrateWorkspaceSessions, validateSessionWorkspace } from "../harness/omp/workspace-session.ts";
 import perceptionTemplate from "../../templates/perception.py" with { type: "text" };
+import actionTemplate from "../../templates/action.py" with { type: "text" };
 import { WORKSPACE_HELP, workspaceCommand } from "./workspace.ts";
 import { LOG_HELP, logCommand } from "./log-archive.ts";
 
@@ -111,6 +113,7 @@ async function main() {
     await mkdir(join(workspace, "memory"), { recursive: true });
     await mkdir(runDir, { recursive: true });
     await writeFile(join(workspace, "perception.py"), perceptionTemplate, { flag: "wx" }).catch(error => { if (error.code !== "EEXIST") throw error; });
+    await writeFile(join(workspace, "action.py"), actionTemplate, { flag: "wx" }).catch(error => { if (error.code !== "EEXIST") throw error; });
     // Let the dashboard locate logs even when this workspace is outside the checkout.
     await writeFile(join(state.dir, "workspace.json"), JSON.stringify({ workspace }, null, 2));
     const clock = { id: runId, now: () => performance.now() };
@@ -130,6 +133,12 @@ async function main() {
     runtime.controller = new WorkspaceController({ workspace, devices, record: log.record, env: environment });
     runtime.perception = new PerceptionRuntime({ workspace, runDir, env: environment, record: log.record,
       registerMedia: log.registerMedia, diagnostics, clock });
+    const hostRuntime = runtime, deviceSession = devices;
+    runtime.action = new ActionRuntime({ workspace, runDir, env: environment, record: log.record, diagnostics,
+      isAuto: epoch => hostRuntime.status().mode === "auto" && hostRuntime.status().epoch === epoch,
+      setInputGeneration: (epoch, generation) => deviceSession.setInputGeneration!(epoch, generation),
+      onCleanupError: error => { void hostRuntime.stop(error.message); },
+    });
     devices.onHandback(reason => { void runtime!.stop(reason); });
     devices.onDisconnect((error) => { void runtime!.disconnected(error); });
     const model = values.model ?? "openai-codex/gpt-6.1-sol";
@@ -150,7 +159,7 @@ async function main() {
       logging: { diagnostics, basewareDiagnostics: devices.diagnostics }, eventSources: devices.eventSources,
       shiori: values["device-only"] ? null : { implementation: "omp", implementationVersion: "18.9.1" },
       provenance: await runProvenance(workspace), model: values["device-only"] ? null : model,
-      seconds, maxRequests, resume, perception: { entry: "perception.py:Perception" }, compactionThreshold: compactionThreshold ?? null }, null, 2));
+      seconds, maxRequests, resume, perception: { entry: "perception.py:Perception" }, action: { entry: "action.py:Action" }, compactionThreshold: compactionThreshold ?? null }, null, 2));
     ready = true;
     await runtime.perception.reload();
     console.log(JSON.stringify({ ready: true, socket, workspace, stateDir: state.dir, runDir, ...runtime.status() }, null, 2));

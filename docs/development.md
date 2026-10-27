@@ -122,6 +122,7 @@ rsa auto on
 
 - `rsa auto on --message '本轮的一次提醒'`：附言只在接管开始发送，不是运行中插话接口；之后续轮不重复注入。
 - `rsa auto off`：撤销设备操作权并请求取消在途工作，游戏保持运行；等周期清理结束后才能再次接管。OMP 管理后台进程，活着不等于仍有设备输入权限。
+- `rsa action status/reload/stop`：查看、重载或禁用 `action.py` 常驻动作。manual 下 reload 只启用待加载入口；auto 下 stop/reload 会取消本 workspace 的全部当前输入（包括并发 CLI），不重启 OMP、感知或接管预算。步骤异常需修复后 reload；详见 [workspace](workspace.md#常驻动作)。
 - `rsa down`：先交还控制、等清理，再停止本 workspace 管理的 Host、Baseware 和模拟器。外部手动启动的进程不归它关闭；先保存游戏。
 - `rsa down --keep-emulator`：保留模拟器现场，用于修改预算、模型或加载 Host/Baseware 代码；随后 `rsa up`、`rsa services`、`rsa auto on`。
 - `down` 默认保留共享 Dashboard/Alice；`--pet` 关闭受管理的共享 Pet，单独打开的实例仍由应用退出；`--dashboard` 只关闭本 workspace 启动的 Dashboard，会影响其他消费者。
@@ -185,7 +186,7 @@ Dashboard 共享日志客户端有变化时，重新构建 `rsa-companion` 并�
 
 ## 验证
 
-默认离线检查，不连接模型或操作游戏：
+默认离线检查，不连接模型或操作游戏。动作层验收用真实 Python worker 与模拟 driver 覆盖持续执行、重载、异常、旧代拒绝和人工释放，不以 RPC 成功代替输入终态：
 
 ```sh
 (cd baseware && bun run check && bun test)

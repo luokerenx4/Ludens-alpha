@@ -367,12 +367,12 @@ test("historical CLI images survive native bash, sibling tools and persistence w
     await writeFile(join(f.workspace, "latest.png"), latestPng);
     await writeFile(join(f.workspace, "frame"), "old");
     await writeFile(join(f.workspace, "perception.py"), `from pathlib import Path
-from rsa_tools import perception, record
+from rsa_tools import capability, record
 class Perception:
     sample_hz = 20
     def start(self, context): pass
     @record
-    @perception
+    @capability
     def sample(self):
         frame = Path("frame").read_text()
         return {"text": frame, "media": [{"path": frame+".png", "mediaType": "image/png"}]}

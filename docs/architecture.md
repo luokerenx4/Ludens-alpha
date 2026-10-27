@@ -7,7 +7,7 @@ RSA（Recursive Self-Adaptation）让 Coding Agent 在 workspace 中探索设备
 | 组件 | 职责 |
 | --- | --- |
 | `baseware/` | 独立设备服务：装配 driver，提供能力目录、控制权、取消、媒体和设备日志；外放 CLI、TS/Python API 与 MCP。 |
-| `rsa/` | Harness：工作区、接管预算、统一能力入口、感知进程、Benchmark，以及 Shiori 的装配与日志。 |
+| `rsa/` | Harness：工作区、接管预算、统一能力入口、感知与动作进程、Benchmark，以及 Shiori 的装配与日志。 |
 | Shiori | Agent Loop 内核的职责名，当前由 RSA Host 内的 OMP 实现：模型请求、工具执行、会话、上下文压缩与原生后台管理。 |
 | `rsa-dashboard/` | 归档读取 worker、HTTP API 与统一的运行、回放、Benchmark、Alice 界面，读取运行事实并提供人工交还入口。 |
 | `rsa-companion/` | Electron 壳与原生 Alice Pet，复用同一 Dashboard 界面和日志来源。 |
@@ -16,9 +16,12 @@ RSA（Recursive Self-Adaptation）让 Coding Agent 在 workspace 中探索设备
 flowchart LR
     O[操作者] --> H[RSA Host / Shiori: OMP]
     H --> P[工作区常驻 Perception]
+    H --> X[工作区常驻 Action]
     H --> S[OMP 原生 bash / 后台程序]
     S --> C[RSA 统一 Controller 入口]
     P --> C
+    X --> C
+    X --> P
     C --> B[Baseware 服务]
     B --> D[Driver]
     D --> E[模拟器 / 桌面 / 设备]
@@ -59,6 +62,8 @@ rsa controller controller/pad.play --args '{"inputs":[{"atMs":0,"durationMs":500
 
 人工交还同时停止 RSA 的自动循环、取消其管理的在途能力调用，并阻止新的模型请求。设备释放不等待模型推理结束；driver 完成清理后才报告 manual，已经进入底层的调用可能先收尾。OMP 原生 shell、后台任务和命名服务遵循上游生命周期；进程即使仍存活，旧 epoch 也不能再控制设备。详见 [Runtime](../rsa/src/harness/runtime.ts)。
 
+动作 worker 固定绑定 epoch 和 inputGeneration。动作 stop/reload/故障通过 Baseware 重置本 workspace 的全部当前输入（包括并发 CLI），不重置 epoch、预算或 OMP 会话；旧 generation 被拒绝，释放失败则交还控制。manual 不运行动作 worker，下一次接管新建实例；动作重载不重启感知。
+
 工作区隔离文件、会话和服务地址，不是 OS 沙箱；多个工作区可能共享真实桌面。
 
 ## 会话与 Loop
@@ -73,6 +78,8 @@ rsa controller controller/pad.play --args '{"inputs":[{"atMs":0,"durationMs":500
 2. 工作区感知进程持续调用 `sample()`，将带时间戳的结果写入 `ObservationHistory`。插件在 prompt 开始及整批工具结束后读取最新结果，附加技能和记忆索引。显式 `observe` 可查询历史时刻或范围，已返回的结果不会再重复附加。
 3. OMP 执行自己的推理与工具循环；一次 prompt 结束后，RSA 在预算内继续下一次。
 
+独立的 `action.py:Action` 进程在 auto 期间按 `step_hz`（默认 30 Hz）调用 `step()`，可读取感知历史、执行设备输入并保留跨轮状态。两个进程共用 `@capability` 和可选 `@record`，调度入口分别是 `Perception.sample()` 与 `Action.step()`；不把每个能力都变成调度任务。感知入口要求记录，动作入口可只执行。工作区实现策略，Harness 提供生命周期与输入收尾，见 [动作层方案](action-runtime-plan.md)。
+
 环境在模型思考时继续运行。工作区可改感知和控制程序，不能改外层调度；见 [OMP 装配](../rsa/src/harness/omp/session.ts) 与 [扩展](../rsa/src/harness/omp/extension.ts)。
 
 压缩复用 OMP，默认阈值 256000，图片数量预算 Infinity，入历史时按 OMP 压图。Codex 使用 WebSocket auto；见 [WS 测试依据](development.md#ws-恢复测试依据)。
@@ -85,13 +92,13 @@ Dashboard 将归档读取放在独立的 Node worker 线程中，Next 路由负�
 
 ## TypeScript 与 Python
 
-RSA 的 `src/` 与 `python/` 都是正式组件。TypeScript 管理 Shiori、控制权、跨进程协议和产品接口；Python 包 `rsa_tools` 管理常驻感知、时空轴媒体写入与按需解码。Python 使用独立的 pyproject/锁文件、可安装包和测试/类型检查，统一检查入口见 [开发指南](development.md)。workspace 中 AI 编写的 Python 与框架代码分别维护；感知函数只返回结果并按需标记 `@record`，框架负责视频编码与文件生命周期。
+RSA 的 `src/` 与 `python/` 都是正式组件。TypeScript 管理 Shiori、控制权、跨进程协议和产品接口；Python 包 `rsa_tools` 管理常驻感知与动作、时空轴媒体写入与按需解码。Python 使用独立的 pyproject/锁文件、可安装包和测试/类型检查，统一检查入口见 [开发指南](development.md)。workspace 中 AI 编写的 Python 与框架代码分别维护；能力函数执行工作并按需标记 `@record`，框架负责视频编码与文件生命周期。
 
 PyAV 在现有常驻 worker 内按需加载，编码线程和队列受限，不新增录像服务。TS 和 Dashboard 通过同一时空轴引用消费媒体，历史解码可离线执行，不依赖活着的采样进程。实施与验收见 [双语言与视频存储方案](python-video-plan.md)。
 
-## 感知持久化边界
+## 能力持久化边界
 
-workspace 的 `.rsa/timeline/` 是显式记录感知的唯一原件归属。`@perception` 声明感知，`@record` 将结果写入时空轴；已有感知进程负责单写入者与连续采样，用户函数仍在调用方 Python 进程执行。Baseware 返回原生数据，只使用调用临时文件；RSA run 记录引用，Dashboard 解析引用和可重建索引。RSA 额外保存的模型、工具与传输正文通过 `.rsa/archive/` 共享，媒体引用时空轴；OMP 自身的原生 session/blob 继续由上游管理。契约与生命周期见 [Workspace](workspace.md#感知能力与-workspace-时空轴)，施工依据见 [时空轴方案](workspace-timeline-plan.md) 与 [模型日志引用化方案](indexed-model-log-plan.md)。
+workspace 的 `.rsa/timeline/` 是显式记录能力结果的唯一原件归属。`@capability` 统一声明感知和动作能力，`@record` 将结果写入时空轴；已有感知进程负责单写入者与连续采样，用户函数仍在调用方 Python 进程执行。Baseware 返回原生数据，只使用调用临时文件；RSA run 记录引用，Dashboard 解析引用和可重建索引。RSA 额外保存的模型、工具与传输正文通过 `.rsa/archive/` 共享，媒体引用时空轴；OMP 自身的原生 session/blob 继续由上游管理。契约与生命周期见 [Workspace](workspace.md#能力留档与-workspace-时空轴)，施工依据见 [时空轴方案](workspace-timeline-plan.md) 与 [模型日志引用化方案](indexed-model-log-plan.md)。
 
 ## 统一时空轴与回放
 

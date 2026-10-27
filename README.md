@@ -133,12 +133,13 @@ my-task/
 ├── AGENTS.md         # Optional workspace instructions
 ├── baseware.json     # Generated device capability and parameter reference
 ├── perception.py     # Persistent, workspace-owned perception
+├── action.py         # Persistent control program while auto is active
 ├── skills/           # Reusable methods and supporting scripts
 ├── memory/           # Current goals, state, and next steps
 └── logs/             # Run records, model inputs, and diagnostics
 ```
 
-The agent can compose Python functions, retain models in its perception process, and manage background programs with OMP's native tools. Workspace files and sessions persist across runs; separate CLI invocations do not share memory. See the [workspace contract](docs/workspace.md) for capability discovery, Python APIs, perception reloads, and storage locations.
+The agent can compose Python functions, retain models in its separate perception and action processes, and manage background programs with OMP's native tools. Workspace files and sessions persist across runs; separate CLI invocations do not share memory. See the [workspace contract](docs/workspace.md) for unified `@capability` functions, optional `@record`, resident lifecycle, and storage locations.
 
 ### Benchmarks
 

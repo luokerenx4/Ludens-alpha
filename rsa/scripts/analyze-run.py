@@ -349,6 +349,21 @@ def perception_report(inside, events):
     return summary, {"reads": reads, "statuses": statuses, "inputErrors": input_errors}
 
 
+def action_runtime_report(inside):
+    lifecycle = [{"seq": event["seq"], "at": event["at"], "type": event["type"],
+                  "trace": event.get("trace", {}), "origin": event.get("origin"), "data": event["data"]}
+                 for event in inside if event["type"] in
+                 ("action_status", "action_fault", "action_fault_end", "action_stats")]
+    summary = {
+        "statusEvents": dict(Counter(event["data"].get("state", "unknown") for event in lifecycle
+                                     if event["type"] == "action_status")),
+        "faultsStarted": sum(event["type"] == "action_fault" for event in lifecycle),
+        "faultsEnded": sum(event["type"] == "action_fault_end" for event in lifecycle),
+        "statsWindows": sum(event["type"] == "action_stats" for event in lifecycle),
+    }
+    return summary, lifecycle
+
+
 def model_attempts(related):
     order = {id(event): index for index, event in enumerate(related)}
     requests = {event["trace"]["requestId"]: event for event in related if event["type"] == "model_request"}
@@ -713,6 +728,7 @@ def analyze(run, epoch=None):
     discovery = operation_spans(inside, events, "python_capabilities_start", "python_capabilities")
     shiori_spans = operation_spans(inside, events, "shiori_span_start", "shiori_span_end")
     perception_summary, perception = perception_report(inside, events)
+    action_runtime_summary, action_runtime = action_runtime_report(inside)
     # A native loop can end after control was handed back; attach its summary to the loop we actually started.
     loop_keys = {trace_key(event, "traceId", "spanId") for event in inside
                  if event["type"] == "shiori_span_start" and event["data"].get("operation") == "invoke_agent"}
@@ -803,7 +819,7 @@ def analyze(run, epoch=None):
         "localPythonCalls": span_summary(local_python_calls),
         "localPythonExceptions": python_exceptions,
         "capabilityDiscovery": span_summary(discovery),
-        "perception": perception_summary,
+        "perception": perception_summary, "actionRuntime": action_runtime_summary,
         "shiori": {"spans": span_summary(shiori_spans), "nativeLoops": len(native_runs)}}
     return {"analysisVersion": 7, "runDir": str(run), "generatedAt": datetime.now(timezone.utc).isoformat(),
         "source": source,
@@ -823,7 +839,7 @@ def analyze(run, epoch=None):
         "capabilities": capabilities, "pythonCapabilities": python_calls, "capabilityDiscovery": discovery,
         "localPythonCalls": local_python_calls,
         "localPythonExceptionGroups": python_exception_groups,
-        "perception": perception,
+        "perception": perception, "actionRuntime": action_runtime,
         "shiori": {"spans": shiori_spans, "runs": native_runs},
         "notes": [
             "Offline snapshot of the selected takeover epoch; multiple takeovers require explicit selection. Control mode refers to that epoch and does not prove the host process is live. Pending requests and a partial final line may complete later.",
@@ -846,6 +862,7 @@ def analyze(run, epoch=None):
             "Skill read/write/edit counts use successful tool completion and named SKILL.md paths. Unreadable argument references make the affected count unknown (null); skillEvidence keeps known successes and skillArgumentErrors records missing evidence. Counts do not prove the quality of learned content or that an edit changed its hash.",
             "Capture intervals include waiting, GPU readback and file encoding. sourceSequence advance does not prove that the frame reflects the preceding action.",
             "perception measures explicitly traced snapshot reads, including late ends, not background sampling or controller actions. New/reused counts use the recorded reused flag; unique snapshot IDs are separate from read count. sampleAgeMs is read-end wall time minus the declared sampledAt only when both have timezones and the age is nonnegative; missing/invalid/future timestamps remain unknown. It does not measure model-dispatch age, sample freshness guarantees, or sensor capture duration. Status events without the selected epoch are not assigned by time.",
+            "actionRuntime preserves explicitly attributed worker lifecycle, fault and statistics events, including late cleanup. Fault counts count opened/closed windows, not failed device actions; an error status is not counted again as a fault. Statistics are reported windows, not controller executions, and no cadence, task success or physical input outcome is inferred from them.",
             "perception.inputErrors separately records post-read model-input/media-encoding failures, linked by epoch and result.id. A successful perception read does not imply successful delivery to the model; read outcomes are retained rather than overwritten by encoding failures.",
             "P95 uses the nearest-rank percentile. Capability and Shiori spans pair only by explicit epoch/traceId/spanId; older untraced calls are not inferred.",
             "Native Shiori run summaries cover one agent loop, not a whole takeover. They overlap existing model/tool metrics and must not be added to token/cost totals. Python detail spans overlap their enclosing capability calls; durations are inclusive, not additive.",

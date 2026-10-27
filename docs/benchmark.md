@@ -72,7 +72,9 @@ seq = record.record("sample_verified", {"frame": 42})
 
 conditions 描述比较条件；subject 引用对象、不复制模型/数据集，应声明版本/SHA，包括内存训练时的被测版本。artifact 归档并记 hash，原文件覆盖不影响附件；可在 `record.run_dir / "artifacts"` 生成后登记。作者登记的条件与实际执行证据分开，不能仅凭文件存在判定调用过。
 
-装饰器的本地执行 observer 独立收集 targets 中真正调用的能力及加载 codeSHA，不依赖日志 RPC。normal 连续采样不保存每次 Python start/end，observer 仍能收集 subject；它证明该版本参与执行，不替代逐次调用链或任务成功证据。普通主动 import 仍保留调用元数据，不序列化任意 Python 参数和返回对象。
+装饰器的本地执行 observer 独立收集 targets 中真正调用的能力及加载 codeSHA，不依赖日志 RPC。normal 连续感知/动作不保存每次 Python start/end，observer 仍能收集 subject；它证明该版本参与执行，不替代逐次调用链或任务成功证据。普通主动 import 仍保留调用元数据，不序列化任意 Python 参数和返回对象。
+
+感知与动作使用同一 `@capability`；评测可以直接组合顶层函数或实例方法（如 `Perception.sample`、`Action.step`），沿用 targets、条件和指标。observer 只证明本进程实际执行；另一个常驻进程的行为需引用其明确的源码版本、trace、输入终态与时空轴证据，不能因它在线或累计步数增长就判定能力达标。
 
 已有时空轴原件经路径与内容 hash 校验后只登记 `timeline.asset`，不再复制；此时 `path` 相对 workspace，普通归档附件的 `path` 仍相对 run。
 

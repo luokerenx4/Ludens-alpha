@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 import json, os
 from helper import transform
 
-from rsa_tools import perception, record
+from rsa_tools import capability, record
 class Perception:
     sample_hz = 20
     def start(self, context):
@@ -22,7 +22,7 @@ class Perception:
             output.write(str(os.getpid()) + "\\n")
 
     @record
-    @perception
+    @capability
     def sample(self):
         self.sequence += 1
         value = {"pid": os.getpid(), "version": self.version, "sequence": self.sequence}

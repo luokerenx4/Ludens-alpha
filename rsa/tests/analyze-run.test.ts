@@ -177,6 +177,30 @@ test("analysis without speculation events has zero lifecycle counts and no model
   expect(report.firstRequest).toBeNull();
 });
 
+test("action worker analysis retains explicit epoch and generation without inventing controller actions", async () => {
+  const event = fixture();
+  const report = await analyze([
+    event("control", "one", { mode: "auto", epoch: "one" }),
+    event("action_status", "one", { state: "ready", generation: "first" }),
+    event("action_stats", "one", { generation: "first", step: { completed: 150 } }),
+    event("action_fault", "one", { generation: "first", error: "Step failed" }),
+    event("action_status", "one", { state: "error", generation: "first" }),
+    event("control", "one", { mode: "manual", reason: "human" }),
+    event("control", "two", { mode: "auto", epoch: "two" }),
+    event("action_status", "two", { state: "ready", generation: "second" }),
+    event("action_fault_end", "one", { generation: "first", reason: "stopped" }),
+    event("action_status", "one", { state: "stopped", generation: "first" }),
+    event("action_stats", "one", { step: { completed: 999 } }, { epoch: null }),
+  ], "one");
+  expect(report.summary.actionRuntime).toEqual({ statusEvents: { ready: 1, error: 1, stopped: 1 },
+    faultsStarted: 1, faultsEnded: 1, statsWindows: 1 });
+  expect(report.actionRuntime.map((item: { seq: number }) => item.seq)).toEqual([2, 3, 4, 5, 9, 10]);
+  expect(report.actionRuntime[1].data.step.completed).toBe(150);
+  expect(report.actionRuntime.every((item: { trace: { epoch: string } }) => item.trace.epoch === "one")).toBe(true);
+  expect(report.summary.controllerActions).toBe(0);
+  expect(report.actions).toEqual([]);
+});
+
 test("perception analysis separates cached reads, unknown ages and late cancellation without inventing actions", async () => {
   const event = fixture();
   const trace = (spanId: string) => ({ traceId: "perception", spanId });

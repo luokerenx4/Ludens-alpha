@@ -12,7 +12,7 @@ from ._context import current, invocation, request
 from ._observation_history import validate_sample
 
 
-_clock = "python-perception-" + uuid.uuid4().hex
+_clock = "python-capability-" + uuid.uuid4().hex
 
 
 def _mark(target, kind):
@@ -27,29 +27,31 @@ def _mark(target, kind):
             code_sha = hashlib.sha256(source.read_bytes()).hexdigest()
         identity = {"id": f"python/{path}:{target.__qualname__}", "codeSHA": code_sha,
                     "origin": {"path": path, "function": target.__qualname__, "line": target.__code__.co_firstlineno}}
-        flags = {"capability": False, "perception": False, "recorded": False}
+        flags = {"capability": False, "recorded": False}
         original = target
 
         def finish(result, started):
             finished = time.monotonic()
             context = current()
-            if flags["perception"]:
-                validate_sample(result, context["workspace"])
             if not flags["recorded"]:
                 return result
+            validate_sample(result, context["workspace"])
             message = {"sample": result, "identity": identity,
                        "sampling": {"clock": _clock, "startedAtMs": started * 1000,
                                     "finishedAtMs": finished * 1000},
                        "generation": context.get("generation"), "runId": context.get("run_id"),
                        "trace": context["trace"]}
             local = context.get("timeline_append")
-            if local is not None:
-                return local(**message)
-            return request(context["socket_path"], {"kind": "timeline", "argv": [], "action": "append", **message}, context["timeout"])
+            result = local(**message) if local is not None else request(
+                context["socket_path"], {"kind": "timeline", "argv": [], "action": "append", **message}, context["timeout"])
+            recording = context.get("recording_window")
+            if recording is not None:
+                recording.recorded()
+            return result
 
         def check():
-            if flags["recorded"] and not flags["perception"]:
-                raise ValueError("@record requires @perception on the same function")
+            if flags["recorded"] and not flags["capability"]:
+                raise ValueError("@record requires @capability on the same function")
 
         if inspect.iscoroutinefunction(target):
             @wraps(target)
@@ -69,10 +71,7 @@ def _mark(target, kind):
         wrapped.__rsa_identity__ = identity
         target = wrapped
     flags[kind] = True
-    if kind == "perception":
-        flags["capability"] = True
     target.__rsa_capability__ = flags["capability"]
-    target.__rsa_perception__ = flags["perception"]
     target.__rsa_recorded__ = flags["recorded"]
     return target
 
@@ -82,11 +81,6 @@ def capability(function=None):
     return (lambda target: _mark(target, "capability")) if function is None else _mark(function, "capability")
 
 
-def perception(function=None):
-    """Declare a sensing capability returning text, JSON data and/or media."""
-    return (lambda target: _mark(target, "perception")) if function is None else _mark(function, "perception")
-
-
 def record(function=None):
-    """Record each successful @perception result on the workspace timeline."""
+    """Record each successful @capability result envelope on the workspace timeline."""
     return (lambda target: _mark(target, "recorded")) if function is None else _mark(function, "recorded")

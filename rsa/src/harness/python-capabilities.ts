@@ -11,7 +11,6 @@ export interface PythonCapability {
   parameters: Record<string, unknown>;
   origin: { path: string; function: string; line: number };
   codeSHA: string;
-  perception?: boolean;
   recorded?: boolean;
 }
 
@@ -55,7 +54,7 @@ export class PythonCapabilities {
   }
 
   private emit(type: string, data: unknown, trace: EventTrace) {
-    const continuous = trace.recordingPurpose === "continuous-perception";
+    const continuous = trace.recordingPurpose === "continuous-perception" || trace.recordingPurpose === "continuous-action";
     if (!continuous || this.diagnostics === "full") this.record?.(type, data, trace,
       continuous ? { channel: "diagnostic" } : undefined);
   }
@@ -99,11 +98,10 @@ export class PythonCapabilities {
       const details: PythonInvocationDetails = { capabilityId: id, origin: capability.origin, codeSHA: capability.codeSHA,
         ...(failed ? { error: reply.error ?? { type: "PythonProcessError", message: `Python exited ${processResult.exitCode}` } } : { result: reply.result }),
         exitCode: processResult.exitCode, stderr: processResult.stderr };
-      const result = details.result as { timeline?: unknown } | undefined;
+      const result = details.result as { timeline?: unknown; media?: unknown[] } | undefined;
       this.emit("python_capability_result", { ...details,
-        // A sensing declaration is not permission for the invocation log to
-        // archive its payload. Explicit recording owns the only retained copy.
-        ...(capability.perception || result?.timeline ? { result: result?.timeline
+        // Explicit recording owns the retained payload; invocation logs only reference it.
+        ...(capability.recorded || result?.timeline || Array.isArray(result?.media) ? { result: result?.timeline
           ? { timeline: result.timeline } : { recorded: false } } : {}),
         outcome: failed ? "error" : "success", durationMs: performance.now() - started }, trace);
       return { content: [{ type: "text" as const, text: JSON.stringify(failed ? { error: details.error } : reply.result) }], details, isError: failed };

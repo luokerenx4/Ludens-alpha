@@ -213,8 +213,9 @@ test("init and dry-run preserve existing workspace files and never invoke servic
     expect((await run("init", "--driver", "mgba")).code).not.toBe(0);
     expect(await readFile(join(workspace, "rsa.json"), "utf8")).toBe(configBefore);
     expect(await readFile(join(workspace, "AGENTS.md"), "utf8")).toBe("My existing workspace instructions\n");
-    expect((await readdir(workspace)).sort()).toEqual(["AGENTS.md", "perception.py", "rsa.json"]);
+    expect((await readdir(workspace)).sort()).toEqual(["AGENTS.md", "action.py", "perception.py", "rsa.json"]);
     expect(await readFile(join(workspace, "perception.py"), "utf8")).toContain("NotImplementedError");
+    expect(await readFile(join(workspace, "action.py"), "utf8")).toContain("NotImplementedError");
     const desktop = join(directory, "Desktop workspace");
     expect((await run("--workspace", desktop, "init", "--driver", "cua", "--cua-command", "./tools/cua-driver")).code).toBe(0);
     const desktopPreview = await run("--workspace", desktop, "up", "--dry-run");

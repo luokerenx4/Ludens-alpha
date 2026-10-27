@@ -2,6 +2,8 @@
 
 状态：已实施并通过离线验收。范围是 OMP 以外的观测持久化；不修改 OMP 本体、原生 session、模型请求 payload 或 WS/SSE stream。
 
+本文保留初次时空轴施工依据。装饰器契约已由 [动作层与统一能力方案](action-runtime-plan.md) 更新：当前统一使用 `@capability` 配合可选 `@record`，不再导出 `@perception`；现行使用说明见 [Workspace](workspace.md#能力留档与-workspace-时空轴)。
+
 ## 目标与边界
 
 workspace 拥有一条跨 run 的感知时空轴。原子能力通过两个显式装饰器声明感知与记录；只有被记录的感知结果进入轴。感知进程是唯一写入者，其他组件引用轴上的记录和媒体，不再自动建立永久截图副本。

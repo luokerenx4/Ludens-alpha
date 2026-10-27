@@ -5,6 +5,7 @@ import { parseArgs } from "node:util";
 import { defaultSocket } from "@playness/baseware/address";
 import workspaceGuide from "../../templates/AGENTS.md" with { type: "text" };
 import perceptionTemplate from "../../templates/perception.py" with { type: "text" };
+import actionTemplate from "../../templates/action.py" with { type: "text" };
 
 export const WORKSPACE_HELP = `Workspace startup (macOS):
 rsa init --driver ryubing|mgba|azahar|cua [--game <path>] [--cua-command <path>] [--seconds <n>]
@@ -354,6 +355,7 @@ export async function workspaceCommand(command: string, args: string[], selected
     await writeFile(join(workspace, "rsa.json"), `${JSON.stringify(config, null, 2)}\n`, { flag: "wx" });
     await writeFile(join(workspace, "AGENTS.md"), workspaceGuide, { flag: "wx" }).catch(error => { if (error.code !== "EEXIST") throw error; });
     await writeFile(join(workspace, "perception.py"), perceptionTemplate, { flag: "wx" }).catch(error => { if (error.code !== "EEXIST") throw error; });
+    await writeFile(join(workspace, "action.py"), actionTemplate, { flag: "wx" }).catch(error => { if (error.code !== "EEXIST") throw error; });
     console.log(`Created ${join(workspace, "rsa.json")}\nReview with rsa up --dry-run, then run rsa up.`);
     return;
   }

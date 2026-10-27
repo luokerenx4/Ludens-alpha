@@ -15,6 +15,7 @@ dependencies = [
 
 [project.scripts]
 rsa-perception = "rsa_tools._perception:main"
+rsa-action = "rsa_tools._action:main"
 rsa-python-bridge = "rsa_tools._bridge:main"
 
 [dependency-groups]

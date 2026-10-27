@@ -40,25 +40,25 @@ test("local Python, Controller and CLI share a workspace timeline across runs wi
   const cli = (...args: string[]) => run([join(import.meta.dir, "../bin/rsa"), ...args]);
   const blob = Buffer.from("shared offline audio").toString("base64");
   try {
-    await writeFile(join(workspace, "senses.py"), `from rsa_tools import perception, record, capability, Client
+    await writeFile(join(workspace, "senses.py"), `from rsa_tools import capability, record, Client
 import os
-@perception
+@capability
 def transient():
     """Read the calling process without recording."""
     return {"data": {"pid": os.getpid()}, "media": [{"data": "${blob}", "mediaType": "audio/wav"}]}
 @record
-@perception
+@capability
 def temperature(value: float = 22.5):
     """Read a scalar and an audio sample."""
     return {"data": {"value": value, "pid": os.getpid()}, "space": {"frame": "room-a"},
             "sampledAt": "2026-01-01T00:00:00Z", "media": [{"data": "${blob}", "mediaType": "audio/wav"}]}
-@perception
+@capability
 @record
 def outer():
     """Compose a recorded sensing capability."""
     inner = temperature()
     return {"sources": [inner["timeline"]], "media": inner["media"], "data": {"nested": True}}
-@perception
+@capability
 def forbidden_input():
     """Try input without a control lease."""
     return Client().call("controller/pad.press")
@@ -70,7 +70,7 @@ def action():
     expect((await runtime.perception!.reload()).state).toBe("unimplemented");
     const catalog = await cli("controller", "list");
     expect(catalog.capabilities.find((item: any) => item.id.endsWith(":temperature")))
-      .toMatchObject({perception: true, recorded: true});
+      .toMatchObject({recorded: true});
     const local = await python('import json, os; from senses import transient; print(json.dumps({"result": transient(), "pid": os.getpid()}))');
     expect(local.result.data.pid).toBe(local.pid);
     expect((await cli("controller", "python/senses.py:transient")).media[0].data).toBe(blob);

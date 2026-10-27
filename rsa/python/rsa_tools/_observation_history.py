@@ -61,9 +61,9 @@ SAMPLE_FIELDS = {"text", "data", "media", "sampledAt", "sources", "space", "time
 
 
 def validate_sample(sample, workspace):
-    """Validate the sensing envelope without silently dropping sensor fields."""
+    """Validate the recorded result envelope without silently dropping fields."""
     if not isinstance(sample, dict):
-        raise TypeError("A perception capability must return an observation object")
+        raise TypeError("A recorded capability must return an observation object")
     if set(sample) - SAMPLE_FIELDS:
         raise ValueError("Unknown observation fields: " + ", ".join(sorted(set(sample) - SAMPLE_FIELDS)))
     if not isinstance(sample.get("text", ""), str):

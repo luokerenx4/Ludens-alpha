@@ -3,6 +3,7 @@ import type { Catalog } from "@playness/baseware/protocol";
 import type { DiagnosticsMode, EventTrace, RecordEvent } from "./events.ts";
 import type { PerceptionRuntime } from "./perception.ts";
 import type { WorkspaceController } from "./controller.ts";
+import type { ActionRuntime } from "./action.ts";
 
 export interface AgentRunner {
   run(context: { epoch: string; signal: AbortSignal; message?: string }): Promise<void>;
@@ -18,6 +19,7 @@ export interface DeviceSession {
   readonly diagnostics?: DiagnosticsMode;
   acquire(epoch: string): Promise<void>;
   release(epoch: string): Promise<void>;
+  setInputGeneration?(epoch: string, generation: string | null): Promise<void>;
   execute(id: string, args: ToolArguments, epoch: string | undefined, signal: AbortSignal, trace: EventTrace, origin?: ObservationOrigin): Promise<ExecutionResult>;
 }
 
@@ -38,24 +40,32 @@ export class Runtime {
   agent?: AgentRunner;
   controller?: WorkspaceController;
   perception?: PerceptionRuntime;
+  action?: ActionRuntime;
 
   constructor(private devices: DeviceSession, readonly record: RecordEvent, private maxSeconds = 300, private runId: string = crypto.randomUUID(), readonly diagnostics: DiagnosticsMode = "normal") {}
 
   status() {
     // The host can outlive many takeovers; its log clock is not this cycle's budget.
     const remainingSeconds = this.mode === "auto" ? Math.max(0, Math.ceil((this.takeoverDeadlineMs - performance.now()) / 1000)) : null;
-    return { runId: this.runId, maxSeconds: this.maxSeconds, remainingSeconds, mode: this.mode, epoch: this.mode === "auto" ? this.epoch : null, connected: this.connected, reason: this.reason, agent: !!this.agent, thinking: !!this.running, consolidating: this.consolidating, perception: this.perception?.status(), logging: { diagnostics: this.diagnostics, basewareDiagnostics: this.devices.diagnostics ?? "normal" } };
+    return { runId: this.runId, maxSeconds: this.maxSeconds, remainingSeconds, mode: this.mode, epoch: this.mode === "auto" ? this.epoch : null, connected: this.connected, reason: this.reason, agent: !!this.agent, thinking: !!this.running, consolidating: this.consolidating, perception: this.perception?.status(), action: this.action?.status(), logging: { diagnostics: this.diagnostics, basewareDiagnostics: this.devices.diagnostics ?? "normal" } };
   }
 
   list() { return this.devices.catalog; }
 
+  checkInputGeneration(epoch: string | undefined, trace: EventTrace = {}) {
+    if (trace.inputGeneration !== undefined && !this.action?.accepts(epoch, trace.inputGeneration))
+      throw new Error("STALE_INPUT_GENERATION: reload the action program under the current control epoch");
+  }
+
   async callController(id: string, args: unknown, epoch: string | undefined, signal: AbortSignal, trace: EventTrace = {}) {
     if (!this.controller) throw new Error("Workspace controller is unavailable");
+    this.checkInputGeneration(epoch, trace);
     if ((epoch !== undefined || await this.controller.requiresControl(id, signal, trace)) && (this.mode !== "auto" || !epoch || epoch !== this.epoch)) {
       throw new Error("STALE_EPOCH: use the current control epoch");
     }
     const combined = epoch ? AbortSignal.any([signal, this.control!.signal]) : signal;
     combined.throwIfAborted();
+    this.checkInputGeneration(epoch, trace);
     const call = this.controller.call(id, args, { epoch, signal: combined, trace: { ...trace, epoch } });
     // Background perception reads have no lease and outlive control cycles.
     // Only calls owned by this epoch need draining before another takeover.
@@ -80,6 +90,9 @@ export class Runtime {
     this.record("control", this.status(), { epoch });
     if (message) this.record("user_message", { text: message }, { epoch });
     this.timer = setTimeout(() => void this.stop("time budget").catch((e) => this.record("error", String(e))), this.maxSeconds * 1000);
+    try { await this.action?.activate(epoch); }
+    catch (error) { await this.stop(String(error)); throw error; }
+    if (control.signal.aborted) return this.status();
     if (this.agent) {
       this.running = this.agent.run({ epoch, signal: control.signal, message })
         .catch((error) => { if (!control.signal.aborted) this.record("error", String(error)); })
@@ -141,6 +154,8 @@ export class Runtime {
     clearTimeout(this.timer);
     // Revoking the device never waits for model cancellation.
     this.abortAgent();
+    const actionStopped = this.action?.deactivate();
+    void actionStopped?.catch(error => this.record("error", String(error), { epoch: this.epoch }));
     this.stopping = (async () => {
       await this.opening?.catch(() => {});
       try { await this.devices.release(this.epoch); }
@@ -151,6 +166,7 @@ export class Runtime {
       // The device is already released; let cancelled workspace calls finish
       // before another epoch can start. Nested calls need no global queue.
       await Promise.allSettled(this.calls);
+      await actionStopped?.catch(() => {});
       this.mode = "manual";
       this.record("control", this.status(), { epoch: this.epoch });
     })().finally(() => { this.stopping = undefined; });
@@ -168,6 +184,9 @@ export class Runtime {
       await this.stop("shutdown");
       await this.running;
       await this.agent?.close();
-    } finally { await this.perception?.stop(); }
+    } finally {
+      try { await this.action?.deactivate(); }
+      finally { await this.perception?.stop(); }
+    }
   }
 }

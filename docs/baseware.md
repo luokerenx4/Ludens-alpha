@@ -64,7 +64,7 @@ RSA 的持久连接持有有期限的 epoch，CLI/API/MCP 继承该上下文，�
 
 原生媒体内容及其顺序、标注在调用返回值中保留，`observations[].contentIndex` 对应原生内容位置。模拟器采集所需的文件仅在调用期间存在，读取字节后清理；CUA 内联媒体直接交付，调用者显式指定的输出文件保留。Baseware 不为每次采集建立永久截图档案，`Observation.path` 可以缺省。
 
-观测是否留档由 workspace 感知能力的 `@perception` / `@record` 声明决定。常驻感知进程把标记结果写入 workspace 的 `.rsa/timeline`，持久媒体按内容去重；RSA 与 Dashboard 引用原件，不复制到 run。调用者自行保存的数据集或输出文件仍属于普通 workspace 文件。契约见 [Workspace](workspace.md#常驻感知)。
+能力结果是否留档由 workspace 的 `@capability` / `@record` 声明决定。常驻感知进程把标记结果写入 workspace 的 `.rsa/timeline`，持久媒体按内容去重；RSA 与 Dashboard 引用原件，不复制到 run。调用者自行保存的数据集或输出文件仍属于普通 workspace 文件。契约见 [Workspace](workspace.md#能力留档与-workspace-时空轴)。
 
 设备日志中的 `result` 是归档表示：二进制 `data/blob` 被省略，保留媒体类型、内容位置及大小；若已有明确时空轴引用或文件路径则记录引用，否则标明 `dataOmitted/blobOmitted`。同次调用的观测放在 `execution.observations`，不再额外写一组采集生命周期。API、CLI、MCP 的真实结果保持完整，日志表示不能直接转发为原生工具结果。
 

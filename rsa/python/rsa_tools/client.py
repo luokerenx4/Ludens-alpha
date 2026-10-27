@@ -31,9 +31,10 @@ class Client:
         # the sampler's purpose or run ownership across a driver boundary.
         trace = dict(context["trace"])
         if continuous(parent):
-            trace["recordingPurpose"] = "continuous-perception"
-        if parent.get("trace", {}).get("recordingId"):
-            trace["recordingId"] = parent["trace"]["recordingId"]
+            trace["recordingPurpose"] = parent.get("recording_purpose") or parent["trace"]["recordingPurpose"]
+        for key in ("recordingId", "inputGeneration"):
+            if parent.get("trace", {}).get(key):
+                trace[key] = parent["trace"][key]
         context["trace"] = trace
         return context
 
@@ -53,6 +54,14 @@ class Client:
     def help(self, capability_id: str) -> Any:
         """Read the selected capability's description and arguments."""
         return self._request("help", id=capability_id)
+
+    def observe(self, query: dict[str, Any] | None = None) -> Any:
+        """Read timeline history without sampling; returns the same envelope as rsa observe."""
+        context = self._context()
+        return request(context["socket_path"], {
+            "kind": "perception", "argv": ["observe"], "query": query or {},
+            **({"epoch": context["epoch"]} if context["epoch"] is not None else {}), "trace": context["trace"],
+        }, context["timeout"])
 
     def call(self, capability_id: str, arguments: dict[str, Any] | None = None) -> Any:
         """Call a driver or local Python function with named arguments."""

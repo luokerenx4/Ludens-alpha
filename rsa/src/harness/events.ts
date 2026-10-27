@@ -12,7 +12,8 @@ export const RSA_SOURCE: EventSource = { component: "rsa" };
 
 export interface EventTrace {
   recordingId?: string;
-  recordingPurpose?: "continuous-perception";
+  recordingPurpose?: "continuous-perception" | "continuous-action";
+  inputGeneration?: string;
   traceId?: string;
   spanId?: string;
   parentSpanId?: string;
