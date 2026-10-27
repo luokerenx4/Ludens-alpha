@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { appendFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { refreshActivity, queryActivity, type LogBlock } from "../lib/activity";
@@ -25,6 +25,23 @@ async function fixture(work: (path: string) => Promise<void>) {
     await work(path);
   } finally { await closeLogIndexes(); await rm(path, { recursive: true, force: true }); }
 }
+
+test("a new activity reader does not inherit the departed reader's cancellation", async () => fixture(async path => {
+  const index = getLogIndex(path);
+  await index.refreshEvents();
+  let unblock!: () => void;
+  const gate = index.exclusive(() => new Promise<void>(resolve => { unblock = resolve; }));
+  await new Promise<void>(resolve => setImmediate(resolve));
+  const controller = new AbortController();
+  const old = refreshActivity(index, { ingest: false, signal: controller.signal });
+  const rejected = assert.rejects(old, { name: "AbortError" });
+  controller.abort();
+  const fresh = refreshActivity(index, { ingest: false });
+  assert.notEqual(fresh, old);
+  unblock(); await gate; await rejected; await fresh;
+  const result = await queryActivity(index, scope);
+  assert.ok(result.blocks.some(block => block.title === "control"));
+}));
 
 test("Python groups survive page boundaries, restart and late outer completion without losing raw exceptions", async () => fixture(async path => {
   const local = (seq: number, type: string, spanId: string, parentSpanId?: string, outcome?: string): Event => ({
@@ -163,70 +180,65 @@ test("abandoned history searches stop at a bounded yield without cancelling the 
   await assert.rejects(queryActivity(index, scope, {}, controller.signal), { name: "AbortError" });
 }));
 
-test("disk-paged history keeps display order, search totals and late updates without loading every pointer", async () => fixture(async path => {
-  const index = await getLogIndex(path), store = index.store("blocks");
-  const rows: LogBlock[] = [];
-  const total = 5000;
-  await index.exclusive(async () => {
-    for (let i = 0; i < total; i++) {
-      const row: LogBlock = { id: `item-${String(i).padStart(5, "0")}`, kind: i % 11 ? "text" : "diagnostic",
-        at: new Date(Date.UTC(2026, 9, 21) + ((i * 97) % total) * 1000).toISOString(), title: "message",
-        text: i % 13 ? "ordinary" : "Needle", status: "complete", trace: { epoch: i % 7 ? "cycle" : "other" },
-        createdRevision: i + 1, revision: i + 1 };
-      rows.push(row);
-      await store.put(row.id, row, { at: row.at, epoch: row.trace!.epoch, kind: row.kind, status: row.status,
-        createdRevision: row.createdRevision, revision: row.revision });
-    }
-    index.setMeta("revision", total);
-  });
-  const expected = rows.filter(row => row.trace!.epoch === "cycle" && row.kind === "text" && row.text === "Needle")
-    .sort((a, b) => b.at.localeCompare(a.at) || b.id.localeCompare(a.id));
+test("source-backed history keeps paging, searches and immutable late updates without persisted bodies", async () => fixture(async path => {
+  const index = getLogIndex(path), total = 5000;
+  const source = Array.from({ length: total }, (_, i) => ({ id: `item-${String(i).padStart(5, "0")}`,
+    atMs: ((i * 97) % total) * 1000, epoch: i % 7 ? "cycle" : "other", text: i % 13 ? "ordinary" : "Needle" }));
+  const frameFor = (value: typeof source[number], sequence: number, text = value.text) => JSON.stringify({
+    atMs: value.atMs, trace: { epoch: value.epoch }, event: { data: JSON.stringify({ type: "response.output_text.done",
+      item_id: value.id, text, sequence_number: sequence }) } }) + "\n";
+  await writeFile(join(path, "streams/model.jsonl"), source.map((row, i) => frameFor(row, i + 1)).join(""));
+  await refreshActivity(index);
+  const expected = source.filter(row => row.epoch === "cycle" && row.text === "Needle")
+    .sort((a, b) => b.atMs - a.atMs || b.id.localeCompare(a.id));
   const first = await queryActivity(index, scope, { mode: "history", kind: "text", q: "needle", limit: 17 });
   if (!("before" in first)) throw new Error("history cursor missing");
   assert.equal(first.total, expected.length);
-  assert.equal(first.projection.blockCount, rows.filter(row => row.trace!.epoch === "cycle").length);
-  assert.deepEqual(first.blocks.map(row => row.id), expected.slice(0, 17).reverse().map(row => row.id));
+  assert.deepEqual(first.blocks.map(row => row.id), expected.slice(0, 17).reverse().map(row => `model:text:${row.id}:0`));
   const second = await queryActivity(index, scope, { mode: "history", kind: "text", q: "needle", before: first.before!, limit: 17 });
-  assert.deepEqual(second.blocks.map(row => row.id), expected.slice(17, 34).reverse().map(row => row.id));
+  assert.deepEqual(second.blocks.map(row => row.id), expected.slice(17, 34).reverse().map(row => `model:text:${row.id}:0`));
   const snapshot = await queryActivity(index, scope, { limit: 3 });
-  if (!("cursor" in snapshot)) throw new Error("snapshot cursor missing");
   const old = expected.at(-1)!;
-  const changed = { ...old, text: "late correction", revision: total + 1 };
-  await index.exclusive(async () => {
-    await store.put(old.id, changed, { at: old.at, epoch: "cycle", kind: old.kind, status: old.status,
-      createdRevision: old.createdRevision, revision: changed.revision });
-    index.setMeta("revision", changed.revision);
-  });
-  // Direct lookup and idle/delta polls must not walk all latest records.
-  const entries = store.entries;
+  await appendFile(join(path, "streams/model.jsonl"), frameFor(old, total + 1, "late correction"));
+  await refreshActivity(index);
+  const store = index.store("blocks"), entries = store.entries;
   store.entries = () => { throw new Error("unexpected full latest scan"); };
   try {
-    const delta = await queryActivity(index, scope, { cursor: snapshot.cursor, limit: 1 });
-    assert.deepEqual(delta.blocks, [changed]);
-    assert.equal(delta.hasMore, false);
-    const lookup = await queryActivity(index, scope, { mode: "block", id: old.id });
-    assert.deepEqual(lookup.blocks, [changed]);
+    const delta = await queryActivity(index, scope, { cursor: snapshot.cursor!, limit: 1 });
+    assert.equal(delta.blocks[0].id, `model:text:${old.id}:0`); assert.equal(delta.blocks[0].text, "late correction");
+    const lookup = await queryActivity(index, scope, { mode: "block", id: `model:text:${old.id}:0` });
+    assert.equal(lookup.blocks[0].text, "late correction");
   } finally { store.entries = entries; }
   const revised = await queryActivity(index, scope, { mode: "history", kind: "text", q: "needle", limit: 1 });
   assert.equal("total" in revised && revised.total, expected.length - 1);
+  for (const name of ["blocks", "streams", "events", "relations"])
+    assert.ok((await readdir(join(index.directory, name))).every(file => !file.startsWith("data-")), `${name} stores only locators`);
 }));
 
-test("snapshot retains older active blocks with a bounded response for never-finished history", async () => fixture(async path => {
-  const index = await getLogIndex(path), store = index.store("blocks");
-  await index.exclusive(async () => {
-    for (let i = 0; i < 710; i++) {
-      const row: LogBlock = { id: `item-${String(i).padStart(3, "0")}`, kind: "tool", title: "tool", text: "",
-        at: new Date(Date.UTC(2026, 9, 21) + i * 1000).toISOString(), status: i < 700 ? "running" : "complete",
-        revision: i + 1, createdRevision: i + 1 };
-      await store.put(row.id, row, { at: row.at, epoch: "cycle", kind: row.kind, status: row.status, revision: row.revision });
-    }
-    index.setMeta("revision", 710);
-  });
+test("snapshot retains older active tools while its response stays bounded", async () => fixture(async path => {
+  const index = getLogIndex(path);
+  await writeFile(join(path, "streams/model.jsonl"), Array.from({ length: 710 }, (_, i) =>
+    frame(`response.function_call_arguments.${i < 700 ? "delta" : "done"}`, `item-${String(i).padStart(3, "0")}`, "", i + 1)).join(""));
+  await refreshActivity(index);
   const snapshot = await queryActivity(index, scope, { limit: 3 });
   assert.equal(snapshot.blocks.length, 503);
-  assert.equal(snapshot.blocks[0].id, "item-200");
-  assert.equal(snapshot.blocks.at(-1)?.id, "item-709");
-  assert.equal(snapshot.projection.blockCount, 710);
-  const old = await queryActivity(index, scope, { mode: "block", id: "item-000" });
+  assert.equal(snapshot.blocks[0].id, "model:tool:item-200");
+  assert.equal(snapshot.blocks.at(-1)?.id, "model:tool:item-709");
+  const old = await queryActivity(index, scope, { mode: "block", id: "model:tool:item-000" });
   assert.equal(old.blocks[0].status, "running", "bounded live response never removes historical blocks");
+}));
+
+test("activity can commit bounded batches and resume without copying ordinary diagnostic payloads", async () => fixture(async path => {
+  const index = getLogIndex(path);
+  const events = Array.from({ length: 1200 }, (_, i) => ({ ...event(i + 3, "perception_sample", { evidence: "large raw evidence ".repeat(100) }), trace: { epoch: "cycle" } }));
+  await appendFile(join(path, "events.jsonl"), events.map(row => JSON.stringify(row)).join("\n") + "\n");
+  await refreshActivity(index, { maxEvents: 100 });
+  assert.equal(Number(index.meta("activityPosition")), 100);
+  await refreshActivity(index);
+  const page = await queryActivity(index, scope, { mode: "history", kind: "diagnostic", q: "large raw evidence", limit: 2 });
+  assert.equal("total" in page && page.total, 1200);
+  assert.ok(page.blocks.every(block => block.data?.evidence === events[0].data.evidence));
+  const names = await readdir(join(index.directory, "blocks", "pages"));
+  for (const name of names.filter(name => name.endsWith(".jsonl")))
+    assert.equal((await readFile(join(index.directory, "blocks", "pages", name), "utf8")).includes("large raw evidence"), false);
 }));

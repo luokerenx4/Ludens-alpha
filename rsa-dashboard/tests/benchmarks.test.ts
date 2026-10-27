@@ -349,9 +349,10 @@ test("old, mismatched and corrupt results are isolated as issues", async () => {
   }
 });
 
-test("evidence resolves referenced events, exposes missing sequences and rejects symlink escape", async () => {
+test("evidence resolves committed events, exposes missing sequences and rejects symlink escape", async () => {
   const f = await fixture();
   try {
+    await writeFile(join(f.directory, "events.jsonl"), '{"seq":9', { flag: "a" });
     const evidence = await benchmarkEvidence("ws-bench", "new", f.root);
     assert.deepEqual(
       evidence.events.map((event) => event.seq),

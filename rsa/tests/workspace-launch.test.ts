@@ -22,6 +22,7 @@ class FakeServices implements LaunchIO {
   bridgeClientPids: number[] = [];
   bridgePort: number | undefined;
   dashboard = false;
+  dashboardBuild = true;
   mode = "manual";
   cleanupReads = 0;
   clock = 0;
@@ -42,6 +43,7 @@ class FakeServices implements LaunchIO {
     expect(cwd).toBe(sharedPetLaunch ? this.plan.sharedPet.cwd : this.plan.workspace);
     this.calls.push([...argv]);
     const result = (stdout = "", code = 0, stderr = "") => ({ code, stdout, stderr });
+    if (argv.join("\0") === this.plan.dashboardCheck.join("\0")) return this.dashboardBuild ? result() : result("", 1, "Dashboard production build is stale; run build");
     if (argv[0] === "env" && argv[2] === this.plan.baseware && argv[3] === "status") {
       expect(argv[1]).toBe(`BASEWARE_SOCKET=${this.plan.basewareSocket}`);
       if (!this.jobs.has(this.target("baseware")) && !this.externalBaseware) return result("", 1);
@@ -100,6 +102,16 @@ class FakeServices implements LaunchIO {
 
 const plan = () => launchPlan(parseConfig({ driver: "ryubing", game: "games/A game; $(touch BAD).nsp" }),
   "/tmp/Workspace with spaces", "/tmp/Source with spaces", "/tmp/baseware-test.sock");
+
+test("managed Dashboard uses a current production build and fails before starting devices when stale", async () => {
+  const value = await plan();
+  expect(value.commands.dashboard).toEqual(["npm", "--prefix", "/tmp/Source with spaces/rsa-dashboard", "run", "start"]);
+  const io = new FakeServices(value);
+  io.dashboardBuild = false;
+  await expect(new WorkspaceLauncher(value, io).up()).rejects.toThrow("production build is stale");
+  expect(io.starts).toEqual([]);
+  expect(io.calls).toEqual([value.dashboardCheck]);
+});
 
 test("launch config keeps limits explicit and paths as literal argv entries", async () => {
   const value = await plan();

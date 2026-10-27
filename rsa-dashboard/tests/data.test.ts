@@ -1,20 +1,21 @@
 import { clearCatalogCache } from "../lib/data";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { writeFile, realpath, mkdtemp, mkdir, symlink, rm } from "node:fs/promises";
+import { writeFile, readFile, realpath, mkdtemp, mkdir, symlink, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
 import { parseEvents, aggregate, selectCycle } from "../lib/aggregate";
 import {
   resolveRun,
+  controlState,
   canControl,
   hostRequest,
-  localRequest,
   catalog,
   mediaFile,
   stopRun,
 } from "../lib/data";
+import { localRequest } from "../lib/local-request";
 import type { Event, LiveStatus, RunData } from "../lib/types";
 
 test("run summary retains controller, cache, compaction and skill evidence", () => {
@@ -703,4 +704,18 @@ test("WS frame metadata stays separate from HTTP body, attempts and header timin
   assert.equal(fallback.headersMs, 1500);
   assert.equal(fallback.attempts, 1);
   assert.equal(result.summary.medianHeadersMs, 1500);
+});
+
+
+test("control identity reads never create or migrate a cold archive index", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "rsa-control-index-")));
+  try {
+    const run = join(root, "game", "runs", "run"), index = join(run, ".dashboard-index");
+    await mkdir(index, { recursive: true });
+    await writeFile(join(run, "manifest.json"), JSON.stringify({ runId: "run", kind: "benchmark", drivers: [] }));
+    await writeFile(join(index, ".writing"), "old interrupted cache");
+    const result = await controlState("game", "run", "epoch", root);
+    assert.equal(result.controlAllowed, false);
+    assert.equal(await readFile(join(index, ".writing"), "utf8"), "old interrupted cache");
+  } finally { clearCatalogCache(); await rm(root, { recursive: true, force: true }); }
 });

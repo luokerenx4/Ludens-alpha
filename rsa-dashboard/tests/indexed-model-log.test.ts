@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { JsonArchive } from "../../shared/log-archive";
 import { activityBlocks, refreshActivity, queryActivity } from "../lib/activity";
 import { closeLogIndexes, getLogIndex } from "../lib/log-index";
-import { loadRun } from "../lib/data";
+import { openRun } from "../lib/data";
 import type { Event } from "../lib/types";
 
 const scope = { project: "test", runId: "run", epoch: "cycle" };
@@ -108,11 +108,11 @@ test("Dashboard binds archives to the registered workspace and rejects a foreign
   await mkdir(state, { recursive: true });
   await writeFile(join(state, "workspace.json"), JSON.stringify({ workspace }));
   await writeFile(join(run, "events.jsonl"), "");
-  const loaded = await loadRun("test", "run", root);
+  const loaded = await openRun("test", "run", root);
   assert.equal(loaded.index.archiveWorkspace, workspace); loaded.release();
   const foreign = join(workspace, "foreign"); await mkdir(foreign);
   await writeFile(join(run, "manifest.json"), JSON.stringify({ workspace: foreign }));
-  const mismatched = await loadRun("test", "run", root);
+  const mismatched = await openRun("test", "run", root);
   assert.equal(mismatched.index.archiveWorkspace, null); mismatched.release();
   const reference = new JsonArchive(workspace).write({ content: [{ type: "text", text: "private" }] });
   await assert.rejects(activityBlocks(run, [event(2, "tool_end", { toolName: "bash", result: reference }, "tool")], null));
@@ -130,8 +130,9 @@ test("run projection indexes skill paths but keeps referenced arguments out of c
   await writeFile(join(run, "events.jsonl"), values.map(value => JSON.stringify(value)).join("\n") + "\n");
   const index = getLogIndex(run); index.archiveWorkspace = workspace;
   await refreshRunProjection(index);
-  const cached = await index.store("run-calls").get<any>("next");
-  assert.deepEqual(cached.tools[0].args, {}); assert.deepEqual(cached.tools[0].argsRef, args);
+  const cached = index.store("run-calls").meta("next");
+  assert.ok(cached);
+  assert.equal(cached.file, undefined);
   assert.equal(JSON.stringify(cached).includes(source), false);
   await rm(join(workspace, ".rsa", "archive", oldArgs.path));
   const page = await readRunProjection(index, "cycle");

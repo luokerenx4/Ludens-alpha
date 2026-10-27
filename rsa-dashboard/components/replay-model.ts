@@ -23,7 +23,9 @@ export function mergeReplayPages(pages: ReplayWindow[]): ReplayWindow {
   }
   return { startAt: pages[0]?.startAt ?? 0, endAt: pages[0]?.endAt ?? 0,
     frames: [...frames.values()].sort((a, b) => a.at - b.at || a.sequence - b.sequence),
-    items: [...items.values()].sort((a, b) => a.startAt - b.startAt || a.id.localeCompare(b.id)) };
+    items: [...items.values()].sort((a, b) => a.startAt - b.startAt || a.id.localeCompare(b.id)),
+    ...(pages.at(-1)?.nextCursor ? { nextCursor: pages.at(-1)!.nextCursor } : {}),
+    ...(pages.at(-1)?.coverage ? { coverage: pages.at(-1)!.coverage } : {}) };
 }
 
 /** One current frame per capability; never replace missing history with future pixels. */

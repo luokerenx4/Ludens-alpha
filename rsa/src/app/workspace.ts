@@ -66,6 +66,7 @@ export interface LaunchPlan {
   workspace: string;
   config: LaunchConfig;
   dashboardUrl: string;
+  dashboardCheck: string[];
   background: string;
   sharedPet: { cwd: string; background: string };
   launcher: string;
@@ -83,6 +84,7 @@ export async function launchPlan(config: LaunchConfig, workspace: string, repo =
   const sharedPet = { cwd: repo, background: resolve(repo, "../artifacts/rsa/alice/background") };
   return {
     workspace, config, dashboardUrl: "http://127.0.0.1:3015", background, sharedPet,
+    dashboardCheck: ["npm", "--prefix", join(repo, "rsa-dashboard"), "run", "check-build"],
     launcher: join(repo, "rsa/scripts/launch-background.py"), rsa, baseware, basewareSocket,
     commands: {
       ...(config.game ? { emulator: ["env", `RSA_BRIDGE_PORT=${config.port}`,
@@ -94,7 +96,7 @@ export async function launchPlan(config: LaunchConfig, workspace: string, repo =
       host: [rsa, "run", "--baseware-socket", basewareSocket, "--model", config.model,
         "--seconds", String(config.seconds), "--requests", String(config.requests), "--compaction-threshold", String(config.compactionThreshold),
       ],
-      ...(config.dashboard ? { dashboard: ["npm", "--prefix", join(repo, "rsa-dashboard"), "run", "dev"] } : {}),
+      ...(config.dashboard ? { dashboard: ["npm", "--prefix", join(repo, "rsa-dashboard"), "run", "start"] } : {}),
       ...(config.pet ? { pet: [join(repo, "rsa-companion/bin/rsa-companion"), "--workspace", workspace, "--show-window"] } : {}),
     },
   };
@@ -214,6 +216,12 @@ export class WorkspaceLauncher {
     return result.stdout.trim().split(/\s+/).filter(Boolean).map(Number).filter(pid => !listeners.includes(pid));
   }
   async up() {
+    // Fail before launching the device when the permanent Dashboard would run stale code.
+    let dashboard = await this.io.dashboardReady(this.plan.dashboardUrl);
+    if (this.plan.config.dashboard && !dashboard) {
+      const build = await this.run(this.plan.dashboardCheck);
+      if (build.code !== 0) throw new Error(build.stderr || build.stdout || "Build the Dashboard before starting it.");
+    }
     let baseware = await this.baseware();
     if (!baseware) {
       const existing = await this.job("baseware");
@@ -264,7 +272,7 @@ export class WorkspaceLauncher {
     } else this.io.note(`Reusing host ${host.runId}; running settings are unchanged.`);
     if (!host.connected) throw new Error("Host is alive but its device is disconnected. Inspect rsa services before stopping and starting it again.");
 
-    let dashboard = await this.io.dashboardReady(this.plan.dashboardUrl);
+    dashboard = await this.io.dashboardReady(this.plan.dashboardUrl);
     if (this.plan.config.dashboard && !dashboard) {
       if (!(await this.job("dashboard")).pid && (await this.listeningPids(3015)).length) throw new Error("Port 3015 is occupied but the RSA Dashboard API is not ready; inspect that service before retrying.");
       await this.ensure("dashboard");

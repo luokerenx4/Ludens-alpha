@@ -1,3 +1,4 @@
+import { readArchiveJson } from "./archive-client";
 /** Shared read-only activity protocol for the Dashboard hook and Alice Pet. */
 export interface EventSource { component: string; implementation?: string; implementationVersion?: string }
 export interface LogBlock {
@@ -69,11 +70,7 @@ export function acceptsScope(scope: ActivityScope, project: string, run?: string
 }
 export async function requestActivity(params: URLSearchParams, signal: AbortSignal, baseUrl?: string): Promise<ActivityResponse> {
   const path = "/api/activity?" + params;
-  const response = await fetch(baseUrl ? new URL(path, baseUrl).href : path, { cache: "no-store", signal });
-  const result = await response.json();
-  signal.throwIfAborted();
-  if (!response.ok) throw new Error(result.error ?? `日志服务 HTTP ${response.status}`);
-  return result;
+  return readArchiveJson<ActivityResponse>(baseUrl ? new URL(path, baseUrl).href : path, signal);
 }
 
 /** Holds only an opaque cursor. The server owns projection, ordering and reset snapshots. */

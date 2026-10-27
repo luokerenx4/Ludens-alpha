@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, appendFile, rm, realpath } from "node:fs/promises";
+import { mkdtemp, writeFile, appendFile, rm, realpath, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getLogIndex, closeLogIndexes, type LogIndex } from "../lib/log-index";
@@ -128,8 +128,8 @@ test("incremental projection retains actual perception input, late results and e
     assert.equal(cycle.selectedEpoch, "next");
     await assert.rejects(selectIndexedCycle(index, {} as Manifest, "absent"), /周期/);
     const expected = aggregate(selectCycle([...values, ...appended], "cycle").events);
-    assert.deepEqual(after.calls, JSON.parse(JSON.stringify(expected.calls)));
-    assert.deepEqual(after.observations, JSON.parse(JSON.stringify(expected.observations)));
+    assert.deepEqual(JSON.parse(JSON.stringify(after.calls)), JSON.parse(JSON.stringify(expected.calls)));
+    assert.deepEqual(JSON.parse(JSON.stringify(after.observations)), JSON.parse(JSON.stringify(expected.observations)));
     for (const key of Object.keys(expected.summary)) assert.equal(after.summary[key as keyof typeof after.summary], expected.summary[key as keyof typeof expected.summary], key);
   });
 });
@@ -144,6 +144,30 @@ test("late controller errors replace sampling notices instead of double-counting
     const result = await readRunProjection(index, "cycle");
     assert.equal(result.summary.errors, 1);
     assert.equal(result.notices[0].type, "execution_error");
+    assert.match(result.notices[0].text, /device failed/);
+    assert.ok([...index.store("run-notices").entries()].every(row => row.text === undefined && row.file === undefined));
+    assert.ok((await readdir(join(path, ".dashboard-index", "run-notices"))).every(file => !file.startsWith("data-")));
+  });
+});
+
+test("a new run reader can resume after the last preparation reader cancels", async () => {
+  const event = events();
+  await fixture([event("control", { mode: "auto" })], async (index, path) => {
+    await appendFile(join(path, "events.jsonl"), JSON.stringify(event("execution", { exitCode: 0, status: "completed" })) + "\n");
+    await index.refreshEvents();
+    let unblock!: () => void;
+    const gate = index.exclusive(() => new Promise<void>(resolve => { unblock = resolve; }));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    const controller = new AbortController();
+    const old = refreshRunProjection(index, { ingest: false, signal: controller.signal });
+    const rejected = assert.rejects(old, { name: "AbortError" });
+    controller.abort();
+    const fresh = refreshRunProjection(index, { ingest: false });
+    assert.notEqual(fresh, old);
+    unblock(); await gate; await rejected; await fresh;
+    assert.equal((await readRunProjection(index, "cycle")).summary.actions, 1);
+    const cancelled = new AbortController(); cancelled.abort();
+    await assert.rejects(readRunProjection(index, "cycle", {}, false, Date.now(), cancelled.signal), { name: "AbortError" });
   });
 });
 

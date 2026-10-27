@@ -1,6 +1,7 @@
-import { benchmarkCatalog, benchmarkEvidence } from "@/lib/benchmark-data";
-import { localRequest } from "@/lib/data";
+import { dashboardWorker } from "@/lib/dashboard-worker";
+import { localRequest, errorResponse } from "@/lib/local-request";
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 export async function GET(request: Request) {
   try {
     localRequest(request);
@@ -13,10 +14,10 @@ export async function GET(request: Request) {
       throw new Error("报告查询需要 project 和 run");
     return Response.json(
       project && run
-        ? await benchmarkEvidence(project, run, undefined, report)
-        : await benchmarkCatalog(),
+        ? await dashboardWorker().call("benchmarkEvidence", [project, run, report], request.signal)
+        : await dashboardWorker().call("benchmarkCatalog", [], request.signal),
     );
   } catch (error) {
-    return Response.json({ error: String(error) }, { status: 400 });
+    return errorResponse(error);
   }
 }

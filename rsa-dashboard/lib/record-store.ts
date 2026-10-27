@@ -2,10 +2,10 @@ import { mkdirSync, openSync, closeSync, readSync, writeSync, statSync, existsSy
 import { join } from "node:path";
 
 const CHUNK = 1024 * 1024, SEGMENT = 8 * CHUNK, PAGE_ROWS = 1024;
-export type RecordPointer = Record<string, any> & { id: string; file: string; offset: number; length: number };
+export type RecordPointer = Record<string, any> & { id: string; file?: string; offset?: number; length?: number };
 export class SourceChanged extends Error {}
 type Where = Record<string, unknown>;
-type Page = { file: string; min: string; max: string; count: number; bytes: number; facets: Record<string, Record<string, number>>; first?: number; last?: number };
+type Page = { file: string; min: string; max: string; count: number; bytes: number; facets: Record<string, Record<string, number>>; first?: number; last?: number; minTime?: number; maxTime?: number };
 type Manifest = { version: 1; next: number; pages: Page[]; history: Page[]; count: number; facets: Record<string, number> };
 type Cached = { owner: FileRecords; page: Page; rows: RecordPointer[]; dirty: boolean; weight: number };
 const cacheKey = Symbol.for("ludens.dashboard.index-pages");
@@ -103,7 +103,7 @@ export class FileRecords {
   private dataFile = "";
   private dataOffset = 0;
   private part = 0;
-  constructor(readonly directory: string, private onWrite = () => {}, private keepHistory = false) {
+  constructor(readonly directory: string, private onWrite = () => {}, private keepHistory = false, private sourceFile?: string) {
     mkdirSync(directory, { recursive: true });
     this.pageDirectory = join(directory, "pages");
     const manifestPath = join(this.pageDirectory, "manifest.json");
@@ -220,6 +220,14 @@ export class FileRecords {
         page.facets[field] = counts;
       }
     }
+    if (!removed && added && Number.isFinite(added.timeMs)) {
+      page.minTime = Math.min(page.minTime ?? Infinity, added.timeMs);
+      page.maxTime = Math.max(page.maxTime ?? -Infinity, added.timeMs);
+    } else if (removed || !added) {
+      const times = rows.filter(row => Number.isFinite(row.timeMs)).map(row => row.timeMs as number);
+      page.minTime = times.length ? Math.min(...times) : undefined;
+      page.maxTime = times.length ? Math.max(...times) : undefined;
+    }
     entry.weight = Math.max(128, page.bytes * 4); entry.dirty = true;
     this.changed = true;
     if (entry.weight > cacheLimit()) { save(entry); return; }
@@ -258,7 +266,7 @@ export class FileRecords {
       page.first = order(history.rows[0]); page.last = order(pointer);
     }
   }
-  *entries(options: { where?: Where; prefix?: string; afterId?: string; beforeId?: string; reverse?: boolean } = {}): IterableIterator<RecordPointer> {
+  *entries(options: { where?: Where; prefix?: string; afterId?: string; beforeId?: string; reverse?: boolean; time?: { from?: number; to?: number } } = {}): IterableIterator<RecordPointer> {
     const pages = this.manifest.pages.slice();
     const first = options.prefix || options.afterId ? this.locate(options.prefix ?? options.afterId!) : 0;
     const last = options.beforeId ? this.locate(options.beforeId) : pages.length - 1;
@@ -268,10 +276,13 @@ export class FileRecords {
       if (options.prefix && page.min > options.prefix && !page.min.startsWith(options.prefix)) { if (options.reverse) continue; break; }
       if (options.beforeId && page.min >= options.beforeId) continue;
       if (!possible(page, options.where)) continue;
+      if (options.time && ((page.maxTime ?? Infinity) < (options.time.from ?? -Infinity)
+        || (page.minTime ?? -Infinity) > (options.time.to ?? Infinity))) continue;
       const rows = this.load(page).rows.slice();
       if (options.reverse) rows.reverse();
       for (const row of rows) if ((!options.prefix || row.id.startsWith(options.prefix)) && (!options.afterId || row.id > options.afterId)
-        && (!options.beforeId || row.id < options.beforeId) && matches(row, options.where)) yield row;
+        && (!options.beforeId || row.id < options.beforeId) && matches(row, options.where) && (!options.time ||
+          (row.timeMs >= (options.time.from ?? -Infinity) && row.timeMs <= (options.time.to ?? Infinity)))) yield row;
     }
   }
   *versions(options: { after?: number; before?: number; reverse?: boolean; where?: Where } = {}): IterableIterator<RecordPointer> {
@@ -299,25 +310,39 @@ export class FileRecords {
     }
     let total = 0; for (const _ of this.entries({ where })) total++; return total;
   }
+  /** Page summaries cover late source timestamps without loading record bodies. */
+  get timeBounds(): { min?: number; max?: number } {
+    let min = Infinity, max = -Infinity;
+    for (const page of this.manifest.pages) {
+      if (Number.isFinite(page.minTime)) min = Math.min(min, page.minTime!);
+      if (Number.isFinite(page.maxTime)) max = Math.max(max, page.maxTime!);
+    }
+    return { ...(Number.isFinite(min) ? { min } : {}), ...(Number.isFinite(max) ? { max } : {}) };
+  }
   meta(id: string) {
     if (!this.manifest.pages.length) return undefined;
     const rows = this.load(this.manifest.pages[this.locate(id)]).rows, i = lower(rows, id);
     return rows[i]?.id === id ? rows[i] : undefined;
   }
   async read<T = any>(pointer: RecordPointer): Promise<T> {
-    let fd = this.readers.get(pointer.file);
+    const file = pointer.file ?? this.sourceFile;
+    if (!file || !Number.isSafeInteger(pointer.offset) || !Number.isSafeInteger(pointer.length))
+      throw new Error("This index row has no source body");
+    let fd = this.readers.get(file);
     if (fd === undefined) {
-      fd = openSync(pointer.file, "r"); this.readers.set(pointer.file, fd);
+      fd = openSync(file, "r"); this.readers.set(file, fd);
       if (this.readers.size > 8) { const oldest = this.readers.keys().next().value!; closeSync(this.readers.get(oldest)!); this.readers.delete(oldest); }
-    } else { this.readers.delete(pointer.file); this.readers.set(pointer.file, fd); }
-    const buffer = Buffer.alloc(pointer.length); let offset = 0;
+    } else { this.readers.delete(file); this.readers.set(file, fd); }
+    const buffer = Buffer.alloc(pointer.length!); let offset = 0;
     while (offset < buffer.length) {
-      const n = readSync(fd, buffer, offset, buffer.length - offset, pointer.offset + offset);
-      if (!n) throw new SourceChanged(pointer.file); offset += n;
+      const n = readSync(fd, buffer, offset, buffer.length - offset, pointer.offset! + offset);
+      if (!n) throw new SourceChanged(file); offset += n;
     }
     return JSON.parse(buffer.toString("utf8"));
   }
   async get<T = any>(id: string): Promise<T | undefined> { const pointer = this.meta(id); return pointer ? this.read<T>(pointer) : undefined; }
+  /** A rebuildable directory row; unlike put(), this does not copy a body. */
+  index(id: string, metadata: Record<string, unknown>) { this.onWrite(); this.retain({ ...metadata, id }); }
   reference(id: string, file: string, offset: number, length: number, metadata: Record<string, unknown>) {
     this.onWrite(); this.retain({ ...metadata, id, file, offset, length });
   }

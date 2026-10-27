@@ -1,14 +1,15 @@
-import { readFile, realpath } from "node:fs/promises";
+import { readFile, realpath, open } from "node:fs/promises";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { catalog, hostRequest, loadRun } from "./data";
+import { catalog, hostRequest, openRun } from "./data";
+import { prepareArchive } from "./prepare-run";
 import { latestGameRun } from "./initial-selection";
 import { LogIndex, SourceChanged, type RecordPointer } from "./log-index";
 import { activitySearchText } from "../components/activity-feed-model";
 import { advanceLivePhase, emptyLivePhase, livePhaseValue, type LivePhaseState } from "./live-phase";
 import { eventObservations } from "./observation-events";
 import type { Event } from "./types";
-import { projectPythonCall } from "./python-activity";
+import { projectPythonCall, pythonSummaryBlock, type PythonSummary } from "./python-activity";
 import { readArtifact } from "../../shared/log-archive";
 
 export interface LogBlock {
@@ -215,12 +216,7 @@ async function streamFile(path: string, model: string, anchor: Event, workspace?
 }
 async function payloadText(path: string, value: any, index?: LogIndex, workspace?: string | null): Promise<string> {
   if (!value?.path) return resultText(value);
-  const key = `${value.encoding ?? "gzip"}:${value.path}`;
-  const saved = await index?.store("payloads").get<string>(key);
-  if (saved !== undefined) return saved;
-  const text = resultText(await artifact(path, value, workspace));
-  await index?.store("payloads").put(key, text);
-  return text;
+  return resultText(await artifact(path, value, workspace));
 }
 
 export async function activityBlocks(path: string, events: Event[], workspace?: string | null): Promise<LogBlock[]> {
@@ -291,42 +287,133 @@ async function overlayEvents(path: string, events: Event[], blocks: Map<string, 
 
 
 const TOOL_EVENTS = ["tool_start", "tool_update", "tool_end", "exec", "exec_result", "model_end"];
-async function saveBlock(index: LogIndex, block: LogBlock) {
-  const store = index.store("blocks");
-  const prior = store.meta(block.id);
+type BlockRecipe = { kind: "event"; position: number }
+  | { kind: "model"; model: string; anchorPosition: number; streamOffset: number; eventCutoff: number }
+  | { kind: "python"; position: number; summary: PythonSummary; exceptionPosition?: number };
+async function saveBlock(index: LogIndex, block: LogBlock, recipe: BlockRecipe) {
+  const store = index.store("blocks"), prior = store.meta(block.id);
   const { createdRevision: _created, revision: _revision, ...content } = block;
-  const digest = createHash("sha256").update(JSON.stringify(content)).digest("hex");
-  if (prior?.digest === digest) return;
-  const revision = index.revision + 1;
-  const createdRevision = prior ? Number(prior.createdRevision) : revision;
-  const value = { ...content, createdRevision, revision };
-  // Immutable versions preserve creation order when a late update lands beyond
-  // a consumer's current page. The index holds only metadata, never block text.
-  await store.put(block.id, value, { model: block.trace?.modelCallId ?? null, epoch: block.trace?.epoch ?? null,
-    at: block.at, kind: block.kind, status: block.status, createdRevision, revision, digest });
+  const digest = recipe.kind === "event" ? undefined : createHash("sha256").update(JSON.stringify(content)).digest("hex");
+  if (prior && (recipe.kind === "event" || prior.digest === digest)) return;
+  const revision = index.revision + 1, createdRevision = prior ? Number(prior.createdRevision ?? prior.revision) : revision;
+  store.index(block.id, { recipe, ...(block.trace?.epoch ? { epoch: block.trace.epoch } : {}), at: block.at, kind: block.kind,
+    status: block.status, ...(recipe.kind === "python" ? { updatedAt: block.updatedAt } : {}),
+    ...(createdRevision !== revision ? { createdRevision } : {}), revision, ...(digest ? { digest } : {}) });
   index.setMeta("revision", revision);
 }
+
+/** Source cutoffs make a delivery version immutable without copying its rendered text. */
+async function modelBlocks(index: LogIndex, recipe: Extract<BlockRecipe, { kind: "model" }>, signal?: AbortSignal): Promise<LogBlock[]> {
+  const anchor = await index.readEvent(recipe.anchorPosition);
+  if (!anchor) throw new Error("模型来源事件不存在");
+  const state = emptyStream(), path = join(index.path, "streams", `${recipe.model}.jsonl`);
+  let projected: LogBlock[] = [], pending = Buffer.alloc(0), offset = 0;
+  if (recipe.streamOffset) {
+    if (await realpath(path) !== path) throw new Error("流日志必须位于运行目录内");
+    const file = await open(path, "r");
+    try {
+      while (offset < recipe.streamOffset) {
+        signal?.throwIfAborted();
+        const buffer = Buffer.alloc(Math.min(1024 * 1024, recipe.streamOffset - offset));
+        const { bytesRead } = await file.read(buffer, 0, buffer.length, offset);
+        if (!bytesRead) throw new SourceChanged(path);
+        offset += bytesRead; pending = Buffer.concat([pending, buffer.subarray(0, bytesRead)]);
+        const end = pending.lastIndexOf(10) + 1;
+        if (end) { projected = await storedStream(pending.subarray(0, end).toString("utf8"), index.path,
+          recipe.model, anchor, state, index.archiveWorkspace); pending = pending.subarray(end); }
+      }
+    } finally { await file.close(); }
+  }
+  const blocks = new Map(projected.map(block => [block.id, block])), events: Event[] = [];
+  let position = 0;
+  for (;;) {
+    const page = await index.queryEvents({ model: recipe.model, afterPosition: position,
+      beforePosition: recipe.eventCutoff + 1, types: TOOL_EVENTS, signal });
+    if (!page.length) break;
+    events.push(...page.map(row => row.event)); position = page.at(-1)!.position;
+  }
+  await overlayEvents(index.path, events, blocks, undefined, index.archiveWorkspace);
+  return [...blocks.values()];
+}
+function blockReader(index: LogIndex, signal?: AbortSignal) {
+  const cached = new Map<string, { blocks: Map<string, LogBlock>; bytes: number }>();
+  let bytes = 0;
+  return async (row: RecordPointer): Promise<LogBlock> => {
+    signal?.throwIfAborted();
+    const recipe = row.recipe as BlockRecipe;
+    let block: LogBlock | undefined;
+    if (recipe.kind === "event") {
+      const event = await index.readEvent(recipe.position);
+      if (!event) throw new Error("活动来源事件不存在");
+      const blocks = new Map<string, LogBlock>(); await overlayEvents(index.path, [event], blocks, undefined, index.archiveWorkspace);
+      block = blocks.get(row.id);
+    } else if (recipe.kind === "python") {
+      const event = await index.readEvent(recipe.position);
+      if (!event) throw new Error("Python 来源事件不存在");
+      const summary = { ...recipe.summary };
+      if (recipe.exceptionPosition && summary.lastException) {
+        const exception = await index.readEvent(recipe.exceptionPosition);
+        summary.lastException = { ...summary.lastException, error: exception?.data.error };
+      }
+      block = pythonSummaryBlock(event, row.id, summary, row.updatedAt);
+    } else {
+      const key = JSON.stringify(recipe); let entry = cached.get(key);
+      if (!entry) {
+        const blocks = await modelBlocks(index, recipe, signal), weight = Buffer.byteLength(JSON.stringify(blocks));
+        entry = { blocks: new Map(blocks.map(value => [value.id, value])), bytes: weight };
+        if (weight <= 8 * 1024 * 1024) {
+          while (bytes + weight > 8 * 1024 * 1024 && cached.size) {
+            const first = cached.keys().next().value!; bytes -= cached.get(first)!.bytes; cached.delete(first);
+          }
+          cached.set(key, entry); bytes += weight;
+        }
+      }
+      block = entry.blocks.get(row.id);
+    }
+    if (!block) throw new Error(`活动来源无法重建：${row.id}`);
+    return { ...block, createdRevision: row.createdRevision ?? row.revision, revision: row.revision };
+  };
+}
+
 interface CurrentState {
   phase: LivePhaseState; intent: string | null; observationId: string | null;
   updatedAt: string | null; error: string | null;
 }
 const emptyCurrent = (): CurrentState => ({ phase: emptyLivePhase(), intent: null, observationId: null, updatedAt: null, error: null });
-async function projectEvents(index: LogIndex) {
+async function projectEvents(index: LogIndex, options: ActivityBatch = {}) {
+  let processed = 0;
   let position = Number(index.meta("activityPosition") ?? 0);
   const dirty = new Set<string>(JSON.parse(index.meta("activityDirty") ?? "[]"));
   for (;;) {
-    const page = await index.queryEvents({ afterPosition: position, limit: 250 });
+    options.signal?.throwIfAborted();
+    if (processed >= (options.maxEvents ?? Infinity)) break;
+    const page = await index.queryEvents({ afterPosition: position, limit: Math.min(250, (options.maxEvents ?? Infinity) - processed) });
     if (!page.length) break;
+    processed += page.length;
     const ordinary = new Map<string, LogBlock>();
     const current = new Map<string, CurrentState>();
     const phases = new Map<string, Event[]>();
     await overlayEvents(index.path, page.map(row => row.event).filter(event =>
       !(event.trace?.modelCallId && TOOL_EVENTS.includes(event.type))), ordinary, index);
-    for (const block of ordinary.values()) await saveBlock(index, block);
-    for (const { event } of page) {
+    const positions = new Map(page.map(row => [row.event.seq, row.position]));
+    for (const block of ordinary.values()) {
+      const previous = index.store("blocks").meta(block.id)?.recipe as BlockRecipe | undefined;
+      const position = positions.get(block.seq!) ?? (previous && "position" in previous ? previous.position : undefined);
+      if (!position) throw new Error("活动块缺少原始事件位置");
+      let recipe: BlockRecipe = { kind: "event", position };
+      if (block.id.startsWith("python:")) {
+        const summary = structuredClone(block.data) as PythonSummary;
+        const exceptionPosition = summary.lastException ? positions.get(summary.lastException.seq)
+          ?? (previous?.kind === "python" ? previous.exceptionPosition : undefined) : undefined;
+        if (summary.lastException) delete summary.lastException.error;
+        recipe = { kind: "python", position, summary, ...(exceptionPosition ? { exceptionPosition } : {}) };
+      }
+      await saveBlock(index, block, recipe);
+    }
+    for (const { event, position: eventPosition } of page) {
       const model = event.trace?.modelCallId;
       if (model) {
-        if (!index.store("streams").meta(model)) await index.store("streams").put(model, { anchor: event, state: emptyStream() });
+        if (!index.store("streams").meta(model)) index.store("streams").index(model, { anchorPosition: eventPosition, offset: 0 });
         dirty.add(model);
       }
       const key = `current:${event.trace?.epoch ?? ""}`;
@@ -339,7 +426,7 @@ async function projectEvents(index: LogIndex) {
       if (event.type === "tool_start" && event.data.intent) state!.intent = event.data.intent;
       for (const observation of eventObservations(event)) {
         if (observation.mediaType?.startsWith("image/") && !index.store("images").meta(observation.id))
-          await index.store("images").put(observation.id, true);
+          index.store("images").index(observation.id, {});
       }
       if (event.type === "model_start") {
         const images = (event.data.observations ?? []).filter((id: string) => index.store("images").meta(id));
@@ -365,51 +452,48 @@ async function projectEvents(index: LogIndex) {
   }
   return dirty;
 }
-async function projectModel(index: LogIndex, model: string, changed: boolean) {
+async function projectModel(index: LogIndex, model: string, changed: boolean, signal?: AbortSignal) {
   if (!/^[a-zA-Z0-9_-]+$/.test(model)) throw new Error("无效的模型调用 ID");
   const relative = `streams/${model}.jsonl`;
   let next = await index.readAppend(relative);
   if (!changed && !next?.changed) return;
-  const saved = (await index.store("streams").get<{ anchor: Event; state: StreamState }>(model))!;
-  const { anchor, state } = saved;
-  let projected = advanceStream([], model, anchor, state);
-  let lastOffset = -1;
+  const saved = index.store("streams").meta(model)!;
+  let streamOffset = Number(saved.offset ?? 0), lastOffset = -1;
   while (next?.changed && next.state.offset !== lastOffset) {
-    lastOffset = next.state.offset;
-    projected = await storedStream(next.text, index.path, model, anchor, state, index.archiveWorkspace);
+    lastOffset = next.state.offset; streamOffset = next.state.offset;
     index.saveFile(next.state);
     if (next.state.offset === next.state.size || !next.text) break;
     next = await index.readAppend(relative);
   }
-  await index.store("streams").put(model, { anchor, state });
-  const blocks = new Map(projected.map(block => [block.id, block]));
-  let position = 0;
-  const events: Event[] = [];
-  // Only one call's tool lifecycle is read; unrelated history stays on disk.
-  for (;;) {
-    const page = await index.queryEvents({ model, afterPosition: position, types: TOOL_EVENTS });
-    if (!page.length) break;
-    events.push(...page.map(row => row.event)); position = page.at(-1)!.position;
-  }
-  await overlayEvents(index.path, events, blocks, index);
-  for (const block of blocks.values()) await saveBlock(index, block);
+  if (next) index.saveFile(next.state);
+  index.store("streams").index(model, { anchorPosition: saved.anchorPosition, offset: streamOffset });
+  const recipe: BlockRecipe = { kind: "model", model, anchorPosition: saved.anchorPosition,
+    streamOffset, eventCutoff: Number(index.meta("activityPosition") ?? 0) };
+  for (const block of await modelBlocks(index, recipe, signal)) await saveBlock(index, block, recipe);
 }
-const refreshes = new WeakMap<LogIndex, Promise<void>>();
+export interface ActivityBatch { maxEvents?: number; maxBytes?: number; signal?: AbortSignal; ingest?: boolean }
+export function activityProgress(index: LogIndex) {
+  const position = Number(index.meta("activityPosition") ?? 0);
+  return { position, total: index.eventRevision, complete: position >= index.eventRevision && index.progress.complete };
+}
+const refreshes = new WeakMap<LogIndex, { promise: Promise<void>; signal?: AbortSignal }>();
 /** Incremental source ingestion; no historical Event[] or global block array. */
-export function refreshActivity(index: LogIndex) {
+export function refreshActivity(index: LogIndex, options: ActivityBatch = {}) {
   let pending = refreshes.get(index);
-  if (!pending) {
-    pending = index.exclusive(async () => {
+  if (!pending || pending.signal?.aborted) {
+    const next = { promise: undefined! as Promise<void>, signal: options.signal };
+    next.promise = index.exclusive(async () => {
       for (let attempt = 0; ; attempt++) {
         try {
           // Presentation changes invalidate only the disposable index, never source logs.
-          if (index.meta("activitySemantics") !== "4") { index.resetActivity(); index.setMeta("activitySemantics", "4"); }
-          await index.appendEvents();
-          const dirty = await projectEvents(index);
+          if (index.meta("activitySemantics") !== "5") { index.resetActivity(); index.setMeta("activitySemantics", "5"); }
+          if (options.ingest !== false) await index.appendEvents({ maxBytes: options.maxBytes, signal: options.signal });
+          const dirty = await projectEvents(index, options);
           // Checking file metadata also notices a late stream append or replacement
           // after model_end. Parser states are loaded only for changed calls.
-          for (const row of index.store("streams").entries())
-            await projectModel(index, row.id, dirty.has(row.id));
+          for (const row of index.store("streams").entries()) {
+            options.signal?.throwIfAborted(); await projectModel(index, row.id, dirty.has(row.id), options.signal);
+          }
           index.setMeta("activityDirty", "[]");
           break;
         } catch (error) {
@@ -417,10 +501,10 @@ export function refreshActivity(index: LogIndex) {
           await index.reset();
         }
       }
-    }).finally(() => refreshes.delete(index));
-    refreshes.set(index, pending);
+    }).finally(() => { if (refreshes.get(index) === next) refreshes.delete(index); });
+    refreshes.set(index, next); pending = next;
   }
-  return pending;
+  return pending.promise;
 }
 
 export interface ActivityScope { project: string; runId: string | null; epoch: string | null }
@@ -470,7 +554,7 @@ export async function queryActivity(index: LogIndex, scope: ActivityScope, query
   signal?.throwIfAborted();
   const limit = Math.max(1, Math.min(Math.floor(query.limit ?? 100) || 100, 500));
   const store = index.store("blocks");
-  const generation = index.generation;
+  const generation = index.meta("activityGeneration") ?? index.generation;
   const head = index.revision;
   const token = (extra: object) => encode({ scope, generation, ...extra });
   const bound = (value: any) => value?.generation === generation && JSON.stringify(value.scope) === JSON.stringify(scope);
@@ -481,7 +565,8 @@ export async function queryActivity(index: LogIndex, scope: ActivityScope, query
     latestEventAt: latest?.at ?? null, latestSourceAt: latest?.origin?.at ?? latest?.at ?? null,
     generatedAt: new Date().toISOString(), durationMs: 0,
     blockCount: store.count(epochFilter), revision: head, generation };
-  const read = (items: RecordPointer[]) => Promise.all(items.map(item => store.read<LogBlock>(item)));
+  const hydrate = blockReader(index, signal);
+  const read = async (items: RecordPointer[]) => { const blocks: LogBlock[] = []; for (const item of items) blocks.push(await hydrate(item)); return blocks; };
   let examined = 0;
   const yieldRead = async () => {
     await new Promise<void>(resolve => setImmediate(resolve));
@@ -502,7 +587,7 @@ export async function queryActivity(index: LogIndex, scope: ActivityScope, query
       if (++examined % 250 === 0) await yieldRead();
       if (!inEpoch(pointer) || (kind === "all" ? pointer.kind === "diagnostic" : pointer.kind !== kind)) continue;
       // Search scans disk lazily. Neither all pointers nor matching bodies are retained.
-      const block = q ? await store.read<LogBlock>(pointer) : undefined;
+      const block = q ? await hydrate(pointer) : undefined;
       if (q && !activitySearchText(block!).includes(q)) continue;
       total++;
       if (validBefore && !(String(pointer.at) < before.at || (pointer.at === before.at && pointer.id < before.id))) continue;
@@ -556,9 +641,10 @@ export async function getActivity(project: string, run?: string, epoch?: string,
       generatedAt: new Date().toISOString(), durationMs: performance.now() - started, blockCount: 0, revision: 0, generation: "empty" },
     current: { workspace: selected.workspace ?? null, runId: null, epoch: null, activity: "idle", phase: "工作区尚无运行记录",
       intent: null, observationId: null, updatedAt: null, error: null } };
-  const { manifest, index, release } = await loadRun(project, runId);
+  const { manifest, index, release } = await openRun(project, runId);
   try {
-  await refreshActivity(index);
+  await prepareArchive(index, { kind: "activity", step: signal => refreshActivity(index, { maxEvents: 2000, ingest: false, signal }),
+    progress: () => activityProgress(index), signal });
   // Readers may leave; shared projection work remains available to other consumers.
   signal?.throwIfAborted();
   const selectedState = await index.exclusive(async () => {

@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import type { Project, RunData } from "@/lib/types";
+import type { ReplayOverviewResult } from "@/lib/replay-types";
 import { initialSelection, latestGameRun } from "@/lib/initial-selection";
 import { ActivityFeed } from "@/components/activity-feed";
 import { useActivityFeed } from "@/components/use-activity-feed";
@@ -22,12 +23,7 @@ import {
   transport,
 } from "@/components/run-visuals";
 
-async function json<T>(url: string, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(url, { cache: "no-store", signal });
-  const result = await response.json();
-  if (!response.ok) throw new Error(result.error ?? "读取失败");
-  return result;
-}
+import { readArchiveJson as json, type ArchiveProgress } from "@/lib/archive-client";
 const subscribeLocation = (listener: () => void) => {
   window.addEventListener("popstate", listener);
   return () => window.removeEventListener("popstate", listener);
@@ -120,7 +116,12 @@ export default function Dashboard() {
   const [loaded, setLoaded] = useState<{ key: string; data: RunData } | null>(
     null,
   );
+  const [replayCycles, setReplayCycles] = useState<{ key: string; cycles: RunData["cycles"] } | null>(null);
+  const onReplayOverview = useCallback((value: ReplayOverviewResult) => {
+    setReplayCycles({ key: JSON.stringify([value.project, value.run]), cycles: value.cycles });
+  }, []);
   const [error, setError] = useState("");
+  const [preparing, setPreparing] = useState<{ key: string; progress: ArchiveProgress } | null>(null);
   const [refresh, setRefresh] = useState(true);
   const alice = useAliceFollow();
   const [stopping, setStopping] = useState(false);
@@ -135,6 +136,9 @@ export default function Dashboard() {
   const selectedImage = query.get("image") ?? undefined;
   const key = JSON.stringify([scopeKey, beforeCall, requestedCall, selectedImage]);
   const data = loaded?.key === key ? loaded.data : null;
+  const cycles = view === "replay"
+    ? replayCycles?.key === JSON.stringify([selection.project, run]) ? replayCycles.cycles : []
+    : data?.cycles ?? [];
   const activity = useActivityFeed({ project: selection.project, run, epoch: selection.epoch || undefined,
     enabled: view === "live", refresh, selectedBlock: query.get("block") ?? undefined });
   const call =
@@ -152,6 +156,12 @@ export default function Dashboard() {
     for (const [name, value] of Object.entries(patch))
       value ? params.set(name, value) : params.delete(name);
     navigateUrl("/?" + params.toString());
+  };
+  const viewLink = (id: View) => {
+    const params = new URLSearchParams(query);
+    params.set("view", id);
+    if (id !== "replay" && params.get("epoch") === "all") params.delete("epoch");
+    return "?" + params.toString();
   };
   const pinned = {
     project: selection.project,
@@ -184,7 +194,7 @@ export default function Dashboard() {
     };
   }, []);
   useEffect(() => {
-    if (benchmarkCases || !selection.project || !run) return;
+    if (benchmarkCases || view === "replay" || !selection.project || !run) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     const params = new URLSearchParams({
@@ -200,15 +210,17 @@ export default function Dashboard() {
         const next = await json<RunData>(
           "/api/run?" + params,
           controller.signal,
+          progress => setPreparing({ key, progress }),
         );
         if (controller.signal.aborted) return;
         setLoaded({ key, data: next });
+        setPreparing(null);
         setError("");
 
       } catch (e) {
         if (!controller.signal.aborted) setError(String(e));
       } finally {
-        if (!controller.signal.aborted && refresh && view !== "replay")
+        if (!controller.signal.aborted && refresh)
           timer = setTimeout(load, 2500);
       }
     };
@@ -345,15 +357,12 @@ export default function Dashboard() {
           {(Object.keys(views) as View[]).map((id) => (
             <a
               key={id}
-              href={
-                "?" +
-                new URLSearchParams({ ...Object.fromEntries(query), view: id })
-              }
+              href={viewLink(id)}
               className={view === id ? "active" : ""}
               aria-current={view === id ? "page" : undefined}
               onClick={(e) => {
                 e.preventDefault();
-                navigate({ view: id });
+                navigateUrl(viewLink(id));
               }}
             >
               <NavIcon kind={id} />
@@ -421,14 +430,15 @@ export default function Dashboard() {
                   }
                 >
                   <option value="">
-                    {data?.manifest.kind === "benchmark" && !data.cycles.length
+                    {data?.manifest.kind === "benchmark" && !cycles.length
                       ? "完整基准运行"
                       : "最新周期"}
-                    {data?.cycles.length ? " · #" + data.cycles.length : ""}
+                    {cycles.length ? " · #" + cycles.length : ""}
                   </option>
-                  {[...(data?.cycles ?? [])].reverse().map((c, i) => (
+                  {view === "replay" && <option value="all">全部周期</option>}
+                  {[...cycles].reverse().map((c, i) => (
                     <option key={c.epoch} value={c.epoch}>
-                      #{data!.cycles.length - i} · {clockTime(c.startedAt)}
+                      #{cycles.length - i} · {clockTime(c.startedAt)}
                     </option>
                   ))}
                 </select>
@@ -496,7 +506,8 @@ export default function Dashboard() {
           {view === "alice" ? (
             <AliceSettings follow={alice} projects={projects} />
           ) : view === "replay" ? (
-            <TimelinePlayer key={scopeKey} project={selection.project} run={run} epoch={selection.epoch || undefined}
+            <TimelinePlayer key={scopeKey} project={selection.project} run={run} epoch={selection.epoch || "latest"}
+              onOverview={onReplayOverview}
               position={query.get("at")} onPosition={at => navigate({ project: selection.project, run, at: String(at) })} />
           ) : benchmarkCases ? (
             <BenchmarkCases
@@ -515,7 +526,7 @@ export default function Dashboard() {
                     ? "还没有运行记录"
                     : error
                       ? "暂时无法读取运行"
-                      : "正在读取运行日志"}
+                      : preparing?.key === key ? "正在整理历史目录" : "正在读取运行日志"}
               </h2>
               <p>
                 {!catalogReady
@@ -524,7 +535,9 @@ export default function Dashboard() {
                     ? "在工作空间启动 RSA 后，画面、日志和性能会出现在这里。"
                     : error
                       ? "请检查本地日志服务，恢复连接后会自动更新。"
-                      : "保留每一次观察与行动。"}
+                      : preparing?.key === key
+                        ? `已读取 ${bytes(preparing.progress.bytes)} / ${bytes(preparing.progress.totalBytes)}${preparing.progress.projection ? `，已整理 ${preparing.progress.projection.position.toLocaleString()} / ${preparing.progress.projection.total.toLocaleString()} 条已知事件` : ""}。录像可在回放页直接播放。`
+                        : "保留每一次观察与行动。"}
               </p>
             </section>
           ) : (

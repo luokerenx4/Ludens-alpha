@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, writeFile, appendFile, realpath, rm, symlink, readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, appendFile, realpath, rm, symlink, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { getReplay } from "../lib/replay";
@@ -67,6 +67,12 @@ async function fixture() {
     { ms: 33000, channel: "vision", runId: "unrelated" }]);
   return { root, workspace, run, timeline, records,
     query: (query: Parameters<typeof getReplay>[2]) => getReplay("project", "run", query, root),
+    window: async (query: Omit<Parameters<typeof getReplay>[2], "mode">) => {
+      await getReplay("project", "run", { mode: "overview", epoch: query.epoch }, root);
+      const frames = await getReplay("project", "run", { ...query, mode: "frames" }, root) as ReplayWindow;
+      const events = await getReplay("project", "run", { ...query, mode: "events" }, root) as ReplayWindow;
+      return { ...frames, items: events.items };
+    },
     close: async () => { await closeLogIndexes(); await rm(root, { recursive: true, force: true }); } };
 }
 
@@ -75,26 +81,46 @@ test("replay uses all recorded channels, scopes epoch boundaries, and pairs span
   try {
     const overview = await f.query({ mode: "overview", epoch: "one" }) as ReplayOverview;
     assert.deepEqual([overview.startAt, overview.endAt], [start, start + 20000]);
-    assert.deepEqual(overview.capabilities.sort(), ["temperature", "vision"]);
-    const window = await f.query({ mode: "window", epoch: "one", start: start + 10000, end: start + 15000 }) as ReplayWindow;
+    assert.equal(overview.coverage?.complete, true);
+    const window = await f.window({ epoch: "one", start: start + 10000, end: start + 15000 }) as ReplayWindow;
     assert.deepEqual(window.frames.map(frame => frame.sequence), [2, 4, 5, 6]);
     assert.equal(window.frames.find(frame => frame.sequence === 5)?.media.length, 2);
     const action = window.items.find(item => item.track === "action")!;
     assert.deepEqual([action.startAt, action.endAt, action.status], [start + 1000, start + 12000, "completed"]);
     assert.equal(window.items.filter(item => item.track === "model").length, 0);
-    const full = await f.query({ mode: "window", epoch: "one", start, end: start + 40000 }) as ReplayWindow;
+    const full = await f.window({ epoch: "one", start, end: start + 40000 }) as ReplayWindow;
     assert(!full.frames.some(frame => frame.sequence >= 8));
     assert(full.items.some(item => item.track === "tool" && item.status === "error"));
-    const second = await f.query({ mode: "window", epoch: "two", start: start + 30000, end: start + 32000 }) as ReplayWindow;
+    const second = await f.window({ epoch: "two", start: start + 30000, end: start + 32000 }) as ReplayWindow;
     assert.deepEqual(second.frames.map(frame => frame.sequence), [9]);
     const all = await f.query({ mode: "overview" }) as ReplayOverview;
     assert.equal(all.endAt, start + 32000);
     await assert.rejects(f.query({ mode: "overview", epoch: "fake" }), /没有时空轴记录/);
-    await assert.rejects(f.query({ mode: "window", start, end: start + 60001 }), /不超过 60 秒/);
+    await assert.rejects(f.window({ start, end: start + 60001 }), /不超过 60 秒/);
   } finally { await f.close(); }
 });
 
-test("video playback uses stable segment URLs, time offsets, explicit pending/gaps and scoped offline files", async () => {
+test("replay exposes control cycles and resolves latest without building run statistics", async () => {
+  const f = await fixture();
+  try {
+    const latest = await f.query({ mode: "overview", epoch: "latest" }) as ReplayOverview;
+    assert.deepEqual(latest.cycles, [{ epoch: "one", startedAt: iso(0) }, { epoch: "two", startedAt: iso(30000) }]);
+    assert.equal(latest.epoch, "two");
+    assert.deepEqual([latest.startAt, latest.endAt], [start + 30000, start + 32000]);
+    const all = await f.query({ mode: "overview", epoch: "all" }) as ReplayOverview;
+    assert.equal(all.epoch, null);
+    assert.deepEqual([all.startAt, all.endAt], [start, start + 32000]);
+    const earlier = await f.query({ mode: "overview", epoch: "one" }) as ReplayOverview;
+    assert.equal(earlier.epoch, "one");
+    const frames = await f.query({ mode: "frames", epoch: latest.epoch!, start: latest.startAt, end: latest.endAt }) as ReplayWindow;
+    assert.ok(frames.frames.length);
+    assert.ok(frames.frames.flatMap(frame => frame.media).every(media => new URL(media.url, "http://localhost").searchParams.get("epoch") === "two"));
+    const directories = await readdir(join(f.run, ".dashboard-index"));
+    assert.equal(directories.some(name => name.startsWith("run-")), false, "cycle selection only reads canonical control metadata");
+  } finally { await f.close(); }
+});
+
+test("video playback has stable asset identity, recorded proof URLs, explicit gaps and scoped offline files", async () => {
   const f = await fixture();
   const assets = ["video/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.mp4", "video/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb.mp4"];
   try {
@@ -108,24 +134,99 @@ test("video playback uses stable segment URLs, time offsets, explicit pending/ga
       { ms: 15500, channel: "dual", video: assets.map(asset => ({ asset, pts: 500000 })) },
       { ms: 15900, channel: "dual", video: assets.map(asset => ({ asset, pts: 900000, gap: true })) },
     ], 11);
-    let page = await f.query({ mode: "window", epoch: "one", start: start + 15000, end: start + 16000 }) as ReplayWindow;
+    let page = await f.window({ epoch: "one", start: start + 15000, end: start + 16000 }) as ReplayWindow;
     const first = page.frames.find(frame => frame.sequence === 11)!, second = page.frames.find(frame => frame.sequence === 12)!;
-    assert.equal(first.media[0].video?.url, second.media[0].video?.url);
+    assert.equal(first.media[0].video?.assetId, second.media[0].video?.assetId);
+    assert.notEqual(first.media[0].video?.url, second.media[0].video?.url);
     assert.notEqual(first.media[0].video?.url, first.media[1].video?.url);
     assert.equal(first.media[0].video?.originAt, start + 15000);
     assert.equal(second.media[0].video?.originAt, start + 15000);
     assert.equal(first.media[0].video?.status, "pending");
     assert.equal(page.frames.find(frame => frame.sequence === 13)?.media[0].video?.status, "gap");
-    await assert.rejects(f.query({ mode: "segment", epoch: "one", asset: assets[0] }), { status: 409 });
+    await assert.rejects(f.query({ mode: "segment", epoch: "one", record: "record-11", sequence: 11, media: 0, asset: assets[0] }), { status: 409 });
     for (const asset of assets) await writeFile(join(f.timeline, asset + ".json"), JSON.stringify({ status: "ready", durationSeconds: 0.6 }));
-    page = await f.query({ mode: "window", epoch: "one", start: start + 15000, end: start + 16000 }) as ReplayWindow;
+    page = await f.window({ epoch: "one", start: start + 15000, end: start + 16000 }) as ReplayWindow;
     assert.equal(page.frames.find(frame => frame.sequence === 11)?.media[0].video?.status, "ready");
-    const video = await f.query({ mode: "segment", epoch: "one", asset: assets[0] }) as FileMedia;
+    const video = await f.query({ mode: "segment", epoch: "one", record: "record-11", sequence: 11, media: 0, asset: assets[0] }) as FileMedia;
     assert.equal(video.file, join(f.timeline, assets[0])); assert.equal(video.mediaType, "video/mp4"); assert(!("bytes" in video));
-    await assert.rejects(f.query({ mode: "segment", epoch: "two", asset: assets[0] }), { status: 404 });
+    await assert.rejects(f.query({ mode: "segment", epoch: "two", record: "record-11", sequence: 11, media: 0, asset: assets[0] }), { status: 404 });
     await assert.rejects(f.query({ mode: "segment", asset: "../video/escape.mp4" }), /无效/);
     await rm(join(f.timeline, assets[0])); await symlink(join(f.run, "events.jsonl"), join(f.timeline, assets[0]));
-    await assert.rejects(f.query({ mode: "segment", asset: assets[0] }), /必须位于/);
+    await assert.rejects(f.query({ mode: "segment", record: "record-11", sequence: 11, media: 0, asset: assets[0] }), /必须位于/);
+  } finally { await f.close(); }
+});
+
+test("cold replay frames and video do not wait for full event ingestion or create replay projections", async () => {
+  const f = await fixture();
+  try {
+    const asset = "video/cold.mp4";
+    await mkdir(join(f.timeline, "video"));
+    await writeFile(join(f.timeline, asset), "video bytes");
+    await writeFile(join(f.timeline, asset + ".json"), JSON.stringify({ status: "ready", durationSeconds: 1 }));
+    await f.records([{ ms: 15000, channel: "dual", video: [{ asset, pts: 0 }] }], 11);
+    const rows = Array.from({ length: 4500 }, (_, i) => JSON.stringify(event(i + 11, 16000, "diagnostic", { text: "x".repeat(1200) })));
+    await appendFile(join(f.run, "events.jsonl"), rows.join("\n") + "\n");
+    const overview = await f.query({ mode: "overview", epoch: "one" }) as ReplayOverview;
+    assert.equal(overview.coverage?.complete, false);
+    const index = getLogIndex(f.run), revision = index.eventRevision;
+    assert(revision > 10 && revision < 4510);
+    const page = await f.query({ mode: "frames", epoch: "one", start: start + 15000, end: start + 17000 }) as ReplayWindow;
+    assert(page.frames.some(frame => frame.sequence === 11)); assert.equal(page.items.length, 0);
+    const video = await f.query({ mode: "segment", epoch: "one", record: "record-11", sequence: 11, media: 0 }) as FileMedia;
+    assert.equal(video.file, join(f.timeline, asset));
+    assert.equal(index.eventRevision, revision);
+    assert.equal(index.meta("operations:position"), undefined);
+    const names = await readdir(index.directory);
+    assert(!names.some(name => name.startsWith("replay-")));
+    const controller = new AbortController(); controller.abort();
+    await assert.rejects(getReplay("project", "run", { mode: "overview" }, f.root, controller.signal), { name: "AbortError" });
+    assert.equal(index.eventRevision, revision);
+  } finally { await f.close(); }
+});
+
+test("event interval preparation is explicit and never labels unprepared model calls as logs", async () => {
+  const f = await fixture();
+  try {
+    const rows = Array.from({ length: 5100 }, (_, i) => event(i + 11, 10000, "model_start", { model: "sol" }, { modelCallId: `pending-${i}` }));
+    rows.push(event(5111, 16000, "perception_observe_end", { status: { state: "ready", generation: "worker" } }));
+    await appendFile(join(f.run, "events.jsonl"), rows.map(row => JSON.stringify(row)).join("\n") + "\n");
+    const query = { mode: "events" as const, epoch: "one", start: start + 15000, end: start + 17000 };
+    await assert.rejects(f.query(query), { status: 202, code: "ARCHIVE_PREPARING" });
+    const frames = await f.query({ ...query, mode: "frames" }) as ReplayWindow;
+    assert(frames.frames.length > 0);
+    let page = await f.query(query) as ReplayWindow;
+    const items = [...page.items];
+    while (page.nextCursor) { page = await f.query({ ...query, cursor: page.nextCursor }) as ReplayWindow; items.push(...page.items); }
+    assert.equal(items.filter(item => item.track === "model").length, 5100);
+    assert(items.filter(item => item.track === "model").every(item => item.status === "pending"));
+    assert(items.every(item => typeof item.status === "string"));
+  } finally { await f.close(); }
+});
+
+test("whole-run bounds use source time extrema instead of the last received event", async () => {
+  const f = await fixture();
+  try {
+    await appendFile(join(f.run, "events.jsonl"), JSON.stringify(event(11, -1000, "late")) + "\n");
+    const overview = await f.query({ mode: "overview" }) as ReplayOverview;
+    assert.equal(overview.startAt, start - 1000); assert.equal(overview.endAt, start + 32000);
+    const window = await f.query({ mode: "frames", start: start + 30000, end: start + 32000 }) as ReplayWindow;
+    assert(window.frames.some(frame => frame.sequence === 9));
+  } finally { await f.close(); }
+});
+
+test("frame pages stay bounded with carried channels and exclude later appended samples", async () => {
+  const f = await fixture();
+  try {
+    // Equal-time samples exercise pagination without making frame rate assumptions.
+    await f.records(Array.from({ length: 520 }, (_, i) => ({ ms: 16000, channel: "vision" })), 11);
+    const query = { mode: "frames" as const, epoch: "one", start: start + 15000, end: start + 17000 };
+    const first = await f.query(query) as ReplayWindow;
+    assert.equal(first.frames.length, 500); assert(first.nextCursor); assert.equal(first.items.length, 0);
+    await f.records([{ ms: 16000, channel: "vision" }], 531);
+    const second = await f.query({ ...query, cursor: first.nextCursor }) as ReplayWindow;
+    const ids = [...first.frames, ...second.frames].map(frame => frame.sequence);
+    assert.equal(ids.length, 522); assert.equal(new Set(ids).size, ids.length);
+    assert(!ids.includes(531)); assert.equal(second.nextCursor, undefined);
   } finally { await f.close(); }
 });
 
@@ -133,7 +234,7 @@ test("bounded pagination retains equal-time rows and is isolated from appended e
   const f = await fixture();
   try {
     await appendFile(join(f.run, "events.jsonl"), Array.from({ length: 1100 }, (_, i) => JSON.stringify(event(i + 11, 16000, "diagnostic"))).join("\n") + "\n");
-    const query = { mode: "window" as const, epoch: "one", start: start + 15000, end: start + 17000 };
+    const query = { mode: "events" as const, epoch: "one", start: start + 15000, end: start + 17000 };
     const first = await f.query(query) as ReplayWindow;
     assert.equal(first.frames.length + first.items.length, 500); assert(first.nextCursor);
     await appendFile(join(f.run, "events.jsonl"), JSON.stringify(event(1111, 16500, "late")) + "\n");
@@ -144,9 +245,29 @@ test("bounded pagination retains equal-time rows and is isolated from appended e
       assert(page.frames.length + page.items.length <= 500);
       ids.push(...page.items.map(item => item.id), ...page.frames.map(item => item.id)); cursor = page.nextCursor;
     }
-    assert.equal(ids.length, 1102); assert.equal(new Set(ids).size, ids.length);
+    assert.equal(ids.length, 1100); assert.equal(new Set(ids).size, ids.length);
     await assert.rejects(f.query({ ...query, end: query.end + 1, cursor: first.nextCursor }), /分页游标/);
     const stats = indexCacheStats(); assert(stats.bytes <= stats.limit);
+  } finally { await f.close(); }
+});
+
+test("a late operation finish cannot change interval membership halfway through a cursor", async () => {
+  const f = await fixture();
+  try {
+    const trace = { traceId: "late", spanId: "span" };
+    const rows = Array.from({ length: 500 }, (_, i) => event(i + 11, 16000, "diagnostic"));
+    rows.push(event(511, 10000, "action_start", { actionId: "late-finish" }, trace));
+    await appendFile(join(f.run, "events.jsonl"), rows.map(row => JSON.stringify(row)).join("\n") + "\n");
+    const query = { mode: "events" as const, epoch: "one", start: start + 15000, end: start + 17000 };
+    const first = await f.query(query) as ReplayWindow;
+    assert.equal(first.items.length, 500); assert(first.nextCursor);
+    // This source event arrives later but says the action ended before the requested window.
+    await appendFile(join(f.run, "events.jsonl"), JSON.stringify(event(512, 14000, "action_end", { actionId: "late-finish" }, trace)) + "\n");
+    const second = await f.query({ ...query, cursor: first.nextCursor }) as ReplayWindow;
+    assert.equal(second.items.length, 1); assert.equal(second.items[0].track, "action");
+    assert.equal(second.items[0].status, "pending"); assert.equal(second.items[0].endAt, null);
+    const fresh = await f.query(query) as ReplayWindow;
+    assert.equal(fresh.items.length, 500); assert.equal(fresh.nextCursor, undefined);
   } finally { await f.close(); }
 });
 
@@ -172,18 +293,19 @@ test("late finishes update existing spans; cancelled and unfinished actions rema
   const f = await fixture();
   try {
     await appendFile(join(f.run, "events.jsonl"), JSON.stringify(event(11, 10000, "action_start", { actionId: "pending" }, { traceId: "t2", spanId: "s" })) + "\n");
-    let page = await f.query({ mode: "window", epoch: "one", start: start + 15000, end: start + 16000 }) as ReplayWindow;
+    let page = await f.window({ epoch: "one", start: start + 15000, end: start + 16000 }) as ReplayWindow;
     assert.equal(page.items.find(item => item.source.actionId === "pending")?.endAt, null);
     await appendFile(join(f.run, "events.jsonl"), JSON.stringify(event(12, 18000, "action_end", { actionId: "pending", status: "interrupted" }, { traceId: "t2", spanId: "s" })) + "\n");
-    page = await f.query({ mode: "window", epoch: "one", start: start + 15000, end: start + 16000 }) as ReplayWindow;
+    page = await f.window({ epoch: "one", start: start + 15000, end: start + 16000 }) as ReplayWindow;
     const span = page.items.find(item => item.source.actionId === "pending")!;
     assert.equal(span.endAt, start + 18000); assert.equal(span.status, "cancelled");
     const detail = await f.query({ mode: "detail", epoch: "one", id: span.id }) as ReplayDetail;
     assert.equal((detail.data as { events: unknown[] }).events.length, 2);
     await f.records([{ ms: 16000, channel: "vision" }], 11);
-    page = await f.query({ mode: "window", epoch: "one", start: start + 15000, end: start + 17000 }) as ReplayWindow;
+    page = await f.window({ epoch: "one", start: start + 15000, end: start + 17000 }) as ReplayWindow;
     assert(page.frames.some(frame => frame.sequence === 11));
-    assert.equal(getLogIndex(f.run).meta("replay:sequence"), "11");
+    assert.equal(getLogIndex(f.run).meta("replay:sequence"), undefined);
+    assert.equal(getLogIndex(f.run).meta("replay:position"), undefined);
   } finally { await f.close(); }
 });
 

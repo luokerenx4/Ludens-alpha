@@ -2,14 +2,15 @@ import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { join, resolve, basename, dirname } from "node:path";
 import { connect } from "node:net";
 import { selectCycle } from "./aggregate";
-import { loadIndexedEvents } from "./log-index";
-import { refreshRunProjection, selectIndexedCycle, readRunProjection, indexedObservation, hasTimelineReference, type RunPage } from "./run-index";
+import { getLogIndex } from "./log-index";
+import { refreshRunProjection, selectIndexedCycle, readRunProjection, indexedObservation, hasTimelineReference, runProgress, type RunPage } from "./run-index";
+import { prepareArchive } from "./prepare-run";
 import { latestGameRun } from "./initial-selection";
 import { readTimelineRecord, timelinePath, type TimelineRecordDetail } from "./timeline-record";
 import type { Event, Manifest, Project, RunData, LiveStatus } from "./types";
 import { decodeTimelineFrame } from "../../shared/timeline-media";
 // Runtime state lives in artifacts beside the monorepo, outside its Git tree.
-export const artifactRoot = resolve(process.cwd(), "../../artifacts/rsa");
+export const artifactRoot = resolve(process.env.RSA_DASHBOARD_ARTIFACT_ROOT ?? resolve(process.cwd(), "../../artifacts/rsa"));
 const safePart = (value: string) =>
   /^[a-zA-Z0-9._-]+$/.test(value) && value !== "." && value !== "..";
 async function projectState(project: string, root: string) {
@@ -125,7 +126,7 @@ async function scanCatalog(root: string, includeEmpty: boolean): Promise<Project
     .sort((a, b) => (latestGameRun(b)?.id ?? b.runs[0]?.id ?? "")
       .localeCompare(latestGameRun(a)?.id ?? a.runs[0]?.id ?? ""));
 }
-export async function loadRun(project: string, run: string, root = artifactRoot) {
+export async function openRun(project: string, run: string, root = artifactRoot) {
   const path = await resolveRun(project, run, root);
   const manifest = JSON.parse(await readFile(join(path, "manifest.json"), "utf8")) as Manifest;
   let workspace: string | null = null;
@@ -138,9 +139,9 @@ export async function loadRun(project: string, run: string, root = artifactRoot)
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     workspace = null;
   }
-  const indexed = await loadIndexedEvents(path);
-  indexed.index.archiveWorkspace = workspace;
-  return { path, manifest, ...indexed };
+  const index = getLogIndex(path), release = index.retain();
+  index.archiveWorkspace = workspace;
+  return { path, manifest, index, release, archiveWorkspace: workspace };
 }
 export function hostRequest<T = LiveStatus>(
   socketPath: string,
@@ -205,13 +206,16 @@ export async function getRun(
   run: string,
   epoch?: string,
   page: RunPage = {},
+  signal?: AbortSignal,
 ): Promise<RunData> {
-  const { manifest, index, release } = await loadRun(project, run);
+  const { manifest, index, release } = await openRun(project, run);
   try {
   const projects = await catalog();
-  await refreshRunProjection(index);
+  await prepareArchive(index, { kind: "run", signal,
+    step: signal => refreshRunProjection(index, { maxEvents: 2000, ingest: false, signal }),
+    progress: () => runProgress(index) });
   const cycle = await selectIndexedCycle(index, manifest, epoch);
-  const { phase, ...projection } = await readRunProjection(index, cycle.selectedEpoch, page, cycle.wholeRun);
+  const { phase, ...projection } = await readRunProjection(index, cycle.selectedEpoch, page, cycle.wholeRun, Date.now(), signal);
   const latest = latestGameRun(projects.find((p) => p.id === project))?.id;
   let live: LiveStatus | null = null;
   // Only the newest manifest may designate a live socket. Archived runs never contact hosts.
@@ -250,11 +254,22 @@ export async function getRun(
   };
   } finally { release(); }
 }
+export async function controlState(project: string, run: string, epoch: string, root = artifactRoot) {
+  // Human takeover cannot wait for a cold/obsolete archive index to rebuild.
+  const path = await resolveRun(project, run, root);
+  const manifest = JSON.parse(await readFile(join(path, "manifest.json"), "utf8")) as Manifest;
+  const latest = latestGameRun((await catalog(root)).find(item => item.id === project))?.id;
+  const live = latest === run && manifest.kind !== "benchmark"
+    ? await hostRequest(manifest.socket, { kind: "status", argv: [] }).catch(() => null) : null;
+  return { manifest, live, selectedEpoch: epoch,
+    controlAllowed: !!latest && !!canControl(latest, run, live, epoch) };
+}
 export async function stopRun(
   project: string,
   run: string,
   expectedEpoch: string | null,
-  readRun: typeof getRun = getRun,
+  readRun: (project: string, run: string, epoch: string) => Promise<Pick<RunData,
+    "manifest" | "live" | "selectedEpoch" | "controlAllowed">> = controlState,
 ) {
   if (!expectedEpoch) throw new Error("必须明确选择接管周期");
   const data = await readRun(project, run, expectedEpoch);
@@ -274,9 +289,9 @@ export async function stopRun(
   });
 }
 export async function mediaFile(project: string, run: string, id: string, root = artifactRoot, signal?: AbortSignal) {
-  const { path, index, release } = await loadRun(project, run, root);
+  const { path, index, release } = await openRun(project, run, root);
   try {
-  const observation = await indexedObservation(index, id);
+  const observation = await indexedObservation(index, id, signal);
   const textMedia = observation?.mediaType.startsWith("text/") || observation?.mediaType === "application/json";
   if (
     !observation ||
@@ -328,13 +343,13 @@ export async function mediaFile(project: string, run: string, id: string, root =
 }
 
 export async function timelineRecord(project: string, run: string, recordId: string, sequence: number,
-  source: { call?: string; observation?: string }, root = artifactRoot): Promise<TimelineRecordDetail> {
+  source: { call?: string; observation?: string }, root = artifactRoot, signal?: AbortSignal): Promise<TimelineRecordDetail> {
   if (!recordId || !Number.isSafeInteger(sequence) || sequence < 1) throw new Error("无效的时空轴记录引用");
-  const { index, release } = await loadRun(project, run, root);
+  const { index, release } = await openRun(project, run, root);
   try {
-    if (!await hasTimelineReference(index, recordId, sequence, source)) throw new Error("此运行没有引用指定观测");
+    if (!await hasTimelineReference(index, recordId, sequence, source, signal)) throw new Error("此运行没有引用指定观测");
     const workspace = await registeredWorkspace(await projectState(project, root));
-    const stored = await readTimelineRecord(join(workspace, ".rsa", "timeline"), recordId, sequence)
+    const stored = await readTimelineRecord(join(workspace, ".rsa", "timeline"), recordId, sequence, signal)
       .catch(error => { if (error.code === "ENOENT") return undefined; throw error; });
     if (stored) return stored;
 
@@ -358,16 +373,4 @@ export async function timelineRecord(project: string, run: string, recordId: str
     }
     throw Object.assign(new Error("观测已过期或已移除"), { status: 410, code: "OBSERVATION_EXPIRED" });
   } finally { release(); }
-}
-
-export function localRequest(request: Request, mutation = false) {
-  const host = request.headers.get("host")?.split(":")[0];
-  if (host !== "127.0.0.1" && host !== "localhost")
-    throw new Error("只允许本地访问");
-  if (
-    mutation &&
-    request.headers.get("origin") !==
-      `${new URL(request.url).protocol}//${request.headers.get("host")}`
-  )
-    throw new Error("只允许同源控制请求");
 }

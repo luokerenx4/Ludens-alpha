@@ -152,8 +152,28 @@ rsa run --model openai-codex/gpt-6.1-sol --seconds 300 --requests 50
 
 ```sh
 (cd rsa-dashboard && npm run dev)
-# 生产构建/运行：分别执行 npm run build 和 npm start（同一组件目录）。
+# 常驻运行：先 npm run build，再 npm start（同一组件目录）。
 ```
+
+`rsa up` 的受管 Dashboard 使用 production。启动前会核对构建与当前源码的指纹；缺失或过期会明确要求在 `rsa-dashboard` 执行 `npm run build`，不会静默运行旧界面。检查发生在启动设备之前。
+
+档案读取在 Dashboard 自己的 Node worker 中运行，不进入 Next/React 的编译和异步调试环境。开发模式修改 `lib/` 后端或 `worker/` 时需要重启 Dashboard；前端仍使用 Next HMR。worker 没有独立服务或端口，随 Dashboard 退出。停止/重载 Dashboard 无需重启游戏 Host、Baseware 或模拟器。
+
+冷历史目录按请求分批补建。HTTP `202 ARCHIVE_PREPARING` 带进度，浏览器和 Pet 会取消可中断地续读；不是空历史页。关闭页面会取消后续构建，已提交目录可继续使用。录像通过现有时空轴直接读取，不等待完整活动日志整理。`.dashboard-index` 只是可重建目录，升级格式会使旧分页游标失效，不修改原日志、session 或录像。
+
+真实档案的离线压力检查使用独立缓存，避免改写正在使用的目录：
+
+```sh
+cd rsa-dashboard
+node --expose-gc --max-old-space-size=1024 --import tsx scripts/check-index-memory.ts \
+  --run /absolute/path/to/workspace/logs/run-id \
+  --cache-root /absolute/path/to/temporary-index \
+  --output /absolute/path/to/report.json --epoch epoch-id
+```
+
+该脚本记录重建、分页和释放后的内存及目录体积；Next 开发/生产 HTTP 与实际播放仍需单独验证，不能用离线结果代替。
+
+Dashboard 共享日志客户端有变化时，重新构建 `rsa-companion` 并重启 Electron 主进程；只刷新窗口不会更新已打包的 Pet 消费器。
 
 打开 [本地控制台](http://127.0.0.1:3015)。另一个终端运行 `rsa-companion/bin/rsa-companion --show-window`，Electron 加载同一页面。关闭窗口只隐藏，双击卢登斯/点击托盘重开，Quit 才退出。
 

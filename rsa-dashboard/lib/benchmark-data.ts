@@ -4,7 +4,8 @@ import { builtinDefinitions } from "../../rsa/src/benchmark/builtins";
 import { validateDefinition } from "../../rsa/src/benchmark/contract";
 import { readResult as readStoredResult } from "../../rsa/src/benchmark/store";
 import { artifactRoot, catalog, resolveRun } from "./data";
-import { parseEvents } from "./aggregate";
+import { createReadStream } from "node:fs";
+import type { Event } from "./types";
 import {
   definitionKey,
   type BenchmarkDefinition,
@@ -128,28 +129,34 @@ export async function benchmarkEvidence(
   run: string,
   root = artifactRoot,
   reportId?: string,
+  signal?: AbortSignal,
 ): Promise<BenchmarkEvidence> {
   const { result, directory } = await readResult(project, run, root, reportId);
   const wanted = new Set(result.checks.flatMap((check) => check.evidenceSeq));
   let logAvailable = true;
-  const text = await readFile(join(directory, "events.jsonl"), "utf8").catch(
-    (error) => {
-      if (error.code !== "ENOENT") throw error;
-      logAvailable = false;
-      return "";
-    },
-  );
-  const log = parseEvents(text);
-  const events = log.filter((event) => wanted.has(event.seq));
-  const found = new Set(events.map((event) => event.seq));
-  const epochs = log
-    .filter(
-      (event) =>
-        event.type === "control" &&
-        event.data.mode === "auto" &&
-        event.trace.epoch,
-    )
-    .map((event) => event.trace.epoch);
+  const events: Event[] = [], epochs: string[] = [];
+  const stream = createReadStream(join(directory, "events.jsonl"), { encoding: "utf8", signal });
+  let pending = "";
+  try {
+    for await (const chunk of stream) {
+      signal?.throwIfAborted();
+      pending += chunk;
+      let start = 0, newline: number;
+      while ((newline = pending.indexOf("\n", start)) !== -1) {
+        const line = pending.slice(start, newline); start = newline + 1;
+        if (!line.trim()) continue;
+        const event = JSON.parse(line) as Event;
+        if (wanted.has(event.seq)) events.push(event);
+        if (event.type === "control" && event.data.mode === "auto" && event.trace.epoch) epochs.push(event.trace.epoch);
+      }
+      // A writer's unterminated final line is not committed yet.
+      pending = pending.slice(start);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    logAvailable = false;
+  } finally { stream.destroy(); }
+  const found = new Set(events.map(event => event.seq));
   return {
     result,
     events,

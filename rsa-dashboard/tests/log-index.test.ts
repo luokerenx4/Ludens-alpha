@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { appendFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { closeLogIndexes, FileRecords, getLogIndex, indexCacheStats, loadIndexedEvents, pruneLogIndexes } from "../lib/log-index";
+import { LogIndex, closeLogIndexes, FileRecords, getLogIndex, indexCacheStats, loadIndexedEvents, pruneLogIndexes } from "../lib/log-index";
 import { refreshActivity } from "../lib/activity";
 
 test("latest-only records discard old pointers and reopen the last data segment after deletion", async () => {
@@ -12,7 +12,7 @@ test("latest-only records discard old pointers and reopen the last data segment 
   try {
     await store.put("large", "x".repeat(8 * 1024 * 1024));
     await store.put("removed", "last segment");
-    assert.ok(store.meta("removed")?.file.endsWith("data-000001.jsonl"));
+    assert.ok(store.meta("removed")?.file?.endsWith("data-000001.jsonl"));
     await store.delete("removed");
     for (let i = 0; i < 1000; i++) await store.put("state", { count: i });
     assert.equal([...store.entries()].length, 2);
@@ -27,7 +27,7 @@ test("latest-only records discard old pointers and reopen the last data segment 
     store = new FileRecords(path);
     assert.equal([...store.entries()].length, 1);
     await store.put("next", "after restart");
-    assert.ok(store.meta("next")?.file.endsWith("data-000001.jsonl"));
+    assert.ok(store.meta("next")?.file?.endsWith("data-000001.jsonl"));
     assert.equal((await store.get<string>("large"))?.length, 8 * 1024 * 1024);
   } finally { store.close(); await rm(path, { recursive: true, force: true }); }
 });
@@ -50,7 +50,7 @@ test("cache format changes rebuild stale phase state without changing source log
     assert.notEqual(index.generation, generation);
     assert.equal(index.meta("current:"), undefined);
     assert.equal((await index.queryEvents()).length, 1);
-    assert.equal([...index.store("events").versions()].length, 1);
+    assert.equal([...index.store("events").versions()].length, 0);
     assert.equal(await readFile(join(path, "events.jsonl"), "utf8"), source);
   } finally { await closeLogIndexes(); await rm(path, { recursive: true, force: true }); }
 });
@@ -100,39 +100,48 @@ test("run leases protect active readers while idle indexes and pages can be evic
   }
 });
 
-test("legacy image metadata migrates to disk without losing the current model observation", async () => {
-  const path = await realpath(await mkdtemp(join(tmpdir(), "rsa-image-index-upgrade-")));
-  const source = JSON.stringify({ seq: 1, at: "2026-10-24T00:00:00Z", atMs: 0,
-    type: "control", trace: { epoch: "cycle" }, data: { mode: "auto" } }) + "\n";
+test("canonical event addresses and small relations preserve late source time, paging and cancelled subscribers", async () => {
+  const path = await realpath(await mkdtemp(join(tmpdir(), "rsa-event-directory-")));
   try {
-    await writeFile(join(path, "events.jsonl"), source);
-    let index = await getLogIndex(path);
-    await index.refreshEvents();
+    const values = Array.from({ length: 1200 }, (_, i) => ({ seq: i + 1, at: "2026-10-24T01:00:00Z", atMs: i,
+      origin: { at: new Date(Date.UTC(2026, 9, 24) + (1200 - i) * 1000).toISOString() },
+      type: "observation", trace: { epoch: "cycle", modelCallId: "model", traceId: "trace", spanId: `span-${i}` },
+      data: { id: `image-${i}`, marker: "raw-only-payload" } }));
+    await writeFile(join(path, "events.jsonl"), values.map(row => JSON.stringify(row)).join("\n") + "\n");
+    const index = getLogIndex(path), controller = new AbortController();
+    const cancelled = index.refreshEvents({ maxBytes: 4096, signal: controller.signal });
+    const surviving = index.refreshEvents({ maxBytes: 4096 }); controller.abort();
+    await assert.rejects(cancelled, { name: "AbortError" });
+    await surviving;
+    assert.ok(index.progress.bytes > 0); assert.equal(index.progress.complete, false);
     const generation = index.generation;
-    index.setMeta("image:old-top", "1");
-    index.setMeta("image:old-bottom", "1");
-    index.setMeta("unrelated", "retained");
-    await index.flush(); await closeLogIndexes();
-    index = await getLogIndex(path);
     await index.refreshEvents();
-    assert.equal(index.generation, generation);
-    assert.equal(index.eventRevision, 1);
-    assert.equal(index.meta("image:old-top"), undefined);
-    assert.equal(index.meta("image:old-bottom"), undefined);
-    assert.equal(index.meta("unrelated"), "retained");
-    assert.equal(index.store("images").count(), 2);
-    assert.equal(await index.store("images").get("old-bottom"), true);
-    const checkpoint = JSON.parse(await readFile(join(index.directory, "checkpoint.json"), "utf8"));
-    assert.ok(Object.keys(checkpoint.metadata).every(key => !key.startsWith("image:")));
-    await appendFile(join(path, "events.jsonl"), JSON.stringify({ seq: 2, at: "2026-10-24T00:00:01Z", atMs: 1000,
-      type: "model_start", trace: { epoch: "cycle" }, data: { observations: ["old-top", "old-bottom"] } }) + "\n");
-    await refreshActivity(index);
-    assert.equal(JSON.parse(index.meta("current:cycle")!).observationId, "old-bottom");
+    assert.equal(index.generation, generation); assert.equal(index.progress.complete, true);
+    const bounds = { startAt: "2026-10-24T00:00:01.000Z", endAt: "2026-10-24T00:20:00.000Z" };
+    assert.deepEqual(index.timeBounds, bounds, "source extrema are independent of receive/position order");
+    const selected = await index.queryEventRefs({ fromAt: "2026-10-24T00:00:01Z", toAt: "2026-10-24T00:00:03Z", limit: 2 });
+    assert.deepEqual(selected.map(row => row.seq), [1198, 1199]);
+    assert.equal(selected[0].file, undefined, "source path is per store, not repeated per event");
+    const next = await index.queryEventRefs({ fromAt: "2026-10-24T00:00:01Z", toAt: "2026-10-24T00:00:03Z", afterPosition: selected.at(-1)!.position });
+    assert.deepEqual(next.map(row => row.seq), [1200]);
+    assert.deepEqual(await index.readEvent(next[0]), values[1199]);
+    assert.equal((await index.queryEventRefs({ observationId: "image-100" }))[0].seq, 101);
+    assert.equal(index.store("events").count(), 1200); assert.equal([...index.store("events").versions()].length, 0);
+    assert.ok([...index.store("relations").entries()].every(row => Object.keys(row).sort().join() === "id,position"));
+    await index.exclusive(async () => 42); await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal((index as any).pending, undefined, "idle queue does not retain its completed promise chain");
     await closeLogIndexes();
-    index = await getLogIndex(path);
-    await index.refreshEvents();
-    assert.equal(index.store("images").count(), 2, "subsequent refresh does not duplicate migrated images");
-    assert.equal(index.eventRevision, 2);
+    const checkpointPath = join(path, ".dashboard-index", "checkpoint.json");
+    const checkpoint = JSON.parse(await readFile(checkpointPath, "utf8"));
+    delete checkpoint.metadata["source:minTime"]; delete checkpoint.metadata["source:maxTime"];
+    await writeFile(checkpointPath, JSON.stringify(checkpoint));
+    const reopened = getLogIndex(path);
+    assert.equal(reopened.generation, generation);
+    assert.deepEqual(reopened.timeBounds, bounds, "existing page summaries recover bounds without rebuilding");
+    await appendFile(join(path, "events.jsonl"), JSON.stringify({ ...values[0], seq: 1201,
+      origin: { at: "2026-10-23T23:00:00Z" } }) + "\n");
+    await reopened.refreshEvents();
+    assert.deepEqual(reopened.timeBounds, { ...bounds, startAt: "2026-10-23T23:00:00.000Z" });
   } finally { await closeLogIndexes(); await rm(path, { recursive: true, force: true }); }
 });
 
@@ -167,4 +176,20 @@ test("parallel run loads acquire leases before any other load can evict their in
     if (oldMax === undefined) delete process.env.RSA_DASHBOARD_INDEX_MAX_RUNS; else process.env.RSA_DASHBOARD_INDEX_MAX_RUNS = oldMax;
     await rm(root, { recursive: true, force: true });
   }
+});
+
+
+test("shutdown drains queued preparation continuations before closing the index", async () => {
+  const path = await realpath(await mkdtemp(join(tmpdir(), "rsa-index-drain-")));
+  const index = new LogIndex(path, join(path, "index"));
+  const order: string[] = [];
+  try {
+    const preparation = index.exclusive(async () => {
+      await new Promise(resolve => setTimeout(resolve, 5)); order.push("source");
+    }).then(() => index.exclusive(async () => {
+      await new Promise(resolve => setTimeout(resolve, 5)); order.push("projection");
+    }));
+    await index.drain(); order.push("drained"); await preparation;
+    assert.deepEqual(order, ["source", "projection", "drained"]);
+  } finally { index.close(); await rm(path, { recursive: true, force: true }); }
 });

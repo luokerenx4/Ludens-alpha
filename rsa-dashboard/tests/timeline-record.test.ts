@@ -38,13 +38,15 @@ test("record details read one indexed JSON payload, retain data/space and enforc
   try {
     // The preceding bytes are deliberately invalid JSON: a full-segment parser would fail.
     const prefix = Buffer.from("unrelated prior payload\n");
-    const payload = Buffer.from(JSON.stringify({ id: details.recordId, ...details, media: [] }) + "\n");
+    const payload = Buffer.from(JSON.stringify({ id: details.recordId, ...details, capability: "temperature", recordedAt: "2026-10-27T00:00:00.000Z", media: [] }) + "\n");
     const index = Buffer.alloc(128);
+    index.writeDoubleBE(Date.parse("2026-10-27T00:00:00.000Z") / 1000, 64);
+    createHash("sha256").update("temperature").digest().copy(index, 64 + 32, 0, 16);
     index.writeBigUInt64BE(2n, 64 + 8);
     index.writeBigUInt64BE(BigInt(prefix.length), 64 + 16);
     index.writeBigUInt64BE(BigInt(payload.length), 64 + 24);
     createHash("sha256").update(details.recordId).digest().copy(index, 64 + 48, 0, 16);
-    await writeFile(join(f.segments, "segment.meta.json"), JSON.stringify({ firstSequence: 1, lastSequence: 2 }));
+    await writeFile(join(f.segments, "segment.meta.json"), JSON.stringify({ firstSequence: 1, lastSequence: 2, count: 2 }));
     await writeFile(join(f.segments, "segment.idx"), index);
     await writeFile(join(f.segments, "segment.jsonl"), Buffer.concat([prefix, payload]));
     assert.deepEqual(await timelineRecord("project", "run", "temperature", 2, { call: "model" }, f.root), details);
