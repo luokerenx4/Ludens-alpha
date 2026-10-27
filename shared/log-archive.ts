@@ -4,6 +4,8 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync
 import { readFile, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { gzipSync, gunzipSync } from "node:zlib";
+import type { TimelineAssetReference, VideoFrameReference } from "./timeline-types";
+import { validateVideoReference } from "./timeline-media";
 
 export interface JsonArchiveRef {
   encoding: "rsa-json-v1";
@@ -19,8 +21,12 @@ export interface MediaReference {
   bytes: number;
   mediaType?: string;
   asset?: string;
-  status: "recorded" | "unrecorded";
+  /** Video references are registered before encoding finishes; the sidecar owns readiness. */
+  status: "recorded" | "referenced" | "unrecorded";
   reason?: string;
+  video?: VideoFrameReference;
+  /** A video frame reconstructs perception, not the exact delivered image bytes. */
+  approximate?: boolean;
 }
 export interface ReadOptions { media?: "reference" | "full"; workspace?: string | null }
 type Scalar = string | number | boolean | null;
@@ -98,20 +104,76 @@ export class JsonArchive {
   readonly workspace: string;
   readonly root: string;
   // Only small identities, never bytes or parsed histories. Eviction affects discovery, not stored references.
-  private media = new Map<string, string>();
+  private media = new Map<string, TimelineAssetReference & { indexed?: boolean }>();
   constructor(workspace: string) {
     this.workspace = realpathSync(workspace);
     this.root = ensureDirectory(this.workspace, [".rsa", "archive"]);
     ensureDirectory(this.root, ["objects"]);
+    ensureDirectory(this.root, ["media"]);
   }
 
-  registerMedia(media: { sha256: string; asset: string; [key: string]: unknown }) {
+  registerMedia(media: { sha256: string; asset: string; video?: VideoFrameReference; [key: string]: unknown }) {
     if (!HASH.test(media.sha256)) throw new Error("Invalid media hash");
-    mediaPath(media.asset);
-    if (!media.asset.endsWith(`/${media.sha256}.bin`)) throw new Error("Timeline media hash mismatch");
+    if (media.video) validateVideoReference(media);
+    else {
+      mediaPath(media.asset);
+      if (!media.asset.endsWith(`/${media.sha256}.bin`)) throw new Error("Timeline media hash mismatch");
+    }
+    // The byte lookup is a reconstruction source, not the observation's time.
+    // A later dropped copy must not invalidate identical older model images.
+    const previous = this.media.get(media.sha256);
+    if (media.video?.status === "gap" && previous && previous.video?.status !== "gap") return;
     this.media.delete(media.sha256);
-    this.media.set(media.sha256, media.asset);
+    this.media.set(media.sha256, { asset: media.asset, ...(media.video ? { video: { ...media.video } } : {}) });
     if (this.media.size > 4096) this.media.delete(this.media.keys().next().value!);
+  }
+
+  /** Only images consumed by logging get a durable, byte-free lookup. Sampling
+   * may evict the hot map; resumed/full requests still find the same source. */
+  private videoReference(sha256: string) {
+    let reference = this.media.get(sha256);
+    if (reference?.indexed) return reference;
+    const directory = ensureDirectory(this.workspace, [".rsa", "archive", "media"]);
+    const path = join(directory, `${sha256}.json`);
+    let indexed = false;
+    try {
+      if (realpathSync(path) !== path || statSync(path).size > 64 * 1024) throw new Error("Invalid archived media index");
+      const stored = JSON.parse(readFileSync(path, "utf8")) as TimelineAssetReference;
+      validateVideoReference(stored);
+      // Keep the first durable source unless it expired or encoding failed.
+      // New window copies must not be rebound to an already expired window.
+      let replace = false;
+      if (reference?.video && reference.video.status !== "gap" && reference.asset !== stored.asset) {
+        replace = stored.asset.startsWith("window-");
+        if (!replace) {
+          const statePath = join(this.workspace, ".rsa", "timeline", stored.asset + ".json");
+          try {
+            if (realpathSync(statePath) !== statePath || statSync(statePath).size > 64 * 1024)
+              throw new Error("Invalid timeline video status file");
+            replace = JSON.parse(readFileSync(statePath, "utf8")).status === "error";
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+            replace = true;
+          }
+        }
+      }
+      if (!replace) { reference = stored; indexed = true; }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    if (reference?.video && reference.video.status !== "gap") {
+      if (!indexed) {
+        const temporary = `${path}.${randomUUID()}.tmp`;
+        try {
+          writeFileSync(temporary, JSON.stringify({ asset: reference.asset, video: reference.video }) + "\n", { flag: "wx" });
+          renameSync(temporary, path);
+        } finally { try { unlinkSync(temporary); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; } }
+      }
+      this.media.delete(sha256);
+      this.media.set(sha256, { ...reference, indexed: true });
+      if (this.media.size > 4096) this.media.delete(this.media.keys().next().value!);
+    }
+    return reference;
   }
 
   private mediaNode(value: string, type?: string): Node {
@@ -122,7 +184,14 @@ export class JsonArchive {
         status: "unrecorded", reason: "invalid-base64" }];
     }
     const sha256 = hash(bytes);
-    const asset = this.media.get(sha256) ?? `objects/${sha256}.bin`;
+    const registered = this.videoReference(sha256);
+    if (registered?.video) {
+      const gap = registered.video.status === "gap";
+      return ["m", { sha256, bytes: bytes.length, ...(type ? { mediaType: type } : {}),
+        asset: registered.asset, video: registered.video, approximate: true, status: gap ? "unrecorded" : "referenced",
+        ...(gap ? { reason: registered.video.reason ?? "recording-gap" } : {}) }];
+    }
+    const asset = registered?.asset ?? `objects/${sha256}.bin`;
     const root = join(this.workspace, ".rsa", "timeline"), path = join(root, mediaPath(asset));
     let available = false;
     try { available = realpathSync(root) === root && realpathSync(path) === path && statSync(path).size === bytes.length; }
@@ -139,7 +208,9 @@ export class JsonArchive {
     // Native CLI results are often JSON inside a text block. Preserve the exact
     // surrounding string; replace only identified media value spans, not its formatting.
     if (value.trimStart().startsWith("{") || value.trimStart().startsWith("[")) {
-      try {
+      let parsed: unknown;
+      try { parsed = JSON.parse(value); parsedJson = true; } catch { /* ordinary prose */ }
+      if (parsedJson) {
         const candidates = new Map<string, Node>();
         const visit = (item: any, depth = 0, container?: string) => {
           if (typeof item === "string") {
@@ -154,7 +225,7 @@ export class JsonArchive {
             else visit(child, depth + 1, key);
           }
         };
-        const parsed = JSON.parse(value); parsedJson = true; visit(parsed);
+        visit(parsed);
         for (const token of value.matchAll(/"(?:[^"\\]|\\[\s\S])*"/g)) {
           const node = candidates.get(JSON.parse(token[0]));
           if (!node) continue;
@@ -162,7 +233,7 @@ export class JsonArchive {
           spans.push({ start: token.index! + 1, end: token.index! + token[0].length - 1,
             node: escapes.length ? ["e", node, escapes] : node });
         }
-      } catch { /* ordinary prose */ }
+      }
     }
     if (!parsedJson) for (const match of value.matchAll(uri)) {
       const start = match.index! + match[0].length - match[2]!.length;
@@ -294,6 +365,7 @@ export async function readArtifact(runDir: string, ref: any, options: ReadOption
       }
       case "m": {
         if (mode !== "full") return { $media: node[1] };
+        if (node[1].video) return missingMedia({ ...node[1], reason: "lossy-video-source; use the timeline frame for a visual reconstruction" });
         if (!node[1].asset) return missingMedia(node[1]);
         try { return fullMedia(await readUnder(join(workspace, ".rsa", "timeline"), mediaPath(node[1].asset)), node[1]); }
         catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return missingMedia(node[1]); throw error; }
@@ -326,6 +398,7 @@ export function readArtifactSync(runDir: string, ref: any, options: ReadOptions 
       }
       case "m": {
         if (mode !== "full") return { $media: node[1] };
+        if (node[1].video) return missingMedia({ ...node[1], reason: "lossy-video-source; use the timeline frame for a visual reconstruction" });
         if (!node[1].asset) return missingMedia(node[1]);
         try { return fullMedia(readUnderSync(join(workspace, ".rsa", "timeline"), mediaPath(node[1].asset)), node[1]); }
         catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return missingMedia(node[1]); throw error; }

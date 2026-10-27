@@ -75,7 +75,7 @@ def validate_sample(sample, workspace):
     json.dumps(sample, allow_nan=False)
     for item in sample.get("media", []):
         if (not isinstance(item, dict) or not isinstance(item.get("mediaType"), str)
-                or not item["mediaType"] or set(item) - {"path", "data", "mediaType", "timeline"}):
+                or not item["mediaType"] or set(item) - {"path", "data", "mediaType", "timeline", "sha256", "bytes", "approximate"}):
             raise TypeError("sample.media entries require mediaType and path or base64 data")
         if "data" in item:
             if not isinstance(item["data"], str):
@@ -138,6 +138,8 @@ class ObservationHistory:
         self.persistent = persist in {"1", "true"}
         self.lock = threading.Lock()
         self._hot = OrderedDict()
+        self._hot_media = {}
+        self._video = None
         self.hot_bytes = 0
         self._references = Counter()
         self._expired = None  # min/max wall time and last evicted sequence, not old records.
@@ -177,6 +179,16 @@ class ObservationHistory:
             # No old persistent history is exposed in window-only mode.
             self._segments = []
             self._temporary = Path(tempfile.mkdtemp(prefix=f"window-{os.getpid()}-", dir=self.directory))
+        else:
+            # The exclusive writer lock proves no live encoder owns an old
+            # pending segment. Do not advertise a killed MP4 as playable.
+            for path in (self.directory / "video").glob("*.mp4.json"):
+                state = json.loads(path.read_text())
+                if state.get("status") == "pending":
+                    state.update(status="error", error="Recording interrupted before segment finalization")
+                    temporary = path.with_suffix(".tmp")
+                    temporary.write_text(json.dumps(state) + "\n")
+                    temporary.replace(path)
 
     def policy(self):
         return {"persistent": self.persistent, "hotSeconds": self.hot_seconds,
@@ -259,6 +271,12 @@ class ObservationHistory:
         json.dumps({"identity": identity, "sampling": sampling, "trace": trace}, allow_nan=False)
         recorded_at = recorded_at or _iso(time.time())
         at = timestamp(recorded_at, "recordedAt")
+        prepared = {}
+        for index, item in enumerate(sample.get("media", [])):
+            if item["mediaType"].startswith("image/"):
+                from rsa_tools._video import image_size
+                raw = self._media_bytes(item)
+                prepared[index] = (raw, image_size(raw))
         with self.lock:
             if self._writer.closed:
                 raise RuntimeError("Workspace timeline writer is closed")
@@ -270,14 +288,27 @@ class ObservationHistory:
                 segment = self._new_segment(at)
             media_dir = self.objects if self.persistent else self._temporary
             reference = {"recordId": str(uuid.uuid4()), "sequence": self.sequence + 1}
-            archived, media_bytes = [], 0
-            for item in sample.get("media", []):
-                path, added = self._archive(item, media_dir)
-                archived.append({"path": str(path), "mediaType": item["mediaType"],
-                                 "timeline": {**reference, "asset": path.relative_to(self.directory).as_posix()}})
-                media_bytes += path.stat().st_size
-                if segment is not None:
-                    segment["mediaBytes"] += added
+            archived, media_bytes, originals = [], 0, {}
+            for index, item in enumerate(sample.get("media", [])):
+                if item["mediaType"].startswith("image/"):
+                    raw, size = prepared[index]
+                    if self._video is None:
+                        from rsa_tools._video import VideoRecorder
+                        video_dir = (self.directory if self.persistent else self._temporary) / "video"
+                        self._video = VideoRecorder(self.directory, video_dir)
+                    channel = json.dumps([identity["id"], identity.get("codeSHA"), index, generation, item["mediaType"]])
+                    location = self._video.submit(raw, channel, at, size)
+                    archived.append({"mediaType": item["mediaType"], "sha256": hashlib.sha256(raw).hexdigest(),
+                                     "bytes": len(raw), "timeline": {**reference, **location}})
+                    originals[index] = raw
+                    media_bytes += len(raw)
+                else:
+                    path, added = self._archive(item, media_dir)
+                    archived.append({"path": str(path), "mediaType": item["mediaType"],
+                                     "timeline": {**reference, "asset": path.relative_to(self.directory).as_posix()}})
+                    media_bytes += path.stat().st_size
+                    if segment is not None:
+                        segment["mediaBytes"] += added
             record = {"id": reference["recordId"], "sequence": reference["sequence"],
                       "timeline": reference, "capability": identity["id"], "identity": identity,
                       "generation": generation, "runId": run_id, "trace": trace or {},
@@ -300,16 +331,24 @@ class ObservationHistory:
             temporary = self.directory / "sequence.tmp"
             temporary.write_text(str(self.sequence))
             temporary.replace(self.directory / "sequence.json")
-            paths = tuple(item["path"] for item in archived)
+            paths = tuple(item.get("path") or str(self.directory / item["timeline"]["asset"]) for item in archived)
             cost = len(encoded) + media_bytes
             self._hot[self.sequence] = (time.monotonic(), at, encoded, paths, cost, _key(record["capability"]), _key(record["id"]))
+            self._hot_media[self.sequence] = originals
             self.hot_bytes += cost
             self._references.update(paths)
             # Window media may expire as soon as this call releases the lock.
             # Deliver its bytes now, without a second permanent archive or lease.
-            result = self._delivery(record)
+            result = self._delivery(record, originals)
             self._prune()
             return result
+
+    def _media_bytes(self, item):
+        if "data" in item:
+            return base64.b64decode(item["data"], validate=True)
+        source = Path(item["path"])
+        source = source if source.is_absolute() else self.root / source
+        return source.read_bytes()
 
     def _archive(self, item, directory):
         directory.mkdir(parents=True, exist_ok=True)
@@ -364,6 +403,14 @@ class ObservationHistory:
                              if item["timeline"]["asset"] == source["asset"]), None)
             if original is None:
                 raise ValueError("Derived media source asset does not belong to the record")
+            video = original["timeline"].get("video")
+            if video is not None:
+                # The supplied bytes identify this delivery. Historical replay
+                # reconstructs its video source, not an exact second PNG archive.
+                return {"sha256": hashlib.sha256(raw).hexdigest(), "asset": source["asset"],
+                        "video": video, "approximate": True,
+                        "mediaType": media_type, "bytes": len(raw), "recordId": source["recordId"],
+                        "sequence": source["sequence"], "sourceAsset": source["asset"], "transform": transform}
             path = self.directory / source["asset"]
             directory = self.objects if self.persistent else self._temporary
             # Only writer-owned immutable media is a source, never an arbitrary
@@ -411,15 +458,36 @@ class ObservationHistory:
             return self._read((*values[:4], path.with_suffix(".jsonl"), *values[4:]))
         return None
 
-    def _delivery(self, record):
-        if self.persistent:
-            return record
-        return {**record, "media": [{**item, "data": base64.b64encode(Path(item["path"]).read_bytes()).decode("ascii")}
-                                    for item in record["media"]]}
+    def _delivery(self, record, originals=None, budget=None):
+        originals = self._hot_media.get(record["sequence"], {}) if originals is None else originals
+        media = []
+        for index, item in enumerate(record["media"]):
+            video = item["timeline"].get("video")
+            if video is not None:
+                raw = originals.get(index)
+                cold = raw is None
+                if cold:
+                    from rsa_tools._video import decode_frame
+                    raw = decode_frame(self.directory, item["timeline"]["asset"], video)
+                if budget is not None:
+                    budget[0] -= len(raw)
+                    if budget[0] < 0:
+                        raise ValueError("Observation media exceed the query byte budget; request a smaller range")
+                media.append({**item, "data": base64.b64encode(raw).decode("ascii"),
+                              **({"mediaType": "image/png", "approximate": True,
+                                  "sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw)} if cold else {})})
+            elif not self.persistent:
+                media.append({**item, "data": base64.b64encode(Path(item["path"]).read_bytes()).decode("ascii")})
+            else:
+                media.append(item)
+        return {**record, "media": media}
 
     def _delete_unused(self, path):
         if not self.persistent and not self._references.get(path):
-            Path(path).unlink(missing_ok=True)
+            if Path(path).suffix == ".mp4" and self._video is not None:
+                self._video.discard(Path(path).relative_to(self.directory).as_posix())
+            else:
+                Path(path).unlink(missing_ok=True)
 
     def _prune(self):
         cutoff = time.monotonic() - self.hot_seconds
@@ -429,6 +497,7 @@ class ObservationHistory:
             if created > cutoff and self.hot_bytes <= self.hot_limit:
                 break
             self._hot.pop(sequence)
+            self._hot_media.pop(sequence, None)
             self.hot_bytes -= cost
             if not self.persistent:
                 previous = self._expired or (at, at, 0)
@@ -448,7 +517,10 @@ class ObservationHistory:
             return
         try:
             with self.lock:
+                if self._video is not None:
+                    self._video.close()
                 self._hot.clear()
+                self._hot_media.clear()
                 self._references.clear()
                 self.hot_bytes = 0
                 if self._temporary is not None:
@@ -568,12 +640,21 @@ class ObservationHistory:
                         if len(selected) > limit:
                             break
             has_more = len(selected) > limit
-            records = [self._delivery(self._read(entry)) for entry in selected[:limit]]
-            result = {"records": records, "query": query, "hasMore": has_more,
-                      "availability": self._availability(query, records)}
-            if has_more:
-                result["nextAfter"] = records[-1]["sequence"]
-            return result
+            records = [self._read(entry) for entry in selected[:limit]]
+            availability = self._availability(query, records)
+            budget = [_number("RSA_VIDEO_QUERY_BYTES", 32 * 1024 * 1024, True)]
+            originals = [dict(self._hot_media.get(record["sequence"], {})) for record in records]
+            if not self.persistent:
+                # Window files can be removed by another append. Copy their
+                # bytes while locked; all video frames are still in hot memory.
+                records = [self._delivery(record, raw, budget) for record, raw in zip(records, originals)]
+        if self.persistent:
+            # Decoding cold video never holds the sampler's writer lock.
+            records = [self._delivery(record, raw, budget) for record, raw in zip(records, originals)]
+        result = {"records": records, "query": query, "hasMore": has_more, "availability": availability}
+        if has_more:
+            result["nextAfter"] = records[-1]["sequence"]
+        return result
 
     def _select(self, entries, at, start, end, after, limit, latest, capability, record_id):
         selected = []
@@ -594,3 +675,39 @@ class ObservationHistory:
                 if len(selected) > limit:
                     break
         return selected
+
+
+def read_timeline_record(workspace, sequence):
+    """Read one committed persistent record without owning or starting a writer."""
+    if type(sequence) is not int or sequence < 1:
+        raise ValueError("Timeline sequence must be a positive integer")
+    root = Path(workspace).resolve() / ".rsa" / "timeline"
+    segments = root / "segments"
+    if root.resolve() != root or segments.resolve() != segments:
+        raise ValueError("Timeline storage must not follow symlinks")
+    for metadata in segments.glob("*.meta.json"):
+        if metadata.resolve() != metadata:
+            raise ValueError("Timeline segment metadata must not follow symlinks")
+        summary = json.loads(metadata.read_text())
+        if not summary["firstSequence"] <= sequence <= summary["lastSequence"]:
+            continue
+        path = Path(str(metadata).removesuffix(".meta.json"))
+        index, payload = path.with_suffix(".idx"), path.with_suffix(".jsonl")
+        if index.resolve() != index or payload.resolve() != payload:
+            raise ValueError("Timeline segment files must not follow symlinks")
+        with index.open("rb") as stream:
+            stream.seek((sequence - summary["firstSequence"]) * _ENTRY.size)
+            entry = stream.read(_ENTRY.size)
+        if len(entry) != _ENTRY.size:
+            raise ValueError("Timeline record index is incomplete")
+        _at, stored_sequence, offset, length, capability_key, record_key = _ENTRY.unpack(entry)
+        if stored_sequence != sequence or offset + length > min(summary["recordBytes"], payload.stat().st_size):
+            raise ValueError("Timeline record index does not match committed storage")
+        with payload.open("rb") as stream:
+            stream.seek(offset)
+            record = json.loads(stream.read(length))
+        if (record["sequence"] != sequence or _key(record["id"]) != record_key
+                or _key(record["capability"]) != capability_key):
+            raise ValueError("Timeline record identity does not match its index")
+        return record
+    raise ValueError("Timeline record is unavailable; benchmark references require persistent recorded media")

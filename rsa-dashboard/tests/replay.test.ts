@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { getReplay } from "../lib/replay";
 import { closeLogIndexes, getLogIndex, indexCacheStats } from "../lib/log-index";
 import type { ReplayWindow, ReplayOverview, ReplayDetail } from "../lib/replay-types";
+import type { FileMedia } from "../lib/file-response";
 
 const start = Date.parse("2026-10-27T00:00:00Z");
 const iso = (ms: number) => new Date(start + ms).toISOString();
@@ -34,16 +35,21 @@ async function fixture() {
     event(10, 32000, "control", { mode: "manual" }, {}, "two"),
   ];
   await writeFile(join(run, "events.jsonl"), events.map(e => JSON.stringify(e)).join("\n") + "\n");
-  async function records(points: { ms: number; channel: string; runId?: string }[], first = 1) {
+  async function records(points: { ms: number; channel: string; runId?: string;
+    video?: { asset: string; pts: number; gap?: boolean }[] }[], first = 1) {
     let offset = 0;
     const rows: Buffer[] = [], index = Buffer.alloc(points.length * 64);
     for (let n = 0; n < points.length; n++) {
       const sequence = first + n, id = `record-${sequence}`, { ms, channel } = points[n];
       const media = [0, 1].map(i => {
         const body = Buffer.from(`image:${sequence}:${i}`), asset = `objects/${hash(body).toString("hex")}.bin`;
+        const video = points[n].video?.[i];
+        if (video) return { mediaType: "image/png", timeline: { recordId: id, sequence, asset: video.asset,
+          video: { pts: video.pts, timeBase: [1, 1000000], width: 400, height: 240,
+            ...(video.gap ? { status: "gap", reason: "recording queue full" } : {}) } }, body };
         return { mediaType: "image/png", timeline: { recordId: id, sequence, asset }, body };
       });
-      for (const m of media) await writeFile(join(timeline, m.timeline.asset), m.body);
+      for (const m of media) if (!("video" in m.timeline)) await writeFile(join(timeline, m.timeline.asset), m.body);
       const row = Buffer.from(JSON.stringify({ id, sequence, recordedAt: iso(ms), capability: channel,
         runId: points[n].runId ?? "run", text: `sample ${sequence}`, media: media.map(({ body, ...m }) => m), data: { sample: sequence } }) + "\n");
       rows.push(row);
@@ -85,6 +91,41 @@ test("replay uses all recorded channels, scopes epoch boundaries, and pairs span
     assert.equal(all.endAt, start + 32000);
     await assert.rejects(f.query({ mode: "overview", epoch: "fake" }), /没有时空轴记录/);
     await assert.rejects(f.query({ mode: "window", start, end: start + 60001 }), /不超过 60 秒/);
+  } finally { await f.close(); }
+});
+
+test("video playback uses stable segment URLs, time offsets, explicit pending/gaps and scoped offline files", async () => {
+  const f = await fixture();
+  const assets = ["video/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.mp4", "video/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb.mp4"];
+  try {
+    await mkdir(join(f.timeline, "video"));
+    for (const asset of assets) {
+      await writeFile(join(f.timeline, asset), "streaming video bytes");
+      await writeFile(join(f.timeline, asset + ".json"), JSON.stringify({ status: "pending", durationSeconds: 0 }));
+    }
+    await f.records([
+      { ms: 15000, channel: "dual", video: assets.map(asset => ({ asset, pts: 0 })) },
+      { ms: 15500, channel: "dual", video: assets.map(asset => ({ asset, pts: 500000 })) },
+      { ms: 15900, channel: "dual", video: assets.map(asset => ({ asset, pts: 900000, gap: true })) },
+    ], 11);
+    let page = await f.query({ mode: "window", epoch: "one", start: start + 15000, end: start + 16000 }) as ReplayWindow;
+    const first = page.frames.find(frame => frame.sequence === 11)!, second = page.frames.find(frame => frame.sequence === 12)!;
+    assert.equal(first.media[0].video?.url, second.media[0].video?.url);
+    assert.notEqual(first.media[0].video?.url, first.media[1].video?.url);
+    assert.equal(first.media[0].video?.originAt, start + 15000);
+    assert.equal(second.media[0].video?.originAt, start + 15000);
+    assert.equal(first.media[0].video?.status, "pending");
+    assert.equal(page.frames.find(frame => frame.sequence === 13)?.media[0].video?.status, "gap");
+    await assert.rejects(f.query({ mode: "segment", epoch: "one", asset: assets[0] }), { status: 409 });
+    for (const asset of assets) await writeFile(join(f.timeline, asset + ".json"), JSON.stringify({ status: "ready", durationSeconds: 0.6 }));
+    page = await f.query({ mode: "window", epoch: "one", start: start + 15000, end: start + 16000 }) as ReplayWindow;
+    assert.equal(page.frames.find(frame => frame.sequence === 11)?.media[0].video?.status, "ready");
+    const video = await f.query({ mode: "segment", epoch: "one", asset: assets[0] }) as FileMedia;
+    assert.equal(video.file, join(f.timeline, assets[0])); assert.equal(video.mediaType, "video/mp4"); assert(!("bytes" in video));
+    await assert.rejects(f.query({ mode: "segment", epoch: "two", asset: assets[0] }), { status: 404 });
+    await assert.rejects(f.query({ mode: "segment", asset: "../video/escape.mp4" }), /无效/);
+    await rm(join(f.timeline, assets[0])); await symlink(join(f.run, "events.jsonl"), join(f.timeline, assets[0]));
+    await assert.rejects(f.query({ mode: "segment", asset: assets[0] }), /必须位于/);
   } finally { await f.close(); }
 });
 

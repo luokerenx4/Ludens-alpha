@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 from functools import lru_cache
+from importlib.resources import files
 import json
 import math
 import os
@@ -44,7 +45,7 @@ def json_errors(value):
 @lru_cache(maxsize=1)
 def _validator():
     from jsonschema.validators import validator_for
-    schema = json.loads((Path(__file__).resolve().parents[2] / "benchmarks" / "report.schema.json").read_text())
+    schema = json.loads(files("rsa_tools").joinpath("report.schema.json").read_text(encoding="utf-8"))
     return validator_for(schema)(schema)
 
 

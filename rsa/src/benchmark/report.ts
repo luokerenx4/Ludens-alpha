@@ -1,5 +1,5 @@
 import Ajv from "ajv";
-import schema from "../../benchmarks/report.schema.json";
+import schema from "../../python/rsa_tools/report.schema.json";
 import type { AuthorReport, CaseOutcome, ReportIssue } from "./contract.ts";
 export { schema as reportSchema };
 const validate = new Ajv({ allErrors: true, strictNumbers: true, allowUnionTypes: true }).compile(schema);

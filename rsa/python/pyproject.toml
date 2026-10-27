@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ludens-rsa"
+version = "0.1.0"
+description = "Ludens RSA Python runtime, perception and workspace SDK"
+requires-python = ">=3.12"
+dependencies = [
+  "av>=19,<20",
+  "Pillow>=12,<13",
+  "jsonschema>=4.23,<5",
+]
+
+[project.scripts]
+rsa-perception = "rsa_tools._perception:main"
+rsa-python-bridge = "rsa_tools._bridge:main"
+
+[dependency-groups]
+dev = ["mypy>=1.15,<2", "types-jsonschema>=4,<5"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["rsa_tools"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["rsa_tools"]
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true

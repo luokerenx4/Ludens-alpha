@@ -71,7 +71,10 @@ def main():
         record = history.append(sample, generation, sampling, identity=identity, run_id=runId, trace=trace)
         send({"event": "sample", "snapshot": {
             key: value for key, value in record.items() if key not in ("text", "media", "data", "space", "sources")
-        }, "mediaCount": len(record["media"]), "trace": trace or {}})
+        }, "mediaCount": len(record["media"]), "trace": trace or {},
+              "mediaReferences": [{"sha256": item["sha256"], "bytes": item["bytes"],
+                                   "mediaType": item["mediaType"], **item["timeline"],
+                                   "approximate": True} for item in record["media"] if "sha256" in item]})
         return observation_result(record)
 
     def sample_continuously(instance, sample_hz, context):

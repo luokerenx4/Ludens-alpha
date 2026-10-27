@@ -9,6 +9,8 @@ export const perceptionStateLabel: Record<PerceptionStatus["state"], string> = {
 };
 
 export function mediaFailureMessage(status: number): string {
+  if (status === 409) return "视频片段正在写入，请稍后重试";
+  if (status === 503) return "历史画面解码繁忙，请稍后重试";
   return status === 410 ? "观测已过期或已移除" : "无法读取观测文件";
 }
 

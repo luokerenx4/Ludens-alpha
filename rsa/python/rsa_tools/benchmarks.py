@@ -62,7 +62,10 @@ def _workspace_id(workspace):
 
 
 def _index(workspace):
-    root = Path(os.environ.get("RSA_ARTIFACT_ROOT") or Path(__file__).resolve().parents[4] / "artifacts" / "rsa")
+    configured = os.environ.get("RSA_ARTIFACT_ROOT")
+    if not configured:
+        raise ValueError("RSA_ARTIFACT_ROOT is required to register workspace benchmarks; run through RSA or set the artifact directory explicitly")
+    root = Path(configured).resolve()
     directory = root / _workspace_id(workspace)
     directory.mkdir(parents=True, exist_ok=True)
     _write(directory / "workspace.json", {"workspace": str(workspace)})
@@ -192,7 +195,9 @@ class BenchmarkContext:
         return item
 
     def artifact(self, path, *, label=None):
-        """Archive a workspace file, or reference an existing timeline object."""
+        """Attach a file, recorded media envelope, or persistent timeline reference."""
+        if isinstance(path, dict):
+            return self._timeline_artifact(path.get("timeline", path), label)
         path = Path(path)
         workspace = Path(self.result["workspace"]).resolve()
         source = (workspace / path).resolve() if not path.is_absolute() else path.resolve()
@@ -222,6 +227,46 @@ class BenchmarkContext:
         destination.write_bytes(data)
         item = {"path": destination.relative_to(self.run_dir).as_posix(), "sha256": sha256,
                 **({"label": label} if label is not None else {})}
+        self.result.setdefault("artifacts", []).append(item)
+        self._save()
+        return item
+
+    def _timeline_artifact(self, reference, label):
+        from ._observation_history import read_timeline_record
+        from ._video import media_path
+
+        if (not isinstance(reference, dict) or not isinstance(reference.get("recordId"), str)
+                or not isinstance(reference.get("asset"), str)):
+            raise ValueError("A timeline artifact requires recordId, sequence and asset")
+        if label is not None and not isinstance(label, str):
+            raise ValueError("Benchmark artifact label must be a string")
+        workspace = Path(self.result["workspace"]).resolve()
+        record = read_timeline_record(workspace, reference.get("sequence"))
+        if record["id"] != reference["recordId"]:
+            raise ValueError("Timeline artifact record identity does not match")
+        media = next((item for item in record["media"] if item["timeline"] == reference), None)
+        if media is None:
+            raise ValueError("Timeline artifact does not belong to the recorded observation")
+        reference = media["timeline"]  # Retain the committed record, not a caller-owned mutable dict.
+        timeline = workspace / ".rsa" / "timeline"
+        source = media_path(timeline, reference["asset"])
+        video = reference.get("video")
+        item = {"path": source.relative_to(workspace).as_posix(), "timeline": reference,
+                "mediaType": media["mediaType"], **({"label": label} if label is not None else {})}
+        if video is not None:
+            if video.get("status") == "gap":
+                raise ValueError("Cannot attach an unrecorded video gap")
+            status = json.loads(media_path(timeline, reference["asset"] + ".json").read_text())
+            if status.get("status") not in {"pending", "ready"}:
+                raise ValueError("Recorded video artifact is unavailable")
+            if status["status"] == "ready" and not source.is_file():
+                raise ValueError("Recorded video artifact is missing")
+            item["approximate"] = True
+        else:
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            if source.name != digest + ".bin":
+                raise ValueError("Recorded artifact checksum does not match its source")
+            item["sha256"] = digest
         self.result.setdefault("artifacts", []).append(item)
         self._save()
         return item

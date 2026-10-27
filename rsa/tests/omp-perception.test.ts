@@ -105,8 +105,9 @@ class Perception:
     expect(new Set(adapted.map(snapshot => snapshot.observation.perception.codeSHA)).size).toBe(3);
     for (const snapshot of adapted) {
       const observation = snapshot.observation.observations[0];
-      expect(observation.path.startsWith(join(workspace, ".rsa", "timeline", "objects"))).toBe(true);
-      expect(await readFile(observation.path)).toEqual(await readFile(image));
+      expect(observation.path).toBeUndefined();
+      expect(observation.timeline.asset.startsWith("video/")).toBe(true);
+      expect(observation.timeline.video.width).toBe(32);
     }
     const file = session.sessionFile!;
     await session.dispose(); session = undefined;

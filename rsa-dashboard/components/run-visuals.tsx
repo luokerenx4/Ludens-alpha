@@ -414,6 +414,7 @@ export function ObservationPanel({
         {observation?.sourceSequence != null && (
           <span>源帧 {observation.sourceSequence}</span>
         )}
+        {observation?.timeline?.video && <span>视频还原 · 与当时输入可能有压缩差异</span>}
         {!showingInput && (
           <button className="text-button" onClick={() => onImage("")}>
             返回模型输入

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { AuthStorage, ModelRegistry, SessionManager, Settings } from "@oh-my-pi/pi-coding-agent";
 import { daemonClientForProject } from "@oh-my-pi/pi-coding-agent/launch/client";
@@ -19,6 +19,7 @@ import { Runtime } from "../src/harness/runtime.ts";
 import { listen as listenRsa } from "../src/harness/transport.ts";
 import { Workspace } from "../src/harness/workspace.ts";
 import { PerceptionRuntime } from "../src/harness/perception.ts";
+import { pythonExecutable } from "../../shared/python.ts";
 import { encodeRawPng } from "@oh-my-pi/pi-coding-agent/utils/png-encode";
 import { encodeTerminalImage, TerminalGraphicsDecoder } from "@oh-my-pi/pi-coding-agent/utils/terminal-graphics";
 
@@ -47,7 +48,7 @@ const tool = (id: string, name: string, args: Record<string, unknown>): Assistan
  */
 async function fixture() {
   const originalEnvironment = new Map([
-    "PATH", "PYTHONPATH", "RSA_SOCKET", "RSA_WORKSPACE", "RSA_RUN_ID", "BASEWARE_SOCKET",
+    "PATH", "PYTHONPATH", "RSA_PYTHON", "RSA_ARTIFACT_ROOT", "RSA_SOCKET", "RSA_WORKSPACE", "RSA_RUN_ID", "BASEWARE_SOCKET",
     "BASEWARE_EPOCH", "BASEWARE_TRACE", "RSA_EPOCH", "RSA_TRACE",
   ].map(key => [key, process.env[key]]));
   const directory = await realpath(await mkdtemp(join(tmpdir(), "rsa-native-bash-")));
@@ -170,7 +171,7 @@ async function fixture() {
   };
 }
 
-const worker = `import json, os, subprocess, time
+const worker = `import json, os, subprocess, sys, time
 from pathlib import Path
 from rsa_tools import Client, capability
 from baseware import Client as Device
@@ -185,6 +186,7 @@ def attempt(call):
 
 Path("worker-context.json").write_text(json.dumps({
     "pid": os.getpid(), "cwd": os.getcwd(), "workspace": os.environ["RSA_WORKSPACE"],
+    "pythonExecutable": sys.executable, "configuredPython": os.environ["RSA_PYTHON"],
     "runId": os.environ["RSA_RUN_ID"], "epoch": os.environ["BASEWARE_EPOCH"],
     "rsaSocket": os.environ["RSA_SOCKET"], "basewareSocket": os.environ["BASEWARE_SOCKET"],
     "trace": json.loads(os.environ["BASEWARE_TRACE"]),
@@ -212,13 +214,15 @@ test("native service survives OMP turns while human handback revokes its origina
     await writeFile(join(f.workspace, "worker.py"), worker);
     await writeFile(join(f.workspace, "phase"), "first");
     const firstEpoch = f.epoch();
-    await f.prompt(tool("launch-service", "bash", { command: "python3 -u worker.py", name: "offline-controller",
+    await f.prompt(tool("launch-service", "bash", { command: '"$RSA_PYTHON" -u worker.py', name: "offline-controller",
       pty: false, ready: { log: "WORKER_READY", timeout: 10 } }));
     const injectedPaths = { path: process.env.PATH, python: process.env.PYTHONPATH };
     expect(f.results.get("launch-service")?.details.service).toMatchObject({ name: "offline-controller", ready: true });
     await until(() => Bun.file(join(f.workspace, "result-first.json")).exists());
     const context = await Bun.file(join(f.workspace, "worker-context.json")).json();
     pid = context.pid;
+    expect(context.configuredPython).toBe(pythonExecutable());
+    if (isAbsolute(pythonExecutable())) expect(dirname(context.pythonExecutable)).toBe(dirname(pythonExecutable()));
     expect(context).toMatchObject({ cwd: f.workspace, workspace: f.workspace, runId: "native-bash-run",
       epoch: firstEpoch, rsaSocket: f.rsaSocket, basewareSocket: f.basewareSocket,
       staleRsaEpoch: "", staleRsaTrace: "" });
@@ -400,16 +404,16 @@ class Perception:
       expect(delivered.data.origin).toBe("tool_result");
       // The CLI records the actual decoder version through the timeline writer.
       // Its source record is the requested historical frame, never latest.
-      expect(delivered.data.path).toBe(join(f.workspace, ".rsa", "timeline", "objects", `${delivered.data.sha256}.bin`));
+      expect(delivered.data.path).toBeUndefined();
+      expect(delivered.data.timeline).toEqual(old.result.observations![0]!.timeline);
       expect(delivered.data.recorded).toBe(true);
       const derivative = events.find(event => event.type === "observation_media"
         && event.data.observationId === old.result.observations![0]!.id
         && event.data.modelMedia?.transform === "omp.terminalGraphics");
       expect(derivative?.data.modelMedia).toMatchObject({ recordId: old.snapshot!.id,
         sequence: old.snapshot!.sequence, sourceAsset: old.result.observations![0]!.timeline!.asset });
-      expect(await readFile(delivered.data.path)).toEqual(Buffer.from(expectedImage.data, "base64"));
       expect(delivered.data.sha256).toBe(new Bun.CryptoHasher("sha256").update(Buffer.from(expectedImage.data, "base64")).digest("hex"));
-      expect(Buffer.from(await readFile(old.result.observations![0]!.path!))).toEqual(Buffer.from(oldPng));
+      expect(Buffer.from(old.result.observations![0]!.data!, "base64")).toEqual(Buffer.from(oldPng));
       const saved = f.session.agent.state.messages.find(message => message.role === "toolResult" && message.toolCallId === id);
       expect(saved?.role === "toolResult" && saved.content).toContainEqual(expectedImage);
       expect(JSON.stringify(saved)).toContain(old.snapshot!.recordedAt);
@@ -427,7 +431,8 @@ class Perception:
     await f.session.settleAsyncWork();
     const backgroundInputs = (await f.events()).filter(event => event.type === "observation" && event.data.controllerId === "background_result");
     expect(backgroundInputs).toHaveLength(1);
-    expect(backgroundInputs[0].data.path).toBeString();
+    expect(backgroundInputs[0].data.path).toBeUndefined();
+    expect(backgroundInputs[0].data.timeline).toEqual(old.result.observations![0]!.timeline);
     expect(backgroundInputs[0].data.recorded).toBe(true);
     expect(backgroundInputs[0].data.sha256).toBe(new Bun.CryptoHasher("sha256").update(Buffer.from(expectedImage.data, "base64")).digest("hex"));
     expect(backgroundInputs[0].trace.toolCallId).toBeUndefined();

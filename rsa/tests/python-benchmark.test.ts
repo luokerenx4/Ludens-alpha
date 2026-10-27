@@ -177,7 +177,7 @@ print(json.dumps({"values": [first["metrics"]["count"]["value"], second["metrics
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("benchmark artifacts reference shared timeline originals across runs without copying media", async () => {
+test("benchmark artifacts reference shared nonvisual timeline originals across runs without copying media", async () => {
   const { root, workspace, artifactRoot } = await fixture();
   try {
     await writeFile(join(workspace, "evaluation.py"), `from rsa_tools import benchmark, current_benchmark
@@ -192,7 +192,7 @@ from pathlib import Path
 from rsa_tools._observation_history import ObservationHistory
 import evaluation
 history = ObservationHistory(Path.cwd())
-record = history.append({"media": [{"data": base64.b64encode(b"shared frame").decode(), "mediaType": "image/png"}]}, "fixture",
+record = history.append({"media": [{"data": base64.b64encode(b"shared frame").decode(), "mediaType": "application/octet-stream"}]}, "fixture",
                         {"clock": "fixture", "startedAtMs": 1, "finishedAtMs": 2})
 history.close()
 source = Path(record["media"][0]["path"])
@@ -212,6 +212,66 @@ print(json.dumps({"path": source.relative_to(Path.cwd()).as_posix(), "asset": re
     }
     expect(await readdir(join(workspace, ".rsa", "timeline", "objects"))).toEqual([response.asset.split("/").at(-1)]);
     expect(await readFile(join(workspace, response.path), "utf8")).toBe("shared frame");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("benchmark image artifacts retain exact video-frame references across runs without copying frames or clips", async () => {
+  const { root, workspace, artifactRoot } = await fixture();
+  try {
+    await writeFile(join(workspace, "evaluation.py"), `import json
+from rsa_tools import benchmark, current_benchmark
+@benchmark
+def evaluate(media_json: str):
+    """Attach a recorded frame, whether still encoding or already cold."""
+    current_benchmark().artifact(json.loads(media_json), label="Recorded frame")
+    return {}
+`);
+    const response = await python(workspace, artifactRoot, `import base64, copy, json
+from io import BytesIO
+from pathlib import Path
+from PIL import Image
+from rsa_tools._observation_history import ObservationHistory
+from rsa_tools.benchmarks import BenchmarkContext
+import evaluation
+history = ObservationHistory(Path.cwd())
+sampling = {"clock": "fixture", "startedAtMs": 1, "finishedAtMs": 2}
+def capture(color, at):
+    output = BytesIO()
+    Image.new("RGB", (48, 32), color).save(output, format="PNG")
+    return history.append({"media": [{"data": base64.b64encode(output.getvalue()).decode(), "mediaType": "image/png"}]},
+                          "fixture", sampling, at)["media"][0]
+first = capture((200, 20, 10), "2026-10-27T01:00:00.000Z")
+evaluation.evaluate(json.dumps(first))  # The writer is alive; attaching must not take its lock.
+second = capture((20, 200, 10), "2026-10-27T01:00:00.350Z")
+history.close()
+evaluation.evaluate(json.dumps(second["timeline"]))
+context = BenchmarkContext(Path("logs/invalid"), {"workspace": str(Path.cwd())})
+for key, value in [("recordId", "forged"), ("sequence", second["timeline"]["sequence"]), ("asset", "../escape")]:
+    forged = {**first["timeline"], key: value}
+    try: context.artifact(forged)
+    except ValueError: pass
+    else: raise AssertionError("forged reference accepted")
+forged = copy.deepcopy(first["timeline"])
+forged["video"]["pts"] += 1
+try: context.artifact(forged)
+except ValueError: pass
+else: raise AssertionError("wrong video frame accepted")
+print(json.dumps({"references": [first["timeline"], second["timeline"]]}))
+`, { RSA_PERCEPTION_PERSIST: "1" });
+    const runs = (await results(workspace)).sort((a, b) => a.result.artifacts![0]!.timeline!.sequence! - b.result.artifacts![0]!.timeline!.sequence!);
+    expect(runs).toHaveLength(2);
+    expect(response.references[0].asset).toBe(response.references[1].asset);
+    expect(response.references.map((ref: any) => ref.video.pts)).toEqual([0, 350000]);
+    for (const [index, { result, directory }] of runs.entries()) {
+      expect(result.status).toBe("completed");
+      expect(result.artifacts).toEqual([{ path: `.rsa/timeline/${response.references[index].asset}`,
+        timeline: response.references[index], mediaType: "image/png", approximate: true, label: "Recorded frame" }]);
+      expect(await readdir(join(directory, "artifacts"))).toEqual([]);
+    }
+    expect(await Bun.file(join(workspace, ".rsa/timeline/objects")).exists()).toBe(false);
+    const files = await readdir(join(workspace, ".rsa/timeline/video"));
+    expect(files.filter(name => name.endsWith(".mp4"))).toHaveLength(1);
+    expect(files.filter(name => name.endsWith(".json"))).toHaveLength(1);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

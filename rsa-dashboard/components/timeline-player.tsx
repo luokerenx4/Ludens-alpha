@@ -7,6 +7,7 @@ import { adjacentReplayFrame, clampReplayTime, mergeReplayPages, nearbyReplayIte
   retainReplayWindows } from "./replay-model";
 import { useBufferedMedia } from "./use-buffered-media";
 import type { BufferedImage } from "./image-buffer";
+import { ReplayVideo } from "./replay-video";
 import "./timeline-player.css";
 
 async function read<T>(url: string, signal: AbortSignal): Promise<T> {
@@ -39,7 +40,9 @@ const wallTime = (at: number) => new Date(at).toLocaleTimeString("zh-CN", {
 const statusLabel: Record<string, string> = { completed: "完成", success: "完成", error: "失败", failed: "失败",
   cancelled: "取消", pending: "进行中", running: "进行中" };
 
-function ReplayMedia({ media, label, image }: { media: ReplayFrame["media"][number]; label: string; image?: BufferedImage }) {
+type VideoPlayback = { at: number; playing: boolean; speed: number; onReady(slot: string, url: string, ready: boolean): void };
+function ReplayMedia({ media, label, image, playback, slot }: { media: ReplayFrame["media"][number]; label: string; image?: BufferedImage;
+  playback: VideoPlayback; slot: string }) {
   const [failure, setFailure] = useState<{ url: string; message: string } | null>(null);
   const error = failure?.url === media.url ? failure.message : "";
   const setError = (message: string) => setFailure({ url: media.url, message });
@@ -56,6 +59,7 @@ function ReplayMedia({ media, label, image }: { media: ReplayFrame["media"][numb
     }).catch(error => { if (!controller.signal.aborted) setError(error.message); });
     return () => controller.abort();
   }, [media.url, isText]);
+  if (media.video) return <ReplayVideo source={media.video} {...playback} slot={slot} label={label} />;
   if (image?.error || error) return <div className="replay-media-missing" role="status">{image?.error || error}<small>此处保留时间位置，播放可以继续。</small></div>;
   if (media.mediaType.startsWith("image/")) return <img src={image?.src} width={image?.width} height={image?.height} alt={label} draggable={false}
     onError={() => setError("画面不可用 · 可能已过期或被移除")} />;
@@ -67,10 +71,13 @@ function ReplayMedia({ media, label, image }: { media: ReplayFrame["media"][numb
   return <a href={media.url} target="_blank" rel="noreferrer">查看 {media.mediaType} 记录 ↗</a>;
 }
 
-const FrameMedia = memo(function FrameMedia({ frame, images }: { frame: ReplayFrame; images: Map<string, BufferedImage> }) {
+const FrameMedia = memo(function FrameMedia({ frame, images, playback }: {
+  frame: ReplayFrame; images: Map<string, BufferedImage>; playback: VideoPlayback;
+}) {
   return <><div className="replay-media-grid">
     {frame.media.map(media => <div className={"replay-media" + (media.mediaType.startsWith("image/") ? " replay-image" : "")} key={media.index}>
-      <ReplayMedia media={media} image={images.get(media.url)} label={frame.capability + " · " + wallTime(frame.at) + " · " + (media.index + 1)} />
+      <ReplayMedia media={media} image={images.get(media.url)} playback={playback} slot={frame.capability + ":" + media.index}
+        label={frame.capability + " · " + wallTime(frame.at) + " · " + (media.index + 1)} />
     </div>)}
     {!frame.media.length && <p className="replay-no-media">此条感知没有媒体，可展开详情查看数据。</p>}
   </div>
@@ -98,10 +105,11 @@ function ReplayDetails({ scope, selection, onClose }: { scope: string; selection
     <div className="surface-heading"><h2>{detail?.title ?? "来源详情"}</h2>
       <button type="button" className="text-button" onClick={onClose}>关闭详情 ×</button></div>
     {error ? <p role="alert">{error}</p> : !detail ? <p role="status">正在读取原始记录…</p> : <>
-      {!!detail.observations?.length && <div className="replay-inputs"><h3>模型实际输入的观测</h3>
+      {!!detail.observations?.length && <div className="replay-inputs"><h3>模型输入的观测</h3>
         {detail.observations.map(observation => <div key={observation.id}>
           {observation.url ? <img src={observation.url} alt={"模型输入 " + observation.id} loading="lazy" /> : <span>未录制的媒体</span>}
-          <small>{observation.recordId ?? observation.id}{observation.sequence ? " · #" + observation.sequence : ""}</small>
+          <small>{observation.recordId ?? observation.id}{observation.sequence ? " · #" + observation.sequence : ""}
+            {observation.approximate ? " · 视频还原，与当时输入可能有压缩差异" : ""}</small>
         </div>)}
       </div>}
       <pre>{JSON.stringify(detail.data, null, 2)}</pre>
@@ -131,6 +139,11 @@ export function TimelinePlayer({ project, run, epoch, position, onPosition }: {
   const [shareState, setShareState] = useState("");
   const stepRequest = useRef<AbortController | null>(null);
   const [stepping, setStepping] = useState(false);
+  const [videoReadiness, setVideoReadiness] = useState<Record<string, { url: string; ready: boolean }>>({});
+  const onVideoReady = useCallback((slot: string, url: string, ready: boolean) => {
+    setVideoReadiness(previous => previous[slot]?.url === url && previous[slot].ready === ready
+      ? previous : { ...previous, [slot]: { url, ready } });
+  }, []);
   const initialPosition = useRef(position);
   const hasOverview = useRef(false);
   const positionApplied = useRef<string | null | undefined>(undefined);
@@ -190,13 +203,38 @@ export function TimelinePlayer({ project, run, epoch, position, onPosition }: {
   // Records are immutable. Keep frame identity stable while the playhead moves within one sample.
   const frameKey = JSON.stringify(visibleFrames.map(frame => [frame.id, frame.media]));
   const target = useMemo(() => activeWindow ? { key: frameKey, value: visibleFrames,
-    urls: visibleFrames.flatMap(frame => frame.media.filter(media => media.mediaType.startsWith("image/")).map(media => media.url)) } : null,
+    urls: visibleFrames.flatMap(frame => frame.media.filter(media => media.mediaType.startsWith("image/") && !media.video).map(media => media.url)) } : null,
   // eslint-disable-next-line react-hooks/exhaustive-deps
   [frameKey, !!activeWindow]);
   const future = frames.filter(frame => frame.at > at && (!capability || frame.capability === capability)).slice(0, 2)
-    .flatMap(frame => frame.media.filter(media => media.mediaType.startsWith("image/")).map(media => media.url));
+    .flatMap(frame => frame.media.filter(media => media.mediaType.startsWith("image/") && !media.video).map(media => media.url));
   const { displayed, pending } = useBufferedMedia(scope + ":" + capability + ":" + refresh + ":" + retry, target, future, !activeWindow || stepping);
-  const ready = !!activeWindow && !pending && !stepping;
+  // Video frames share a decoder for the entire segment; advancing record metadata must not pause playback.
+  const imageReady = !!activeWindow && (!target?.urls.length || !pending) && !stepping;
+  const shownFrames = target && !target.urls.length ? visibleFrames : displayed?.value ?? [];
+  const videoSlots = visibleFrames.flatMap(frame => frame.media.filter(media => media.video)
+    .map(media => ({ slot: frame.capability + ":" + media.index, video: media.video! })));
+  const slotsKey = JSON.stringify(videoSlots.map(({ slot }) => slot));
+  useEffect(() => {
+    const keep = new Set<string>(JSON.parse(slotsKey));
+    setVideoReadiness(previous => {
+      if (Object.keys(previous).every(slot => keep.has(slot))) return previous;
+      return Object.fromEntries(Object.entries(previous).filter(([slot]) => keep.has(slot)));
+    });
+  }, [slotsKey]);
+  const ready = imageReady && videoSlots.every(({ slot, video }) => video.status === "gap" || video.status === "error"
+    || video.status === "ready" && videoReadiness[slot]?.url === video.url && videoReadiness[slot].ready);
+  const pendingSegments = !!activeWindow?.frames.some(frame => frame.media.some(media => media.video?.status === "pending"));
+  useEffect(() => {
+    if (!pendingSegments || !activeWindow) return;
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      void readWindow(scope, activeWindow.startAt, activeWindow.endAt, controller.signal)
+        .then(window => { if (!controller.signal.aborted) storeWindow(window); })
+        .catch(error => { if (!controller.signal.aborted) setWindowError(String(error)); });
+    }, 2000);
+    return () => { clearTimeout(timer); controller.abort(); };
+  }, [pendingSegments, activeWindow, scope, storeWindow]);
   useEffect(() => {
     if (!playing || !ready || !overview) return;
     let animation = 0, previous = performance.now(), lastPaint = previous;
@@ -278,10 +316,10 @@ export function TimelinePlayer({ project, run, epoch, position, onPosition }: {
           <option value="">全部感知</option>{capabilities.map(value => <option key={value} value={value}>{value}</option>)}
         </select></label></div>
       <div className="replay-frames" aria-busy={!ready}>
-        {displayed?.value.length ? displayed.value.map(frame => <article className="replay-frame" key={frame.capability} data-frame-id={frame.id}>
+        {shownFrames.length ? shownFrames.map(frame => <article className="replay-frame" key={frame.capability} data-frame-id={frame.id}>
           <div className="replay-frame-meta"><button type="button" className="text-button" onClick={() => setSelection({ kind: "frame", value: frame })}>
             {frame.capability} · #{frame.sequence} ↗</button><span>采样 {wallTime(frame.at)}{ready ? " · " + (Math.max(0, at - frame.at) / 1000).toFixed(1) + " 秒前" : " · 上一画面"}</span></div>
-          <FrameMedia frame={frame} images={displayed.images} />
+          <FrameMedia key={refresh + ":" + retry} frame={frame} images={displayed?.images ?? new Map()} playback={{ at, playing: playing && ready, speed, onReady: onVideoReady }} />
         </article>) : <div className="replay-loading">{!ready ? "正在载入画面…" : "此时还没有" + (capability ? "此来源的" : "") + "感知记录"}<small>播放会按记录时间继续。</small></div>}
         {!ready && <span className="replay-buffering" role="status">{windowError ? "此段读取失败" : "正在缓冲…"}</span>}
       </div>

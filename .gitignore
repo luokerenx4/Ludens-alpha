@@ -29,3 +29,8 @@ __pycache__/
 *.pyc
 *.swp
 *.swo
+
+# Python project environments and build metadata
+.venv/
+.mypy_cache/
+*.egg-info/

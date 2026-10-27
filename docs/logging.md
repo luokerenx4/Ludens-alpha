@@ -14,13 +14,17 @@
 | `payloads/` | 旧版 gzip 请求、响应和工具正文；保留可读，新宿主不再写此副本 |
 | `perception/<generation>/` | 感知入口、实际导入的工作区源码清单 `sources.json`、stderr |
 
-新观测统一存放在 `workspace/.rsa/timeline/`，跨 run 使用：`objects/<sha256>.bin` 保存去重的持久媒体，`segments/` 保存 JSONL 记录、定长 `.idx` 索引及 `.meta.json` 段摘要。关闭持久化时仅使用有限的 `window-<pid>-…/` 临时窗口。运行事件只引用记录与媒体，不再生成 `run/observations/` 副本。已有 run 的观测附件和日志保持原样可读，不自动迁移或删除。
+新观测统一存放在 `workspace/.rsa/timeline/`，跨 run 使用：`video/<id>.mp4` 保存录制图像的视频段，配套 `.mp4.json` 保存编码状态；媒体引用含 `video: {pts,timeBase,width,height}`。`objects/<sha256>.bin` 保存其他去重媒体，`segments/` 保存 JSONL 记录、定长 `.idx` 索引及 `.meta.json` 段摘要。关闭持久化时仅使用有限的 `window-<pid>-…/` 临时窗口。运行事件只引用记录与媒体，不再生成 `run/observations/` 副本。已有 run 的观测附件和日志保持原样可读，不自动迁移或删除。
 
 模型与工具档案位于 `workspace/.rsa/archive/objects/<sha256>.json.gz`，只存文本和结构，大消息、工具定义和正文按内容共享，跨请求、跨 run 去重。引用使用 `encoding: "rsa-json-v1"`、对象路径、内容 hash 和原始 JSON 字节数；对象用 tagged JSON 区分用户数据与内部引用，不占用用户的 `$ref` 等字段。流事件使用 `rsa-stream-v1`，`dataRef` 中不超过 2 KiB 的编码根节点可以内联，避免每个 token delta 占一个文件；大子节点仍共享。所有读者使用 [同一个 codec](../shared/log-archive.ts)。
 
-已知 image/audio 字段、data URL 和 JSON 工具文本中的媒体引用时空轴已有资产；JSON 字符转义不产生媒体副本。未录制媒体只保存 hash、大小和不可恢复原因，不由日志永久留存。默认读取返回媒体引用；完整读取才加载字节并核验 hash，过期、删除或未录制时明确失败。媒体引用不能冒充 provider 输入。
+已知 image/audio 字段、data URL 和 JSON 工具文本中的媒体引用时空轴已有资产；JSON 字符转义不产生媒体副本。未录制媒体只保存 hash、大小和不可恢复原因，不由日志永久留存。默认读取返回媒体引用；完整读取对原样保留的对象加载字节并核验 hash，过期、删除或未录制时明确失败。视频引用标记 `approximate: true`，保存的 hash/bytes 是当时交付身份；Dashboard/历史观测可从视频做视觉复原，`logs read --full` 对有损视频明确报错，不伪造与原始模型请求一致的字节。媒体引用不能冒充 provider 输入。
 
 `events.jsonl` 保留调用身份和统计；工具参数放 `argsRef`，结果和模型消息放 artifact 引用。后台 job 和压缩结果只内联必要的生命周期/数值诊断，完整结构在结果引用中。HTTP 请求保留 wire hash、字节数和编码，JSON/gzip JSON 的正文复用语义对象；恢复 JSON 不等于还原压缩后的网络字节。stream 只存一份 data，raw 中对应的 data 行仅留位置与前缀。
+
+`timeline_media` 登记原始感知或历史解码字节的 hash 到视频帧引用；`observation_media.modelMedia` 登记 OMP 压图/终端转码后的交付 hash，仍指向同一帧及变换说明，不保存第二套衍生图片。日志里的视频媒体状态 `referenced` 只代表引用已登记，是否编码成功以视频段状态文件为准；`gap` 对应 `unrecorded`，不能统计成录像成功。
+
+真正被日志消费的图像另在 `.rsa/archive/media/<sha256>.json` 保存小型 hash→视频引用索引，不保存媒体字节，也不为每个后台采样建立索引文件。内存映射上限为 4096 项，淘汰或 Host 重启后按 hash 读取。相同字节优先复用稳定的有效来源；它是内容重建来源，具体采样时刻仍以观测事件的 record 引用为准。窗口过期或编码失败后，有新来源时可以更新索引。
 
 OMP 原生 session、blob 和恢复机制不改，真实模型输入不替换为日志引用。共享 archive 与 timeline 不是单个 run 的附属文件：只复制或删除 `logs/<run-id>` 不会复制或回收它们。本次不迁移旧日志、不实现自动垃圾回收，避免让历史引用失效；具体施工与验收见 [模型日志引用化方案](indexed-model-log-plan.md)。
 

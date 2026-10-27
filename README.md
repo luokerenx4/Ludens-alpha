@@ -36,7 +36,7 @@ Drivers expose device capabilities, not game strategies. Screen processing, coor
 ### 1. Prepare the prerequisites
 
 - **macOS** for `rsa up`, `rsa down`, and `rsa services`, which use launchd.
-- **Bun 1.4**, **Python 3.9+**, **Node.js 22+**, and **pnpm 11**.
+- **Bun 1.4**, **Python 3.12+**, **Node.js 22+**, **pnpm 11**, and **uv**.
 - Local **OMP model credentials** configured before starting the agent. RSA reuses OMP authentication; the default model is `openai-codex/gpt-6.1-sol`.
 - One prepared environment from the table above. ROMs, firmware, keys, and saves are not included.
 
@@ -44,7 +44,7 @@ For device preparation and model configuration, see the [development guide](docs
 
 ### 2. Install the components
 
-Each component has its own dependency lockfile.
+Each component has its own dependency lockfile. RSA includes a TypeScript host and a packaged Python runtime; `uv sync` installs the latter into `rsa/python/.venv`.
 
 ```sh
 git clone https://github.com/luokerenx4/Ludens-alpha.git
@@ -52,7 +52,7 @@ cd Ludens-alpha
 
 (cd baseware && bun install --frozen-lockfile)
 (cd rsa && bun install --frozen-lockfile)
-python3 -m pip install -r rsa/python/requirements.txt
+uv sync --project rsa/python --frozen
 (cd rsa-dashboard && npm ci)
 (cd rsa-companion && pnpm install --frozen-lockfile && pnpm build)
 

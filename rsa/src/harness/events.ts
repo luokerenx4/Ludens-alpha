@@ -46,9 +46,17 @@ export class EventLog {
   }
 
   readonly record: RecordEvent = (type, data, trace = {}, metadata = {}) => {
+    const mediaErrors: string[] = [];
+    const register = (media: Parameters<JsonArchive["registerMedia"]>[0]) => {
+      try { this.archive?.registerMedia(media); }
+      catch (error) { mediaErrors.push(String(error)); }
+    };
     if (type === "observation_media" && data && typeof data === "object" && "modelMedia" in data) {
       const media = data.modelMedia as Parameters<JsonArchive["registerMedia"]>[0] | undefined;
-      if (media) this.archive?.registerMedia(media);
+      if (media) register(media);
+    }
+    if (type === "timeline_media" && data && typeof data === "object" && "media" in data && Array.isArray(data.media)) {
+      for (const media of data.media) register(media);
     }
     const seq = ++this.sequence;
     const at = new Date().toISOString(), atMs = this.clock.now();
@@ -58,6 +66,7 @@ export class EventLog {
       origin: metadata.origin ?? { eventId: `${this.clock.id}:${seq}`, clockId: this.clock.id, seq, at, atMs },
       type, trace, data,
     }) + "\n");
+    if (mediaErrors.length) this.record("media_reference_error", { eventId: `${this.clock.id}:${seq}`, errors: mediaErrors }, trace, metadata);
   };
 
   recorder(source: EventSource): RecordEvent {

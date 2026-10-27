@@ -1,21 +1,19 @@
 import { spawn } from "node:child_process";
-import { delimiter, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { pythonModulePaths } from "../harness/python-capabilities.ts";
+import { join } from "node:path";
+import { pythonExecutable, pythonEnvironment } from "../../../shared/python.ts";
 import type { PythonDiagnostic } from "../harness/python-capabilities.ts";
 import type { BenchmarkDefinition } from "./contract.ts";
 import { builtinDefinitions } from "./builtins.ts";
 import { atomicJson, indexWorkspace } from "./store.ts";
 
-export const pythonBridge = fileURLToPath(new URL("../../python/rsa_tools/_bridge.py", import.meta.url));
+export const pythonBridge = ["-B", "-m", "rsa_tools._bridge"];
 export function pythonEnv(workspace: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, ...extra, RSA_WORKSPACE: workspace, PYTHONDONTWRITEBYTECODE: "1" };
-  return { ...env, PYTHONPATH: [...pythonModulePaths(), ...(env.PYTHONPATH ? [env.PYTHONPATH] : [])].join(delimiter) };
+  return pythonEnvironment({ ...extra, RSA_WORKSPACE: workspace, PYTHONDONTWRITEBYTECODE: "1" });
 }
 export async function discoverBenchmarks(workspace: string, artifactRoot: string) {
   const state = await indexWorkspace(workspace, artifactRoot);
   const discovery = await new Promise<{ benchmarks: BenchmarkDefinition[]; diagnostics: PythonDiagnostic[] }>((done, fail) => {
-    const child = spawn(process.env.RSA_PYTHON ?? "python3", ["-B", pythonBridge], {
+    const child = spawn(pythonExecutable(), pythonBridge, {
       cwd: state.workspace, env: pythonEnv(state.workspace, { RSA_ARTIFACT_ROOT: artifactRoot }), stdio: ["pipe", "pipe", "pipe"],
     });
     let stdout = "", stderr = "";

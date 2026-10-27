@@ -13,6 +13,7 @@ export async function GET(request: Request) {
       q.get("project") ?? "",
       q.get("run") ?? "",
       q.get("id") ?? "",
+      undefined, request.signal,
     );
     return new Response(new Uint8Array(m.bytes), {
       headers: {

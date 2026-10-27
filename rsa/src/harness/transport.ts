@@ -62,7 +62,7 @@ export async function dispatch(runtime: Runtime, request: Request, signal = new 
     if (!runtime.perception) throw new Error("Timeline recorder is unavailable; run rsa perception reload.");
     if (request.action === "derive") {
       if (!request.media) throw new Error("Timeline derive requires encoded media and its recorded source");
-      const modelMedia = await runtime.perception.deriveMedia(request.media, signal);
+      const modelMedia = await runtime.perception.deriveMedia(request.media, signal, request.id);
       runtime.record("observation_media", { observationId: request.id, modelMedia,
         modelBytes: modelMedia.bytes, mimeType: modelMedia.mediaType }, request.trace);
       return modelMedia;

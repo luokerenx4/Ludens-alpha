@@ -7,6 +7,7 @@ import { refreshRunProjection, selectIndexedCycle, readRunProjection, indexedObs
 import { latestGameRun } from "./initial-selection";
 import { readTimelineRecord, timelinePath, type TimelineRecordDetail } from "./timeline-record";
 import type { Event, Manifest, Project, RunData, LiveStatus } from "./types";
+import { decodeTimelineFrame } from "../../shared/timeline-media";
 // Runtime state lives in artifacts beside the monorepo, outside its Git tree.
 export const artifactRoot = resolve(process.cwd(), "../../artifacts/rsa");
 const safePart = (value: string) =>
@@ -272,7 +273,7 @@ export async function stopRun(
     expectedEpoch,
   });
 }
-export async function mediaFile(project: string, run: string, id: string, root = artifactRoot) {
+export async function mediaFile(project: string, run: string, id: string, root = artifactRoot, signal?: AbortSignal) {
   const { path, index, release } = await loadRun(project, run, root);
   try {
   const observation = await indexedObservation(index, id);
@@ -293,6 +294,10 @@ export async function mediaFile(project: string, run: string, id: string, root =
       throw new Error("无效的时空轴媒体引用");
     const workspace = await registeredWorkspace(await projectState(project, root));
     const timeline = join(workspace, ".rsa", "timeline");
+    if (reference.video) return {
+      bytes: await decodeTimelineFrame(timeline, { asset: reference.asset, video: reference.video }, { signal }),
+      mediaType: "image/png", cacheControl: "no-store",
+    };
     try {
       file = await timelinePath(timeline, reference.asset);
     } catch (error) {

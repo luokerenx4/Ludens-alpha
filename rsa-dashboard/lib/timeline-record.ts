@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { open, readdir, readFile, realpath } from "node:fs/promises";
 import { join } from "node:path";
+import type { VideoFrameReference } from "../../shared/timeline-media";
 
 export interface TimelineRecordDetail {
   recordId: string;
@@ -72,7 +73,7 @@ export interface StoredTimelineRecord {
   capability: string;
   runId?: string;
   text?: string;
-  media?: { mediaType: string; timeline?: { asset: string; recordId?: string; sequence?: number } }[];
+  media?: { mediaType: string; timeline?: { asset: string; recordId?: string; sequence?: number; video?: VideoFrameReference } }[];
   [key: string]: unknown;
 }
 

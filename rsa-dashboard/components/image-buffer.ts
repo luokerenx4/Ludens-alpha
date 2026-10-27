@@ -1,4 +1,5 @@
 /** Decoded images owned by one viewer, never a global or whole-run cache. */
+import { mediaFailureMessage } from "./observation-model";
 export type BufferedImage = { src: string; width: number; height: number; bytes: number; error?: string; dispose(): void };
 type Loader = (url: string, signal: AbortSignal) => Promise<BufferedImage>;
 const failure = (error: unknown): BufferedImage => ({ src: "", width: 0, height: 0, bytes: 0,
@@ -6,7 +7,7 @@ const failure = (error: unknown): BufferedImage => ({ src: "", width: 0, height:
 
 async function loadImage(url: string, signal: AbortSignal): Promise<BufferedImage> {
   const response = await fetch(url, { signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]) });
-  if (!response.ok) throw new Error(response.status === 410 ? "画面已过期" : "画面不可用 · 可能已被移除");
+  if (!response.ok) throw new Error(mediaFailureMessage(response.status));
   const blob = await response.blob();
   signal.throwIfAborted();
   const src = URL.createObjectURL(blob), image = new Image();

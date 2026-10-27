@@ -4,15 +4,15 @@ import { eventObservations, observationExecution } from "./observation-events";
 import type { Event } from "./types";
 import type { ReplayItem, ReplayTrack } from "./replay-types";
 import type { LogIndex, RecordPointer } from "./log-index";
-import { timelinePointers, readTimelinePayload } from "./timeline-record";
+import { timelinePointers, readTimelinePayload, type StoredTimelineRecord } from "./timeline-record";
 
-const VERSION = "5";
+const VERSION = "6";
 export const timeKey = (at: number, suffix = "") => String(Math.max(0, Math.floor(at))).padStart(16, "0") + ":" + suffix;
 const time = (event: Event) => Date.parse(event.origin?.at ?? event.at);
 const key = (...parts: unknown[]) => createHash("sha256").update(JSON.stringify(parts)).digest("hex");
 export type ReplayPointer = RecordPointer & ReplayItem & { epoch: string; position: number; endPosition?: number };
 export type FramePointer = RecordPointer & { sequence: number; at: number; capability: string; recordId: string;
-  runId: string; text: string; mediaTypes: string[]; capabilityHash: string; recordHash: string };
+  runId: string; text: string; mediaTypes: string[]; media: NonNullable<StoredTimelineRecord["media"]>; capabilityHash: string; recordHash: string };
 
 function operation(event: Event): { key: string; track: ReplayTrack; start: boolean } | undefined {
   const epoch = event.trace?.epoch ?? "", trace = event.trace ?? {};
@@ -75,7 +75,7 @@ async function projectEvents(index: LogIndex) {
       if (event.type === "context") index.store("replay-contexts").reference(epoch, pointer.file, pointer.offset, pointer.length, { position });
       if (event.type === "observation_media" && typeof event.data.observationId === "string" && event.data.modelMedia)
         index.store("replay-model-media").reference(key(epoch, event.data.observationId) + ":" + String(position).padStart(16, "0"),
-          pointer.file, pointer.offset, pointer.length, { position, epoch });
+          pointer.file, pointer.offset, pointer.length, { position, epoch, approximate: !!event.data.modelMedia.video });
       const input = observationExecution(event);
       if (input?.result?.id) index.store("replay-inputs").reference(key(epoch, input.result.id), pointer.file, pointer.offset, pointer.length, { position });
       for (const observation of eventObservations(event))
@@ -129,7 +129,14 @@ async function projectFrames(index: LogIndex, run: string) {
       const id = `frame:${sequence}`;
       index.store("replay-frames").reference(id, entry.file, entry.offset, entry.length, { ...entry, id,
         recordId: record.id, runId: run, capability: record.capability, text: (record.text ?? "").slice(0, 300),
-        mediaTypes: (record.media ?? []).map(media => media.mediaType) });
+        mediaTypes: (record.media ?? []).map(media => media.mediaType),
+        media: (record.media ?? []).map(({ mediaType, timeline }) => ({ mediaType, timeline })) });
+      for (const media of record.media ?? []) {
+        if (!media.timeline?.video || media.timeline.video.status === "gap") continue;
+        const asset = media.timeline.asset;
+        index.store("replay-video-frames").reference(videoAssetKey(asset) + ":" + timeKey(entry.at, String(sequence)),
+          entry.file, entry.offset, entry.length, { asset, at: entry.at, sequence });
+      }
       index.store("replay-frame-time").reference(timeKey(entry.at, String(sequence).padStart(16, "0")), entry.file, entry.offset, entry.length,
         { itemId: id, at: entry.at, sequence, capability: record.capability });
       index.store("replay-channels").reference(record.capability, entry.file, entry.offset, entry.length, { capability: record.capability });
@@ -147,7 +154,7 @@ export function refreshReplay(index: LogIndex, run: string) {
     pending = index.exclusive(async () => {
       if (index.meta("replay:version") !== VERSION) {
         // This is a disposable projection, not a second media or event archive.
-        for (const name of ["replay-items", "replay-time", "replay-spans", "replay-pairs", "replay-models", "replay-frames", "replay-frame-time", "replay-channels", "replay-contexts", "replay-inputs", "replay-observations", "replay-model-media"])
+        for (const name of ["replay-items", "replay-time", "replay-spans", "replay-pairs", "replay-models", "replay-frames", "replay-frame-time", "replay-channels", "replay-contexts", "replay-inputs", "replay-observations", "replay-model-media", "replay-video-frames"])
           for (const entry of index.store(name).entries()) await index.store(name).delete(entry.id);
         index.setMeta("replay:position", 0); index.setMeta("replay:sequence", 0); index.setMeta("replay:version", VERSION);
       }
@@ -165,5 +172,6 @@ export function replayItem(pointer: ReplayPointer): ReplayItem {
 }
 
 export const replayIdentity = key;
+export const videoAssetKey = (asset: string) => key(asset);
 
 export function replayCycle(index: LogIndex, epoch: string) { return JSON.parse(index.meta(`replay:cycle:${VERSION}:${epoch}`) ?? "{}"); }

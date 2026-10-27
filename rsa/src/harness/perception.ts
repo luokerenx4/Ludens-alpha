@@ -7,6 +7,8 @@ import { createInterface } from "node:readline";
 import type { Clock, ExecutionResult, Observation } from "@playness/baseware/contracts";
 import { childTrace, type EventTrace, type RecordEvent } from "./events.ts";
 import { pythonModulePaths } from "./python-capabilities.ts";
+import { pythonExecutable } from "../../../shared/python.ts";
+import type { VideoFrameReference } from "../../../shared/timeline-types.ts";
 
 export interface PerceptionStatus {
   state: "unimplemented" | "loading" | "ready" | "stopped" | "error";
@@ -52,6 +54,8 @@ export interface TimelineDerive {
 export interface TimelineMedia {
   sha256: string; asset: string; mediaType: string; bytes: number;
   recordId: string; sequence: number; sourceAsset: string; transform: string;
+  video?: VideoFrameReference;
+  approximate?: boolean;
 }
 export type DeriveMedia = (input: TimelineDerive, observationId?: string) => Promise<TimelineMedia>;
 export interface PerceptionRead {
@@ -90,6 +94,8 @@ export class PerceptionRuntime {
   private reading: Promise<unknown> = Promise.resolve();
   private readonly workspace: string;
   private readonly clock: Clock;
+  // Only identities for explicitly delivered images, keyed by the CLI's record marker.
+  private deliveredMedia = new Map<string, TimelineMedia>();
 
   constructor(private readonly options: {
     workspace: string; runDir: string; env?: NodeJS.ProcessEnv; record: RecordEvent; clock?: Clock;
@@ -130,12 +136,23 @@ export class PerceptionRuntime {
     return reply.result;
   }
 
-  async deriveMedia(input: TimelineDerive, signal: AbortSignal): Promise<TimelineMedia> {
+  async deriveMedia(input: TimelineDerive, signal: AbortSignal, observationId?: string): Promise<TimelineMedia> {
     const worker = this.worker;
     if (!worker || worker.expectedExit) throw new Error("Timeline recorder is unavailable; run rsa perception reload.");
     const reply = await this.request(worker, { ...input, action: "derive" }, 30_000, signal);
     if (!reply.ok) throw new Error(`${reply.error?.type}: ${reply.error?.message}`);
-    return reply.result as TimelineMedia;
+    const media = reply.result as TimelineMedia;
+    if (observationId) {
+      const key = `${observationId}\0${media.sha256}`;
+      this.deliveredMedia.delete(key);
+      this.deliveredMedia.set(key, media);
+      if (this.deliveredMedia.size > 4096) this.deliveredMedia.delete(this.deliveredMedia.keys().next().value!);
+    }
+    return media;
+  }
+
+  deliveredMediaReference(sha256: string, observationId?: string): TimelineMedia | undefined {
+    return observationId ? this.deliveredMedia.get(`${observationId}\0${sha256}`) : undefined;
   }
 
   private async read(signal: AbortSignal, parent: EventTrace, query: ObservationQuery): Promise<PerceptionRead> {
@@ -156,7 +173,7 @@ export class PerceptionRuntime {
       if (!reply.ok) return this.finish(this.unavailable(`${reply.error?.type}: ${reply.error?.message}`), started, trace);
       const value = reply.result as { records: Array<PerceptionSnapshot & {
         text: string; data?: unknown; space?: unknown;
-        media: { path: string; mediaType: string; data?: string; timeline?: Observation["timeline"] }[];
+        media: { path?: string; mediaType: string; data?: string; timeline?: Observation["timeline"] }[];
       }>; query: ObservationQuery; hasMore: boolean; nextAfter?: number; availability?: PerceptionRead["availability"] };
       if (!this.isCurrent(worker)) {
         return this.finish(this.unavailable("Perception generation stopped or was replaced during observation.",
@@ -230,7 +247,7 @@ export class PerceptionRuntime {
       RSA_RUN_ID: basename(this.options.runDir), BASEWARE_TRACE: JSON.stringify(backgroundTrace) };
     for (const key of ["RSA_EPOCH", "RSA_TRACE", "BASEWARE_EPOCH"]) delete (env as NodeJS.ProcessEnv)[key];
     env.PYTHONPATH = [...pythonModulePaths(), ...(env.PYTHONPATH ? [env.PYTHONPATH] : [])].join(delimiter);
-    const child = spawn(env.RSA_PYTHON ?? "python3", ["-u", "-m", "rsa_tools._perception"], {
+    const child = spawn(pythonExecutable(env), ["-u", "-m", "rsa_tools._perception"], {
       cwd: this.workspace, env, detached: true, stdio: ["pipe", "pipe", "pipe"],
     });
     const stderr = createWriteStream(join(directory, "stderr.log"));
@@ -244,10 +261,11 @@ export class PerceptionRuntime {
     child.stdin.on("error", () => {});
     const lines = createInterface({ input: child.stdout });
     lines.on("line", line => {
-      let reply: Reply & { event?: string; state?: PerceptionStatus["state"]; snapshot?: PerceptionSnapshot; mediaCount?: number; trace?: EventTrace };
+      let reply: Reply & { event?: string; state?: PerceptionStatus["state"]; snapshot?: PerceptionSnapshot; mediaCount?: number; mediaReferences?: TimelineMedia[]; trace?: EventTrace };
       try { reply = JSON.parse(line); }
       catch { return; }
       if (reply.event && this.isCurrent(worker)) {
+        if (reply.mediaReferences?.length) this.record("timeline_media", { media: reply.mediaReferences }, reply.trace ?? backgroundTrace);
         if (reply.event === "status") this.setStatus({ ...this.current, state: reply.state!,
           error: typeof reply.error === "string" ? reply.error : undefined }, backgroundTrace);
         if (reply.event === "sample") this.record("perception_sample", {
@@ -323,7 +341,8 @@ export class PerceptionRuntime {
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
     };
     kill("SIGTERM");
-    const timer = setTimeout(() => kill("SIGKILL"), 1000);
+    // A bounded encoding queue must be flushed before the writer releases its lock.
+    const timer = setTimeout(() => kill("SIGKILL"), 10_000);
     try { await worker.exited; }
     finally { clearTimeout(timer); }
   }
@@ -343,6 +362,15 @@ export class PerceptionRuntime {
   }
 
   private finish(read: PerceptionRead, started: number, trace: EventTrace) {
+    // Cold video decoding produces new image bytes. Register their identity
+    // against the same frame before a CLI/tool result can reach log archival.
+    const media = (read.result.observations ?? []).flatMap(observation => {
+      if (observation.data === undefined || !observation.timeline?.video) return [];
+      const bytes = Buffer.from(observation.data, "base64");
+      return [{ ...observation.timeline, sha256: createHash("sha256").update(bytes).digest("hex"),
+        bytes: bytes.length, mediaType: observation.mediaType, approximate: true }];
+    });
+    if (media.length) this.record("timeline_media", { media }, trace);
     this.record("perception_observe_end", { ...perceptionMetadata(read), outcome: read.error ? "error" : "success",
       durationMs: this.clock.now() - started }, trace);
     return read;

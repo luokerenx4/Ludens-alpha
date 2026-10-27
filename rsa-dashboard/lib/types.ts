@@ -1,3 +1,5 @@
+import type { VideoFrameReference } from "../../shared/timeline-media";
+
 export interface Event {
   source?: {
     component: string;
@@ -52,7 +54,7 @@ export interface Observation {
   origin: string;
   mediaType: string;
   mediaStorage?: "timeline" | "run" | "unrecorded";
-  timeline?: { recordId?: string; sequence?: number; asset: string };
+  timeline?: { recordId?: string; sequence?: number; asset: string; video?: VideoFrameReference };
   text?: string;
   hook?: { id: string; codeSHA: string; path: string };
   perception?: PerceptionRead;

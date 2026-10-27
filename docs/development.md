@@ -6,18 +6,20 @@
 
 ## 安装
 
-整套后台启动目前需要 macOS launchd。准备 Bun 1.4、Python 3.9+、Node.js 22+、pnpm 11，以及已配置的本机 OMP 模型登录。RSA 固定使用 OMP 18.9.1，复用其凭据；默认模型为 `openai-codex/gpt-6.1-sol`。各组件独立安装，保留各自锁文件：
+整套后台启动目前需要 macOS launchd。准备 Bun 1.4、Python 3.12+、Node.js 22+、pnpm 11、uv，以及已配置的本机 OMP 模型登录。RSA 固定使用 OMP 18.9.1，复用其凭据；默认模型为 `openai-codex/gpt-6.1-sol`。各组件独立安装，保留各自锁文件：
 
 ```sh
 (cd baseware && bun install --frozen-lockfile)
 (cd rsa && bun install --frozen-lockfile)
-python3 -m pip install -r rsa/python/requirements.txt
+uv sync --project rsa/python --frozen
 (cd rsa-dashboard && npm ci)
 (cd rsa-companion && pnpm install --frozen-lockfile && pnpm build)
 export PATH="$PWD/baseware/bin:$PWD/rsa/bin:$PWD/rsa-companion/bin:$PATH"
 ```
 
-[requirements.txt](../rsa/python/requirements.txt) 声明 `jsonschema>=4.23,<5`，用于 benchmark 报告校验，需独立于 Bun 安装。可先激活自己的 Python 环境；`RSA_PYTHON` 选择能力、感知和评测进程的解释器，shell 的 `python3` 也应指向该环境。训练、图像库由 workspace 按需安装。
+[pyproject.toml](../rsa/python/pyproject.toml) 和 `uv.lock` 管理正式 `ludens-rsa` 包（导入名 `rsa_tools`）、PyAV/Pillow 媒体处理及 jsonschema 校验依赖。框架解释器优先使用显式 `RSA_PYTHON`，其次项目 `rsa/python/.venv`，最后 PATH 中的 `python3`；指定外部解释器时需在该环境安装包及依赖。项目环境不替换用户全局训练环境。工作区自己的任务依赖由 AI 按需管理。正式 wheel 包含报告 schema，不依赖源码目录布局；独立 Python 评测注册需明确 `RSA_ARTIFACT_ROOT`，Host/CLI 会注入它。
+
+OMP 原生 shell 也会获得 `RSA_PYTHON`。需要与感知/能力入口共用依赖时调用 `"$RSA_PYTHON" script.py`；裸 `python3` 仍遵循用户 login shell 配置，不能假定它就是项目环境。项目环境只安装框架依赖，PyTorch 等任务依赖需安装到选定解释器，或用已装好任务依赖的解释器并补齐框架包。
 
 其他终端也需配置 PATH 或使用绝对 CLI 路径。Bun 安装 RSA 时自动应用 [依赖补丁](../rsa/patches/)。
 
@@ -166,7 +168,7 @@ rsa run --model openai-codex/gpt-6.1-sol --seconds 300 --requests 50
 ```sh
 (cd baseware && bun run check && bun test)
 python3 baseware/scripts/sync-cua-contract.py --check
-(cd rsa && bun run check && bun test)
+(cd rsa && bun run check && bun run test)
 (cd rsa-dashboard && npm test && npm run typecheck && npm run build)
 (cd rsa-companion && pnpm typecheck && pnpm test)
 ```

@@ -4,9 +4,13 @@
   "type": "module",
   "scripts": {
     "rsa": "bun src/app/main.ts",
-    "test": "bun test",
+    "test": "bun run test:typescript && bun run test:python",
     "test:transport": "bun test tests/omp-websocket.test.ts",
-    "check": "tsc --noEmit"
+    "check": "bun run check:typescript && bun run check:python",
+    "test:typescript": "uv run --project python --frozen bun test",
+    "test:python": "uv run --project python --frozen python scripts/test-python.py",
+    "check:typescript": "tsc --noEmit",
+    "check:python": "uv run --project python --frozen mypy --config-file python/pyproject.toml python/rsa_tools"
   },
   "devDependencies": {
     "@types/bun": "1.3.14",

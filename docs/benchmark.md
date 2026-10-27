@@ -43,7 +43,7 @@ def evaluate(dataset: str, checkpoint: str) -> dict:
 
 targets 可省略或关联多个能力，title/scope 描述名称/范围。protocol 默认 `"1"`，改数据划分、评分或判定时更新；源码 SHA/revision 独立记录，实现修改不自动改变口径。
 
-报告唯一作者契约是 [report.schema.json](../rsa/benchmarks/report.schema.json)，Python、TypeScript 和 `rsa bench schema/validate` 使用同一份：
+报告唯一作者契约是 [report.schema.json](../rsa/python/rsa_tools/report.schema.json)，Python、TypeScript 和 `rsa bench schema/validate` 使用同一份：
 
 | 字段 | 要求 |
 | --- | --- |
@@ -69,6 +69,8 @@ seq = record.record("sample_verified", {"frame": 42})
 conditions 描述比较条件；subject 引用对象、不复制模型/数据集，应声明版本/SHA，包括内存训练时的被测版本。artifact 归档并记 hash，原文件覆盖不影响附件；可在 `record.run_dir / "artifacts"` 生成后登记。条件是作者声明，实际调用看日志；无日志不证明无副作用。
 
 已有时空轴原件经路径与内容 hash 校验后只登记 `timeline.asset`，不再复制；此时 `path` 相对 workspace，普通归档附件的 `path` 仍相对 run。
+
+录制图像可以直接 `record.artifact(media)` 或 `record.artifact(media["timeline"])`，按持久索引校验 `recordId/sequence/asset` 和视频 PTS，保存同一视频帧引用，不复制视频或另存图片。视频附件带 `approximate: true`，原图 hash 不代表仍保留原图；片段可以尚在编码，可读状态以 sidecar 为准。非持久窗口不提供离线附件引用。看板沿用附件路径与元数据展示。
 
 ## 执行和版本化报告
 

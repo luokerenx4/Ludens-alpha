@@ -6,7 +6,7 @@ export interface ArchivedObservation {
   sensorId?: string;
   mediaType: string;
   path?: string;
-  timeline?: { recordId?: string; sequence?: number; asset: string };
+  timeline?: Observation["timeline"];
   origin?: string;
   sourceSequence?: number;
   sourceSequenceDelta?: number;

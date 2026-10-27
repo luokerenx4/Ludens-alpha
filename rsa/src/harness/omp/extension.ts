@@ -10,7 +10,7 @@ import type { Clock, Observation } from "@playness/baseware/contracts";
 import type { Runtime } from "../runtime.ts";
 import { Workspace } from "../workspace.ts";
 import type { EventTrace, RecordEvent } from "../events.ts";
-import { pythonModulePaths } from "../python-capabilities.ts";
+import { pythonEnvironment } from "../../../../shared/python.ts";
 import { observationBytes, observationMetadata, perceptionMetadata, type DeriveMedia, type TimelineMedia, type ObservationQuery, type PerceptionRead } from "../perception.ts";
 
 export async function media(observations: Observation[], record?: RecordEvent, trace?: EventTrace, derive?: DeriveMedia) {
@@ -82,11 +82,14 @@ export function createRsaExtension(options: {
   // Each RSA host owns one OMP session. Use OMP's existing extension environment
   // mechanism; native bash and its process manager own execution. Capture paths
   // once so repeated prompts do not keep prepending the same directories.
+  const python = pythonEnvironment();
   const environment = {
-    PATH: [options.binDir, resolve(import.meta.dir, "../../../../baseware/bin"), process.env.PATH ?? ""].join(delimiter),
-    PYTHONPATH: [...pythonModulePaths(), ...(process.env.PYTHONPATH ? [process.env.PYTHONPATH] : [])].join(delimiter),
+    RSA_PYTHON: python.RSA_PYTHON,
+    PATH: [options.binDir, resolve(import.meta.dir, "../../../../baseware/bin"), python.PATH ?? ""].join(delimiter),
+    PYTHONPATH: python.PYTHONPATH,
     RSA_SOCKET: options.rsaSocket ?? "",
     RSA_WORKSPACE: workspace.path, RSA_RUN_ID: runtime.status().runId,
+    RSA_ARTIFACT_ROOT: process.env.RSA_ARTIFACT_ROOT ?? resolve(import.meta.dir, "../../../../../artifacts/rsa"),
     BASEWARE_SOCKET: options.basewareSocket, BASEWARE_EPOCH: "", BASEWARE_TRACE: "{}",
     RSA_EPOCH: "", RSA_TRACE: "",
   };
@@ -143,11 +146,19 @@ export function createRsaExtension(options: {
 
   // Native tool images remain in OMP's own history. Delivery metadata is not
   // permission to create another permanent media archive.
-  async function recordToolImages(images: ImageContent[], parent: EventTrace, source: string) {
+  async function recordToolImages(images: ImageContent[], parent: EventTrace, source: string, content: unknown[] = []) {
     const observations: Observation[] = [];
-    for (const image of images) {
+    // rsa observe --images prints an explicit record marker for each terminal
+    // image. Pair that marker with the registered byte hash, never a nearest frame.
+    const markers = content.flatMap(part => {
+      const value = part as { type?: string; text?: string };
+      return value.type === "text" && typeof value.text === "string"
+        ? [...value.text.matchAll(/Image \d+: ([a-zA-Z0-9-]+) \| observation #/g)].map(match => match[1]) : [];
+    });
+    for (const [index, image] of images.entries()) {
       const bytes = Buffer.from(image.data, "base64");
       const hash = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
+      const delivered = runtime.perception?.deliveredMediaReference(hash, markers[index]);
       // Exact byte identity can reuse an existing recorded asset. This does
       // not infer its capture time or which of several records produced it.
       const root = join(workspace.path, ".rsa", "timeline");
@@ -157,10 +168,12 @@ export function createRsaExtension(options: {
           && file.isFile() && file.size === bytes.length).catch(() => false);
       const now = options.clock?.now() ?? performance.now();
       const observation: Observation = { id: crypto.randomUUID(), controllerId: source, mediaType: image.mimeType,
-        ...(retained ? { path, timeline: { asset } } : {}),
+        ...(delivered ? { timeline: { asset: delivered.asset, recordId: delivered.recordId, sequence: delivered.sequence,
+          ...(delivered.video ? { video: delivered.video } : {}) } } : retained ? { path, timeline: { asset } } : {}),
         timing: { clock: options.clock?.id ?? runtime.status().runId, requestedAtMs: now, receivedAtMs: now } };
-      runtime.record("observation", { ...observation, origin: "tool_result", sha256: hash, recorded: retained }, parent);
-      runtime.record("observation_media", { observationId: observation.id, modelBytes: bytes.length, mimeType: image.mimeType }, parent);
+      runtime.record("observation", { ...observation, origin: "tool_result", sha256: hash, recorded: !!delivered || retained }, parent);
+      runtime.record("observation_media", { observationId: observation.id, modelBytes: bytes.length, mimeType: image.mimeType,
+        ...(delivered ? { modelMedia: delivered } : {}) }, parent);
       observations.push(observation);
     }
     return observations;
@@ -228,7 +241,7 @@ export function createRsaExtension(options: {
       if (event.toolName === "bash") observed = undefined;
       if (event.toolName !== "observe") {
         const images = event.content.filter((part): part is ImageContent => part.type === "image");
-        toolImages.push(...await recordToolImages(images, trace(event.toolCallId), event.toolName));
+        toolImages.push(...await recordToolImages(images, trace(event.toolCallId), event.toolName, event.content));
       }
       if (event.toolName === "read") {
         // OMP resolves selectors such as SKILL.md:19-22. Use its result metadata
@@ -261,7 +274,7 @@ export function createRsaExtension(options: {
         if (deliveredBackground.has(key)) continue;
         deliveredBackground.add(key);
         const images = message.content.filter((part): part is ImageContent => part.type === "image");
-        const inputs = await recordToolImages(images, { epoch: cycle.epoch }, "background_result");
+        const inputs = await recordToolImages(images, { epoch: cycle.epoch }, "background_result", message.content);
         if (!inputs.length) continue;
         latestContext = { ...latestContext, observations: [...latestContext.observations, ...inputs.map(o => o.id)] };
         runtime.record("observation_context", { origin: "background_result", observations: latestContext.observations,

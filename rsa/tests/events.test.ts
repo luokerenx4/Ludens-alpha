@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { gunzipSync } from "node:zlib";
@@ -37,4 +37,19 @@ test("run events have ordered identities and immutable, lossless payload referen
     expect(forwarded.trace.parentSpanId).toBe(parent.spanId);
     expect(forwarded.trace.spanId).not.toBe(parent.spanId);
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("malformed video registration is diagnosed without terminating the host event callback", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "rsa-video-reference-"));
+  const directory = join(workspace, "logs", "run");
+  await mkdir(directory, { recursive: true });
+  try {
+    const log = new EventLog(directory, { id: "fixture", now: () => 1 }, workspace);
+    log.record("timeline_media", { media: [{ sha256: "a".repeat(64), asset: "video/f0.mp4",
+      video: { pts: 0, timeBase: [1, 1000000], width: 32769, height: 1 } }] });
+    const events = (await readFile(join(directory, "events.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    expect(events.map(event => event.type)).toEqual(["timeline_media", "media_reference_error"]);
+    expect(events[1].data.eventId).toBe("fixture:1");
+    expect(events[1].data.errors[0]).toContain("Invalid timeline video frame reference");
+  } finally { await rm(workspace, { recursive: true, force: true }); }
 });

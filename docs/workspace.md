@@ -88,7 +88,7 @@ def temperature() -> dict:
 
 感知信封支持 `text`、`data`（任意 JSON）、`media`、`sampledAt`、`sources`、`space`。字段可省略，未知字段明确报错。媒体为 `{mediaType, path}` 或 `{mediaType, data}`（base64）；路径可相对 workspace。设备原生图片可把其 `data/mimeType` 放入信封，不必自己先存文件。`sampledAt` 只填写已知来源时刻，`space` 按设备/算法实际坐标系描述，Harness 不推断空间含义。
 
-记录后返回信封附 `timeline: {recordId, sequence}`，媒体带同轴 `asset` 引用及本机读取路径。相同媒体按 SHA-256 在 `objects/` 共享一份，观测时间点仍独立。嵌套能力按各自标记记录，可在 `sources` 引用内层结果；不会自动保存所有中间数据。
+记录后返回信封附 `timeline: {recordId, sequence}`，媒体带同轴 `asset` 引用。图像持续编码至 `video/` 短 MP4 段，并由 `timeline.video` 的 `pts/timeBase/width/height` 定位；当前原图通过有界热缓存的内联 `data` 交付，历史冷帧按需解码，不保证存在图片 `path`。其他媒体按 SHA-256 在 `objects/` 共享一份，观测时间点仍独立。嵌套能力按各自标记记录，可在 `sources` 引用内层结果；不会自动保存所有中间数据。
 
 普通 import、`Client.call("python/…")` 和 CLI 都经过同一装饰器。用户函数仍在原 Python 进程运行；只有结果通过 RSA socket 交给已有感知 worker 的单一写入者。没有可用 writer 或记录失败会报错，不会自动重试采样/动作。声明感知不授予设备输入权限，动作仍受 epoch 控制。
 
@@ -119,9 +119,16 @@ rsa perception stop
 | `RSA_PERCEPTION_PERSIST` | `1` | `0` 仅保留短期窗口，接受 true/false |
 | `RSA_PERCEPTION_SEGMENT_SECONDS` | `3600` | UTC 时间分段长度 |
 | `RSA_PERCEPTION_HOT_BYTES` | `67108864` | 热层预算，64 MiB |
-| `RSA_PERCEPTION_SEGMENT_BYTES` | `268435456` | 单段预算，256 MiB |
+| `RSA_PERCEPTION_SEGMENT_BYTES` | `268435456` | 元数据及非视频媒体单段预算，256 MiB |
+| `RSA_VIDEO_SEGMENT_SECONDS` | `10` | 视频段时长；停采或停止进程时也会收尾 |
+| `RSA_VIDEO_QUEUE_BYTES` | `33554432` | 编码队列预算，包含压缩输入与 RGB 大小；也限制单帧解码尺寸 |
+| `RSA_VIDEO_QUEUE_FRAMES` | `64` | 编码队列帧数上限 |
+| `RSA_VIDEO_STREAMS` | `16` | 同时保持的图像流数上限；新流令最久未用流收尾 |
+| `RSA_VIDEO_QUERY_BYTES` | `33554432` | 单次历史查询媒体字节预算；超限需缩小分页 |
 
-持久模式采样完成即提交分段，冷记录按需查询，不常驻全量索引或图片。关闭持久化后只保留有限临时窗口，停止/reload 清空窗口；响应会携带选中媒体字节，防止读取后淘汰造成交付失效，不另建审计副本。过期由 `availability` 明确返回。持久化开关不删除旧持久档案或用户主动保存的文件，OMP 原生会话仍属独立范围；RSA 模型日志仅引用这些媒体，不让临时窗口变成永久档案。
+持久模式采样完成提交记录元数据，图像由有界后台队列编码。时空轴元数据默认一小时分段，视频默认 10 秒分段；每个视频段的 `.mp4.json` 状态区分 pending/ready/error。热图像可在编码期间直接用于当前观测；冷查询需已完成的视频段，积压丢录制帧明确记为 gap。视频按实际 recordedAt 的间隔赋予 PTS，保留来源 sampledAt，不补造帧。历史解码是高质量有损复原，不声称还原当时模型输入的逐字节内容。冷记录按需查询，不常驻全量索引或图片。关闭持久化后只保留有限临时窗口，停止/reload 清空窗口；响应会携带选中媒体字节，防止读取后淘汰造成交付失效，不另建审计副本。过期由 `availability` 明确返回。持久化开关不删除旧持久档案或用户主动保存的文件，OMP 原生会话仍属独立范围；RSA 模型日志仅引用这些媒体，不让临时窗口变成永久档案。
+
+编码器、Python 和图像库还会使用原生内存，上表不是进程 RSS 上限。冷视频解码在采样锁外执行；Dashboard 离线解码限制为 2 个并发、16 个等待请求，单次 20 秒／32 MiB 输出。MP4 末帧在没有下一次采样时使用 1/30 秒尾长，回放随后保持最后画面，不代表补采了后续帧。
 
 CLI 默认返回 JSON，`--images` 用 OMP 原生终端图像通道交付所选图像，一页最多 32 张/40 MiB；超限需缩小分页，不静默丢图。时空轴可以保存音频/二进制等媒体，但当前模型适配仅直接消费图像及文本/JSON，不宣称支持所有模型模态。普通原生工具图片没有隐式永久归档；若字节与轴中已有媒体相同，Dashboard 可以复用其引用，不猜采集时间。
 

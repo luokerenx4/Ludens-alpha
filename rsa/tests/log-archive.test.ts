@@ -180,3 +180,57 @@ test("readers validate ownership, content hashes and canonical paths; legacy pay
   writeFileSync(join(run, legacyPath), gzipSync(JSON.stringify({ old: true })));
   expect(await readArtifact(run, { path: legacyPath, encoding: "gzip" }, { workspace: null })).toEqual({ old: true });
 });
+
+test("video references avoid duplicate image blobs and never impersonate exact model bytes", async () => {
+  const { workspace, run, store } = setup();
+  const bytes = Buffer.from("model image bytes already delivered");
+  const sha256 = new Bun.SHA256().update(bytes).digest("hex");
+  const video = { pts: 120000, timeBase: [1, 1000000] as [number, number], width: 32, height: 32 };
+  const source = { sha256, asset: "video/01234567-abcd.mp4", video };
+  store.registerMedia(source);
+  const ref = store.write({ image: { type: "image", data: bytes.toString("base64"), mimeType: "image/png" } });
+  const value = await readArtifact(run, ref);
+  expect(value.image.data.$media).toMatchObject({ ...source, approximate: true, status: "referenced" });
+  await expect(readArtifact(run, ref, { media: "full" })).rejects.toThrow("lossy-video-source");
+  expect(() => readArtifactSync(run, ref, { media: "full" })).toThrow("lossy-video-source");
+  for (const file of readdirSync(join(store.root, "objects")))
+    expect(gunzipSync(readFileSync(join(store.root, "objects", file))).toString()).not.toContain(bytes.toString("base64"));
+  store.registerMedia({ ...source, video: { ...video, status: "gap", reason: "queue-full" } });
+  expect((await readArtifact(run, store.write({ type: "image", data: bytes.toString("base64") }))).data.$media)
+    .toMatchObject({ status: "referenced", asset: source.asset });
+  for (let index = 0; index < 4100; index++) store.registerMedia({ ...source,
+    sha256: createHash("sha256").update(String(index)).digest("hex"), video: { ...video, pts: index } });
+  expect(readdirSync(join(store.root, "media"))).toEqual([`${sha256}.json`]); // Samples alone do not create lookup files.
+  for (const archive of [store, new JsonArchive(workspace)])
+    expect((await readArtifact(run, archive.write({ type: "image", data: bytes.toString("base64") }))).data.$media)
+      .toMatchObject({ ...source, status: "referenced" });
+  const missed = Buffer.from("different unrecorded pixels");
+  store.registerMedia({ ...source, sha256: createHash("sha256").update(missed).digest("hex"),
+    video: { ...video, status: "gap", reason: "queue-full" } });
+  expect((await readArtifact(run, store.write({ type: "image", data: missed.toString("base64") }))).data.$media)
+    .toMatchObject({ status: "unrecorded", reason: "queue-full" });
+  expect(() => store.registerMedia({ ...source, asset: "video/../../outside.mp4" })).toThrow("Invalid timeline video");
+});
+
+test("video lookup renews temporary or failed sources while keeping a healthy durable source stable", async () => {
+  const { workspace, run, store } = setup();
+  const bytes = Buffer.from("same pixels across recording attempts");
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  const video = { pts: 0, timeBase: [1, 1000000] as [number, number], width: 32, height: 32 };
+  const value = { type: "image", data: bytes.toString("base64") };
+  const use = async (asset: string) => {
+    store.registerMedia({ sha256, asset, video });
+    return (await readArtifact(run, store.write(value))).data.$media.asset;
+  };
+  expect(await use("window-1/video/aaaa.mp4")).toBe("window-1/video/aaaa.mp4");
+  expect(await use("window-2/video/bbbb.mp4")).toBe("window-2/video/bbbb.mp4");
+  expect(await use("video/cccc.mp4")).toBe("video/cccc.mp4");
+  const state = join(workspace, ".rsa/timeline/video/cccc.mp4.json");
+  mkdirSync(join(state, ".."), { recursive: true });
+  writeFileSync(state, JSON.stringify({ status: "ready" }));
+  expect(await use("video/dddd.mp4")).toBe("video/cccc.mp4");
+  writeFileSync(state, JSON.stringify({ status: "error" }));
+  expect(await use("video/dddd.mp4")).toBe("video/dddd.mp4");
+  writeFileSync(join(store.root, "media", `${sha256}.json`), "broken index");
+  expect(() => new JsonArchive(workspace).write(JSON.stringify(value))).toThrow(); // Never fall back to retaining raw image JSON.
+});

@@ -1,3 +1,5 @@
+import type { TimelineAssetReference } from "../../../shared/timeline-types";
+
 /** Runtime-independent benchmark contract. Reports never rewrite execution facts. */
 export interface BenchmarkDefinition {
   id: string; title: string; description: string; scope: string;
@@ -22,7 +24,8 @@ export interface BenchmarkReference { id: string; path?: string; sha256?: string
 export interface BenchmarkArtifact {
   /** Run-relative archive, or workspace-relative original when timeline is present. */
   path: string; label?: string; sha256?: string;
-  timeline?: { asset: string };
+  timeline?: TimelineAssetReference & { recordId?: string; sequence?: number };
+  mediaType?: string; approximate?: boolean;
 }
 export interface CaseMetadata {
   conditions?: Record<string, unknown>; subjects?: BenchmarkReference[];

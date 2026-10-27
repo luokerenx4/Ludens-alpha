@@ -16,7 +16,15 @@ export interface ReplayFrame {
   at: number;
   capability: string;
   text?: string;
-  media: { index: number; mediaType: string; url: string }[];
+  media: { index: number; mediaType: string; url: string; video?: {
+    url: string;
+    originAt: number;
+    width: number;
+    height: number;
+    durationSeconds: number;
+    status: "pending" | "ready" | "error" | "gap";
+    reason?: string;
+  } }[];
 }
 
 export interface ReplayItem {
@@ -41,11 +49,12 @@ export interface ReplayDetail {
   title: string;
   data: unknown;
   /** Exact known model inputs; never inferred from the nearest frame. */
-  observations?: { id: string; url?: string; recordId?: string; sequence?: number }[];
+  observations?: { id: string; url?: string; recordId?: string; sequence?: number; approximate?: boolean }[];
 }
 
-// GET /api/replay?project=&run=&epoch=&mode=overview|window|detail|media
+// GET /api/replay?project=&run=&epoch=&mode=overview|window|detail|media|segment
 // window: start/end = UTC ms, cursor optional; returns ReplayWindow.
 // detail: id = ReplayItem.id, or record=ReplayFrame.id&sequence=.
 // media: record=&sequence=&media=<index>; image bytes, no caller-supplied file path.
+// segment: asset=<video asset>; a streamed video authorized against this run's recorded frames.
 // Errors: { error: string }. All responses and controls are read-only.

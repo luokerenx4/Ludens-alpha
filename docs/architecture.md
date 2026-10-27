@@ -79,6 +79,12 @@ rsa controller controller/pad.play --args '{"inputs":[{"atMs":0,"durationMs":500
 
 Baseware 记录设备事实，RSA 保存模型、工具、能力和感知记录，Shiori 接入 OMP 原生 telemetry。Dashboard 与 Pet 消费日志，不另起推理循环。来源与调用链见 [日志契约](logging.md)，评测见 [Benchmark](benchmark.md)。调用成功、文件增长或帧数增加不等于任务成功。
 
+## TypeScript 与 Python
+
+RSA 的 `src/` 与 `python/` 都是正式组件。TypeScript 管理 Shiori、控制权、跨进程协议和产品接口；Python 包 `rsa_tools` 管理常驻感知、时空轴媒体写入与按需解码。Python 使用独立的 pyproject/锁文件、可安装包和测试/类型检查，统一检查入口见 [开发指南](development.md)。workspace 中 AI 编写的 Python 与框架代码分别维护；感知函数只返回结果并按需标记 `@record`，框架负责视频编码与文件生命周期。
+
+PyAV 在现有常驻 worker 内按需加载，编码线程和队列受限，不新增录像服务。TS 和 Dashboard 通过同一时空轴引用消费媒体，历史解码可离线执行，不依赖活着的采样进程。实施与验收见 [双语言与视频存储方案](python-video-plan.md)。
+
 ## 感知持久化边界
 
 workspace 的 `.rsa/timeline/` 是显式记录感知的唯一原件归属。`@perception` 声明感知，`@record` 将结果写入时空轴；已有感知进程负责单写入者与连续采样，用户函数仍在调用方 Python 进程执行。Baseware 返回原生数据，只使用调用临时文件；RSA run 记录引用，Dashboard 解析引用和可重建索引。RSA 额外保存的模型、工具与传输正文通过 `.rsa/archive/` 共享，媒体引用时空轴；OMP 自身的原生 session/blob 继续由上游管理。契约与生命周期见 [Workspace](workspace.md#感知能力与-workspace-时空轴)，施工依据见 [时空轴方案](workspace-timeline-plan.md) 与 [模型日志引用化方案](indexed-model-log-plan.md)。

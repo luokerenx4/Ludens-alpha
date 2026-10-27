@@ -28,28 +28,28 @@ class HistoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             history = ObservationHistory(directory)
             raw = base64.b64encode(b"original").decode()
-            first = history.append({"media": [{"data": raw, "mediaType": "image/png"}]}, "one", SAMPLING)
-            second = history.append({"media": [{"data": raw, "mediaType": "image/png"}]}, "one", SAMPLING)
+            first = history.append({"media": [{"data": raw, "mediaType": "application/octet-stream"}]}, "one", SAMPLING)
+            second = history.append({"media": [{"data": raw, "mediaType": "application/octet-stream"}]}, "one", SAMPLING)
             source = first["media"][0]["timeline"]
             history.close()
             history = ObservationHistory(directory)  # Source is not in the hot cache.
             encoded = base64.b64encode(b"model version").decode()
-            derived = history.derive(source, encoded, "image/jpeg", "omp.resizeImage")
+            derived = history.derive(source, encoded, "application/octet-stream", "omp.resizeImage")
             self.assertEqual(derived["recordId"], first["id"])
             self.assertNotEqual(derived["recordId"], second["id"])
             self.assertEqual(derived["sourceAsset"], source["asset"])
             self.assertEqual((history.directory / derived["asset"]).read_bytes(), b"model version")
             self.assertNotEqual(derived["asset"], source["asset"])
-            self.assertEqual(history.derive(source, raw, "image/png", "identity")["asset"], source["asset"])
+            self.assertEqual(history.derive(source, raw, "application/octet-stream", "identity")["asset"], source["asset"])
             self.assertEqual(history.sequence, second["sequence"])  # Encoding isn't a new sample.
             self.assertEqual(len(list(history.objects.iterdir())), 2)
             with self.assertRaisesRegex(ValueError, "record is missing"):
-                history.derive({**source, "recordId": "not-the-record"}, encoded, "image/jpeg", "resize")
+                history.derive({**source, "recordId": "not-the-record"}, encoded, "application/octet-stream", "resize")
             with self.assertRaisesRegex(ValueError, "does not belong"):
-                history.derive({**source, "asset": "../other.bin"}, encoded, "image/jpeg", "resize")
+                history.derive({**source, "asset": "../other.bin"}, encoded, "application/octet-stream", "resize")
             (history.directory / source["asset"]).unlink()
             with self.assertRaisesRegex(ValueError, "asset is missing"):
-                history.derive(source, encoded, "image/jpeg", "resize")
+                history.derive(source, encoded, "application/octet-stream", "resize")
             history.close()
 
     def test_window_derivatives_expire_with_the_source_without_promotion(self):
@@ -59,24 +59,24 @@ class HistoryTests(unittest.TestCase):
             with patch("rsa_tools._observation_history.time.monotonic", side_effect=lambda: clock[0]):
                 history = ObservationHistory(directory)
                 saved = history.append({"media": [{"data": base64.b64encode(b"source").decode(),
-                                                    "mediaType": "image/png"}]}, "one", SAMPLING)
+                                                    "mediaType": "application/octet-stream"}]}, "one", SAMPLING)
                 source = saved["media"][0]["timeline"]
                 encoded = base64.b64encode(b"derived").decode()
-                derived = history.derive(source, encoded, "image/jpeg", "resize")
+                derived = history.derive(source, encoded, "application/octet-stream", "resize")
                 path = history.directory / derived["asset"]
                 self.assertTrue(derived["asset"].startswith("window-"))
                 self.assertTrue(path.is_file())
                 self.assertFalse(history.objects.exists())
                 self.assertEqual(list(history.segment_dir.iterdir()), [])
                 size = history.hot_bytes
-                history.derive(source, encoded, "image/jpeg", "resize")
+                history.derive(source, encoded, "application/octet-stream", "resize")
                 self.assertEqual(history.hot_bytes, size)  # Same record/version has one lease.
                 clock[0] = 11
                 history.prune()
                 self.assertFalse(path.exists())
                 self.assertEqual(history.hot_bytes, 0)
                 with self.assertRaisesRegex(ValueError, "record is missing or expired"):
-                    history.derive(source, encoded, "image/jpeg", "resize")
+                    history.derive(source, encoded, "application/octet-stream", "resize")
                 history.close()
 
     def test_immutable_media_paged_queries_and_generation_reload(self):
@@ -196,7 +196,7 @@ class HistoryTests(unittest.TestCase):
             source.write_bytes(b"compressed frame")
             with patch("rsa_tools._observation_history.time.monotonic", side_effect=lambda: clock[0]):
                 history = ObservationHistory(root)
-                saved = history.append({"media": [{"path": str(source), "mediaType": "image/png"}]},
+                saved = history.append({"media": [{"path": str(source), "mediaType": "application/octet-stream"}]},
                                        "one", SAMPLING, "2026-10-22T00:00:00Z")
                 copied = Path(saved["media"][0]["path"])
                 self.assertNotEqual(copied, source)
@@ -213,7 +213,7 @@ class HistoryTests(unittest.TestCase):
                 self.assertFalse(copied.exists())
                 self.assertTrue(source.exists())
                 self.assertEqual(list(history.segment_dir.glob("*")), [])
-                saved = history.append({"media": [{"path": str(source), "mediaType": "image/png"}]},
+                saved = history.append({"media": [{"path": str(source), "mediaType": "application/octet-stream"}]},
                                        "one", SAMPLING, "2026-10-22T00:00:11Z")
                 copied = Path(saved["media"][0]["path"])
                 page = history.observe()

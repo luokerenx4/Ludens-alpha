@@ -1,6 +1,7 @@
 """Synchronous access to the workspace's unified capability interface."""
 
 from pathlib import Path
+from typing import Any
 from ._context import RSAError, current, request, scope
 
 
@@ -11,13 +12,14 @@ class Client:
     the client never acquires control or retries actions.
     """
 
-    def __init__(self, socket_path=None, *, epoch=None, trace=None, timeout=None):
+    def __init__(self, socket_path: str | None = None, *, epoch: str | None = None,
+                 trace: dict[str, Any] | None = None, timeout: float | None = None) -> None:
         self.socket_path = socket_path
         self.epoch = epoch
         self.trace = trace
         self.timeout = timeout
 
-    def _context(self):
+    def _context(self) -> dict[str, Any]:
         # Resolve defaults at the call site, so a module-level Client also
         # inherits the active local function's trace.
         return {**current(), **{key: value for key, value in {
@@ -25,7 +27,7 @@ class Client:
             "trace": self.trace, "timeout": self.timeout,
         }.items() if value is not None}}
 
-    def _request(self, action, **fields):
+    def _request(self, action: str, **fields: Any) -> Any:
         context = self._context()
         message = {"kind": "controller", "argv": [], "action": action, **fields}
         if context["epoch"] is not None:
@@ -34,15 +36,15 @@ class Client:
             message["trace"] = context["trace"]
         return request(context["socket_path"], message, context["timeout"])
 
-    def list(self):
+    def list(self) -> Any:
         """List registered driver and workspace capabilities."""
         return self._request("list")
 
-    def help(self, capability_id):
+    def help(self, capability_id: str) -> Any:
         """Read the selected capability's description and arguments."""
         return self._request("help", id=capability_id)
 
-    def call(self, capability_id, arguments=None):
+    def call(self, capability_id: str, arguments: dict[str, Any] | None = None) -> Any:
         """Call a driver or local Python function with named arguments."""
         if capability_id.startswith("python/"):
             from ._capabilities import call_local

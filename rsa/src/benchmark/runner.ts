@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { pythonExecutable } from "../../../shared/python.ts";
 import { randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -109,7 +110,7 @@ export async function runBenchmark(definition: BenchmarkDefinition, args: Record
     env = { ...process.env, RSA_WORKSPACE: executionWorkspace, RSA_ARTIFACT_ROOT: options.artifactRoot, RSA_SOCKET: "", BASEWARE_SOCKET: "",
       RSA_RUN_ID: "", BASEWARE_EPOCH: "", BASEWARE_TRACE: "{}" };
   } else {
-    executable = process.env.RSA_PYTHON ?? "python3"; argv = ["-B", pythonBridge];
+    executable = pythonExecutable(); argv = pythonBridge;
     input = JSON.stringify({ action: "invoke_benchmark", workspace: state.workspace, definition, arguments: parameters, runDir, result });
     env = pythonEnv(state.workspace, { RSA_ARTIFACT_ROOT: options.artifactRoot,
       RSA_SOCKET: inherited && process.env.RSA_SOCKET || state.socket,
