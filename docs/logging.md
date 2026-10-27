@@ -2,6 +2,8 @@
 
 分析器、Dashboard、Alice Pet 和 Benchmark 消费同一日志。函数返回、模型成功、文件写入不等于任务成功，评测见 [Benchmark](benchmark.md)。
 
+连续采样的源头减量与设备日志唯一归属见 [执行事实与诊断日志分离方案](event-recording-plan.md)（待实施）；下面描述的仍是现行写入契约。
+
 ## 文件与事件身份
 
 运行日志写在当前 `workspace/logs/<run-id>/`：
