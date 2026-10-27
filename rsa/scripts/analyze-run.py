@@ -515,7 +515,8 @@ def analyze(run, epoch=None):
         capture_ms = timing["receivedAtMs"] - timing["requestedAtMs"]
         capture_by_origin[data.get("origin") or "unknown"].append(capture_ms)
         observations.append({"seq": event["seq"], "id": data["id"], "controllerId": data.get("controllerId", data.get("sensorId")),
-            "origin": data.get("origin"), "path": data["path"], "arguments": request.get("arguments"), "argv": request.get("argv"),
+            "origin": data.get("origin"), "path": data.get("path"), "timeline": data.get("timeline"),
+            "arguments": request.get("arguments"), "argv": request.get("argv"),
             "captureMs": capture_ms,
             "sourceSequence": data.get("sourceSequence"), "sourceSequenceDelta": data.get("sourceSequenceDelta"),
             "afterExecutionId": after.get("id"), "captureRequestedAfterMs": after.get("captureRequestedAfterMs"),
