@@ -1,5 +1,6 @@
 import { parentPort } from "node:worker_threads";
 import { archiveBuild, catalog, getRun, mediaFile, stopRun, timelineRecord } from "../lib/data";
+import { diagnosticEvents } from "../lib/diagnostic-events";
 import { getActivity } from "../lib/activity";
 import { getReplay } from "../lib/replay";
 import { benchmarkCatalog, benchmarkEvidence } from "../lib/benchmark-data";
@@ -10,6 +11,7 @@ import { closeArchiveBuilds } from "../lib/cold-build";
 
 const port = parentPort!;
 const handlers: { [K in DashboardMethod]: (args: DashboardMethods[K]["args"], signal: AbortSignal) => unknown } = {
+  diagnosticEvents: ([project, run, query], signal) => diagnosticEvents(project, run, query, signal),
   diagnostics: () => ({ memory: process.memoryUsage(), index: indexCacheStats(), activeRequests: requests.size - 1 }),
   catalog: () => catalog(),
   archiveBuild: ([project, run, action, buildId]) => archiveBuild(project, run, action, buildId),

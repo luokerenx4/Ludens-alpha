@@ -124,7 +124,7 @@ test("launch config keeps limits explicit and paths as literal argv entries", as
     "/tmp/Workspace with spaces/games/A game; $(touch BAD).nsp"]);
   expect(value.commands.baseware).toEqual(["/tmp/Source with spaces/baseware/bin/baseware", "serve",
     "--driver", "ryubing", "--port", "47663", "--socket", "/tmp/baseware-test.sock",
-    "--data-dir", "/tmp/Workspace with spaces/logs/baseware"]);
+    "--data-dir", "/tmp/Workspace with spaces/logs/baseware", "--diagnostics", "normal"]);
   expect(value.commands.host).toContain("/tmp/Source with spaces/rsa/bin/rsa");
   expect(value.commands.host).toContain("--baseware-socket");
   expect(value.commands.host).not.toContain("--driver");
@@ -141,7 +141,7 @@ test("Cua launch config uses its native service without choosing a workspace obs
   expect(value.commands.emulator).toBeUndefined();
   expect(value.commands.baseware).toEqual(["/tmp/Source/baseware/bin/baseware", "serve", "--driver", "cua",
     "--cua-command", "/Applications/Cua Driver/cua-driver", "--socket", "/tmp/cua-baseware.sock",
-    "--data-dir", "/tmp/Desktop workspace/logs/baseware"]);
+    "--data-dir", "/tmp/Desktop workspace/logs/baseware", "--diagnostics", "normal"]);
   expect(value.commands.host).not.toContain("--auto-observe");
   const defaults = await launchPlan(parseConfig({ driver: "cua" }), "/tmp/Desktop workspace", "/tmp/Source", "/tmp/cua-baseware.sock");
   expect(defaults.commands.baseware).not.toContain("--cua-command");

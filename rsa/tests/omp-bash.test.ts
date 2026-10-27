@@ -59,7 +59,7 @@ async function fixture() {
   const log = new EventLog(runDir, { id: "native-bash-run", now: () => performance.now() });
   const actions: { args: Record<string, unknown>; epoch?: string }[] = [];
   let held = false, cancelled = 0, released = 0;
-  const core = new BasewareCore({ drivers: [{ id: "offline", version: "1" }], capabilities: {
+  const core = new BasewareCore({ record: log.record, drivers: [{ id: "offline", version: "1" }], capabilities: {
     controllers: [{ tool: { name: "pad.echo", description: "Echo a label or hold for cancellation", inputSchema: { type: "object" } }, requiresControl: true,
       async release() { held = false; released++; },
       async execute(args, { epoch, signal }) {
@@ -277,7 +277,7 @@ test("native service survives OMP turns while human handback revokes its origina
     const start = events.find(event => event.type === "shiori_span_start"
       && event.data.operation === "execute_tool" && event.trace.toolCallId === "launch-service");
     expect(start).toBeDefined();
-    expect(context.trace).toEqual({ epoch: firstEpoch });
+    expect(context.trace).toEqual({ epoch: firstEpoch, recordingId: "native-bash-run" });
     const calls = events.filter(event => event.type === "python_call_start");
     expect(calls).toHaveLength(3);
     // Shell context identifies the run and lease, not a guessed tool parent.

@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import statistics
 import subprocess
+import tempfile
 
 
 def stats(values):
@@ -31,21 +32,58 @@ def weighted_cache(calls):
     return ratio(sum(call["cachedTokens"] for call in known), sum(call["inputTokens"] for call in known))
 
 
-def read_events(path):
-    lines = path.read_text().splitlines(keepends=True)
-    events = []
-    partial = False
-    for index, line in enumerate(lines):
-        if not line.strip():
-            continue
-        try:
-            events.append(json.loads(line))
-        except json.JSONDecodeError:
-            if index == len(lines) - 1 and not line.endswith("\n"):
-                partial = True  # A live writer may still be appending its final event.
-            else:
+def read_events(run, epoch):
+    """Stream canonical facts; retain only the selected epoch needed by this report."""
+    manifest_path = run / "manifest.json"
+    manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
+    multiple_sources = bool(manifest.get("eventSources"))
+    source = {"path": "canonical" if multiple_sources else "events.jsonl", "eventCount": 0,
+              "lastSeq": None, "lastEventAt": None, "ignoredPartialLastLine": False}
+    controls, events = [], []
+    selected = epoch
+
+    def consume(lines):
+        nonlocal selected, events
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                if not line.endswith("\n"):
+                    source["ignoredPartialLastLine"] = True
+                    continue
                 raise
-    return events, partial
+            source.update(eventCount=source["eventCount"] + 1,
+                          lastSeq=event.get("seq"), lastEventAt=event.get("at"))
+            if multiple_sources:
+                source["lastEventId"] = event_identity(event)
+            if event["type"] == "control" and event["data"].get("mode") in ("auto", "manual"):
+                controls.append(event)
+                if selected is None and event["data"].get("mode") == "auto":
+                    selected = event["data"]["epoch"]
+                    events = [previous for previous in events if previous.get("trace", {}).get("epoch") == selected]
+            if selected is None or event.get("trace", {}).get("epoch") == selected:
+                events.append(event)
+
+    if multiple_sources:
+        command = [str(Path(__file__).resolve().parents[1] / "bin" / "rsa"), "logs", "events", "--run", str(run)]
+        # stderr is bounded on disk; pipe backpressure keeps the producer bounded.
+        with tempfile.TemporaryFile(mode="w+") as errors:
+            with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=errors, text=True) as process:
+                try:
+                    consume(process.stdout)
+                except BaseException:
+                    process.terminate()
+                    raise
+                if process.wait() != 0:
+                    errors.seek(0)
+                    raise ValueError("Canonical event reader failed: " + errors.read(4000))
+    else:
+        with (run / "events.jsonl").open() as incoming:
+            consume(incoming)
+    source["retainedEpochEvents"] = len(events)
+    return events, controls, source
 
 
 def skill_paths(args):
@@ -82,6 +120,18 @@ def trace_key(event, *fields):
     return tuple(trace.get(field) for field in ("epoch", *fields))
 
 
+def source_key(event):
+    return event.get("serviceId") or event.get("origin", {}).get("clockId") or "legacy-host"
+
+
+def event_identity(event):
+    return event.get("origin", {}).get("eventId") or f"{source_key(event)}:{event['seq']}"
+
+
+def operation_key(event, *fields):
+    return (source_key(event), *trace_key(event, *fields))
+
+
 def compaction_trace(event):
     return {key: value for key, value in event.get("trace", {}).items()
             if key in ("epoch", "traceId", "spanId", "parentSpanId", "operationId")
@@ -90,16 +140,17 @@ def compaction_trace(event):
 
 def operation_spans(inside, events, start_type, end_type):
     """Use explicit span identities, including late cleanup; never pair by function name or order."""
-    finishes = {trace_key(event, "traceId", "spanId"): event for event in events
+    finishes = {operation_key(event, "traceId", "spanId"): event for event in events
                 if event["type"] == end_type and event.get("trace", {}).get("spanId")}
     spans = []
     for start in inside:
         if start["type"] != start_type or not start.get("trace", {}).get("spanId"):
             continue
-        finish = finishes.get(trace_key(start, "traceId", "spanId"))
+        finish = finishes.get(operation_key(start, "traceId", "spanId"))
         result = finish["data"] if finish else {}
         spans.append({"trace": start["trace"], "source": start.get("source"),
                       "startSeq": start["seq"], "endSeq": finish["seq"] if finish else None,
+                      "startEventId": event_identity(start), "endEventId": event_identity(finish) if finish else None,
                       "operation": start["data"].get("operation", start["data"].get("action")),
                       "name": start["data"].get("name", start["data"].get("id", start["data"].get("capabilityId"))),
                       "codeSHA": start["data"].get("codeSHA"),
@@ -192,13 +243,14 @@ def local_python_exceptions(calls, events):
             root = parent
         # Untraced raises remain separate; shared PID, text or successful ancestor
         # cannot establish that two branches propagated the same exception.
-        identity = key(root["trace"]) or ("untraced", root["startSeq"])
+        identity = key(root["trace"]) or ("untraced", root.get("startEventId", root["startSeq"]))
         if identity not in grouped:
             grouped[identity] = {"root": {field: root[field] for field in ("trace", "name", "startSeq", "endSeq")},
                                  "raisedCalls": [], "ancestor": ancestor(root["trace"]),
                                  "execution": ancestor(root["trace"], execution=True)}
         grouped[identity]["raisedCalls"].append({field: call[field] for field in ("trace", "name", "startSeq", "endSeq")})
-    groups = sorted(grouped.values(), key=lambda group: group["root"]["startSeq"])
+    # Insertion follows the reader's display order; seq is local to its source.
+    groups = list(grouped.values())
 
     def outcomes(field):
         counts = Counter(group[field]["outcome"] if group[field] else "unassociated" for group in groups)
@@ -212,7 +264,7 @@ def local_python_exceptions(calls, events):
 def input_actions(inside, events):
     """Async input execution has its own lifetime after the play RPC returns."""
     def key(event):
-        return (*trace_key(event, "traceId", "spanId"), event["data"].get("actionId"))
+        return (*operation_key(event, "traceId", "spanId"), event["data"].get("actionId"))
     finishes = {key(event): event for event in events if event["type"] == "action_end"}
     actions = []
     for start in inside:
@@ -232,6 +284,7 @@ def input_actions(inside, events):
         actions.append({"actionId": start["data"].get("actionId"), "trace": start.get("trace", {}),
                         "controller": start["data"].get("controllerId"),
                         "startSeq": start["seq"], "endSeq": finish["seq"] if finish else None,
+                        "startEventId": event_identity(start), "endEventId": event_identity(finish) if finish else None,
                         "status": result.get("status", "pending"), "exitCode": result.get("exitCode"),
                         "durationMs": elapsed, "stdout": result.get("stdout"), "error": result.get("error")})
     return actions
@@ -252,9 +305,9 @@ def sample_age_ms(sampled_at, received_at):
 
 def perception_report(inside, events):
     reads = operation_spans(inside, events, "perception_observe_start", "perception_observe_end")
-    by_seq = {event["seq"]: event for event in events if event["type"] == "perception_observe_end"}
+    finishes = {event_identity(event): event for event in events if event["type"] == "perception_observe_end"}
     for read in reads:
-        end = by_seq.get(read["endSeq"])
+        end = finishes.get(read["endEventId"])
         data = end["data"] if end else {}
         snapshot = data.get("snapshot")
         read.update({"status": data.get("status"), "snapshot": snapshot, "reused": data.get("reused"),
@@ -297,6 +350,7 @@ def perception_report(inside, events):
 
 
 def model_attempts(related):
+    order = {id(event): index for index, event in enumerate(related)}
     requests = {event["trace"]["requestId"]: event for event in related if event["type"] == "model_request"}
     streams = {(event["trace"].get("requestId"), event["trace"].get("httpId")): event
                for event in related if event["type"] == "model_stream_start"}
@@ -318,6 +372,7 @@ def model_attempts(related):
         request = requests.get(request_id)
         inbound = streams.get((request_id, http_id))
         attempts.append({"transport": "http", "requestId": request_id, "httpId": http_id,
+            "_order": order[id(first or group[0])],
             "requestSeq": request["seq"] if request else None,
             "startSeq": first["seq"] if first else group[0]["seq"],
             "endSeq": finish["seq"] if finish else None,
@@ -338,6 +393,7 @@ def model_attempts(related):
         inbound = streams.get((request_id, None))
         for dispatch in ws_dispatches.get(request_id) or [None]:
             attempts.append({"transport": "websocket", "requestId": request_id, "httpId": None,
+                "_order": order[id(dispatch or request)],
                 "requestSeq": request["seq"], "startSeq": dispatch["seq"] if dispatch else request["seq"],
                 "endSeq": None, "builtBodyBytes": data.get("bodyBytes"),
                 "wireBytes": dispatch["data"].get("bodyBytes") if dispatch else None,
@@ -347,7 +403,26 @@ def model_attempts(related):
                 "status": None, "fetchWaitMs": None, "headersAtMs": None, "error": None, "aborted": None,
                 "firstInboundSeq": inbound["seq"] if inbound else None,
                 "dispatchToFirstInboundMs": inbound["data"].get("afterDispatchMs") if inbound else None})
-    return sorted(attempts, key=lambda attempt: attempt["startSeq"])
+    return [{key: value for key, value in attempt.items() if key != "_order"}
+            for attempt in sorted(attempts, key=lambda attempt: attempt["_order"])]
+
+
+def observation_events(events, commands):
+    """Read new inline device observations, retaining old independent facts once."""
+    separate = {(operation_key(event, "operationId"), event["data"].get("id"))
+                for event in events if event["type"] == "observation"}
+    for event in events:
+        if event["type"] == "observation":
+            yield event
+        elif event["type"] == "execution":
+            command = commands.get(operation_key(event, "operationId"), {}).get("data", {})
+            for observation in event["data"].get("observations", []):
+                if (operation_key(event, "operationId"), observation.get("id")) in separate:
+                    continue
+                yield {**event, "type": "observation", "data": {
+                    **observation, "arguments": command.get("arguments", event["data"].get("arguments")),
+                    "argv": command.get("argv"),
+                }}
 
 
 def compaction_http_attempts(inside, events):
@@ -411,8 +486,7 @@ def compaction_maintenance_spans(compactions):
 
 
 def analyze(run, epoch=None):
-    events, partial = read_events(run / "events.jsonl")
-    controls = [event for event in events if event["type"] == "control"]
+    events, controls, source = read_events(run, epoch)
     takeovers = [event for event in controls if event["data"]["mode"] == "auto"]
     if epoch is None and len(takeovers) > 1:
         choices = ", ".join(event["data"]["epoch"] for event in takeovers)
@@ -421,7 +495,8 @@ def analyze(run, epoch=None):
     if epoch is not None and enabled is None:
         raise ValueError(f"No auto control event found for epoch {epoch}")
     selected_epoch = enabled["data"]["epoch"] if enabled else None
-    stopped = next((event for event in controls if enabled and event["seq"] > enabled["seq"]
+    stopped = next((event for event in controls if enabled and source_key(event) == source_key(enabled)
+                    and event["seq"] > enabled["seq"]
                     and event["data"]["mode"] == "manual"
                     and event.get("trace", {}).get("epoch") == selected_epoch), None)
     # Match the dashboard: explicit epoch ownership survives handback and a later
@@ -475,13 +550,13 @@ def analyze(run, epoch=None):
             "observationIds": start["data"].get("observations", []),
             "error": final.get("error"), "attempts": attempts})
 
-    commands = {trace_key(event, "operationId"): event for event in inside if event["type"] == "command"}
+    commands = {operation_key(event, "operationId"): event for event in inside if event["type"] == "command"}
     executions = []
     execution_errors = []
     for event in inside:
         if event["type"] not in ("execution", "execution_error"):
             continue
-        command_event = commands.get(trace_key(event, "operationId"))
+        command_event = commands.get(operation_key(event, "operationId"))
         command = command_event["data"] if command_event else {}
         data = event["data"]
         if event["type"] == "execution_error":
@@ -489,7 +564,7 @@ def analyze(run, epoch=None):
                 **{key: event.get("trace", {}).get(key) for key in
                    ("epoch", "modelCallId", "requestId", "toolCallId", "operationId")},
                 "commandSeq": command_event["seq"] if command_event else None,
-                "controller": data.get("controllerId", command.get("controllerId", command.get("id"))), "arguments": command.get("arguments"), "argv": command.get("argv"),
+                "controller": data.get("controllerId", command.get("controllerId", command.get("id"))), "arguments": command.get("arguments", data.get("arguments")), "argv": command.get("argv"),
                 "error": data.get("error"), "aborted": data.get("aborted", False)})
             continue
         timing = data["timing"]
@@ -498,25 +573,23 @@ def analyze(run, epoch=None):
             "readOnly": data.get("readOnly", False),
             "controller": data.get("controllerId", command.get("controllerId", command.get("id"))),
             "requiresControl": data.get("requiresControl", command.get("requiresControl", True)),
-            "arguments": command.get("arguments"), "argv": command.get("argv"), "status": data["status"],
+            "arguments": command.get("arguments", data.get("arguments")), "argv": command.get("argv"), "status": data["status"],
             "durationMs": timing["receivedAtMs"] - timing["requestedAtMs"]})
-    observation_starts = {trace_key(event, "operationId"): event for event in events
+    observation_starts = {operation_key(event, "operationId"): event for event in events
                           if event["type"] == "observation_start"
                           and event.get("trace", {}).get("operationId") is not None}
     observations = []
     capture_by_origin = defaultdict(list)
-    for event in inside:
-        if event["type"] != "observation":
-            continue
+    for event in observation_events(inside, commands):
         data = event["data"]
-        request = observation_starts.get(trace_key(event, "operationId"), {}).get("data", {})
+        request = observation_starts.get(operation_key(event, "operationId"), {}).get("data", {})
         timing = data["timing"]
         after = data.get("afterExecution", {})
         capture_ms = timing["receivedAtMs"] - timing["requestedAtMs"]
         capture_by_origin[data.get("origin") or "unknown"].append(capture_ms)
         observations.append({"seq": event["seq"], "id": data["id"], "controllerId": data.get("controllerId", data.get("sensorId")),
             "origin": data.get("origin"), "path": data.get("path"), "timeline": data.get("timeline"),
-            "arguments": request.get("arguments"), "argv": request.get("argv"),
+            "arguments": request.get("arguments", data.get("arguments")), "argv": request.get("argv", data.get("argv")),
             "captureMs": capture_ms,
             "sourceSequence": data.get("sourceSequence"), "sourceSequenceDelta": data.get("sourceSequenceDelta"),
             "afterExecutionId": after.get("id"), "captureRequestedAfterMs": after.get("captureRequestedAfterMs"),
@@ -626,7 +699,8 @@ def analyze(run, epoch=None):
                  for attempt in call["attempts"] if attempt["transport"] == "websocket"}.values()
     http_errors = [attempt for attempt in http_attempts
                    if (attempt["error"] and not attempt["aborted"]) or (attempt["status"] or 0) >= 400]
-    active_end_ms = stopped["atMs"] if stopped else inside[-1]["atMs"] if inside else None
+    same_host = [event for event in inside if enabled and source_key(event) == source_key(enabled)]
+    active_end_ms = stopped["atMs"] if stopped else same_host[-1]["atMs"] if same_host else None
     elapsed_ms = active_end_ms - enabled["atMs"] if enabled and active_end_ms is not None else None
     actions = input_actions(inside, events)
     successful_actions = sum(execution["status"] == "completed" and execution["requiresControl"]
@@ -731,9 +805,8 @@ def analyze(run, epoch=None):
         "capabilityDiscovery": span_summary(discovery),
         "perception": perception_summary,
         "shiori": {"spans": span_summary(shiori_spans), "nativeLoops": len(native_runs)}}
-    return {"analysisVersion": 6, "runDir": str(run), "generatedAt": datetime.now(timezone.utc).isoformat(),
-        "source": {"path": "events.jsonl", "eventCount": len(events), "lastSeq": events[-1]["seq"] if events else None,
-                   "lastEventAt": events[-1]["at"] if events else None, "ignoredPartialLastLine": partial},
+    return {"analysisVersion": 7, "runDir": str(run), "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "source": source,
         "window": {"epoch": selected_epoch,
                    "startedAt": enabled["at"] if enabled else None, "stoppedAt": stopped["at"] if stopped else None,
                    "stopReason": stopped["data"].get("reason") if stopped else None,
@@ -778,7 +851,7 @@ def analyze(run, epoch=None):
             "Native Shiori run summaries cover one agent loop, not a whole takeover. They overlap existing model/tool metrics and must not be added to token/cost totals. Python detail spans overlap their enclosing capability calls; durations are inclusive, not additive.",
             "localPythonCalls measures decorated functions executing in the workspace Python process, separate from pythonCapabilities (external runner). Nested calls retain their own spans and overlap enclosing durations; neither counts as additional controller actions. Function origin/codeSHA identify loaded code, while origin/endOrigin retain the Python event clock.",
             "localPythonCalls.outcomes.error counts function-boundary raises, not task failures. localPythonExceptions groups consecutive raised local parent spans using explicit epoch/traceId/spanId/parentSpanId only; rootRaised counts these chains, not proven unique exception objects. A successful ancestor separates branches and can have caught a raise, but does not prove it was expected. expected stays null without explicit test evidence. Missing execution ancestry stays unassociated; neither PID, error text, command text nor proximity is used to guess an association. Execution outcomes use a traced Python runner, tool, or background terminal; async submission success is replaced by the associated background outcome (pending until delivered), and does not prove application success.",
-            "Event atMs belongs to the recording host; origin retains the source clock and identity. Do not subtract monotonic timestamps from different clocks. Macro execution success does not prove task success or learning."]}
+            "Canonical multi-source facts retain origin.eventId and source-local seq. Start/end event IDs are unambiguous evidence; seq alone is not a cross-source ordering key. Monotonic timestamps from different sources are never used for control duration. Macro execution success does not prove task success or learning."]}
 
 
 def main():

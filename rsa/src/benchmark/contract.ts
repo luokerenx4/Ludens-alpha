@@ -4,6 +4,7 @@ import type { TimelineAssetReference } from "../../../shared/timeline-types";
 export interface BenchmarkDefinition {
   id: string; title: string; description: string; scope: string;
   revision: string; protocolVersion: string;
+  requiredDiagnostics?: "full";
   source: "builtin" | "workspace";
   parameters: Record<string, unknown>; targets: string[];
   entry: { kind: "builtin"; caseId: string } | { kind: "python"; path: string; function: string; codeSHA: string };
@@ -11,6 +12,7 @@ export interface BenchmarkDefinition {
 export interface BenchmarkCheck {
   id: string; label: string; passed: boolean | null;
   expected?: unknown; actual?: unknown; evidenceSeq: number[];
+  evidenceEvents?: string[];
 }
 export interface BenchmarkMetric {
   id: string; label?: string; value: number | null; unit: string;
@@ -75,6 +77,7 @@ export function validateDefinition(definition: BenchmarkDefinition): void {
     !["title", "description", "scope"].every(key => typeof definition[key] === "string") ||
     !["builtin", "workspace"].includes(definition.source) || !object(definition.parameters) ||
     !Array.isArray(definition.targets) || !definition.targets.every(nonempty) || !object(definition.entry)) throw new Error("Invalid benchmark definition");
+  if (definition.requiredDiagnostics !== undefined && definition.requiredDiagnostics !== "full") throw new Error("Invalid benchmark diagnostics requirement");
   const entry = definition.entry;
   if (entry.kind === "builtin" ? !nonempty(entry.caseId) : entry.kind !== "python" ||
     !nonempty(entry.path) || !nonempty(entry.function) || !nonempty(entry.codeSHA)) throw new Error("Invalid benchmark entry");

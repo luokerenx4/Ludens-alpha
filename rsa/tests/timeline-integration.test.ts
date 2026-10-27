@@ -83,10 +83,13 @@ def action():
     const first = results[0].result;
     expect(first.data.pid).toBe(results[0].pid);
     expect(first.data.pid).not.toBe(runtime.perception!.status().pid);
-    const samples = events.filter(event => event.type === "perception_sample");
+    const segments = join(workspace, ".rsa/timeline/segments");
+    const samples = (await Promise.all((await readdir(segments)).filter(name => name.endsWith(".jsonl"))
+      .map(async name => (await readFile(join(segments, name), "utf8")).trim().split("\n").map(line => JSON.parse(line))))).flat();
     expect(samples).toHaveLength(4);
-    expect(new Set(samples.map(event => event.data.snapshot.sequence)).size).toBe(4);
-    expect(new Set(samples.map(event => event.data.snapshot.id)).size).toBe(4);
+    expect(new Set(samples.map(sample => sample.sequence)).size).toBe(4);
+    expect(new Set(samples.map(sample => sample.id)).size).toBe(4);
+    expect(events.some(event => event.type === "perception_sample")).toBe(false);
     expect(await readdir(join(workspace, ".rsa/timeline/objects"))).toHaveLength(1);
     expect(await readFile(first.media[0].path, "utf8")).toBe("shared offline audio");
     expect(await Bun.file(join(workspace, "logs/first-run/observations")).exists()).toBe(false);

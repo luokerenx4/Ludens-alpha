@@ -1,5 +1,8 @@
 import { readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { EventLog as DeviceEventLog } from "../../../../baseware/src/events.ts";
+import { readRunEvents } from "../../../../shared/event-sources.ts";
+import { atomicJson } from "../store.ts";
 import { BasewareCore } from "@playness/baseware/core";
 import { writeCapabilityDocument } from "@playness/baseware/catalog";
 import { listen as listenBaseware } from "@playness/baseware/server";
@@ -56,7 +59,9 @@ export async function run(ctx: BenchmarkContext): Promise<AuthorReport> {
       if (environment.done) queueMicrotask(() => { void runtime?.stop("benchmark tasks completed"); });
     }
   };
-  const core = new BasewareCore({ capabilities: environment.capabilities,
+  const deviceLog = new DeviceEventLog(join(ctx.runDir, "device-sources"), crypto.randomUUID());
+  const core = new BasewareCore({ serviceId: deviceLog.source.sourceId, source: deviceLog.source, record: deviceLog.record,
+    diagnostics: ctx.log.diagnostics, capabilities: environment.capabilities,
     drivers: [{ id: "benchmark-assembly-bench", version: "1" }] });
   let closeBaseware: (() => Promise<void>) | undefined;
   let closeRsa: (() => Promise<void>) | undefined;
@@ -68,15 +73,17 @@ export async function run(ctx: BenchmarkContext): Promise<AuthorReport> {
     ctx.signal?.throwIfAborted();
     closeBaseware = await listenBaseware(basewareSocket, core);
     devices = await connectBaseware({ socket: basewareSocket, seconds: ctx.seconds, runDir: ctx.runDir, record });
+    await atomicJson(join(ctx.runDir, "manifest.json"), { ...JSON.parse(await readFile(join(ctx.runDir, "manifest.json"), "utf8")),
+      eventSources: devices.eventSources, logging: {diagnostics: ctx.log.diagnostics, basewareDiagnostics: devices.diagnostics} });
     await writeCapabilityDocument(devices.catalog, join(ctx.workspace, "baseware.json"));
     await writeFile(join(ctx.workspace, "perception.py"), perceptionTemplate, { flag: "wx" });
-    runtime = new Runtime(devices, record, ctx.seconds, ctx.log.clock.id);
+    runtime = new Runtime(devices, record, ctx.seconds, ctx.log.clock.id, ctx.log.diagnostics);
     const binDir = resolve(import.meta.dir, "../../../bin");
     const env = { RSA_SOCKET: rsaSocket, BASEWARE_SOCKET: basewareSocket,
-      RSA_WORKSPACE: ctx.workspace, RSA_RUN_ID: ctx.log.clock.id,
+      RSA_WORKSPACE: ctx.workspace, RSA_RUN_ID: ctx.log.clock.id, RSA_LOG_DIAGNOSTICS: ctx.log.diagnostics,
       PATH: [dirname(process.execPath), binDir, process.env.PATH ?? ""].join(":") };
     runtime.controller = new WorkspaceController({ workspace: ctx.workspace, devices, env, record });
-    runtime.perception = new PerceptionRuntime({ workspace: ctx.workspace, runDir: ctx.runDir, env, record });
+    runtime.perception = new PerceptionRuntime({ workspace: ctx.workspace, runDir: ctx.runDir, env, record, registerMedia: ctx.log.registerMedia, diagnostics: ctx.log.diagnostics });
     devices.onHandback(reason => { void runtime!.stop(reason); });
     devices.onDisconnect(error => { void runtime!.disconnected(error); });
     closeRsa = await listenRsa(rsaSocket, runtime);
@@ -104,6 +111,7 @@ export async function run(ctx: BenchmarkContext): Promise<AuthorReport> {
   // This read-only AST audit proves creation, never agent discovery or invocation.
   const inventory = await new PythonCapabilities(ctx.workspace).discover(ctx.signal);
   recordBenchmark("benchmark_reuse_inventory", { stage: "post-run", ...inventory }, { epoch });
-  const events = (await readFile(join(ctx.runDir, "events.jsonl"), "utf8")).split("\n").filter(Boolean).map(line => JSON.parse(line) as ReuseEvent);
+  const events: ReuseEvent[] = [];
+  for await (const event of readRunEvents(ctx.runDir)) events.push(event as unknown as ReuseEvent);
   return evaluateReuse(events, epoch!, ctx.runDir, ctx.metadata);
 }

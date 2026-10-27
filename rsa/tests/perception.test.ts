@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { mkdtemp, readFile, realpath, rm, utimes, writeFile } from "node:fs/promises";
+import { readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { PerceptionRuntime, observationBytes, type ObservationQuery } from "../src/harness/perception.ts";
@@ -18,7 +19,14 @@ async function fixture(options: { startTimeoutMs?: number; observeTimeoutMs?: nu
     while (!predicate() && Date.now() < deadline) await Bun.sleep(10);
     expect(predicate()).toBe(true);
   };
-  const samples = () => events.filter(e => e.type === "perception_sample");
+  const samples = () => {
+    const directory = join(workspace, ".rsa/timeline/segments");
+    return readdirSync(directory).filter(name => name.endsWith(".jsonl")).sort().flatMap(name =>
+      readFileSync(join(directory, name), "utf8").split("\n").filter(Boolean).map(line => {
+        const record = JSON.parse(line);
+        return { data: { snapshot: record }, trace: record.trace ?? {} };
+      }));
+  };
   return { workspace, runtime, events, observe, wait, samples,
     load: async (code: string) => {
       await writeFile(join(workspace, "perception.py"), code);
@@ -77,7 +85,7 @@ test("retention policy reaches the worker and expired history cannot invalidate 
     const file = delivered.result.observations![0]!;
     expect((await observationBytes(file)).toString("utf8")).toBe(delivered.result.stdout);
     const first = delivered.snapshot!;
-    await f.wait(() => f.samples().length >= 8);
+    await f.wait(() => Number(readFileSync(join(f.workspace, "frame.txt"), "utf8")) >= 8);
     const expired = await f.observe({ at: first.recordedAt });
     expect(expired.error).toContain("expired");
     expect(expired.availability?.expired).toBe(true);

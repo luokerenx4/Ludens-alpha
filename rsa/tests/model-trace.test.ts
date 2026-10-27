@@ -327,7 +327,7 @@ test("real OMP preserves image prefixes and native tool traces while shell IPC r
   await Bun.write(image, Buffer.from(png, "base64"));
   const log = new EventLog(directory, {id: "wire-test", now: () => performance.now()});
   let samples = 0;
-  const core = new BasewareCore({ drivers: [{id: "trace-fixture", version: "1"}], capabilities: {controllers: [{tool: { name: "joint-7", description: "move <n>", inputSchema: { type: "object" } }, requiresControl: true,  acquire: async () => {}, release: async () => {},
+  const core = new BasewareCore({ record: log.record, drivers: [{id: "trace-fixture", version: "1"}], capabilities: {controllers: [{tool: { name: "joint-7", description: "move <n>", inputSchema: { type: "object" } }, requiresControl: true,  acquire: async () => {}, release: async () => {},
     async execute(args) { return {id: crypto.randomUUID(), status: "completed", exitCode: 0, stdout: JSON.stringify(args), stderr: "", result: { content: [] },
       timing: {clock: "wire-test", requestedAtMs: performance.now(), receivedAtMs: performance.now()}}; },
   }, {tool: { name: "camera-q", description: "sample", inputSchema: { type: "object" } }, requiresControl: false,  mediaTypes: ["image/png"], async execute() {
@@ -465,9 +465,11 @@ test("real OMP preserves image prefixes and native tool traces while shell IPC r
       }
     }
     const firstBatchEnd = events.filter(e => e.type === "tool_end" && e.trace.modelCallId === firstCall).at(-1)!;
-    expect(events.filter(e => e.type === "observation" && e.trace.modelCallId === firstCall)
+    const observations = events.flatMap(e => e.type === "execution"
+      ? (e.data.observations ?? []).map((data: unknown) => ({...e, type: "observation", data}))
+      : e.type === "observation" ? [e] : []);
+    expect(observations.filter(e => e.trace.modelCallId === firstCall)
       .map(e => e.trace.toolCallId)).toEqual([firstBatchEnd.trace.toolCallId]);
-    const observations = events.filter(e => e.type === "observation");
     expect(observations[0].data.origin).toBe("cli");
     expect(observations[1].data).toMatchObject({origin: "cli", sourceSequenceDelta: 100,
       previousObservationId: "observation-1"});

@@ -19,6 +19,7 @@ import uuid
 from rsa_tools._context import current, scope
 from rsa_tools._observation_history import ObservationHistory, MAIN_CAPABILITY, observation_result
 from rsa_tools._sampling import DEFAULT_SAMPLE_HZ, validate_sample_hz
+from rsa_tools._recording import RecordingWindow
 
 
 class WorkspaceSourceLoader(importlib.machinery.SourceFileLoader):
@@ -69,6 +70,9 @@ def main():
         if history is None:
             raise ValueError("Workspace timeline has not started")
         record = history.append(sample, generation, sampling, identity=identity, run_id=runId, trace=trace)
+        recording = current().get("recording_window")
+        if recording is not None:
+            recording.recorded()
         send({"event": "sample", "snapshot": {
             key: value for key, value in record.items() if key not in ("text", "media", "data", "space", "sources")
         }, "mediaCount": len(record["media"]), "trace": trace or {},
@@ -80,25 +84,42 @@ def main():
     def sample_continuously(instance, sample_hz, context):
         previous_status = None
         interval = 1 / sample_hz
-        while not stopped.is_set():
-            started = time.monotonic()
-            trace = {**context["trace"], "spanId": uuid.uuid4().hex[:16]}
-            if context["trace"].get("spanId"):
-                trace["parentSpanId"] = context["trace"]["spanId"]
-            try:
-                with scope({**context, "trace": trace, "timeline_append": append}):
-                    instance.sample()  # @record owns persistence; never append twice.
-                status = ("ready", None)
+        trace = {**context["trace"], "recordingPurpose": "continuous-perception"}
+        recording = RecordingWindow(send, trace, context["generation"], sample_hz)
+
+        def record_event(event_type, data, trace, origin, channel):
+            send({"event": "recording", "type": event_type, "data": data,
+                  "trace": trace, "origin": origin, "channel": channel})
+
+        context = {**context, "trace": trace, "recording_purpose": "continuous-perception",
+                   "recording_window": recording, "recording_observer": recording.observe,
+                   "recording_sink": record_event}
+
+        def video_metrics():
+            return history._video.metrics() if history._video is not None else None
+
+        try:
+            while not stopped.is_set():
+                started = time.monotonic()
+                trace = {**context["trace"], "spanId": uuid.uuid4().hex[:16]}
+                if context["trace"].get("spanId"):
+                    trace["parentSpanId"] = context["trace"]["spanId"]
+                try:
+                    with scope({**context, "trace": trace, "timeline_append": append}):
+                        instance.sample()  # @record owns persistence; never append twice.
+                    status = ("ready", None)
+                except Exception as error:
+                    state = "unimplemented" if isinstance(error, NotImplementedError) else "error"
+                    status = (state, f"{type(error).__name__}: {error}")
+                # Health changes immediately; durable faults use whole windows.
                 if previous_status != status:
-                    send({"event": "status", "state": "ready"})
-            except Exception as error:
-                state = "unimplemented" if isinstance(error, NotImplementedError) else "error"
-                status = (state, f"{type(error).__name__}: {error}")
-                if previous_status != status:
-                    send({"event": "status", "state": state, "error": status[1]})
-                    traceback.print_exc(file=sys.stderr)
-            previous_status = status
-            stopped.wait(max(0, interval - (time.monotonic() - started)))
+                    send({"event": "status", "state": status[0], "error": status[1], "transient": True})
+                previous_status = status
+                recording.sampled((time.monotonic() - started) * 1000, status[0] == "ready")
+                recording.flush(video=video_metrics())
+                stopped.wait(max(0, interval - (time.monotonic() - started)))
+        finally:
+            recording.flush(reason="stopped", video=video_metrics())
 
     def read_requests():
         for line in sys.stdin:
@@ -132,9 +153,13 @@ def main():
                     history = ObservationHistory(workspace)
                     context = {**current(), "workspace": str(workspace), "run_id": Path(message["runDir"]).name,
                                "epoch": None, "generation": message["generation"], "trace": dict(message.get("trace", {})),
+                               "diagnostics": message.get("diagnostics", os.environ.get("RSA_LOG_DIAGNOSTICS", "normal")),
                                "timeline_append": append}
+                    if context["diagnostics"] not in ("normal", "full"):
+                        raise ValueError("diagnostics must be normal or full")
                     context["trace"].pop("epoch", None)
-                    result = {"pid": os.getpid(), "history": history.policy(), "state": "loading"}
+                    result = {"pid": os.getpid(), "history": history.policy(), "state": "loading",
+                              "diagnostics": context["diagnostics"]}
                     try:
                         source = message.get("source")
                         if message.get("sourceError"):

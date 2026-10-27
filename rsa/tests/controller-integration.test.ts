@@ -31,7 +31,7 @@ async function fixture() {
   const record: RecordEvent = (type, data, trace, metadata) => events.push({ type, data, trace, metadata });
   const actions: { args: Record<string, unknown>; epoch?: string }[] = [];
   let held = false, cancelled = 0, released = 0;
-  const core = new BasewareCore({ drivers: [{ id: "offline", version: "1" }], capabilities: {
+  const core = new BasewareCore({ record, drivers: [{ id: "offline", version: "1" }], capabilities: {
     controllers: [{ tool: { name: "pad.echo", description: "Echo a label; wait/fail labels exercise cancellation and errors.", inputSchema: { type: "object", properties: { label: { type: "string" } }, required: ["label"], additionalProperties: false } }, requiresControl: true,
       async acquire() { held = true; }, async release() { held = false; released++; },
       async execute(args, {epoch, signal}) {
@@ -179,7 +179,7 @@ print(json.dumps(Client().call("python/scripts/actions.py:combined", {"label": "
     await rm(f.source);
     expect(await Bun.file(join(f.runDir, "observations")).exists()).toBe(false);
     expect(Buffer.from(captureDisplay.result.content[0].resource.blob, "base64").toString()).toBe('{"visible":true}');
-    expect(f.events.findLast(event => event.type === "observation")).toMatchObject({data: {path: observation.path}, trace: {epoch, toolCallId: "integration-call"}});
+    expect(f.events.findLast(event => event.type === "execution")).toMatchObject({data: {observations: [{path: observation.path}]}, trace: {epoch, toolCallId: "integration-call"}});
 
     await writeFile(path, source.replace('"v1:"', '"v2:"'));
     const changed = await f.cli(["python/scripts/actions.py:echo"], epoch);

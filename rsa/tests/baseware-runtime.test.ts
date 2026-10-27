@@ -163,21 +163,17 @@ test("remote observations preserve references and never copy files into the RSA 
     expect(result.result).toMatchObject({ structuredContent: { screens: 2 }, _meta: { provenance: "native" },
       content: f.pixels.map(data => ({ type: "image", mimeType: "image/png", data: data.toString("base64") })) });
     expect(new Set(observations.map(observation => observation.path)).size).toBe(2);
-    const recorded = f.events.filter(event => event.type === "observation");
-    expect(recorded).toHaveLength(2);
-    const execution = f.events.find(event => event.type === "execution")!.data;
-    expect(execution.observations).toEqual(observations);
+    expect(f.events).toHaveLength(0); // No forwarded duplicate body in RSA.
+    const original = f.deviceEvents.find(event => event.type === "execution")!;
+    const execution = original.data;
+    expect(execution.observations).toMatchObject(observations);
     expect(execution.result.content).toEqual(observations.map((observation, index) => ({ type: "image", mimeType: "image/png",
       dataPath: observation.path, encodedBytes: f.pixels[index]!.toString("base64").length })));
-    expect(JSON.stringify(f.events)).not.toContain(f.pixels[0]!.toString("base64"));
+    expect(JSON.stringify(f.deviceEvents)).not.toContain(f.pixels[0]!.toString("base64"));
+    expect(original.trace).toMatchObject({toolCallId: "capture-call", recordingId: "run-1"});
+    expect(original.source).toEqual({ component: "baseware", implementation: "baseware" });
     for (const [index, observation] of observations.entries()) {
       expect(observation.path).toBe(f.sources[index]);
-      expect(recorded[index]).toMatchObject({ data: { id: observation.id, path: observation.path }, trace: { toolCallId: "capture-call" } });
-      const original = f.deviceEvents.find(event => event.type === "observation" && event.data.id === observation.id)!;
-      expect(recorded[index]!.source).toEqual({ component: "baseware", implementation: "baseware" });
-      expect(recorded[index]!.origin).toEqual(original.origin);
-      expect(recorded[index]!.trace).toEqual(original.trace);
-      expect(recorded[index]!.data.path).toBe(original.data.path);
       await rm(f.sources[index]!);
       expect(await Bun.file(join(f.runDir, "observations")).exists()).toBe(false);
     }
@@ -217,4 +213,50 @@ test.each([0, 2])("RSA acquires one service lease for a catalog with %i controll
     expect(f.core.status().mode).toBe("manual");
     expect(release).toHaveBeenCalledTimes(1);
   } finally { acquire.mockRestore(); release.mockRestore(); await f.close(); }
+});
+
+test("both journals failing preserves input results, human handback and socket cleanup", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "rsa-baseware-journal-failure-"));
+  const socket = join(directory, "baseware.sock");
+  let inputs = 0, released = 0, disconnected = 0;
+  const handbacks: string[] = [];
+  const errors = spyOn(console, "error").mockImplementation(() => {});
+  const core = new BasewareCore({ drivers: [{ id: "fake", version: "1" }], capabilities: {
+    controllers: [{ tool: { name: "motor", description: "single input", inputSchema: { type: "object" } }, requiresControl: true,
+      async acquire() {}, async release() { released++; },
+      async execute() {
+        inputs++;
+        return { id: "input", status: "completed", exitCode: 0, stdout: "delivered", stderr: "",
+          result: { content: [{ type: "text" as const, text: "delivered" }] },
+          timing: { clock: "fixture", requestedAtMs: 1, receivedAtMs: 2 } };
+      },
+    }],
+  }, record() { throw new Error("device journal disk full"); } });
+  const closeServer = await listen(socket, core);
+  let adapter: Awaited<ReturnType<typeof connectBaseware>> | undefined;
+  try {
+    adapter = await connectBaseware({ socket, seconds: 60, runDir: join(directory, "run"),
+      record() { throw new Error("RSA journal disk full"); } });
+    adapter.onHandback(reason => handbacks.push(reason));
+    adapter.onDisconnect(() => { disconnected++; });
+    await adapter.acquire("journal-failure");
+    expect(core.status()).toMatchObject({ mode: "auto", epoch: "journal-failure" });
+    const result = await adapter.execute("motor", {}, "journal-failure", new AbortController().signal, {});
+    expect(result).toMatchObject({ status: "completed", exitCode: 0, stdout: "delivered" });
+    expect(inputs).toBe(1);
+    expect(disconnected).toBe(0);
+    await core.release(undefined, "human");
+    await until(() => handbacks.length === 1);
+    expect(handbacks).toEqual(["human"]);
+    expect(core.status().mode).toBe("manual");
+    expect(released).toBe(1);
+    expect(() => adapter!.close()).not.toThrow();
+    adapter = undefined;
+    expect(errors.mock.calls.filter(([message]) => String(message).startsWith("Event source gap could not be recorded:"))).toHaveLength(1);
+  } finally {
+    adapter?.close();
+    await closeServer();
+    errors.mockRestore();
+    await rm(directory, { recursive: true, force: true });
+  }
 });

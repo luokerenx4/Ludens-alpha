@@ -4,6 +4,7 @@ import { createServer, type AddressInfo, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { BasewareClient } from "@playness/baseware/client";
+import { readRunEvents } from "../../shared/event-sources.ts";
 import { send } from "../src/harness/transport.ts";
 import { resolveWorkspaceState } from "../src/harness/workspace-state.ts";
 
@@ -82,8 +83,8 @@ mock.module(${JSON.stringify(resolve(import.meta.dir, "../src/harness/omp/sessio
     host.kill("SIGTERM");
     expect(await host.exited).toBe(143); // OMP's documented signal exit code.
     expect(await stderr).toBe("");
-    const events = (await readFile(join(ready.runDir, "events.jsonl"), "utf8"))
-      .trim().split("\n").map(line => JSON.parse(line));
+    const events = [];
+    for await (const event of readRunEvents(ready.runDir)) events.push(event);
     expect(operations).toEqual(["HELLO", "OWN", "DISOWN"]);
     const started = events.filter(event => event.type === "test_agent_close_start");
     const completed = events.filter(event => event.type === "test_agent_close_end");
@@ -95,7 +96,9 @@ mock.module(${JSON.stringify(resolve(import.meta.dir, "../src/harness/omp/sessio
     expect(ended[0].seq).toBeGreaterThan(completed[0].seq);
     expect(ended[0].data).toMatchObject({ mode: "manual", thinking: false });
     const handback = events.find(event => event.type === "baseware_control" && event.data.mode === "manual");
-    expect(handback.seq).toBeLessThan(started[0].seq);
+    expect(handback).toBeDefined();
+    // Cross-process wall times may tie within a millisecond; source seq is local.
+    expect(Date.parse(handback!.at)).toBeLessThanOrEqual(Date.parse(started[0]!.at));
     expect(service.exitCode).toBeNull();
     const inspector = await BasewareClient.connect(basewareSocket);
     try { expect(await inspector.request({ kind: "status" })).toMatchObject({ mode: "manual", connected: true }); }

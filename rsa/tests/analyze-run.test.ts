@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JsonArchive } from "../../shared/log-archive.ts";
+import { EventLog as DeviceEventLog } from "../../baseware/src/events.ts";
 
 const script = new URL("../scripts/analyze-run.py", import.meta.url).pathname;
 const emptyStats = { count: 0, min: null, median: null, p95: null, max: null, sum: 0 };
@@ -116,6 +117,46 @@ test("analysis counts async input completion once and keeps its lifetime after t
   expect(report.executions.map((item: any) => item.actionId)).toEqual(["one", "one", null]);
   expect(report.executions[0].arguments).toEqual({ inputs: [], wait: false });
 });
+
+test("analysis streams canonical sources, keeps source identities and reads inline device observations", async () => {
+  const report = await analyze(async directory => {
+    const primary = new DeviceEventLog(join(directory, "devices"), "device-a");
+    const second = new DeviceEventLog(join(directory, "devices"), "device-b");
+    await writeFile(join(directory, "manifest.json"), JSON.stringify({ eventSources: [primary, second].map(log => ({
+      ...log.source, recordingId: "recording", windows: [{ afterSeq: 0, throughSeq: 4 }],
+    })) }));
+    const trace = { epoch: "one", traceId: "trace", spanId: "play", operationId: "play", recordingId: "recording" };
+    const device = (log: DeviceEventLog, seq: number, at: number, type: string, data: any, recordingId = "recording") =>
+      log.record(type, data, { ...trace, recordingId }, { source: { component: "baseware", implementation: "fixture" },
+        origin: { clockId: log.source.sourceId, eventId: `${log.source.sourceId}:${seq}`, seq,
+          at: new Date(at).toISOString(), atMs: 100_000 + at } });
+    const start = { actionId: "same-action-id", timing: { clock: "device", submittedAtMs: 10 } };
+    device(primary, 1, 10, "command", { controllerId: "pad.play", requiresControl: true, arguments: { key: "left" } });
+    device(primary, 2, 20, "action_start", start);
+    device(primary, 3, 30, "execution", { id: "submitted", actionId: "same-action-id", status: "completed", exitCode: 0,
+      timing: { clock: "device", requestedAtMs: 10, receivedAtMs: 30 }, observations: [{ id: "frame", controllerId: "screen",
+        origin: "tool_batch", timing: { clock: "device", requestedAtMs: 10, receivedAtMs: 30 } }] });
+    device(primary, 4, 2000, "action_end", { actionId: "same-action-id", status: "completed", exitCode: 0,
+      timing: { clock: "device", receivedAtMs: 510 } });
+    device(primary, 5, 2100, "action_end", { actionId: "same-action-id", status: "failed", exitCode: 1 }, "another-run");
+    device(second, 1, 40, "command", { controllerId: "pad.play", requiresControl: true, arguments: { key: "right" } });
+    device(second, 2, 50, "action_start", start);
+    device(second, 3, 2200, "action_end", { actionId: "same-action-id", status: "completed", exitCode: 0,
+      timing: { clock: "device", receivedAtMs: 710 } });
+    return [{ seq: 100, type: "control", at: new Date(0).toISOString(), atMs: 0,
+      origin: { clockId: "host", eventId: "host:100" }, trace: { epoch: "one" }, data: { mode: "auto", epoch: "one" } },
+    { seq: 101, type: "control", at: new Date(1000).toISOString(), atMs: 1000,
+      origin: { clockId: "host", eventId: "host:101" }, trace: { epoch: "one" }, data: { mode: "manual" } }];
+  }, "one");
+  expect(report.source).toMatchObject({ path: "canonical", eventCount: 9 });
+  expect(report.window.observedElapsedMs).toBe(1000);
+  expect(report.summary.controllerActions).toBe(2);
+  expect(report.actions.map((action: any) => [action.startEventId, action.endEventId, action.durationMs])).toEqual([
+    ["device-a:2", "device-a:4", 500], ["device-b:2", "device-b:3", 700],
+  ]);
+  expect(report.observations).toHaveLength(1);
+  expect(report.observations[0]).toMatchObject({ id: "frame", captureMs: 20, arguments: { key: "left" } });
+}, 30_000);
 
 test("analysis without speculation events has zero lifecycle counts and no model requests", async () => {
   const event = fixture();

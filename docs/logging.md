@@ -1,8 +1,19 @@
 # 日志与调用链
 
-分析器、Dashboard、Alice Pet 和 Benchmark 消费同一日志。函数返回、模型成功、文件写入不等于任务成功，评测见 [Benchmark](benchmark.md)。
+分析器、Dashboard、Alice Pet 和 Benchmark 读取同一组事实来源。**连续感知存数据，主动行为存事件，内部过程按需追踪。** 函数返回、模型成功、文件写入不等于任务成功，评测见 [Benchmark](benchmark.md)，施工依据见 [记录方案](event-recording-plan.md)。
 
-连续采样的源头减量与设备日志唯一归属见 [以经历回放为中心的记录方案](event-recording-plan.md)（待实施）：连续感知存数据、主动行为存事件、内部过程按需追踪。下面描述的仍是现行写入契约。
+## 记录模式
+
+`rsa.json` 的 `logging.diagnostics` 在启动时选择 `normal`（默认）或 `full`，有效值写入 manifest；Python 继承 `RSA_LOG_DIAGNOSTICS`。连接已运行的 Baseware 不会改变它的模式，`rsa status` 的 `logging.diagnostics/basewareDiagnostics` 分别报告两个进程的实际值。
+
+- **normal**：保留模型/工具、主动能力调用、输入动作及终态、控制变化、感知生命周期与故障区间。常驻采样入口设置 `trace.recordingPurpose="continuous-perception"`，沿嵌套 Python、RSA 转发和 Baseware 传播；成功采样子树不写逐次调用事件，也不发逐次 Python 日志 RPC。结果仍由 `@record` 写入 Timeline。
+- **full**：额外保存上述内部调用的逐次诊断，写入独立 `diagnostics.jsonl` 或 Baseware 的 `diagnostics/` 分段，不复制已有经历事件和媒体。回放与 Pet 不依赖这一路。
+
+Baseware 只对明确声明只读的查询采用减量；未知能力、有副作用的调用、实际输入、取消、释放和控制变化始终记录。主动 CLI/import 的调用边界也保留，普通后台循环不会仅因频率高被判成感知采样器。日志策略不改变权限、参数或真实返回。
+
+连续感知每 5 秒写 `perception_stats`，按能力 ID 与实际 codeSHA 汇总调用/异常次数、耗时 total/min/max，并记录采样尝试、完成、失败、录制数；Baseware 独立写 `device_sampling_stats`。正常停止补尾段，不保留逐次耗时数组。Python 的 `sample/capabilities` 是窗口增量，`video` 是编码器进程累计计数及当前队列快照，`fault.count` 是故障区间累计，不能跨窗口相加。
+
+首次错误立即产生 `perception_fault` / `device_sampling_error`，同类重试累加；成功与失败交替不会每帧开关故障。Python 在完整统计窗口无同类错误后结束区间；设备侧还需观察到后续成功，正常停止也会关闭区间。根采样健康通过瞬时状态通知立即更新，不等持久故障恢复。normal 不保存每次重复错误堆栈，full 可查逐次细节；区间内可以有成功尝试，不能解释为全程失败。
 
 ## 文件与事件身份
 
@@ -10,11 +21,16 @@
 
 | 文件 | 内容 |
 | --- | --- |
-| `manifest.json` | 工作区、模型、driver、预算、Shiori 实现和运行来源 |
-| `events.jsonl` | schema v2 事件时间线 |
+| `manifest.json` | 工作区、模型、driver、预算、有效日志模式、Shiori 实现及 `eventSources` |
+| `events.jsonl` | RSA 拥有的 schema v2 经历事件 |
+| `diagnostics.jsonl` | full 模式的内部调用诊断，按需读取 |
 | `streams/` | 模型流事件及 source/trace；新版正文使用内容引用，小事件内联 |
 | `payloads/` | 旧版 gzip 请求、响应和工具正文；保留可读，新宿主不再写此副本 |
 | `perception/<generation>/` | 感知入口、实际导入的工作区源码清单 `sources.json`、stderr |
+
+设备事实由 Baseware 独立保存：每个服务实例有 `source.json`、`events/` 与 `diagnostics/`，按一小时或 256 MiB 分段，配小型摘要。RSA 不再把订阅正文抄进 run；manifest 的 `eventSources` 登记 `sourceId/root/format/recordingId/windows`。`recordingId` 是不透明的运行身份，动作开始时冻结，晚到终态仍属于原运行。窗口 `afterSeq/throughSeq` 用于定位和限定无归属背景；显式 `recordingId` 才决定所属 run，晚到已归属事实可以越过窗口。
+
+[统一来源 reader](../shared/event-sources.ts) 按需合并，保留 `origin.eventId` 与来源自己的 seq，不生成新的全局序号。旧 manifest 未声明来源时只读原 run，避免再加读设备档案造成双计。缺源或身份不符明确报错；单个 run 不是自包含包，复制时要带声明的来源依赖，删除 run 不自动回收共享档案。
 
 新观测统一存放在 `workspace/.rsa/timeline/`，跨 run 使用：`video/<id>.mp4` 保存录制图像的视频段，配套 `.mp4.json` 保存编码状态；媒体引用含 `video: {pts,timeBase,width,height}`。`objects/<sha256>.bin` 保存其他去重媒体，`segments/` 保存 JSONL 记录、定长 `.idx` 索引及 `.meta.json` 段摘要。关闭持久化时仅使用有限的 `window-<pid>-…/` 临时窗口。运行事件只引用记录与媒体，不再生成 `run/observations/` 副本。已有 run 的观测附件和日志保持原样可读，不自动迁移或删除。
 
@@ -24,7 +40,7 @@
 
 `events.jsonl` 保留调用身份和统计；工具参数放 `argsRef`，结果和模型消息放 artifact 引用。后台 job 和压缩结果只内联必要的生命周期/数值诊断，完整结构在结果引用中。HTTP 请求保留 wire hash、字节数和编码，JSON/gzip JSON 的正文复用语义对象；恢复 JSON 不等于还原压缩后的网络字节。stream 只存一份 data，raw 中对应的 data 行仅留位置与前缀。
 
-`timeline_media` 登记原始感知或历史解码字节的 hash 到视频帧引用；`observation_media.modelMedia` 登记 OMP 压图/终端转码后的交付 hash，仍指向同一帧及变换说明，不保存第二套衍生图片。日志里的视频媒体状态 `referenced` 只代表引用已登记，是否编码成功以视频段状态文件为准；`gap` 对应 `unrecorded`，不能统计成录像成功。
+媒体登记通过显式 `registerMedia` 回调，在感知发布、历史解码和模型输入重编码处执行，独立于 `EventLog.record`。后台轻量通知不落成 `timeline_media` 或 `perception_sample` 事件。`observation_media.modelMedia` 仍记录模型实际交付的 hash、帧引用和变换说明，不保存第二套衍生图片。视频媒体状态 `referenced` 只代表引用已登记，是否编码成功以视频段状态文件为准；`gap` 对应 `unrecorded`，不能统计成录像成功。
 
 真正被日志消费的图像另在 `.rsa/archive/media/<sha256>.json` 保存小型 hash→视频引用索引，不保存媒体字节，也不为每个后台采样建立索引文件。内存映射上限为 4096 项，淘汰或 Host 重启后按 hash 读取。相同字节优先复用稳定的有效来源；它是内容重建来源，具体采样时刻仍以观测事件的 record 引用为准。窗口过期或编码失败后，有新来源时可以更新索引。
 
@@ -36,7 +52,7 @@ manifest 记录 Git commit/dirty、continue/consolidate 提示和可选 workspac
 
 - `source`：职责组件及独立的 implementation/version。
 - `origin`：源进程产生一次的 `eventId/clockId/seq/at/atMs`，转发和落盘不改身份。
-- `trace`：`traceId/spanId/parentSpanId` 表示调用关系；`epoch/modelCallId/requestId/httpId/toolCallId/operationId` 保留业务身份。
+- `trace`：`traceId/spanId/parentSpanId` 表示调用关系；`epoch/modelCallId/requestId/httpId/toolCallId/operationId` 保留业务身份；`recordingId/recordingPurpose` 表达归属与调用用途。
 - `type/data`：事件语义和内容。
 
 | source.component | 事实来源 |
@@ -48,7 +64,7 @@ manifest 记录 Git commit/dirty、continue/consolidate 提示和可选 workspac
 | `benchmark` | 评测执行与报告 |
 | `dashboard` / `pet` | 日志读取、投影和展示消费 |
 
-顶层时间是接收时间，origin 是源时间；atMs 只能在同一 clockId 内相减。墙钟仅作粗略端到端参考。媒体通过明确引用关联，不用文件路径或读取时间推测采样身份。
+顶层时间属于写入者，origin 保留产生事实的进程时间；atMs 只能在同一时钟域内相减，seq 只能在同一来源内比较。墙钟合并顺序是展示顺序，不能代替因果。媒体通过明确引用关联，不用文件路径或读取时间推测采样身份。
 
 ## 调用与生命周期
 
@@ -59,12 +75,12 @@ manifest 记录 Git commit/dirty、continue/consolidate 提示和可选 workspac
 | `capability_start/end` | list/help/call，含参数、ID、epoch 拒绝；终态 success/error/cancelled 与本地耗时 |
 | `python_capabilities_start/python_capabilities` | 静态发现的独立子 span |
 | `python_capability/result` | CLI runner 的函数位置、源码 hash、参数和结果；属于能力 span 的细节 |
-| `python_call_start/end` | 工作区进程内 `@capability` 或本地 `Client.call`；独立 span、PID、实际注册源码 hash、终态和耗时，不序列化原生参数/返回对象 |
-| `command/execution/execution_error` | Baseware Controller 请求生命周期、controllerId、arguments、requiresControl；提交或查询完成不代表动作结束 |
+| `python_call_start/end` | 主动装饰器函数调用保留独立 span、PID、实际源码 hash、终态和耗时，不序列化原生参数/返回对象；连续采样仅 full 保存逐次诊断 |
+| `command/execution/execution_error` | Baseware 有副作用操作的请求与终态；只读查询逐次记录属于 full，主动查询失败仍保留。`execution.observations` 携带同次返回的观测详情；提交或查询完成不代表动作结束 |
 | `action_start/end` | 已提交手柄动作的独立生命周期、actionId 和终态；沿用原 play 请求的 trace/epoch，异步结束不归到后续 wait/status 请求 |
-| `observation_start/end/error`、`observation` | 同一个设备 span 的采样详情、区间、帧号和媒体；不另算设备操作 |
+| `observation` | 模型/工具交付的观测事实；旧设备 `observation_start/end/error` 与独立 `observation` 仍可读，新设备详情归入 execution，不另算操作 |
 
-嵌套 Python 和 `rsa_tools.Client` 继承父 span/epoch，普通 helper 不追踪。无运行上下文时装饰函数仍可运行。日志失败只记诊断，不改结果、不重试动作；缺 end 保留 pending。trace 不授予操作权，epoch 校验独立执行。
+嵌套 Python 和 `rsa_tools.Client` 继承上下文，普通 helper 不追踪。本地 benchmark observer 始终可观察真实执行，不依赖日志 RPC。normal 省略的采样父层标记 `parentOmitted`，不能因没有对应诊断事件推成永久 pending。日志失败不改调用结果、不重试动作；真实已记录 start 缺终态仍为未知。trace 不授予操作权，epoch 校验独立执行。
 
 `python_call_end.outcome=error` 只证明函数抛出异常，外层可能捕获它（例如负向测试）。Dashboard 将它保留为“函数抛异常”诊断，按显式 Python 父关系归组，展示外层返回状态、调用/抛出次数及最近异常；原始事件仍可完整搜索。异常不会覆写工具或后台任务的最终结果，也不按错误文案推断“预期”。缺少原生 bash 父 trace 的直接 import 调用保持未关联，不按 PID 或时间拼接。离线分析保留原始 span 统计，另给 `localPythonExceptions` / `localPythonExceptionGroups`：相邻异常父子调用归为一条异常链，成功祖先截断；异常链数不是任务失败次数。
 
@@ -74,7 +90,7 @@ manifest 记录 Git commit/dirty、continue/consolidate 提示和可选 workspac
 
 ## 感知与模型真实输入
 
-`perception_status` 记录状态、generation、PID、源码 hash；`perception_sample` 记录新增时空轴快照及媒体数量；`perception_observe_start/end` 记录历史查询及读取结果/耗时。`@perception` 声明感知能力，`@record` 负责将成功结果交给常驻感知进程留档；未标记记录的调用不隐式保存。采样器持续调用 `Perception.sample()`，不再无条件追加；普通 import、CLI 和后台程序也可以调用被标记的能力，写入同一 workspace 时空轴。
+`perception_status` 保存感知启动、替换、停止等生命周期；即时采样健康只更新内存，统计与故障按前述窗口保存。`perception_observe_start/end` 记录主动历史查询及读取结果/耗时。`@perception` 声明感知能力，`@record` 把成功结果交给常驻 writer 留档；未标记记录的调用不隐式保存。采样器持续调用 `Perception.sample()`；普通 import、CLI 和后台程序也能调用被标记的能力，写入同一 workspace 时空轴。
 
 每条记录有 ID、递增 sequence、能力身份及实际加载源码 hash、runId、`recordedAt` 和 `sampling` 区间，以及适用时的 generation、`sampledAt/sources/space`。`recordedAt` 是记录墙钟；`sampling.clock/startedAtMs/finishedAtMs` 是同一进程单调时钟区间；`sampledAt` 由 workspace 提供，表示已知的来源时刻，不能用记录时间伪造设备帧时间。观测可包含文字、任意 JSON 数据和多种媒体，时间与空间信息不局限于视频。记录失败属于能力失败，会抛错；不重试感知调用或动作，也不伪造成功记录。
 
@@ -90,7 +106,7 @@ manifest 记录 Git commit/dirty、continue/consolidate 提示和可选 workspac
 
 Dashboard 从项目注册的 workspace 解析时空轴引用，校验真实路径与目录边界；旧 run 附件仍按原边界读取。记录详情展开时按引用读取单条记录的 `data/space`，不把它们复制回事件；窗口记录仅查询当前宿主，不启动采样。未录制媒体显示交付记录，过期引用返回明确状态并显示过期提示，不渲染失效图片。临时窗口媒体和记录详情不做持久浏览器缓存。
 
-generation 后台 trace 不继承重载请求或控制 epoch，持续采样与查询分别记录调用；查询不会重新执行 workspace 采样代码。接口及 reload 见 [Workspace](workspace.md)。
+generation 后台 trace 不继承重载请求或控制 epoch，保留 recordingId；查询另有主动调用身份，不重新执行 workspace 采样代码。接口及 reload 见 [Workspace](workspace.md)。
 
 ## Shiori、压缩与传输
 
@@ -134,11 +150,13 @@ Dashboard 的一次性与增量读取共用模型档案 reader，兼容旧 gzip 
 
 目录从创建起使用固定的 `generations/<id>/` 路径，完成后原子替换 `active.json`；原始档案仍是唯一事实来源。在途旧读者使用租约，读完后才删除旧目录。构建时已有目录仍可查询，无可读目录时返回 `202 ARCHIVE_PREPARING` 与进度，不能伪装空历史。HTTP 取消只取消查询；有限构建独立完成，成功后进程退出释放临时工作集。显式取消/失败保留状态，用户明确重试才重建，未发布的中间目录不续建。构建中正常追加留给发布后的共享 reducer 增量接续；替换/截断则使此次构建失败。正常增量仍用小批次，已完成的任务不留在长驻 Promise 链里。查询按需展开正文，运行详情最多四路并发，取消会停止后续读取；分页/搜索只保留当前页候选，历史总数和全文搜索范围不截断。worker 的请求队列、超时和 V8 heap 也设上限，它们与索引页缓存分别约束开销，不能把其中任一上限当作整个 Dashboard 进程的总内存。
 
-实时阶段只保存未完成操作的身份、阶段和起始时间/序号，不保存事件正文。设备采集在 `observation_end/error` 结束；后台帧不一定进入模型，不能等待 `observation_media/context` 才关闭采集。后续输入处理沿用工具或模型请求自身的生命周期。
+实时阶段只保存已记录未完成操作的身份、阶段和来源位置，不保存事件正文。新设备调用由 execution/error 收尾，旧设备采集仍识别 observation_end/error；不能等待模型交付才关闭采集，也不为未采集的内部父层创建等待项。
 
 `/api/activity` 提供三种读取：`changes` 按不透明游标交付新增与更新，`history` 按类型/搜索条件分页，`block` 按稳定 ID 定位详情。浏览器和 Pet 共用 changes 客户端，接收成功后推进游标；仅 streams 增长也会产生新版本，旧工具的晚到结果更新原块。第一次连接或索引重建返回快照，Pet 不回放历史气泡；已有队列中的块仍可更新。历史全文搜索按需读文件，开销与搜索范围有关，不以截断历史换速度。
 
 运行概览的统计覆盖整个所选周期，请求详情和观测按页读取。页面标明请求范围，可翻到更早的请求；活动日志保留全量检索入口。`current` 随增量活动提供轻量运行状态，Pet 无需串行请求目录、全量运行详情和全量日志。
+
+full 诊断通过独立 `/api/diagnostics` 按需分页，支持 epoch、时间、trace/span/action/observation 条件，每页最多 500 条；它不进入普通 Activity、回放轨道或 Alice 气泡。正常经历中的诊断类别与 full 原始追踪文件不是同一路。周期采样统计也不产生气泡洪泛。
 
 ## 经历回放
 
@@ -159,7 +177,13 @@ python3 rsa/scripts/analyze-run.py /path/to/workspace/logs/run-id \
 # 展开指定事件的正文，默认媒体只显示引用；不启动宿主或模型
 rsa/bin/rsa logs read --run /path/to/workspace/logs/run-id --event 123 --field payload
 # --ref '<artifact JSON>' 或 --file reference.json 也可定位；--full 才恢复媒体字节
+
+# 逐行读取 run 声明的全部事实来源；full 诊断须显式选择
+rsa/bin/rsa logs events --run /path/to/workspace/logs/run-id
+rsa/bin/rsa logs events --run /path/to/workspace/logs/run-id --diagnostics
 ```
+
+分析器按来源流式读取并保留目标 epoch 所需事件，`source.eventCount` 仍计整个读取范围。`startEventId/endEventId` 用于跨来源定位，不能拿不同来源的 startSeq/endSeq 比大小；新 execution 内的观测和旧独立 observation 兼容读取但不双计。
 
 - 模型延迟统计完成请求，p95 用 nearest-rank。缓存率按 token 加权，分母为 `input + cacheRead + cacheWrite`；warm 仅去掉首请求，不排除后续压缩造成的缓存重置。
 - 动作频率计成功的 `action_end`，以及不带 actionId、需要控制权且非 readOnly 的成功 execution；提交、查询和等待不重复算动作，采样也不算动作。已提交动作按 `action_start/end` 与 actionId 核查。旧日志缺少这些标记时保留原统计，需查看 argv 区分状态查询。一次 play 可以含多个输入片段，不代表单个按钮次数。独立 observe 是该请求唯一执行的工具为 observe。

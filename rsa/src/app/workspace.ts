@@ -36,12 +36,13 @@ export interface LaunchConfig {
   compactionThreshold: number;
   dashboard: boolean;
   pet: boolean;
+  logging: { diagnostics: "normal" | "full" };
 }
 
 export function parseConfig(value: unknown): LaunchConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("rsa.json must be an object");
   const config = value as Record<string, unknown>;
-  const allowed = ["driver", "game", "port", "cuaCommand", "model", "seconds", "requests", "compactionThreshold", "dashboard", "pet"];
+  const allowed = ["driver", "game", "port", "cuaCommand", "model", "seconds", "requests", "compactionThreshold", "dashboard", "pet", "logging"];
   for (const key of Object.keys(config)) if (!allowed.includes(key)) throw new Error(`Unknown rsa.json field: ${key}`);
   if (config.driver !== "mgba" && config.driver !== "ryubing" && config.driver !== "azahar" && config.driver !== "cua") throw new Error("rsa.json driver must be mgba, ryubing, azahar or cua");
   if (config.game !== undefined && (typeof config.game !== "string" || !config.game.trim())) throw new Error("game must be a non-empty path");
@@ -51,7 +52,10 @@ export function parseConfig(value: unknown): LaunchConfig {
     throw new Error("cuaCommand must be a non-empty executable path for the cua driver");
   }
   const result = { ...(config.driver !== "cua" ? { port: config.driver === "mgba" ? 47653 : config.driver === "azahar" ? 47673 : 47663 } : {}), model: "openai-codex/gpt-6.1-sol",
-    seconds: 1800, requests: 1000, compactionThreshold: 256000, dashboard: true, pet: true, ...config } as LaunchConfig;
+    seconds: 1800, requests: 1000, compactionThreshold: 256000, dashboard: true, pet: true, logging: { diagnostics: "normal" }, ...config } as LaunchConfig;
+  if (!result.logging || typeof result.logging !== "object" || Array.isArray(result.logging)
+    || Object.keys(result.logging).some(key => key !== "diagnostics")
+    || !["normal", "full"].includes(result.logging.diagnostics)) throw new Error("logging must contain diagnostics: normal|full");
   for (const key of ["seconds", "requests", "compactionThreshold"] as const) {
     if (!Number.isInteger(result[key]) || result[key] <= 0) throw new Error(`${key} must be a positive integer`);
   }
@@ -92,9 +96,10 @@ export async function launchPlan(config: LaunchConfig, workspace: string, repo =
       baseware: [baseware, "serve", "--driver", config.driver,
         ...(config.driver !== "cua" ? ["--port", String(config.port)] : []),
         ...(config.cuaCommand ? ["--cua-command", config.cuaCommand] : []), "--socket", basewareSocket,
-        "--data-dir", join(workspace, "logs/baseware")],
+        "--data-dir", join(workspace, "logs/baseware"), "--diagnostics", config.logging.diagnostics],
       host: [rsa, "run", "--baseware-socket", basewareSocket, "--model", config.model,
         "--seconds", String(config.seconds), "--requests", String(config.requests), "--compaction-threshold", String(config.compactionThreshold),
+        "--diagnostics", config.logging.diagnostics,
       ],
       ...(config.dashboard ? { dashboard: ["npm", "--prefix", join(repo, "rsa-dashboard"), "run", "start"] } : {}),
       ...(config.pet ? { pet: [join(repo, "rsa-companion/bin/rsa-companion"), "--workspace", workspace, "--show-window"] } : {}),

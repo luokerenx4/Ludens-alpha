@@ -69,15 +69,15 @@ export function aggregate(events: Event[], now = Date.now()) {
     const d = event.data;
     const t = event.trace;
     const toolKey = JSON.stringify([t.epoch, t.modelCallId, t.toolCallId]);
-    const observationKey = JSON.stringify([t.epoch, t.operationId]);
+    const observationKey = JSON.stringify([t.epoch, t.operationId ?? t.spanId]);
     const observed = observationExecution(event);
     if (observed?.result) observationResults.set(JSON.stringify([t.epoch, observed.result.id]), {
       text: observed.result.stdout, perception: observed.perception,
     });
     if (event.type === "context")
       contexts.set(t.epoch, { observations: d.observations ?? [], executions: d.executions ?? [] });
-    if (event.type === "observation_start" && t.operationId)
-      observationRequests.set(observationKey, { controllerId: d.controllerId ?? d.sensorId,
+    if ((event.type === "observation_start" || event.type === "command" || event.type === "capability_start" && event.data.action === "call") && (t.operationId || t.spanId))
+      observationRequests.set(observationKey, { controllerId: d.controllerId ?? d.sensorId ?? d.id,
         ...(d.arguments !== undefined ? { arguments: d.arguments } : { argv: d.argv }) });
     if (event.type === "auto_compaction_start") {
       compaction = {
@@ -283,7 +283,7 @@ export function aggregate(events: Event[], now = Date.now()) {
           ? observation.timing.receivedAtMs - observation.timing.requestedAtMs
           : undefined,
         modelCallId: t.modelCallId,
-        request: t.operationId ? observationRequests.get(observationKey) : undefined,
+        request: (t.operationId || t.spanId) ? observationRequests.get(observationKey) : undefined,
       };
       const existing = observationMap.get(o.id);
       if (!existing) {

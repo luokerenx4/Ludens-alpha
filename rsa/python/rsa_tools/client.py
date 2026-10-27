@@ -2,7 +2,7 @@
 
 from pathlib import Path
 from typing import Any
-from ._context import RSAError, current, request, scope
+from ._context import RSAError, continuous, current, request, scope
 
 
 class Client:
@@ -22,10 +22,20 @@ class Client:
     def _context(self) -> dict[str, Any]:
         # Resolve defaults at the call site, so a module-level Client also
         # inherits the active local function's trace.
-        return {**current(), **{key: value for key, value in {
+        parent = current()
+        context = {**parent, **{key: value for key, value in {
             "socket_path": self.socket_path, "epoch": self.epoch,
             "trace": self.trace, "timeout": self.timeout,
         }.items() if value is not None}}
+        # A client may choose its call trace, but it cannot accidentally discard
+        # the sampler's purpose or run ownership across a driver boundary.
+        trace = dict(context["trace"])
+        if continuous(parent):
+            trace["recordingPurpose"] = "continuous-perception"
+        if parent.get("trace", {}).get("recordingId"):
+            trace["recordingId"] = parent["trace"]["recordingId"]
+        context["trace"] = trace
+        return context
 
     def _request(self, action: str, **fields: Any) -> Any:
         context = self._context()

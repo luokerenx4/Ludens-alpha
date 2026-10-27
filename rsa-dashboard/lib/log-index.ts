@@ -3,10 +3,12 @@ import { open, realpath, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID, createHash } from "node:crypto";
 import type { Event } from "./types";
+import { eventFiles, type EventFile } from "./event-files";
+import { matchesSourceEvent, type EventChannel } from "../../shared/event-sources";
 
 const FORMAT = "files-3";
 const CHUNK = 1024 * 1024;
-export type FileState = { path: string; identity: string; size: number; mtime: number; offset: number; head: string; tail: string; partialTailBytes?: number };
+export type FileState = { path: string; identity: string; size: number; mtime: number; offset: number; head: string; tail: string; partialTailBytes?: number; waitingOffset?: number; windows?: string };
 export { FileRecords, SourceChanged } from "./record-store";
 export type { RecordPointer } from "./record-store";
 import { BulkBudget, FileRecords, SourceChanged, recordCacheStats, storageMetrics, type RecordPointer } from "./record-store";
@@ -68,6 +70,7 @@ export class LogIndex {
   private dirty = false;
   private bulk?: BulkBudget;
   private snapshot?: SourceSnapshot;
+  private eventFiles = new Map<string, EventFile>();
   private freezing = false;
   private invalidated = false;
   frozen = false;
@@ -76,7 +79,7 @@ export class LogIndex {
   leases = 0;
   lastUsed = Date.now();
   retain() { this.leases++; this.lastUsed = Date.now(); let done = false; return () => { if (!done) { done = true; this.leases--; this.lastUsed = Date.now(); reapRetired(); } }; }
-  constructor(readonly path: string, readonly directory: string) {
+  constructor(readonly path: string, readonly directory: string, readonly channel: EventChannel = "events") {
     mkdirSync(directory, { recursive: true });
     const checkpoint = join(directory, "checkpoint.json");
     if (existsSync(checkpoint)) {
@@ -191,13 +194,13 @@ export class LogIndex {
   async readAppend(relative: string, maxBytes = CHUNK): Promise<{ text: string; state: FileState; changed: boolean } | null> {
     const cutoff = this.snapshot?.[relative];
     if (this.snapshot && !cutoff) return null;
-    const file = join(this.path, relative);
+    const source = this.eventFiles.get(relative), file = source?.path ?? join(this.path, relative);
     let info;
     try {
-      if (await realpath(file) !== file || !file.startsWith(this.path + "/")) throw new Error("日志文件必须位于运行目录内");
+      if (await realpath(file) !== file || (!source?.sourceId && !file.startsWith(this.path + "/"))) throw new Error("日志文件必须位于运行目录内");
       info = await stat(file);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      if (!source?.sourceId && (error as NodeJS.ErrnoException).code === "ENOENT") return null;
       throw error;
     }
     const identity = `${info.dev}:${info.ino}`;
@@ -238,10 +241,10 @@ export class LogIndex {
     }
   }
   get progress(): EventProgress {
-    const file = this.files["events.jsonl"];
-    return { bytes: file?.offset ?? 0, totalBytes: file?.size ?? 0, eventPosition: this.eventPosition,
-      partialBytes: file?.partialTailBytes ?? 0,
-      complete: !!file && file.offset + (file.partialTailBytes ?? 0) === file.size };
+    const files = Object.values(this.files).filter(file => file.path === "events.jsonl" || file.path === "diagnostics.jsonl" || file.path.startsWith("baseware/"));
+    return { bytes: files.reduce((sum, file) => sum + file.offset, 0), totalBytes: files.reduce((sum, file) => sum + file.size, 0), eventPosition: this.eventPosition,
+      partialBytes: files.reduce((sum, file) => sum + (file.partialTailBytes ?? 0), 0),
+      complete: (files.length > 0 || this.channel === "diagnostics") && files.every(file => file.offset + (file.partialTailBytes ?? 0) === file.size) };
   }
   async bulkEvents(options: { signal?: AbortSignal; onEvent?: (event: Event, position: number, ref: EventRef) => void | Promise<void>;
     onProgress?: (progress: EventProgress) => void } = {}): Promise<EventProgress> {
@@ -253,6 +256,9 @@ export class LogIndex {
     onEvent?: (event: Event, position: number, ref: EventRef) => void | Promise<void>;
     onProgress?: (progress: EventProgress) => void } = {}): Promise<EventProgress> {
     if (this.frozen || this.freezing) return this.progress;
+    const sources = await eventFiles(this.path, this.channel, this.snapshot);
+    this.eventFiles = new Map(sources.map(file => [file.name, file]));
+    if (sources.length !== 1 || sources[0].name !== "events.jsonl") return this.appendSources(sources, options);
     let consumed = 0;
     for (;;) {
       options.signal?.throwIfAborted();
@@ -262,7 +268,6 @@ export class LogIndex {
       if (!next) throw new Error("未找到事件日志");
       if (!next.changed) { this.saveFile(next.state); return this.progress; }
       let offset = next.state.offset - Buffer.byteLength(next.text);
-      const store = this.store("events");
       const bounds = this.timeBounds;
       let minTime = bounds.startAt ? Date.parse(bounds.startAt) : Infinity;
       let maxTime = bounds.endAt ? Date.parse(bounds.endAt) : -Infinity;
@@ -271,16 +276,9 @@ export class LogIndex {
         const event = JSON.parse(line) as Event;
         storageMetrics.eventParses++;
         const length = Buffer.byteLength(line) + 1, position = ++this.eventPosition;
-        const trace = event.trace ?? {}, timeMs = Date.parse(event.origin?.at ?? event.at);
+        const timeMs = Date.parse(event.origin?.at ?? event.at);
         if (Number.isFinite(timeMs)) { minTime = Math.min(minTime, timeMs); maxTime = Math.max(maxTime, timeMs); }
-        const ref: EventRef = { id: positionKey(position), position, seq: event.seq, offset, length, timeMs,
-          model: trace.modelCallId ?? null, epoch: trace.epoch ?? null, type: event.type, at: event.at,
-          ...(trace.traceId ? { traceId: trace.traceId } : {}), ...(trace.spanId ? { spanId: trace.spanId } : {}),
-          ...(trace.parentSpanId ? { parentSpanId: trace.parentSpanId } : {}),
-          ...(trace.toolCallId ? { toolCallId: trace.toolCallId } : {}),
-          ...(trace.operationId ? { operationId: trace.operationId } : {}) };
-        store.index(ref.id, ref);
-        for (const relation of eventRelations(event)) this.store("relations").index(relationKey(relation, position), { position });
+        const ref = this.indexEvent(event, position, offset, length);
         offset += length;
         if (options.onEvent) await options.onEvent(event, position, ref);
       }
@@ -293,6 +291,115 @@ export class LogIndex {
       if (next.state.offset === next.state.size || consumed >= (options.maxBytes ?? Infinity)) return this.progress;
       await new Promise<void>(resolve => setImmediate(resolve));
     }
+  }
+  private indexEvent(event: Event, position: number, offset: number, length: number, source?: EventFile): EventRef {
+    const trace = event.trace ?? {}, timeMs = Date.parse(event.origin?.at ?? event.at);
+    const ref: EventRef = { id: positionKey(position), position, seq: event.seq, offset, length, timeMs,
+      ...(source ? { file: source.path, sourceId: source.sourceId, sourceFile: source.name } : {}),
+      model: trace.modelCallId ?? null, epoch: trace.epoch ?? null, type: event.type, at: event.at,
+      ...(trace.traceId ? { traceId: trace.traceId } : {}), ...(trace.spanId ? { spanId: trace.spanId } : {}),
+      ...(trace.parentSpanId ? { parentSpanId: trace.parentSpanId } : {}),
+      ...(trace.toolCallId ? { toolCallId: trace.toolCallId } : {}),
+      ...(trace.operationId ? { operationId: trace.operationId } : {}) };
+    this.store("events").index(ref.id, ref);
+    for (const relation of eventRelations(event)) this.store("relations").index(relationKey(relation, position), { position });
+    return ref;
+  }
+  private async prefixState(file: EventFile, state: FileState, offset: number): Promise<FileState> {
+    const handle = await open(file.path, "r");
+    const hash = async (start: number, size: number) => {
+      const buffer = Buffer.alloc(size), result = await handle.read(buffer, 0, size, start);
+      storageMetrics.sourceReadCalls++; storageMetrics.sourceReadBytes += result.bytesRead;
+      return digest(buffer.subarray(0, result.bytesRead));
+    };
+    try { return { ...state, offset, partialTailBytes: offset === state.offset ? state.partialTailBytes : 0,
+      head: await hash(0, Math.min(offset, 4096)), tail: await hash(Math.max(0, offset - 256), Math.min(offset, 256)) }; }
+    finally { await handle.close(); }
+  }
+  /** One buffered chunk per service, not per segment; no event body is copied into the index. */
+  private async appendSources(sources: EventFile[], options: IndexBatch & { chunkBytes?: number;
+    onEvent?: (event: Event, position: number, ref: EventRef) => void | Promise<void>;
+    onProgress?: (progress: EventProgress) => void }): Promise<EventProgress> {
+    type Head = { event: Event; offset: number; length: number; file: EventFile };
+    type Cursor = { files: EventFile[]; fileIndex: number; lines: string[]; line: number; offset: number;
+      state?: FileState; head?: Head };
+    const groups = new Map<string, EventFile[]>();
+    for (const file of sources) { const key = file.sourceId ?? "local"; const group = groups.get(key) ?? []; group.push(file); groups.set(key, group); }
+    const cursors: Cursor[] = [...groups.values()].map(files => ({ files, fileIndex: 0, lines: [], line: 0, offset: 0 }));
+    let consumed = 0, events = 0;
+    const bounds = this.timeBounds;
+    let minTime = bounds.startAt ? Date.parse(bounds.startAt) : Infinity, maxTime = bounds.endAt ? Date.parse(bounds.endAt) : -Infinity;
+    const commit = async (cursor: Cursor) => {
+      if (!cursor.state) return;
+      const file = cursor.files[cursor.fileIndex];
+      this.saveFile(await this.prefixState(file, cursor.state, cursor.offset));
+    };
+    const advance = async (cursor: Cursor) => {
+      cursor.head = undefined;
+      for (;;) {
+        const file = cursor.files[cursor.fileIndex];
+        if (!file || consumed >= (options.maxBytes ?? Infinity)) return;
+        options.signal?.throwIfAborted();
+        if (cursor.line >= cursor.lines.length) {
+          await commit(cursor);
+          let previous = this.files[file.name];
+          const windows = file.dependency ? JSON.stringify(file.dependency.windows) : undefined;
+          if (previous?.waitingOffset !== undefined && previous.windows !== windows) {
+            previous = await this.prefixState(file, previous, previous.waitingOffset);
+            this.saveFile({ ...previous, waitingOffset: undefined, windows });
+          }
+          const next = await this.readAppend(file.name, Math.min(options.chunkBytes ?? CHUNK, 2 * CHUNK));
+          if (!next) { if (file.sourceId) throw new Error("Registered event source disappeared"); cursor.fileIndex++; cursor.state = undefined; continue; }
+          cursor.state = { ...next.state, waitingOffset: this.files[file.name]?.waitingOffset, windows };
+          cursor.offset = next.state.offset - Buffer.byteLength(next.text);
+          cursor.lines = next.text.split("\n").slice(0, -1); cursor.line = 0;
+          if (!cursor.lines.length) {
+            await commit(cursor); cursor.fileIndex++; cursor.state = undefined; continue;
+          }
+        }
+        const line = cursor.lines[cursor.line], length = Buffer.byteLength(line) + 1;
+        if (!line) { cursor.line++; cursor.offset += length; continue; }
+        const event = JSON.parse(line) as Event; storageMetrics.eventParses++;
+        const accepted = !file.dependency || matchesSourceEvent(event, file.dependency);
+        // Background beyond the confirmed watermark may become attributable on the next poll.
+        // Remember only its first byte; advancing windows rereads that suffix and deduplicates origins.
+        if (!accepted && file.dependency && !event.trace?.recordingId
+          && (event.origin?.seq ?? event.seq) > Math.max(...file.dependency.windows.map(window => window.throughSeq ?? window.afterSeq)))
+          cursor.state!.waitingOffset ??= cursor.offset;
+        if (accepted) { cursor.head = { event, offset: cursor.offset, length, file }; return; }
+        cursor.line++; cursor.offset += length; consumed += length;
+        if (cursor.line % 250 === 0) await new Promise<void>(resolve => setImmediate(resolve));
+      }
+    };
+    try {
+      for (const cursor of cursors) await advance(cursor);
+      for (;;) {
+        options.signal?.throwIfAborted();
+        const available = cursors.filter(cursor => cursor.head);
+        if (!available.length) break;
+        available.sort((a, b) => Date.parse(a.head!.event.origin?.at ?? a.head!.event.at) - Date.parse(b.head!.event.origin?.at ?? b.head!.event.at));
+        const cursor = available[0], { event, offset, length, file } = cursor.head!;
+        const origin = file.sourceId ? `${file.sourceId}:${event.origin?.seq ?? event.seq}` : undefined;
+        if (!origin || !this.store("source-events").meta(origin)) {
+          const position = ++this.eventPosition, ref = this.indexEvent(event, position, offset, length, file);
+          if (origin) this.store("source-events").index(origin, { position });
+          if (Number.isFinite(ref.timeMs)) { minTime = Math.min(minTime, ref.timeMs); maxTime = Math.max(maxTime, ref.timeMs); }
+          if (options.onEvent) await options.onEvent(event, position, ref);
+        }
+        cursor.line++; cursor.offset += length; consumed += length;
+        if (++events % 250 === 0) { options.onProgress?.(this.progress); await new Promise<void>(resolve => setImmediate(resolve)); }
+        if (consumed >= (options.maxBytes ?? Infinity)) break;
+        await advance(cursor);
+      }
+    } finally {
+      // A cancelled waiter leaves a consistent consumed prefix for every source.
+      for (const cursor of cursors) await commit(cursor);
+      this.setMeta("eventPosition", this.eventPosition);
+      if (Number.isFinite(minTime)) this.setMeta("source:minTime", minTime);
+      if (Number.isFinite(maxTime)) this.setMeta("source:maxTime", maxTime);
+    }
+    options.onProgress?.(this.progress);
+    return this.progress;
   }
   async queryEventRefs(options: EventQuery = {}): Promise<EventRef[]> {
     if (this.invalidated) throw new SourceChanged(this.path);
@@ -420,6 +527,20 @@ export function getLogIndex(path: string): LogIndex {
     mkdirSync(directory, { recursive: true });
     if (realpathSync(directory) !== directory) throw new Error("日志索引必须位于运行目录内");
     index = new LogIndex(path, directory); registry.set(path, index);
+  }
+  index.lastUsed = Date.now();
+  const release = index.retain(); pruneLogIndexes(); release();
+  return index;
+}
+/** Optional diagnostic history has its own directory and never blocks replay construction. */
+export function getDiagnosticIndex(path: string): LogIndex {
+  const key = `${path}\0diagnostics`;
+  let index = registry.get(key);
+  if (!index) {
+    const directory = join(indexStorageRoot(path), "diagnostics");
+    mkdirSync(directory, { recursive: true });
+    if (realpathSync(directory) !== directory) throw new Error("诊断索引路径包含符号链接");
+    index = new LogIndex(path, directory, "diagnostics"); registry.set(key, index);
   }
   index.lastUsed = Date.now();
   const release = index.retain(); pruneLogIndexes(); release();

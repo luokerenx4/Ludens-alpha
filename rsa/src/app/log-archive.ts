@@ -4,8 +4,13 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { parseArgs } from "node:util";
 import { readArtifact } from "../../../shared/log-archive.ts";
+import { once } from "node:events";
+import { readRunEvents } from "../../../shared/event-sources.ts";
 
-export const LOG_HELP = `rsa logs read --run <run-directory> (--ref '<JSON reference>' | --file <reference.json> | --event <seq> --field <name>) [--full]
+export const LOG_HELP = `rsa logs events --run <run-directory> [--diagnostics]
+Stream saved events as NDJSON, resolving registered device sources without copying them.
+--diagnostics explicitly reads the separate diagnostic channel.
+rsa logs read --run <run-directory> (--ref '<JSON reference>' | --file <reference.json> | --event <seq> --field <name>) [--full]
 Read a stored model/tool artifact offline; no host or model is started.
 Default: expand text/structure and keep media references. --full restores recorded media
 as base64; missing, unrecorded or expired media fails explicitly. HTTP wire hashes describe
@@ -14,6 +19,14 @@ Event fields include payload, response, result, resultRef, body and argsRef. Old
 
 export async function logCommand(argv: string[]) {
   if (!argv.length || argv.includes("--help")) { console.log(LOG_HELP); return; }
+  if (argv[0] === "events") {
+    const { values } = parseArgs({ args: argv.slice(1), options: { run: { type: "string" }, diagnostics: { type: "boolean" } } });
+    if (!values.run) throw new Error("--run is required");
+    for await (const event of readRunEvents(await realpath(values.run), { channel: values.diagnostics ? "diagnostics" : "events" })) {
+      if (!process.stdout.write(JSON.stringify(event) + "\n")) await once(process.stdout, "drain");
+    }
+    return;
+  }
   if (argv[0] !== "read") throw new Error("Expected rsa logs read; see rsa logs --help");
   const { values } = parseArgs({ args: argv.slice(1), options: {
     run: { type: "string" }, ref: { type: "string" }, file: { type: "string" },

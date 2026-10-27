@@ -66,9 +66,15 @@ RSA 的持久连接持有有期限的 epoch，CLI/API/MCP 继承该上下文，�
 
 观测是否留档由 workspace 感知能力的 `@perception` / `@record` 声明决定。常驻感知进程把标记结果写入 workspace 的 `.rsa/timeline`，持久媒体按内容去重；RSA 与 Dashboard 引用原件，不复制到 run。调用者自行保存的数据集或输出文件仍属于普通 workspace 文件。契约见 [Workspace](workspace.md#常驻感知)。
 
-设备日志中的 `result` 是诊断表示：二进制 `data/blob` 被省略，保留媒体类型、内容位置及大小；若已有明确时空轴引用或文件路径则记录引用，否则标明 `dataOmitted/blobOmitted`。API、CLI、MCP 的真实结果保持完整，日志表示不能直接转发为原生工具结果。
+设备日志中的 `result` 是归档表示：二进制 `data/blob` 被省略，保留媒体类型、内容位置及大小；若已有明确时空轴引用或文件路径则记录引用，否则标明 `dataOmitted/blobOmitted`。同次调用的观测放在 `execution.observations`，不再额外写一组采集生命周期。API、CLI、MCP 的真实结果保持完整，日志表示不能直接转发为原生工具结果。
 
 `timing.clock` 标明单调时钟；不同进程的时钟不能直接相减。设备确实提供源序号时才记录 `sourceSequence`。Baseware 的调用完成、设备动作完成、Agent 读取观测、游戏推进分别记录，不互相冒充。连续采样、时序融合与历史查询由 RSA 的感知层承担。
+
+默认 `normal` 保存真实输入及终态、控制变化和故障，明确只读的成功查询不写逐次 command/execution。RSA 的主动调用边界仍有记录；常驻采样通过 `trace.recordingPurpose="continuous-perception"` 连同整个嵌套调用链省略成功审计。`full` 才在独立诊断分段保存只读调用细节。未知/有副作用的能力、输入取消和释放始终保留；readOnlyHint 与 requiresControl 的判断不变。
+
+只读调用每 5 秒按 Controller、recordingId/epoch 汇总次数、失败和耗时。连续感知首次故障即时记录，同类错误累计；后续观察到成功且至少一个统计周期无同类错误时结束区间，停止时补尾段。实际调用不等待统计恢复，成功/失败交替也不逐次写故障开关。日志模式由进程启动决定，连接现有 Baseware 不暗中改模式。
+
+Baseware 是设备事实的唯一持久来源。每个服务实例独立保存 `source.json` 和 `events/diagnostics`，默认一小时或 256 MiB 切段；`origin.eventId=serviceId:seq` 唯一标识事实。RSA manifest 的 `eventSources` 声明来源根、`recordingId` 与 seq 观察窗口，读者按需合并，RSA 不再复制订阅正文。请求携带的不透明 recordingId 在动作开始时冻结，晚到结束仍按原身份读取；没有归属的背景只在明确关闭的观察窗口内展示，不能猜到当前 run。来源缺失明确报错，保存失败也不能阻挡控制释放或触发动作重试。具体格式与查询见 [日志](logging.md)。
 
 ## 上游契约与升级
 

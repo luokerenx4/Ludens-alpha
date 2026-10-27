@@ -2,6 +2,8 @@ import { expect, test } from "bun:test";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { EventLog as DeviceEventLog } from "../../baseware/src/events.ts";
+import { readRunEvents } from "../../shared/event-sources.ts";
 import { BasewareCore } from "@playness/baseware/core";
 import { listen as listenBaseware } from "@playness/baseware/server";
 import { connectBaseware } from "../src/harness/baseware.ts";
@@ -66,9 +68,11 @@ for (const route of ["controller", "local", "import"] as const) test(`evaluator 
   };
   const prefix = `/tmp/rsa-bench-test-${crypto.randomUUID()}`;
   const basewareSocket = `${prefix}-b.sock`, rsaSocket = `${prefix}-r.sock`;
-  const core = new BasewareCore({ capabilities: environment.capabilities, drivers: [{ id: "fixture", version: "1" }] });
+  const deviceLog = new DeviceEventLog(join(runDir, "device-sources"), crypto.randomUUID());
+  const core = new BasewareCore({ serviceId: deviceLog.source.sourceId, source: deviceLog.source, record: deviceLog.record, capabilities: environment.capabilities, drivers: [{ id: "fixture", version: "1" }] });
   const closeBaseware = await listenBaseware(basewareSocket, core);
   const devices = await connectBaseware({ socket: basewareSocket, runDir, seconds: 60, record });
+  await writeFile(join(runDir, "manifest.json"), JSON.stringify({workspace, eventSources: devices.eventSources}));
   const runtime = new Runtime(devices, record, 60, "reuse-fixture");
   const env = { ...process.env, RSA_SOCKET: rsaSocket, BASEWARE_SOCKET: basewareSocket,
     RSA_WORKSPACE: workspace, RSA_RUN_ID: runtime.status().runId,
@@ -124,14 +128,15 @@ def configure(values: list[int]) -> dict:
       else await exec(["python3", "-c", `from scripts.bench import configure as build\nprint(build(${JSON.stringify(values)}))`]);
     }
     recordBenchmark("benchmark_reuse_finished", environment.summary(), { epoch });
-    const events = (await readFile(join(runDir, "events.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line) as ReuseEvent);
+    const events: ReuseEvent[] = [];
+    for await (const event of readRunEvents(runDir)) events.push(event as unknown as ReuseEvent);
     const judge = (records: ReuseEvent[]) => evaluateReuse(records, epoch, runDir);
     const check = (records: ReuseEvent[], id: string) => passed(records, epoch, id, runDir);
     const outcome = judge(events);
     expect(Object.values(outcome.checks!).filter(check => check.passed !== true)).toEqual([]);
     // The same execution evidence must keep its verdict when argument/result
     // bodies become shared references; accepting an async launch is still not completion.
-    await writeFile(join(runDir, "manifest.json"), JSON.stringify({ workspace }));
+    await writeFile(join(runDir, "manifest.json"), JSON.stringify({ workspace, eventSources: devices.eventSources }));
     const indexed = new EventLog(runDir, log.clock, workspace);
     const referenced = events.map(event => {
       if (event.type === "tool_end" && event.data.result) return { ...event, data: { ...event.data,

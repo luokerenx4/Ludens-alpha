@@ -1,7 +1,9 @@
 import { randomBytes } from "node:crypto";
 import type { Capabilities, ExecutionResult, Observation, ToolArguments } from "./contracts.ts";
 import { argumentValidator, archivedToolResult, observationMetadata } from "./tool-contract.ts";
-import type { Catalog, DeviceEvent, RecordEvent, Request, Trace } from "./protocol.ts";
+import type { Catalog, DeviceEvent, EventMetadata, RecordEvent, Request, Trace } from "./protocol.ts";
+import type { EventSourceDescriptor } from "../../shared/event-sources.ts";
+import { SamplingStats } from "./sampling-stats.ts";
 
 export interface DriverInfo { id: string; version: string }
 export interface ClientContext { id: string; onEvent?(event: DeviceEvent): void }
@@ -15,11 +17,14 @@ function operationTrace(parent: Trace, operationId: string): Trace {
 export class BasewareCore {
   readonly capabilities: Capabilities;
   readonly serviceId: string;
+  readonly source?: EventSourceDescriptor;
+  readonly diagnostics: "normal" | "full";
   private drivers: DriverInfo[];
   private sink: RecordEvent;
   private clients = new Map<string, ClientContext>();
   private owner?: ClientContext;
   private epoch?: string;
+  private controlTrace: Trace = {};
   private mode: "manual" | "acquiring" | "auto" | "releasing" = "manual";
   private connected = true;
   private reason = "startup";
@@ -33,31 +38,59 @@ export class BasewareCore {
   private previousObservations = new Map<string, Observation>();
   private sequence = 0;
   private validators = new Map<string, (value: unknown) => ToolArguments>();
+  private sampling: SamplingStats;
+  private statsTimer: ReturnType<typeof setInterval>;
+  private logFailure?: { firstSeq: number; lastSeq: number; count: number; error: string };
 
-  constructor(options: { capabilities: Capabilities; drivers: DriverInfo[]; record?: RecordEvent; serviceId?: string }) {
+  constructor(options: { capabilities: Capabilities; drivers: DriverInfo[]; record?: RecordEvent; serviceId?: string;
+    source?: EventSourceDescriptor; diagnostics?: "normal" | "full" }) {
     this.capabilities = options.capabilities;
     this.drivers = options.drivers;
     this.sink = options.record ?? (() => {});
     this.serviceId = options.serviceId ?? crypto.randomUUID();
+    this.source = options.source;
+    this.diagnostics = options.diagnostics ?? "normal";
+    if (this.source && this.source.sourceId !== this.serviceId) throw new Error("Event source identity mismatch");
     for (const ids of [options.drivers.map(d => d.id), options.capabilities.controllers.map(c => c.tool.name)]) {
       if (new Set(ids).size !== ids.length) throw new Error("Duplicate capability or driver ID");
     }
     for (const controller of this.capabilities.controllers) this.validators.set(controller.tool.name, argumentValidator(controller.tool));
+    this.sampling = new SamplingStats(this.record);
+    this.statsTimer = setInterval(() => this.sampling.flush(), this.sampling.periodMs);
+    this.statsTimer.unref();
   }
 
-  readonly record: RecordEvent = (type, data, trace = {}) => {
+  readonly record: RecordEvent = (type, data, trace = {}, options = {}) => {
     const seq = ++this.sequence;
-    const metadata = { source: { component: "baseware", implementation: "baseware" },
+    const metadata: Required<Pick<EventMetadata, "source" | "origin">> & EventMetadata = {
+      source: { component: "baseware", implementation: "baseware" },
       origin: { eventId: `${this.serviceId}:${seq}`, clockId: this.serviceId, seq,
-        at: new Date().toISOString(), atMs: performance.now() } };
-    this.sink(type, data, trace, metadata);
+        at: new Date().toISOString(), atMs: performance.now() }, ...(options.channel ? { channel: options.channel } : {}) };
+    let recovered: typeof this.logFailure;
+    try {
+      this.sink(type, data, trace, metadata);
+      recovered = this.logFailure;
+      this.logFailure = undefined;
+    } catch (error) {
+      metadata.persisted = false;
+      if (!this.logFailure) {
+        this.logFailure = { firstSeq: seq, lastSeq: seq, count: 0, error: String(error) };
+        console.error(`Baseware event storage unavailable: ${String(error)}`);
+      }
+      this.logFailure.lastSeq = seq; this.logFailure.count++; this.logFailure.error = String(error);
+    }
     const recipients = new Map(this.clients);
     if (this.owner) recipients.set(this.owner.id, this.owner);
-    for (const client of recipients.values()) client.onEvent?.({ type, data, trace, ...metadata });
+    for (const client of recipients.values()) {
+      // Telemetry and subscribers must never turn a completed input into a retryable failure.
+      try { client.onEvent?.({ type, data, trace, ...metadata }); } catch { /* client owns its transport */ }
+    }
+    if (recovered) this.record("event_storage_gap", recovered, trace);
   };
 
   status() {
-    return { serviceId: this.serviceId, mode: this.mode, epoch: this.mode === "auto" ? this.epoch ?? null : null,
+    return { serviceId: this.serviceId, source: this.source, seq: this.sequence, diagnostics: this.diagnostics,
+      storageError: this.logFailure ?? null, mode: this.mode, epoch: this.mode === "auto" ? this.epoch ?? null : null,
       connected: this.connected, reason: this.reason,
       remainingSeconds: this.mode === "auto" ? Math.max(0, Math.ceil((this.deadline - performance.now()) / 1000)) : null };
   }
@@ -74,13 +107,14 @@ export class BasewareCore {
     return tool;
   }
 
-  async acquire(epoch: string, seconds: number, client: ClientContext, signal?: AbortSignal) {
+  async acquire(epoch: string, seconds: number, client: ClientContext, signal?: AbortSignal, trace: Trace = {}) {
     if (!epoch?.trim()) throw new Error("acquire requires an epoch");
     if (!Number.isFinite(seconds) || seconds <= 0 || seconds * 1000 > 2_147_483_647) throw new Error("seconds must be positive and within the timer range");
     if (this.mode !== "manual") throw new Error("Device control is already owned or changing");
     if (!this.connected) throw new Error("Driver disconnected; restart Baseware");
     signal?.throwIfAborted();
     this.epoch = epoch;
+    this.controlTrace = { ...trace, epoch };
     this.owner = client;
     this.lastExecution = undefined;
     this.control = new AbortController();
@@ -103,7 +137,7 @@ export class BasewareCore {
     this.mode = "auto";
     this.reason = "acquired";
     this.timer = setTimeout(() => { void this.release(epoch, "lease expired"); }, seconds * 1000);
-    this.record("baseware_control", this.status(), { epoch });
+    this.record("baseware_control", this.status(), this.controlTrace);
     return this.status();
   }
 
@@ -122,13 +156,14 @@ export class BasewareCore {
       this.acquired = [];
       for (const outcome of outcomes) if (outcome.status === "rejected") {
         this.connected = false;
-        this.record("error", String(outcome.reason), { epoch: this.epoch });
+        this.record("error", String(outcome.reason), this.controlTrace);
       }
       this.mode = "manual";
       const status = this.status();
-      this.record("baseware_control", status, { epoch: this.epoch });
+      this.record("baseware_control", status, this.controlTrace);
+      if (this.controlTrace.recordingId) this.sampling.flush(true, this.controlTrace.recordingId);
       this.owner = undefined;
-      return status;
+      return this.status();
     })().finally(() => { this.stopping = undefined; });
     return this.stopping;
   }
@@ -140,12 +175,12 @@ export class BasewareCore {
 
   async disconnected(error: Error) {
     this.connected = false;
-    this.record("baseware_disconnected", error.message, { epoch: this.epoch });
+    this.record("baseware_disconnected", error.message, this.controlTrace);
     await this.release(this.epoch, error.message);
   }
 
-  private recordObservations(observations: Observation[], args: ToolArguments, trace: Trace, origin: string, execution: typeof this.lastExecution) {
-    for (const observation of observations) {
+  private observationDetails(observations: Observation[], args: ToolArguments, origin: string, execution: typeof this.lastExecution) {
+    return observations.map(observation => {
       const key = JSON.stringify([observation.controllerId, args]);
       const previous = this.previousObservations.get(key);
       const sameClock = previous?.timing.clock === observation.timing.clock;
@@ -156,22 +191,29 @@ export class BasewareCore {
         captureRequestedAfterMs: observation.timing.requestedAtMs - execution.result.timing.receivedAtMs,
         captureReceivedAfterMs: observation.timing.receivedAtMs - execution.result.timing.receivedAtMs,
       } : undefined;
-      this.record("observation", { ...observationMetadata(observation), origin, afterExecution,
+      const details = { ...observationMetadata(observation), origin, afterExecution,
         previousObservationId: sameClock ? previous.id : undefined,
         sourceSequenceDelta: sameClock && previous.sourceSequence !== undefined && observation.sourceSequence !== undefined
-          ? observation.sourceSequence - previous.sourceSequence : undefined }, trace);
+          ? observation.sourceSequence - previous.sourceSequence : undefined };
       this.previousObservations.set(key, observationMetadata(observation));
-    }
+      // Diagnostics may use varied arguments; retain only a small recent correlation cache.
+      if (this.previousObservations.size > 256) this.previousObservations.delete(this.previousObservations.keys().next().value!);
+      return details;
+    });
   }
 
   async execute(id: string, args: ToolArguments, epoch: string | undefined, signal: AbortSignal, parent: Trace = {}, operationId: string = crypto.randomUUID(), origin = "cli") {
     const trace = operationTrace({ ...parent, ...(epoch ? { epoch } : {}) }, operationId);
     const controller = this.capabilities.controllers.find(c => c.tool.name === id);
+    const readOnly = controller?.tool.annotations?.readOnlyHint === true;
+    const continuous = trace.recordingPurpose === "continuous-perception";
+    if (continuous && this.diagnostics === "normal" && trace.parentSpanId) trace.parentOmitted = true;
+    const metadata: EventMetadata = readOnly ? { channel: "diagnostic" } : {};
+    const detailed = !readOnly || this.diagnostics === "full";
     const previousExecution = this.lastExecution;
-    const operation = { controllerId: id, arguments: args, epoch, requiresControl: controller?.requiresControl, origin };
-    this.record("command", operation, trace);
-    let observing = Boolean(controller?.mediaTypes?.length);
-    if (observing) this.record("observation_start", operation, trace);
+    const operation = { controllerId: id, arguments: args, epoch, requiresControl: controller?.requiresControl, readOnly, origin };
+    if (detailed) this.record("command", operation, trace, metadata);
+    const startedAtMs = performance.now();
     let combined = signal;
     try {
       if (!controller) throw new Error(`Unknown controller: ${id}`);
@@ -194,24 +236,26 @@ export class BasewareCore {
       if (controller.requiresControl && !result.actionId && !result.readOnly && epoch === this.epoch) this.lastExecution = { result, trace };
       const outcome = combined.aborted || result.status === "interrupted" ? "cancelled"
         : result.status === "completed" && result.exitCode === 0 ? "success" : "error";
-      this.record("execution", { ...result, observations: result.observations?.map(observationMetadata),
-        result: archivedToolResult(result.result, result.observations), controllerId: id, requiresControl: controller.requiresControl, outcome }, trace);
-      if (result.observations?.length && !observing) {
-        observing = true;
-        this.record("observation_start", operation, trace);
-      }
-      if (observing) {
-        this.recordObservations(result.observations ?? [], args, trace, origin,
-          controller.requiresControl ? { result, trace } : previousExecution);
-        this.record("observation_end", { controllerId: id, observations: result.observations?.map(o => o.id) ?? [], outcome }, trace);
-      }
+      if (readOnly) this.sampling.observe(id, trace, performance.now() - startedAtMs, outcome === "success" ? undefined : `${result.status}: ${result.stderr}`);
+      const nativeText = result.result.content.filter(block => block.type === "text").map(block => block.text).join("\n");
+      // Failures of an explicit read remain experiences; repeating sampler failures are intervals.
+      if (detailed || (!continuous && outcome !== "success")) this.record("execution", {
+        ...result,
+        ...(nativeText && result.stdout === nativeText ? { stdout: undefined } : {}),
+        ...(nativeText && result.stderr === nativeText ? { stderr: undefined } : {}),
+        observations: this.observationDetails(result.observations ?? [], args, origin,
+          controller.requiresControl ? { result, trace } : previousExecution),
+        result: archivedToolResult(result.result, result.observations), controllerId: id, requiresControl: controller.requiresControl,
+        readOnly: result.readOnly ?? readOnly, outcome,
+        ...(!detailed ? { arguments: args, origin, startedAtMs } : {}),
+      }, trace, !continuous && outcome !== "success" ? {} : metadata);
       return result;
     } catch (error) {
       const aborted = combined.aborted;
-      const data = { controllerId: id, requiresControl: controller?.requiresControl, error: String(error), aborted,
+      if (readOnly) this.sampling.observe(id, trace, performance.now() - startedAtMs, error);
+      const data = { ...operation, startedAtMs, error: this.diagnostics === "full" && error instanceof Error ? error.stack ?? String(error) : String(error), aborted,
         outcome: aborted ? "cancelled" : "error" };
-      this.record("execution_error", data, trace);
-      if (observing) this.record("observation_error", data, trace);
+      if (detailed || !continuous) this.record("execution_error", data, trace, !continuous ? {} : metadata);
       throw error;
     }
   }
@@ -224,7 +268,7 @@ export class BasewareCore {
         case "list": return this.list();
         case "subscribe": this.clients.set(client.id, client); return this.status();
         case "help": if (!request.id) throw new Error("Missing capability ID"); return this.help(request.id);
-        case "acquire": return await this.acquire(request.epoch!, request.seconds!, client, signal);
+        case "acquire": return await this.acquire(request.epoch!, request.seconds!, client, signal, request.trace);
         case "release": if (!request.epoch) throw new Error("release requires an epoch"); return await this.release(request.epoch);
         case "revoke": return await this.release(undefined, "human");
         case "controller":
@@ -243,5 +287,9 @@ export class BasewareCore {
     }
   }
 
-  async close() { await this.release(undefined, "shutdown"); }
+  async close() {
+    await this.release(undefined, "shutdown");
+    clearInterval(this.statsTimer);
+    this.sampling.flush(true);
+  }
 }

@@ -45,11 +45,10 @@ test("malformed video registration is diagnosed without terminating the host eve
   await mkdir(directory, { recursive: true });
   try {
     const log = new EventLog(directory, { id: "fixture", now: () => 1 }, workspace);
-    log.record("timeline_media", { media: [{ sha256: "a".repeat(64), asset: "video/f0.mp4",
-      video: { pts: 0, timeBase: [1, 1000000], width: 32769, height: 1 } }] });
+    log.registerMedia({ sha256: "a".repeat(64), asset: "video/f0.mp4",
+      video: { pts: 0, timeBase: [1, 1000000], width: 32769, height: 1 } });
     const events = (await readFile(join(directory, "events.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
-    expect(events.map(event => event.type)).toEqual(["timeline_media", "media_reference_error"]);
-    expect(events[1].data.eventId).toBe("fixture:1");
-    expect(events[1].data.errors[0]).toContain("Invalid timeline video frame reference");
+    expect(events.map(event => event.type)).toEqual(["media_reference_error"]);
+    expect(events[0].data.error).toContain("Invalid timeline video frame reference");
   } finally { await rm(workspace, { recursive: true, force: true }); }
 });

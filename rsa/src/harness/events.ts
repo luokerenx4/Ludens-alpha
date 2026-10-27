@@ -11,6 +11,8 @@ export const EVENT_SCHEMA_VERSION = 2;
 export const RSA_SOURCE: EventSource = { component: "rsa" };
 
 export interface EventTrace {
+  recordingId?: string;
+  recordingPurpose?: "continuous-perception";
   traceId?: string;
   spanId?: string;
   parentSpanId?: string;
@@ -22,6 +24,8 @@ export interface EventTrace {
   operationId?: string;
 }
 export type RecordEvent = (type: string, data: unknown, trace?: EventTrace, metadata?: EventMetadata) => void;
+export type DiagnosticsMode = "normal" | "full";
+export type RegisterMedia = (media: Pick<Parameters<JsonArchive["registerMedia"]>[0], "sha256" | "asset" | "video">) => void;
 export type ArtifactRef = JsonArchiveRef | { path: string; sha256: string; bytes: number; encoding: "gzip" };
 interface WireMetadata {
   sha256: string; bytes: number; contentType?: string; contentEncoding?: string;
@@ -39,34 +43,29 @@ export function childTrace(parent: EventTrace = {}): EventTrace {
 export class EventLog {
   private sequence = 0;
   readonly archive?: JsonArchive;
-  constructor(readonly directory: string, readonly clock: Clock, workspace?: string) {
+  constructor(readonly directory: string, readonly clock: Clock, workspace?: string, readonly diagnostics: DiagnosticsMode = "normal") {
     if (workspace) this.archive = new JsonArchive(workspace);
     else mkdirSync(join(directory, "payloads"), { recursive: true });
     mkdirSync(join(directory, "streams"), { recursive: true });
   }
 
   readonly record: RecordEvent = (type, data, trace = {}, metadata = {}) => {
-    const mediaErrors: string[] = [];
-    const register = (media: Parameters<JsonArchive["registerMedia"]>[0]) => {
-      try { this.archive?.registerMedia(media); }
-      catch (error) { mediaErrors.push(String(error)); }
-    };
-    if (type === "observation_media" && data && typeof data === "object" && "modelMedia" in data) {
-      const media = data.modelMedia as Parameters<JsonArchive["registerMedia"]>[0] | undefined;
-      if (media) register(media);
-    }
-    if (type === "timeline_media" && data && typeof data === "object" && "media" in data && Array.isArray(data.media)) {
-      for (const media of data.media) register(media);
-    }
+    if (metadata.channel === "diagnostic" && this.diagnostics !== "full") return;
     const seq = ++this.sequence;
     const at = new Date().toISOString(), atMs = this.clock.now();
-    appendFileSync(join(this.directory, "events.jsonl"), JSON.stringify({
+    appendFileSync(join(this.directory, metadata.channel === "diagnostic" ? "diagnostics.jsonl" : "events.jsonl"), JSON.stringify({
       schemaVersion: EVENT_SCHEMA_VERSION, runId: this.clock.id, seq, at, atMs,
       source: metadata.source ?? RSA_SOURCE,
       origin: metadata.origin ?? { eventId: `${this.clock.id}:${seq}`, clockId: this.clock.id, seq, at, atMs },
-      type, trace, data,
+      ...(metadata.channel ? { channel: metadata.channel } : {}), type, trace, data,
     }) + "\n");
-    if (mediaErrors.length) this.record("media_reference_error", { eventId: `${this.clock.id}:${seq}`, errors: mediaErrors }, trace, metadata);
+  };
+
+  // Registration is a bounded byte-identity cache, independent of event persistence.
+  // JsonArchive persists a lookup only when a model/tool payload consumes it.
+  readonly registerMedia: RegisterMedia = media => {
+    try { this.archive?.registerMedia({ ...media }); }
+    catch (error) { this.record("media_reference_error", { sha256: media.sha256, error: String(error) }); }
   };
 
   recorder(source: EventSource): RecordEvent {

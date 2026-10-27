@@ -1,5 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { EventLog as DeviceEventLog } from "../../../../baseware/src/events.ts";
+import { atomicJson } from "../store.ts";
 import { BasewareCore } from "@playness/baseware/core";
 import { listen as listenBaseware } from "@playness/baseware/server";
 import { connectBaseware } from "../../harness/baseware.ts";
@@ -7,7 +9,7 @@ import { WorkspaceController } from "../../harness/controller.ts";
 import { Runtime } from "../../harness/runtime.ts";
 import { listen as listenRsa, send } from "../../harness/transport.ts";
 import type { BenchmarkContext, AuthorReport } from "../types.ts";
-import { readEvents, seqs, until } from "../fixtures/evidence.ts";
+import { readEvents, seqs, eventIds, until } from "../fixtures/evidence.ts";
 
 /** Real sockets, arbitration and Python cancellation; only the physical driver is simulated. */
 export async function run(ctx: BenchmarkContext): Promise<AuthorReport> {
@@ -17,7 +19,7 @@ export async function run(ctx: BenchmarkContext): Promise<AuthorReport> {
   const record = ctx.log.recorder({ component: "benchmark" });
   const root = resolve(import.meta.dir, "../../..");
   const env = { ...process.env, RSA_SOCKET: rsaSocket, BASEWARE_SOCKET: basewareSocket,
-    RSA_WORKSPACE: ctx.workspace, RSA_RUN_ID: ctx.log.clock.id,
+    RSA_WORKSPACE: ctx.workspace, RSA_RUN_ID: ctx.log.clock.id, RSA_LOG_DIAGNOSTICS: ctx.log.diagnostics,
     PATH: [dirname(process.execPath), join(root, "bin"), process.env.PATH].join(":"),
     PYTHONPATH: join(root, "python") };
   await mkdir(ctx.workspace, { recursive: true });
@@ -31,7 +33,9 @@ def hold():
     return Client().call("controller/pad.hold", {"durationMs": 30000})
 `);
   let held = false, actions = 0, abortedAt = 0, releasedAt = 0, driverInterrupted = false;
-  const core = new BasewareCore({ drivers: [{ id: "benchmark-input", version: "1" }], capabilities: {
+  const deviceLog = new DeviceEventLog(join(ctx.runDir, "device-sources"), crypto.randomUUID());
+  const core = new BasewareCore({ serviceId: deviceLog.source.sourceId, source: deviceLog.source, record: deviceLog.record,
+    diagnostics: ctx.log.diagnostics, drivers: [{ id: "benchmark-input", version: "1" }], capabilities: {
     controllers: [{ tool: { name: "pad.hold", description: "Hold simulated input for durationMs", inputSchema: { type: "object", properties: {durationMs: {type: "number", minimum: 0}}, required: ["durationMs"], additionalProperties: false } }, requiresControl: true,
       async acquire() {},
       async release() { held = false; releasedAt = performance.now(); },
@@ -54,7 +58,13 @@ def hold():
   }});
   const closeBaseware = await listenBaseware(basewareSocket, core);
   const devices = await connectBaseware({ socket: basewareSocket, seconds: 60, runDir: ctx.runDir, record: ctx.log.record });
-  const runtime = new Runtime(devices, ctx.log.record, 60, ctx.log.clock.id);
+  const manifestPath = join(ctx.runDir, "manifest.json");
+  const manifest = await readFile(manifestPath, "utf8").then(JSON.parse).catch(error => {
+    if (error.code === "ENOENT") return {}; throw error;
+  });
+  await atomicJson(manifestPath, {...manifest, eventSources: devices.eventSources,
+    logging: {diagnostics: ctx.log.diagnostics, basewareDiagnostics: devices.diagnostics}});
+  const runtime = new Runtime(devices, ctx.log.record, 60, ctx.log.clock.id, ctx.log.diagnostics);
   runtime.controller = new WorkspaceController({ workspace: ctx.workspace, devices, env, record: ctx.log.record });
   devices.onHandback(reason => { void runtime.stop(reason); });
   devices.onDisconnect(error => { void runtime.disconnected(error); });
@@ -121,6 +131,7 @@ def hold():
       ...Object.fromEntries(measurements.map(m => [`${m.scenario}-interrupted`, { label: `${m.scenario} 长动作接管`,
         passed: m.manual && m.neutral && m.cancelled && m.pythonGone,
         expected: "交还 manual、输入归零、长动作取消、Python 子进程退出", actual: JSON.stringify(m),
+        evidenceEvents: eventIds(events, e => e.trace.epoch === m.epoch && ["control", "execution", "baseware_control"].includes(e.type)),
         evidenceSeq: seqs(events, e => e.trace.epoch === m.epoch && ["benchmark_handoff_requested", "benchmark_handoff_result", "control", "capability_end", "execution"].includes(e.type)) }])),
       "release-latency": { label: "输入及时释放", passed: measurements.every(m => m.neutralMs <= 500),
         expected: "两种路径的输入释放延迟均 ≤ 500 ms（本地 fixture）", actual: measurements.map(m => `${m.scenario}: ${m.neutralMs.toFixed(2)} ms`).join(", "),

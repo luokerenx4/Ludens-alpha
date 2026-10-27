@@ -29,6 +29,7 @@ async function build(request: Extract<BuilderRequest, { type: "build" }>) {
   const index = new LogIndex(request.path, request.directory);
   index.archiveWorkspace = request.workspace; index.setSourceSnapshot(source.snapshot);
   index.beginBulk(request.budgetBytes);
+  const totalEventBytes = Object.entries(source.snapshot).filter(([name]) => !name.startsWith("streams/")).reduce((sum, [, file]) => sum + file.size, 0);
   const peak = process.memoryUsage();
   const sampleMemory = () => {
     const value = process.memoryUsage();
@@ -46,7 +47,7 @@ async function build(request: Extract<BuilderRequest, { type: "build" }>) {
     const run = await createRunReducer(index, { cold: true, signal: abort.signal });
     const activity = await createActivityReducer(index, { cold: true, signal: abort.signal,
       streamLimits: new Map(Object.entries(source.snapshot).filter(([name]) => name.startsWith("streams/")).map(([name, state]) => [name, state.size])) });
-    progress("events", 0, source.snapshot["events.jsonl"].size);
+    progress("events", 0, totalEventBytes);
     const eventStart = performance.now();
     const events = await index.bulkEvents({ signal: abort.signal,
       onEvent: async (event, current) => {
@@ -58,7 +59,7 @@ async function build(request: Extract<BuilderRequest, { type: "build" }>) {
         }
         if (event.type === "control") {
           hint.controls.push({ position, epoch: event.trace?.epoch, at: event.origin?.at ?? event.at, mode: event.data.mode });
-          progress("events", index.progress.bytes, source.snapshot["events.jsonl"].size);
+          progress("events", index.progress.bytes, totalEventBytes);
         }
         await run.feed({ event, position }); await activity.feed({ event, position });
       },

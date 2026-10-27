@@ -26,6 +26,7 @@ Each workspace keeps its sessions in .rsa/shiori/; --new-session starts fresh wi
 The current directory is the default workspace. Run logs go to <workspace>/logs/<run-id>/.
 --resume selects an existing session from the same workspace, then remembers it for future starts.
 --compaction-threshold configures OMP's native compaction trigger; default is 256000 tokens.
+--diagnostics normal|full selects recording detail at startup (default normal).
 Perception starts empty. Implement workspace/perception.py and use rsa perception reload.
 Hardware is provided by an independent Baseware service. Its default socket is derived from the workspace.`;
 
@@ -58,7 +59,10 @@ async function main() {
     seconds: { type: "string", default: "300" },
     requests: { type: "string", default: "50" },
     "compaction-threshold": { type: "string", default: "256000" },
+    diagnostics: { type: "string", default: "normal" },
   } });
+  if (values.diagnostics !== "normal" && values.diagnostics !== "full") throw new Error("--diagnostics must be normal|full");
+  const diagnostics = values.diagnostics;
   const seconds = Number(values.seconds);
   if (!Number.isFinite(seconds) || seconds <= 0) throw new Error("--seconds must be positive");
   const maxRequests = Number(values.requests);
@@ -110,19 +114,22 @@ async function main() {
     // Let the dashboard locate logs even when this workspace is outside the checkout.
     await writeFile(join(state.dir, "workspace.json"), JSON.stringify({ workspace }, null, 2));
     const clock = { id: runId, now: () => performance.now() };
-    log = new EventLog(runDir, clock, workspace);
-    log.record("run_start", { workspace, workspaceId: state.id });
+    log = new EventLog(runDir, clock, workspace, diagnostics);
+    log.record("run_start", { workspace, workspaceId: state.id, diagnostics });
     devices = await connectBaseware({ socket: basewareSocket, seconds, runDir, record: log.record });
     await writeCapabilityDocument(devices.catalog, join(workspace, "baseware.json"));
-    runtime = new Runtime(devices, log.record, seconds, runId);
+    runtime = new Runtime(devices, log.record, seconds, runId, diagnostics);
     const binDir = resolve(import.meta.dir, "../../bin");
     const environment = {
       RSA_SOCKET: socket, BASEWARE_SOCKET: basewareSocket,
       RSA_WORKSPACE: workspace, RSA_RUN_ID: runId,
+      RSA_LOG_DIAGNOSTICS: diagnostics,
+      BASEWARE_TRACE: JSON.stringify({ recordingId: runId }),
       PATH: [binDir, resolve(import.meta.dir, "../../../baseware/bin"), process.env.PATH ?? ""].join(delimiter),
     };
     runtime.controller = new WorkspaceController({ workspace, devices, record: log.record, env: environment });
-    runtime.perception = new PerceptionRuntime({ workspace, runDir, env: environment, record: log.record, clock });
+    runtime.perception = new PerceptionRuntime({ workspace, runDir, env: environment, record: log.record,
+      registerMedia: log.registerMedia, diagnostics, clock });
     devices.onHandback(reason => { void runtime!.stop(reason); });
     devices.onDisconnect((error) => { void runtime!.disconnected(error); });
     const model = values.model ?? "openai-codex/gpt-6.1-sol";
@@ -140,6 +147,7 @@ async function main() {
     }
     await writeFile(join(runDir, "manifest.json"), JSON.stringify({ runId, workspace, workspaceId: state.id, stateDir: state.dir, socket,
       drivers: devices.catalog.drivers, basewareSocket, omp: "18.9.1", eventSchemaVersion: EVENT_SCHEMA_VERSION,
+      logging: { diagnostics, basewareDiagnostics: devices.diagnostics }, eventSources: devices.eventSources,
       shiori: values["device-only"] ? null : { implementation: "omp", implementationVersion: "18.9.1" },
       provenance: await runProvenance(workspace), model: values["device-only"] ? null : model,
       seconds, maxRequests, resume, perception: { entry: "perception.py:Perception" }, compactionThreshold: compactionThreshold ?? null }, null, 2));

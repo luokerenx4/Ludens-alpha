@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { BasewareCore } from "../src/core.ts";
@@ -31,7 +31,7 @@ async function fixture(execute?: Capabilities["controllers"][number]["execute"])
         if (args.wait) await new Promise<void>(done => signal.addEventListener("abort", () => { cancelled++; done(); }, { once: true }));
         return { result: { content: [] }, id: crypto.randomUUID(), status: signal.aborted ? "interrupted" : "completed", exitCode: signal.aborted ? 130 : 0,
           stdout: String(actions), stderr: "", timing: { clock: "device", requestedAtMs: 0, receivedAtMs: 1 } };
-      }) }, { tool: { name: "thermal", description: "sample", inputSchema: { type: "object", properties: { wait: { type: "boolean" } }, additionalProperties: false } }, requiresControl: false, mediaTypes: ["text/plain"],
+      }) }, { tool: { name: "thermal", description: "sample", annotations: { readOnlyHint: true }, inputSchema: { type: "object", properties: { wait: { type: "boolean" } }, additionalProperties: false } }, requiresControl: false, mediaTypes: ["text/plain"],
       async execute(args, { signal }) {
         if (args.wait) await new Promise<void>((resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
         const id = `sample-${++sample}`;
@@ -40,8 +40,8 @@ async function fixture(execute?: Capabilities["controllers"][number]["execute"])
           observations: [{ id, controllerId: "thermal", path: "/tmp/fake-observation.txt", mediaType: "text/plain", timing, sourceSequence: sample }] };
       } }],
   };
-  const core = new BasewareCore({ capabilities, drivers: [{ id: "fake", version: "1" }],
-    record: (type, data, trace = {}, metadata) => events.push({ type, data, trace, source: metadata!.source!, origin: metadata!.origin! }) });
+  const core = new BasewareCore({ capabilities, drivers: [{ id: "fake", version: "1" }], diagnostics: "full",
+    record: (type, data, trace = {}, metadata) => events.push({ type, data, trace, ...metadata, source: metadata!.source!, origin: metadata!.origin! }) });
   const directory = await mkdtemp(join(tmpdir(), "baseware-test-"));
   const socket = join(directory, "service.sock");
   const close = await listen(socket, core);
@@ -68,7 +68,7 @@ test("client API and CLI use the same catalog, epoch checks and device journal",
   expect(f.core.status().mode).toBe("auto");
   expect(f.events.find(e => e.type === "execution")?.trace.toolCallId).toBe("cli-call");
   await f.client.request({ kind: "controller", id: "thermal", arguments: {}, trace: { toolCallId: "observe-call" } });
-  expect(f.events.find(e => e.type === "observation")?.data).toMatchObject({ afterExecution: { toolCallId: "cli-call" } });
+  expect(f.events.find(e => e.type === "execution" && e.trace.toolCallId === "observe-call")?.data).toMatchObject({ observations: [{ afterExecution: { toolCallId: "cli-call" } }] });
   await f.client.request({ kind: "release", epoch: f.epoch });
   await expect(f.client.request({ kind: "controller", id: "motor", arguments: {}, epoch: f.epoch })).rejects.toThrow("STALE_EPOCH");
 });
@@ -83,11 +83,12 @@ test("sensing uses the same controller call without a lease and preserves the la
   await f.client.request({ kind: "controller", id: "motor", arguments: {}, epoch: f.epoch, trace: { toolCallId: "action" } });
   await sample();
   await sample();
-  const observations = f.events.filter(e => e.type === "observation");
-  expect(observations.slice(1).map(e => (e.data as any).afterExecution.toolCallId)).toEqual(["action", "action"]);
-  expect(observations[2]!.data).toMatchObject({ previousObservationId: "sample-2", sourceSequenceDelta: 1 });
+  const observations = f.events.filter(e => e.type === "execution" && (e.data as any).controllerId === "thermal");
+  expect(observations.slice(1).map(e => (e.data as any).observations[0].afterExecution.toolCallId)).toEqual(["action", "action"]);
+  expect(observations[2]!.data).toMatchObject({ observations: [{ previousObservationId: "sample-2", sourceSequenceDelta: 1 }] });
   const events = f.events.filter(e => e.trace.spanId === observations[2]!.trace.spanId);
-  expect(events.map(e => e.type)).toEqual(["command", "observation_start", "execution", "observation", "observation_end"]);
+  expect(events.map(e => e.type)).toEqual(["command", "execution"]);
+  expect(events.every(e => e.channel === "diagnostic")).toBe(true);
   expect(events.find(e => e.type === "execution")!.data).toMatchObject({ controllerId: "thermal", requiresControl: false });
   await f.client.request({ kind: "revoke" });
   const result = await sample();
@@ -178,15 +179,17 @@ test("duplicate capability IDs fail registration", () => {
 test("service journal and subscribers share each fact's original identity and clock", async () => {
   const directory = await mkdtemp(join(tmpdir(), "baseware-journal-"));
   cleanup.push(() => rm(directory, { recursive: true, force: true }));
-  const log = new EventLog(directory);
-  const core = new BasewareCore({ capabilities: { controllers: [] }, drivers: [], record: log.record });
+  const serviceId = crypto.randomUUID();
+  const log = new EventLog(directory, serviceId);
+  const core = new BasewareCore({ capabilities: { controllers: [] }, drivers: [], record: log.record, serviceId, source: log.source });
   const received: DeviceEvent[] = [];
   await core.handle({ kind: "subscribe" }, { id: "subscriber", onEvent: event => received.push(event) });
   core.record("service_start", {});
   await core.acquire("lease", 30, { id: "owner" });
   await core.close();
   core.record("service_end", core.status());
-  const stored = (await readFile(join(directory, "events.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
+  const files = (await readdir(join(log.source.root, "events"))).filter(name => name.endsWith(".jsonl")).sort();
+  const stored = (await Promise.all(files.map(name => readFile(join(log.source.root, "events", name), "utf8")))).join("").trim().split("\n").map(line => JSON.parse(line));
   expect(stored).toHaveLength(4);
   for (const [index, event] of received.entries()) {
     expect(event.origin).toEqual(stored[index].origin);

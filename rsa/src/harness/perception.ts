@@ -5,7 +5,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, delimiter, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import type { Clock, ExecutionResult, Observation } from "@playness/baseware/contracts";
-import { childTrace, type EventTrace, type RecordEvent } from "./events.ts";
+import { childTrace, type EventTrace, type RecordEvent, type RegisterMedia, type DiagnosticsMode, type EventMetadata } from "./events.ts";
 import { pythonModulePaths } from "./python-capabilities.ts";
 import { pythonExecutable } from "../../../shared/python.ts";
 import type { VideoFrameReference } from "../../../shared/timeline-types.ts";
@@ -99,6 +99,7 @@ export class PerceptionRuntime {
 
   constructor(private readonly options: {
     workspace: string; runDir: string; env?: NodeJS.ProcessEnv; record: RecordEvent; clock?: Clock;
+    registerMedia?: RegisterMedia; diagnostics?: DiagnosticsMode;
     startTimeoutMs?: number; observeTimeoutMs?: number;
   }) {
     this.workspace = resolve(options.workspace);
@@ -142,6 +143,7 @@ export class PerceptionRuntime {
     const reply = await this.request(worker, { ...input, action: "derive" }, 30_000, signal);
     if (!reply.ok) throw new Error(`${reply.error?.type}: ${reply.error?.message}`);
     const media = reply.result as TimelineMedia;
+    this.options.registerMedia?.(media);
     if (observationId) {
       const key = `${observationId}\0${media.sha256}`;
       this.deliveredMedia.delete(key);
@@ -242,9 +244,10 @@ export class PerceptionRuntime {
     const directory = join(this.options.runDir, "perception", generation);
     await mkdir(directory, { recursive: true });
     if (source) await writeFile(join(directory, "perception.py"), source);
-    const backgroundTrace = childTrace();
+    const backgroundTrace = childTrace({ recordingId: basename(this.options.runDir), recordingPurpose: "continuous-perception" });
     const env: NodeJS.ProcessEnv = { ...process.env, ...this.options.env, RSA_WORKSPACE: this.workspace,
-      RSA_RUN_ID: basename(this.options.runDir), BASEWARE_TRACE: JSON.stringify(backgroundTrace) };
+      RSA_RUN_ID: basename(this.options.runDir), RSA_LOG_DIAGNOSTICS: this.options.diagnostics ?? "normal",
+      BASEWARE_TRACE: JSON.stringify(backgroundTrace) };
     for (const key of ["RSA_EPOCH", "RSA_TRACE", "BASEWARE_EPOCH"]) delete (env as NodeJS.ProcessEnv)[key];
     env.PYTHONPATH = [...pythonModulePaths(), ...(env.PYTHONPATH ? [env.PYTHONPATH] : [])].join(delimiter);
     const child = spawn(pythonExecutable(env), ["-u", "-m", "rsa_tools._perception"], {
@@ -261,16 +264,18 @@ export class PerceptionRuntime {
     child.stdin.on("error", () => {});
     const lines = createInterface({ input: child.stdout });
     lines.on("line", line => {
-      let reply: Reply & { event?: string; state?: PerceptionStatus["state"]; snapshot?: PerceptionSnapshot; mediaCount?: number; mediaReferences?: TimelineMedia[]; trace?: EventTrace };
+      let reply: Reply & { event?: string; state?: PerceptionStatus["state"]; snapshot?: PerceptionSnapshot; mediaCount?: number;
+        mediaReferences?: TimelineMedia[]; trace?: EventTrace; transient?: boolean; type?: string; data?: unknown;
+        channel?: "diagnostic"; origin?: EventMetadata["origin"] };
       try { reply = JSON.parse(line); }
       catch { return; }
-      if (reply.event && this.isCurrent(worker)) {
-        if (reply.mediaReferences?.length) this.record("timeline_media", { media: reply.mediaReferences }, reply.trace ?? backgroundTrace);
-        if (reply.event === "status") this.setStatus({ ...this.current, state: reply.state!,
-          error: typeof reply.error === "string" ? reply.error : undefined }, backgroundTrace);
-        if (reply.event === "sample") this.record("perception_sample", {
-          snapshot: reply.snapshot, mediaCount: reply.mediaCount,
-        }, reply.trace ?? backgroundTrace);
+      // Shutdown flushes recording windows too; an expected exit must not lose
+      // the final summary/fault closure, while a replacement cannot update health.
+      if (reply.event && this.worker === worker) {
+        for (const media of reply.mediaReferences ?? []) this.options.registerMedia?.(media);
+        if (reply.event === "status" && this.isCurrent(worker)) this.setStatus({ ...this.current, state: reply.state!,
+          error: typeof reply.error === "string" ? reply.error : undefined }, backgroundTrace, !reply.transient);
+        if (reply.event === "recording" && reply.type) this.record(reply.type, reply.data, reply.trace ?? backgroundTrace, reply.channel, reply.origin);
         return;
       }
       const pending = worker.pending.get(reply.id);
@@ -295,7 +300,8 @@ export class PerceptionRuntime {
     this.setStatus({ ...this.current, pid: child.pid }, backgroundTrace);
     try {
       const reply = await this.request(worker, { action: "start", workspace: this.workspace,
-        runDir: this.options.runDir, generation, source: source?.toString("utf8"), sourceError, trace: backgroundTrace },
+        runDir: this.options.runDir, generation, source: source?.toString("utf8"), sourceError, trace: backgroundTrace,
+        diagnostics: this.options.diagnostics ?? "normal" },
       this.options.startTimeoutMs ?? 30_000);
       if (!reply.ok) throw new Error(`${reply.error?.type}: ${reply.error?.message}`);
       const result = reply.result as { sampleHz?: number; history: PerceptionStatus["history"]; state: PerceptionStatus["state"]; error?: string };
@@ -370,20 +376,22 @@ export class PerceptionRuntime {
       return [{ ...observation.timeline, sha256: createHash("sha256").update(bytes).digest("hex"),
         bytes: bytes.length, mediaType: observation.mediaType, approximate: true }];
     });
-    if (media.length) this.record("timeline_media", { media }, trace);
+    for (const reference of media) this.options.registerMedia?.(reference);
     this.record("perception_observe_end", { ...perceptionMetadata(read), outcome: read.error ? "error" : "success",
       durationMs: this.clock.now() - started }, trace);
     return read;
   }
 
-  private setStatus(status: PerceptionStatus, trace?: EventTrace) {
+  private setStatus(status: PerceptionStatus, trace?: EventTrace, persist = true) {
     if (JSON.stringify(status) === JSON.stringify(this.current)) return;
     this.current = status;
-    this.record("perception_status", status, trace);
+    if (persist) this.record("perception_status", status, trace);
   }
 
-  private record(type: string, data: unknown, trace?: EventTrace) {
-    this.options.record(type, data, trace, { source: { component: "perception", implementation: "python" } });
+  private record(type: string, data: unknown, trace?: EventTrace, channel?: "diagnostic", origin?: EventMetadata["origin"]) {
+    if (channel === "diagnostic" && this.options.diagnostics !== "full") return;
+    this.options.record(type, data, trace, { source: { component: "perception", implementation: "python" },
+      ...(origin ? { origin } : {}), ...(channel ? { channel } : {}) });
   }
 }
 

@@ -1,6 +1,8 @@
 import type { VideoFrameReference } from "../../shared/timeline-media";
 
 export interface Event {
+  /** Present on canonical device files; mirrored historical RSA rows keep their local sequence. */
+  serviceId?: string;
   source?: {
     component: string;
     implementation?: string;

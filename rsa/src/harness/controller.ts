@@ -24,7 +24,7 @@ export class WorkspaceController {
   private readonly python: PythonCapabilities;
 
   constructor(private readonly options: ControllerOptions) {
-    this.python = new PythonCapabilities(options.workspace, options.env.RSA_PYTHON, options.record);
+    this.python = new PythonCapabilities(options.workspace, options.env.RSA_PYTHON, options.record, options.env.RSA_LOG_DIAGNOSTICS === "full" ? "full" : "normal");
   }
 
   async list(signal: AbortSignal, trace: EventTrace = {}) {

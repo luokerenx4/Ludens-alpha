@@ -1,6 +1,6 @@
 import type { ExecutionResult, ToolArguments } from "@playness/baseware/contracts";
 import type { Catalog } from "@playness/baseware/protocol";
-import type { EventTrace, RecordEvent } from "./events.ts";
+import type { DiagnosticsMode, EventTrace, RecordEvent } from "./events.ts";
 import type { PerceptionRuntime } from "./perception.ts";
 import type { WorkspaceController } from "./controller.ts";
 
@@ -15,6 +15,7 @@ export type ObservationOrigin = "cli" | "explicit" | "prompt_start" | "tool_batc
 
 export interface DeviceSession {
   readonly catalog: Catalog;
+  readonly diagnostics?: DiagnosticsMode;
   acquire(epoch: string): Promise<void>;
   release(epoch: string): Promise<void>;
   execute(id: string, args: ToolArguments, epoch: string | undefined, signal: AbortSignal, trace: EventTrace, origin?: ObservationOrigin): Promise<ExecutionResult>;
@@ -38,12 +39,12 @@ export class Runtime {
   controller?: WorkspaceController;
   perception?: PerceptionRuntime;
 
-  constructor(private devices: DeviceSession, readonly record: RecordEvent, private maxSeconds = 300, private runId: string = crypto.randomUUID()) {}
+  constructor(private devices: DeviceSession, readonly record: RecordEvent, private maxSeconds = 300, private runId: string = crypto.randomUUID(), readonly diagnostics: DiagnosticsMode = "normal") {}
 
   status() {
     // The host can outlive many takeovers; its log clock is not this cycle's budget.
     const remainingSeconds = this.mode === "auto" ? Math.max(0, Math.ceil((this.takeoverDeadlineMs - performance.now()) / 1000)) : null;
-    return { runId: this.runId, maxSeconds: this.maxSeconds, remainingSeconds, mode: this.mode, epoch: this.mode === "auto" ? this.epoch : null, connected: this.connected, reason: this.reason, agent: !!this.agent, thinking: !!this.running, consolidating: this.consolidating, perception: this.perception?.status() };
+    return { runId: this.runId, maxSeconds: this.maxSeconds, remainingSeconds, mode: this.mode, epoch: this.mode === "auto" ? this.epoch : null, connected: this.connected, reason: this.reason, agent: !!this.agent, thinking: !!this.running, consolidating: this.consolidating, perception: this.perception?.status(), logging: { diagnostics: this.diagnostics, basewareDiagnostics: this.devices.diagnostics ?? "normal" } };
   }
 
   list() { return this.devices.catalog; }

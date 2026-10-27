@@ -157,7 +157,7 @@ function item(position: number, event: Event, operation?: OperationRef): ReplayI
   return { id: `event:${position}`, track, startAt: operation ? Date.parse(operation.startAt) : at(event),
     endAt: operation ? operation.endAt ? Date.parse(operation.endAt) : null : at(event), label: label(event, track),
     status: operation ? operation.status ?? (operation.endAt ? "completed" : "pending") : outcome(event),
-    source: { seq: event.seq, ...(trace.modelCallId ? { modelCallId: trace.modelCallId } : {}),
+    source: { seq: event.seq, ...(event.origin ? { eventId: event.origin.eventId, sourceId: event.origin.clockId } : {}), ...(trace.modelCallId ? { modelCallId: trace.modelCallId } : {}),
       ...(trace.toolCallId ? { toolCallId: trace.toolCallId } : {}), ...(trace.traceId ? { traceId: trace.traceId } : {}),
       ...(typeof event.data.actionId === "string" ? { actionId: event.data.actionId } : {}) } };
 }

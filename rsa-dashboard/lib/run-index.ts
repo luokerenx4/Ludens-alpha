@@ -218,7 +218,7 @@ async function projectObservation(index: LogIndex, event: Event, position: numbe
   const epoch = epochOf(event), observations = index.store("run-observations");
   for (const item of eventObservations(event)) {
     const key = identity(epoch, item.id), previous = observations.meta(key);
-    const request = event.trace.operationId ? index.store("run-requests").meta(identity(epoch, event.trace.operationId)) : undefined;
+    const request = (event.trace.operationId || event.trace.spanId) ? index.store("run-requests").meta(identity(epoch, event.trace.operationId ?? event.trace.spanId)) : undefined;
     // A recipe keeps the first capture plus latest presentation/storage revisions.
     // No image, perception text or repeated JSON body is persisted here.
     const first = previous?.first ?? position;
@@ -270,8 +270,8 @@ export async function createRunReducer(index: LogIndex, options: { cold?: boolea
       }
       const execution = observationExecution(event);
       if (execution?.result) index.store("run-inputs").index(identity(epoch, execution.result.id), { position });
-      if (event.type === "observation_start" && event.trace.operationId)
-        index.store("run-requests").index(identity(epoch, event.trace.operationId), { position });
+      if ((event.type === "observation_start" || event.type === "command" || event.type === "capability_start" && event.data.action === "call") && (event.trace.operationId || event.trace.spanId))
+        index.store("run-requests").index(identity(epoch, event.trace.operationId ?? event.trace.spanId), { position });
       if (event.type === "control") {
         state.lastControl = { ...d, at: event.at };
         if (d.mode === "auto") {

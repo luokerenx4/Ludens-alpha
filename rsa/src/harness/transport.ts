@@ -2,7 +2,8 @@ import { createServer, connect } from "node:net";
 import { lstat, unlink } from "node:fs/promises";
 import type { Runtime } from "./runtime.ts";
 import { childTrace, type EventTrace, type EventMetadata } from "./events.ts";
-import type { ObservationQuery, TimelineAppend, TimelineDerive } from "./perception.ts";
+import { observationMetadata, type ObservationQuery, type TimelineAppend, type TimelineDerive } from "./perception.ts";
+import type { ExecutionResult } from "@playness/baseware/contracts";
 
 export interface Request {
   kind: string; argv: string[]; epoch?: string; runId?: string; expectedEpoch?: string | null;
@@ -10,7 +11,7 @@ export interface Request {
   sample?: unknown; identity?: TimelineAppend["identity"]; sampling?: TimelineAppend["sampling"]; generation?: string | null;
   query?: ObservationQuery;
   media?: TimelineDerive;
-  event?: { type: "python_call_start" | "python_call_end"; data: { id: string; [key: string]: unknown }; origin: EventMetadata["origin"] };
+  event?: { type: "python_call_start" | "python_call_end"; data: { id: string; [key: string]: unknown }; origin: EventMetadata["origin"]; channel?: "diagnostic" };
 }
 type Response = { ok: true; value: unknown } | { ok: false; error: string };
 
@@ -93,18 +94,25 @@ export async function dispatch(runtime: Runtime, request: Request, signal = new 
     if (!event || !["python_call_start", "python_call_end"].includes(event.type) || typeof event.data?.id !== "string" || !event.origin)
       throw new Error("Invalid workspace Python event");
     // Late completions keep their originating epoch, even after handback.
-    runtime.record(event.type, event.data, { ...request.trace, ...(epoch ? { epoch } : {}) }, {
-      source: { component: "workspace", implementation: "python" }, origin: event.origin,
-    });
+    if (event.channel !== "diagnostic" || runtime.diagnostics === "full")
+      runtime.record(event.type, event.data, { ...request.trace, ...(epoch ? { epoch } : {}) }, {
+        source: { component: "workspace", implementation: "python" }, origin: event.origin,
+        ...(event.channel ? { channel: event.channel } : {}),
+      });
     return null;
   }
   if (kind === "controller") {
     // One span owns the public call, including rejected calls. The Python
     // runner reuses it; the entry function and nested calls have child spans.
-    const trace = childTrace({ ...request.trace, ...(epoch ? { epoch } : {}) });
+    const continuous = request.trace?.recordingPurpose === "continuous-perception";
+    const parent = { ...request.trace, recordingId: runtime.status().runId, ...(epoch ? { epoch } : {}) };
+    const trace = continuous && runtime.diagnostics === "normal" ? parent : childTrace(parent);
+    const record = (type: string, data: unknown) => {
+      if (!continuous || runtime.diagnostics === "full") runtime.record(type, data, trace, continuous ? { channel: "diagnostic" } : undefined);
+    };
     const started = performance.now();
     const operation = { action: request.action, id: request.id };
-    runtime.record("capability_start", operation, trace);
+    record("capability_start", { ...operation, ...(request.arguments !== undefined ? { arguments: request.arguments } : {}) });
     try {
       if (!runtime.controller) throw new Error("Workspace controller is unavailable");
       let value: unknown;
@@ -117,16 +125,18 @@ export async function dispatch(runtime: Runtime, request: Request, signal = new 
       }
       // Driver failures are successful RPC replies with a nonzero exitCode.
       const execution = request.action === "call" && request.id?.startsWith("controller/")
-        ? value as { status?: string; exitCode?: number } : undefined;
+        ? value as ExecutionResult : undefined;
       const outcome = signal.aborted || execution?.status === "interrupted" ? "cancelled"
         : execution?.exitCode || execution?.status === "failed" ? "error" : "success";
-      runtime.record("capability_end", { ...operation, outcome, durationMs: performance.now() - started,
-        ...(execution ? { exitCode: execution.exitCode, status: execution.status } : {}) }, trace);
+      record("capability_end", { ...operation, outcome, durationMs: performance.now() - started,
+        ...(execution ? { executionId: execution.id, controllerId: request.id?.slice("controller/".length),
+          exitCode: execution.exitCode, status: execution.status,
+          observations: execution.observations?.map(observationMetadata) } : {}) });
       return value;
     } catch (error) {
-      runtime.record("capability_end", { ...operation,
+      record("capability_end", { ...operation,
         outcome: signal.aborted || (error instanceof Error && error.name === "AbortError") ? "cancelled" : "error",
-        durationMs: performance.now() - started, error: String(error) }, trace);
+        durationMs: performance.now() - started, error: String(error) });
       throw error;
     }
   }

@@ -84,6 +84,7 @@ export async function runBenchmark(definition: BenchmarkDefinition, args: Record
   const budgetSeconds = Number(isolated ? parameters.seconds : options.seconds);
   if (!Number.isFinite(budgetSeconds) || budgetSeconds <= 0 || (budgetSeconds + 30) * 1000 > 2147483647) throw new Error("Invalid benchmark process budget");
   const inherited = !process.env.RSA_WORKSPACE || resolve(process.env.RSA_WORKSPACE) === state.workspace;
+  const diagnostics = inherited && process.env.RSA_LOG_DIAGNOSTICS === "full" ? "full" : "normal";
   const parentRunId = inherited ? process.env.RSA_RUN_ID : undefined;
   const trace = childTrace(inherited ? JSON.parse(process.env.BASEWARE_TRACE ?? "{}") : {}) as Record<string, string>;
   const provenance = await runProvenance(executionWorkspace).catch(error => {
@@ -92,11 +93,12 @@ export async function runBenchmark(definition: BenchmarkDefinition, args: Record
   const result: BenchmarkExecution = { schemaVersion: 3, definition, status: "running",
     startedAt, endedAt: null, durationMs: null, runId, project: state.id, workspace: state.workspace,
     ...(parentRunId ? { parentRunId } : {}), trace, parameters, provenance,
-    conditions: {}, subjects: [], artifacts: [], limitations: definition.scope ? [definition.scope] : [] };
+    conditions: { diagnostics }, subjects: [], artifacts: [], limitations: definition.scope ? [definition.scope] : [] };
   await atomicJson(join(runDir, "manifest.json"), {
     kind: "benchmark", runId, workspace: state.workspace, workspaceId: state.id, stateDir: state.dir,
     eventSchemaVersion: EVENT_SCHEMA_VERSION, drivers: [], model: isolated ? parameters.model : null,
     seconds: budgetSeconds, maxRequests: isolated ? parameters.maxRequests : 0, provenance,
+    logging: { diagnostics },
     benchmark: { id: definition.id, revision: definition.revision, protocolVersion: definition.protocolVersion }, parentRunId, trace,
   });
   await writeResult(runDir, result);
@@ -108,13 +110,13 @@ export async function runBenchmark(definition: BenchmarkDefinition, args: Record
     await atomicJson(inputPath, worker);
     executable = process.execPath; argv = [join(import.meta.dir, "worker.ts"), inputPath];
     env = { ...process.env, RSA_WORKSPACE: executionWorkspace, RSA_ARTIFACT_ROOT: options.artifactRoot, RSA_SOCKET: "", BASEWARE_SOCKET: "",
-      RSA_RUN_ID: "", BASEWARE_EPOCH: "", BASEWARE_TRACE: "{}" };
+      RSA_RUN_ID: "", BASEWARE_EPOCH: "", BASEWARE_TRACE: "{}", RSA_LOG_DIAGNOSTICS: diagnostics };
   } else {
     executable = pythonExecutable(); argv = pythonBridge;
     input = JSON.stringify({ action: "invoke_benchmark", workspace: state.workspace, definition, arguments: parameters, runDir, result });
     env = pythonEnv(state.workspace, { RSA_ARTIFACT_ROOT: options.artifactRoot,
       RSA_SOCKET: inherited && process.env.RSA_SOCKET || state.socket,
-      RSA_RUN_ID: parentRunId ?? "", BASEWARE_TRACE: JSON.stringify(trace),
+      RSA_RUN_ID: parentRunId ?? "", BASEWARE_TRACE: JSON.stringify(trace), RSA_LOG_DIAGNOSTICS: diagnostics,
       ...(!inherited ? { BASEWARE_EPOCH: "", BASEWARE_SOCKET: "" } : {}) });
   }
   const output = createWriteStream(join(runDir, "benchmark-worker.log"));

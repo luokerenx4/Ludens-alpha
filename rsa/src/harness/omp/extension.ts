@@ -88,7 +88,7 @@ export function createRsaExtension(options: {
     PATH: [options.binDir, resolve(import.meta.dir, "../../../../baseware/bin"), python.PATH ?? ""].join(delimiter),
     PYTHONPATH: python.PYTHONPATH,
     RSA_SOCKET: options.rsaSocket ?? "",
-    RSA_WORKSPACE: workspace.path, RSA_RUN_ID: runtime.status().runId,
+    RSA_WORKSPACE: workspace.path, RSA_RUN_ID: runtime.status().runId, RSA_LOG_DIAGNOSTICS: runtime.diagnostics,
     RSA_ARTIFACT_ROOT: process.env.RSA_ARTIFACT_ROOT ?? resolve(import.meta.dir, "../../../../../artifacts/rsa"),
     BASEWARE_SOCKET: options.basewareSocket, BASEWARE_EPOCH: "", BASEWARE_TRACE: "{}",
     RSA_EPOCH: "", RSA_TRACE: "",
@@ -219,7 +219,7 @@ export function createRsaExtension(options: {
       // Existing processes retain their startup epoch. Only future shells get
       // this lease; child processes never inherit a later takeover implicitly.
       Object.assign(process.env, environment, {
-        BASEWARE_EPOCH: cycle.epoch, BASEWARE_TRACE: JSON.stringify({ epoch: cycle.epoch }),
+        BASEWARE_EPOCH: cycle.epoch, BASEWARE_TRACE: JSON.stringify({ epoch: cycle.epoch, recordingId: runtime.status().runId }),
       });
       refreshShellConfigCache();
       observed = undefined;

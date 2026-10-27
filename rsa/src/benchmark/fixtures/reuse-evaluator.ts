@@ -6,6 +6,7 @@ import type { AuthorReport, CaseMetadata } from "../types.ts";
 
 export interface ReuseEvent {
   seq: number;
+  origin?: { eventId: string; clockId?: string };
   type: string;
   source?: { component: string };
   trace: EventTrace;
@@ -46,13 +47,13 @@ function successfulShellEnd(event: ReuseEvent, runDir?: string): boolean {
     && (!details.async || details.async.state === "completed");
 }
 
-function parsePython(events: ReuseEvent[]) {
+function parsePython(events: (ReuseEvent & { position: number })[]) {
   const inputs = events.flatMap<{ seq: number; command?: string; source?: string }>(event => {
     const command = shellCommand(event);
-    if (command !== undefined) return [{ seq: event.seq, command }];
+    if (command !== undefined) return [{ seq: event.position, command }];
     const args = event.data.args;
     if (event.type === "tool_start" && event.data.toolName === "write" && typeof args?.path === "string"
-      && args.path.endsWith(".py") && typeof args.content === "string") return [{ seq: event.seq, source: args.content }];
+      && args.path.endsWith(".py") && typeof args.content === "string") return [{ seq: event.position, source: args.content }];
     return [];
   });
   if (!inputs.length) return new Map<number, PythonEvidence>();
@@ -64,27 +65,30 @@ function parsePython(events: ReuseEvent[]) {
 
 /** Judge the environment's facts and causality; agent prose is never a verdict. */
 export function evaluateReuse(all: ReuseEvent[], epoch: string, runDir?: string, metadata: CaseMetadata = {}): AuthorReport {
-  const events = all.filter(event => event.trace.epoch === epoch).map(event => {
-    if (event.type !== "tool_start" || !event.data.argsRef || !runDir) return event;
-    try { return { ...event, data: { ...event.data,
+  // The reader supplies a stable chronological view; source-local seq is an
+  // identity, never a cross-process clock. Positions below are view-local only.
+  const events = all.filter(event => event.trace.epoch === epoch).map((event, index) => {
+    const positioned = { ...event, position: index + 1 };
+    if (event.type !== "tool_start" || !event.data.argsRef || !runDir) return positioned;
+    try { return { ...positioned, data: { ...event.data,
       args: readArtifactSync(runDir, event.data.argsRef, { media: "reference" }) } }; }
-    catch { return event; } // Missing evidence cannot establish reuse.
-  }).sort((a, b) => a.seq - b.seq);
+    catch { return positioned; }
+  });
   const benchmark = (type: string) => events.filter(event => event.type === type && event.source?.component === "benchmark");
   const baseline = benchmark("benchmark_reuse_workspace")[0];
   const before = new Set<string>(baseline?.data.pythonFiles ?? []);
   const python = parsePython(events);
   const writes = events.flatMap(event => {
-    const parsed = python.get(event.seq);
+    const parsed = python.get(event.position);
     if (!parsed?.functions) return [];
     const path = posix.normalize(event.data.args.path);
     const end = events.find(end => end.type === "tool_end" && spanKey(end) === spanKey(event)
-      && end.seq > event.seq && end.data.isError === false);
+      && end.position > event.position && end.data.isError === false);
     return end && !path.startsWith("../") && !posix.isAbsolute(path) && !before.has(path)
       ? [{ event, end, path, ...parsed }] : [];
   });
   const phases = benchmark("benchmark_reuse_phase");
-  const phaseAt = (seq: number) => phases.filter(event => event.seq <= seq).at(-1)?.data.phase as number | undefined;
+  const phaseAt = (seq: number) => phases.filter(event => event.position <= seq).at(-1)?.data.phase as number | undefined;
   const parents = new Map<string, string>();
   for (const event of events) {
     const key = spanKey(event);
@@ -134,43 +138,41 @@ export function evaluateReuse(all: ReuseEvent[], epoch: string, runDir?: string,
     const created = newCapabilities.find(item => item.id === id);
     if (!created) return [];
     const delivered = orders.filter(({ execution }) => isDescendant(execution, key));
-    return delivered.length ? [{ event, id, key, route: "controller", evidence: [created.event.seq, event.seq, result.seq], orders: delivered }] : [];
+    return delivered.length ? [{ event, id, key, route: "controller", evidence: [created.event.position, event.position, result.position], orders: delivered }] : [];
   });
   const localCalls = events.filter(event => event.type === "python_call_start" && event.source?.component === "workspace").flatMap(event => {
     const key = spanKey(event), id = publicId(event.data.origin);
     const result = events.find(result => result.type === "python_call_end" && spanKey(result) === key
-      && result.seq > event.seq && result.data.outcome === "success" && result.data.codeSHA === event.data.codeSHA);
+      && result.position > event.position && result.data.outcome === "success" && result.data.codeSHA === event.data.codeSHA);
     const created = newCapabilities.find(item => item.id === id);
     if (!key || !id || !created || !result || !event.data.codeSHA
       || calls.some(call => isDescendant(event, call.key))) return [];
-    const delivered = orders.filter(({ execution }) => execution.seq > event.seq && execution.seq < result.seq
-      && isDescendant(execution, key));
-    return delivered.length ? [{ event, id, key, route: "local", evidence: [created.event.seq, event.seq, result.seq], orders: delivered }] : [];
+    const delivered = orders.filter(({ execution }) => isDescendant(execution, key));
+    return delivered.length ? [{ event, id, key, route: "local", evidence: [created.event.position, event.position, result.position], orders: delivered }] : [];
   });
   calls.push(...localCalls);
   const directCalls = events.filter(event => shellCommand(event) !== undefined).flatMap(event => {
-    const call = python.get(event.seq)?.call, key = spanKey(event);
+    const call = python.get(event.position)?.call, key = spanKey(event);
     if (!call || !key) return [];
-    const write = writes.filter(write => write.path === call.path && write.end.seq < event.seq).at(-1);
-    const result = events.find(result => spanKey(result) === key && result.seq > event.seq
+    const write = writes.filter(write => write.path === call.path && write.end.position < event.position).at(-1);
+    const result = events.find(result => spanKey(result) === key && result.position > event.position
       && successfulShellEnd(result, runDir));
     if (!write?.passiveModule || !write.effectfulFunctions?.includes(call.function) || !result) return [];
-    const delivered = orders.filter(({ execution }) => execution.seq > event.seq && execution.seq < result.seq
-      && isDescendant(execution, key) && !calls.some(call => isDescendant(execution, call.key)));
+    const delivered = orders.filter(({ execution }) => isDescendant(execution, key) && !calls.some(call => isDescendant(execution, call.key)));
     return delivered.length ? [{ event, id: publicId(call)!, key, route: "import",
-      evidence: [write.event.seq, write.end.seq, event.seq, result.seq], orders: delivered }] : [];
+      evidence: [write.event.position, write.end.position, event.position, result.position], orders: delivered }] : [];
   });
   calls.push(...directCalls);
   const reused = new Map<string, typeof calls>();
   for (const id of new Set(calls.map(call => call.id))) {
     const candidates = calls.filter(call => call.id === id);
-    const first = candidates.filter(call => phaseAt(call.event.seq) === 1 && call.orders.some(item => item.order.data.phase === 1));
-    const second = candidates.filter(call => phaseAt(call.event.seq) === 2 && call.orders.some(item => item.order.data.phase === 2));
+    const first = candidates.filter(call => phaseAt(call.event.position) === 1 && call.orders.some(item => item.order.data.phase === 1));
+    const second = candidates.filter(call => phaseAt(call.event.position) === 2 && call.orders.some(item => item.order.data.phase === 2));
     if (first.some(a => second.some(b => a.key !== b.key && a.event.trace.modelCallId && b.event.trace.modelCallId
       && a.event.trace.modelCallId !== b.event.trace.modelCallId))) reused.set(id, candidates);
   }
   const reusedCalls = [...reused.values()].flat();
-  const transferCalls = reusedCalls.filter(call => phaseAt(call.event.seq) === 2);
+  const transferCalls = reusedCalls.filter(call => phaseAt(call.event.position) === 2);
   const finish = benchmark("benchmark_reuse_finished").at(-1);
   const taskComplete = completed.size === 6 && finish?.data.completed === 6;
   const distinctNew = new Set([...newCapabilities.map(item => item.id),
@@ -178,13 +180,13 @@ export function evaluateReuse(all: ReuseEvent[], epoch: string, runDir?: string,
   const evidence = (values: number[]) => [...new Set(values)].sort((a, b) => a - b);
   // On a negative result these references delimit the inspected run; they are
   // inspection scope, not positive evidence that discovery or reuse happened.
-  const discoveryScope = evidence([...(baseline ? [baseline.seq] : []), ...discoveries.map(event => event.seq), ...(finish ? [finish.seq] : [])]);
-  const reuseScope = evidence([...discoveryScope, ...phases.map(event => event.seq),
-    ...events.filter(event => shellCommand(event) !== undefined).map(event => event.seq),
-    ...requests.filter(event => event.data.action === "call" && event.data.id?.startsWith("python/")).map(event => event.seq)]);
+  const discoveryScope = evidence([...(baseline ? [baseline.position] : []), ...discoveries.map(event => event.position), ...(finish ? [finish.position] : [])]);
+  const reuseScope = evidence([...discoveryScope, ...phases.map(event => event.position),
+    ...events.filter(event => shellCommand(event) !== undefined).map(event => event.position),
+    ...requests.filter(event => event.data.action === "call" && event.data.id?.startsWith("python/")).map(event => event.position)]);
   const models = events.filter(event => event.type === "model_start");
   const phaseOrders = (phase: number) => new Set(orders.filter(({ order }) => order.data.phase === phase).map(({ order }) => order.data.orderId)).size;
-  const phaseRequests = (phase: number) => models.filter(event => phaseAt(event.seq) === phase).length;
+  const phaseRequests = (phase: number) => models.filter(event => phaseAt(event.position) === phase).length;
   metadata.limitations = [
     "同一新会话内的短时探索与迁移；没有证明跨会话长期学习或泛化。",
     "脚本数量不是成绩；空函数、失败调用和未推动订单的调用不算能力复用。",
@@ -194,23 +196,23 @@ export function evaluateReuse(all: ReuseEvent[], epoch: string, runDir?: string,
     "两批难度相近但不是严格对照实验，请求/订单变化仅作诊断。",
     "这是合作式 Agent 的功能评测，workspace 没有对恶意篡改日志做安全隔离。",
   ];
-  return {
+  const report: AuthorReport = {
     checks: {
       "fresh-workspace": { label: "干净 workspace 与新会话", passed: baseline ? before.size === 0 && baseline.data.experienceFiles === 0 && baseline.data.session === "new" : null,
         expected: "开始时无 Python 能力、skill 或 memory，创建新会话", actual: baseline ? `${before.size} 个 Python 文件，${baseline.data.experienceFiles} 个经验文件` : "缺少基线记录",
-        evidenceSeq: baseline ? [baseline.seq] : [] },
+        evidenceSeq: baseline ? [baseline.position] : [] },
       "task-completed": { label: "独立环境确认两批订单完成", passed: taskComplete,
         expected: "6 个不同订单被环境接受，并有成功设备调用", actual: `${completed.size}/6 个订单完成`,
-        evidenceSeq: evidence([...orders.flatMap(item => [item.order.seq, item.execution.seq]), ...(finish ? [finish.seq] : [])]) },
+        evidenceSeq: evidence([...orders.flatMap(item => [item.order.position, item.execution.position]), ...(finish ? [finish.position] : [])]) },
       "capability-created": { label: "Agent 创建 Python 函数", passed: distinctNew.size > 0,
         expected: "空白基线之后创建可解析的 Python 函数，不要求装饰器", actual: `${distinctNew.size} 个新函数`,
-        evidenceSeq: evidence([...newCapabilities.map(item => item.event.seq), ...writes.flatMap(write => [write.event.seq, write.end.seq])]) },
+        evidenceSeq: evidence([...newCapabilities.map(item => item.event.position), ...writes.flatMap(write => [write.event.position, write.end.position])]) },
       "capability-reused": { label: "跨批有效复用自写函数", passed: reused.size > 0 ? true : null,
         expected: "直接 import、本地 API 或通过 controller 调用同一自写函数，在两批、不同模型轮次中成功执行并完成订单",
         actual: reused.size ? `${reused.size} 个函数跨批复用，第二批 ${transferCalls.length} 次有效调用`
           : "未找到足以证明跨批复用的调用证据；复杂脚本未做执行追踪，结果待定",
         evidenceSeq: reused.size ? evidence(reusedCalls.flatMap(call => [...call.evidence,
-          ...call.orders.flatMap(item => [item.order.seq, item.execution.seq])])) : reuseScope },
+          ...call.orders.flatMap(item => [item.order.position, item.execution.position])])) : reuseScope },
     },
     metrics: {
       "orders-completed": { label: "完成订单", value: completed.size, unit: "orders", direction: "higher" },
@@ -229,4 +231,11 @@ export function evaluateReuse(all: ReuseEvent[], epoch: string, runDir?: string,
       ])),
     },
   };
+  for (const check of Object.values(report.checks ?? {})) {
+    const evidence = (check.evidenceSeq ?? []).map(position => events[position - 1]!).filter(Boolean);
+    check.evidenceSeq = evidence.filter(event => event.source?.component !== "baseware").map(event => event.seq);
+    const identities = evidence.flatMap(event => event.origin?.eventId ? [event.origin.eventId] : []);
+    if (identities.length) check.evidenceEvents = [...new Set(identities)];
+  }
+  return report;
 }

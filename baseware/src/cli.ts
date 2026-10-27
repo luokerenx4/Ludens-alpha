@@ -5,7 +5,7 @@ import type { Catalog, Request } from "./protocol.ts";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 
-export const HELP = `baseware serve --driver mgba|ryubing|azahar|cua [--port <n>] [--cua-command <path>] [--socket <path>] [--data-dir <path>]
+export const HELP = `baseware serve --driver mgba|ryubing|azahar|cua [--port <n>] [--cua-command <path>] [--socket <path>] [--data-dir <path>] [--diagnostics normal|full]
 baseware status
 baseware list
 baseware export [--output <path>]

@@ -45,6 +45,9 @@ export function perceptionStatus(events: Event[], epoch?: string | null): Percep
 export function observationExecution(event: Event) {
   const perception = perceptionRead(event);
   if (perception) return { result: event.data.result, perception };
+  if (["execution", "capability_end"].includes(event.type) && event.data.observations?.length)
+    return { result: { ...event.data, id: event.data.executionId ?? event.data.id,
+      stdout: event.data.stdout ?? event.data.result?.content?.filter((part: any) => part.type === "text").map((part: any) => part.text).join("\n") ?? "" }, perception: undefined };
   const hook = successfulObserveHook(event);
   return hook ? { result: hook.result, perception: undefined } : null;
 }
@@ -65,6 +68,9 @@ export function successfulObserveHook(event: Event) {
 /** Preserve explicit media references; a delivered image need not have an archive. */
 export function eventObservations(event: Event): ArchivedObservation[] {
   if (event.type === "observation") return [event.data as ArchivedObservation];
+  if (event.type === "execution" || event.type === "capability_end") return (event.data.observations ?? []).map((item: ArchivedObservation) => ({
+    ...item, controllerId: item.controllerId ?? event.data.controllerId, origin: item.origin ?? "controller",
+  }));
   const perception = perceptionRead(event);
   if (perception) {
     const result = event.data.result;

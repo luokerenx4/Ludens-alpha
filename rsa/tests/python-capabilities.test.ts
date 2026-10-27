@@ -320,8 +320,8 @@ def step(label: str):
     expect(acquired).toBe(1);
     expect(core.status()).toMatchObject({mode: "auto", epoch: "owner-epoch"});
     expect(events.filter(event => event.type === "execution" || event.type === "observation").map(event => event.trace))
-      .toEqual([...Array.from({length: 3}, () => expect.objectContaining({epoch: "owner-epoch", toolCallId: "python-real-call"}))]);
-    expect(events.find(event => event.type === "observation")?.data.afterExecution).toMatchObject({id: "execution-1", captureRequestedAfterMs: 9});
+      .toEqual([...Array.from({length: 2}, () => expect.objectContaining({epoch: "owner-epoch", toolCallId: "python-real-call"}))]);
+    expect(events.find(event => event.type === "execution" && event.data.observations?.length)?.data.observations[0].afterExecution).toMatchObject({id: "execution-1", captureRequestedAfterMs: 9});
     const stale = await registry.invoke(capability!.id, {label: "invalid"}, {env: {...env, BASEWARE_EPOCH: "stale-epoch"}});
     expect(stale).toMatchObject({isError: true, details: {error: {type: "BasewareError"}}});
     expect(stale.details.error?.message).toContain("STALE_EPOCH");

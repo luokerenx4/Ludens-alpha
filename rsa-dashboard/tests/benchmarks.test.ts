@@ -602,3 +602,21 @@ test("load failure and missing logs do not become offline mode or a passing verd
     await f.cleanup();
   }
 });
+
+test("benchmark source identities distinguish colliding service seqs from local numeric evidence", async () => {
+  const f = await fixture();
+  try {
+    await f.save(result({ checks: [{ id: "source", label: "source", passed: true, evidenceSeq: [2, 9], evidenceEvents: ["service:2", "service:9", "service:missing"] }] }));
+    const source = join(f.base, "device-source"); await mkdir(join(source, "events"), { recursive: true });
+    await writeFile(join(source, "source.json"), JSON.stringify({ sourceId: "service", format: "baseware-events-v1" }));
+    await writeFile(join(source, "events", "2026-10-27-2.jsonl"), [2, 9].map(seq => JSON.stringify({ seq, at: new Date(seq * 1000).toISOString(), atMs: seq * 1000,
+      type: "action_end", trace: { recordingId: "new", epoch: "first" }, data: { status: "completed" },
+      origin: { eventId: `service:${seq}`, clockId: "service", seq } })).join("\n") + "\n");
+    await writeFile(join(f.directory, "manifest.json"), JSON.stringify({ kind: "benchmark", eventSources: [{ sourceId: "service", root: source,
+      format: "baseware-events-v1", recordingId: "new", windows: [] }] }));
+    const proof = await benchmarkEvidence("ws-bench", "new", f.root);
+    assert.equal(proof.events[0].type, "model_end");
+    assert.deepEqual(proof.events.slice(1).map(event => event.origin?.eventId), ["service:2", "service:9"]);
+    assert.deepEqual(proof.missingSeq, [9]); assert.deepEqual(proof.missingEvents, ["service:missing"]);
+  } finally { await f.cleanup(); }
+});

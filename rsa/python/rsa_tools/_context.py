@@ -8,6 +8,7 @@ import os
 import socket
 import sys
 import time
+import traceback
 import uuid
 
 
@@ -49,6 +50,7 @@ def current():
         "trace": json.loads(os.environ.get("BASEWARE_TRACE", "{}")),
         "workspace": os.environ.get("RSA_WORKSPACE", os.getcwd()),
         "run_id": os.environ.get("RSA_RUN_ID"),
+        "diagnostics": os.environ.get("RSA_LOG_DIAGNOSTICS", "normal"),
         "timeout": None,
     }
 
@@ -62,31 +64,52 @@ def scope(context):
         _active.reset(token)
 
 
+def continuous(context):
+    return (context.get("recording_purpose") == "continuous-perception"
+            or context.get("trace", {}).get("recordingPurpose") == "continuous-perception")
+
+
+def diagnostic_channel(context):
+    """Local observers run even when this call has no persistent event."""
+    if continuous(context):
+        return "diagnostic" if context.get("diagnostics", "normal") == "full" else None
+    return "event"
+
+
 def emit(context, event_type, data):
     """Diagnostics must not change a function's result or retry device actions."""
     global _sequence, _warned
-    host_available = context["run_id"] and context["socket_path"]
+    host_available = context.get("run_id") and context.get("socket_path")
     sink = context.get("event_sink")
-    if not host_available and sink is None:
+    observer = context.get("recording_observer")
+    recorder = context.get("recording_sink")
+    channel = diagnostic_channel(context)
+    if not host_available and sink is None and observer is None and recorder is None:
         return
     _sequence += 1
     origin = {"eventId": f"{_clock_id}:{_sequence}", "clockId": _clock_id,
               "seq": _sequence, "at": datetime.now(timezone.utc).isoformat(),
               "atMs": time.monotonic() * 1000}
-    if sink is not None:
+    for observer_sink in (sink, observer):
+        if observer_sink is None:
+            continue
         try:
-            sink(context, event_type, data, origin)
+            observer_sink(context, event_type, data, origin)
         except Exception as error:
             if not _warned:
                 print(f"RSA Python logging unavailable: {error}", file=sys.stderr)
                 _warned = True
-    if not host_available:
+    if channel is None or not (host_available or recorder):
         return
     try:
+        if recorder is not None:
+            recorder(event_type, data, context["trace"], origin, channel)
+            return
         request(context["socket_path"], {
             "kind": "workspace_event", "argv": [], "runId": context["run_id"],
             "epoch": context["epoch"], "trace": context["trace"],
-            "event": {"type": event_type, "data": data, "origin": origin},
+            "event": {"type": event_type, "data": data, "origin": origin,
+                      **({"channel": channel} if channel == "diagnostic" else {})},
         }, timeout=1)
     except Exception as error:
         if not _warned:
@@ -103,6 +126,8 @@ def invocation(identity):
         trace["parentSpanId"] = parent["trace"]["spanId"]
     if parent["epoch"] is not None:
         trace["epoch"] = parent["epoch"]
+    if continuous(parent):
+        trace["recordingPurpose"] = "continuous-perception"
     context = {**parent, "trace": trace}
     data = {**identity, "pid": os.getpid()}
     with scope(context):
@@ -113,7 +138,8 @@ def invocation(identity):
         except BaseException as error:
             emit(context, "python_call_end", {**data, "outcome": "error",
                  "durationMs": (time.monotonic() - started) * 1000,
-                 "error": f"{type(error).__name__}: {error}"})
+                 "errorType": type(error).__name__, "error": f"{type(error).__name__}: {error}",
+                 **({"traceback": traceback.format_exc()} if context.get("diagnostics") == "full" else {})})
             raise
         else:
             emit(context, "python_call_end", {**data, "outcome": "success",

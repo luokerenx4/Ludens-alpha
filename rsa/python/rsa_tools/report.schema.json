@@ -34,7 +34,8 @@
         "label": {"type": "string"},
         "expected": {},
         "actual": {},
-        "evidenceSeq": {"type": "array", "items": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}}
+        "evidenceSeq": {"type": "array", "items": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}},
+        "evidenceEvents": {"type": "array", "items": {"type": "string", "minLength": 1}}
       }
     }
   }

@@ -50,22 +50,28 @@ export class PythonCapabilities {
   readonly workspace: string;
   private catalog = new Map<string, PythonCapability>();
 
-  constructor(workspace: string, readonly pythonPath = pythonExecutable(), private readonly record?: RecordEvent) {
+  constructor(workspace: string, readonly pythonPath = pythonExecutable(), private readonly record?: RecordEvent, private readonly diagnostics: "normal" | "full" = "normal") {
     this.workspace = resolve(workspace);
+  }
+
+  private emit(type: string, data: unknown, trace: EventTrace) {
+    const continuous = trace.recordingPurpose === "continuous-perception";
+    if (!continuous || this.diagnostics === "full") this.record?.(type, data, trace,
+      continuous ? { channel: "diagnostic" } : undefined);
   }
 
   async discover(signal?: AbortSignal, parent: EventTrace = {}): Promise<PythonDiscovery> {
     const trace = childTrace(parent), started = performance.now();
-    this.record?.("python_capabilities_start", {}, trace);
+    this.emit("python_capabilities_start", {}, trace);
     try {
       const processResult = await this.run({ action: "discover", workspace: this.workspace }, { signal });
       if (processResult.exitCode !== 0) throw new Error(`Python capability discovery failed: ${processResult.stdout || processResult.stderr}`);
       const result = JSON.parse(processResult.stdout) as PythonDiscovery;
       this.catalog = new Map(result.capabilities.map(capability => [capability.id, capability]));
-      this.record?.("python_capabilities", { ...result, outcome: "success", durationMs: performance.now() - started }, trace);
+      this.emit("python_capabilities", { ...result, outcome: "success", durationMs: performance.now() - started }, trace);
       return result;
     } catch (error) {
-      this.record?.("python_capabilities", { outcome: signal?.aborted ? "cancelled" : "error",
+      this.emit("python_capabilities", { outcome: signal?.aborted ? "cancelled" : "error",
         durationMs: performance.now() - started, error: String(error) }, trace);
       throw error;
     }
@@ -76,7 +82,7 @@ export class PythonCapabilities {
     const trace = options.invocationTrace ?? childTrace(parent), started = performance.now();
     const capability = this.catalog.get(id);
     const identity = { capabilityId: id, ...(capability ? { origin: capability.origin, codeSHA: capability.codeSHA } : {}) };
-    this.record?.("python_capability", { ...identity, arguments: args }, trace);
+    this.emit("python_capability", { ...identity, arguments: args }, trace);
     try {
       options.signal?.throwIfAborted();
       if (!capability) throw new Error(`Unknown Python capability: ${id}; discover the workspace before invoking it`);
@@ -94,7 +100,7 @@ export class PythonCapabilities {
         ...(failed ? { error: reply.error ?? { type: "PythonProcessError", message: `Python exited ${processResult.exitCode}` } } : { result: reply.result }),
         exitCode: processResult.exitCode, stderr: processResult.stderr };
       const result = details.result as { timeline?: unknown } | undefined;
-      this.record?.("python_capability_result", { ...details,
+      this.emit("python_capability_result", { ...details,
         // A sensing declaration is not permission for the invocation log to
         // archive its payload. Explicit recording owns the only retained copy.
         ...(capability.perception || result?.timeline ? { result: result?.timeline
@@ -102,7 +108,7 @@ export class PythonCapabilities {
         outcome: failed ? "error" : "success", durationMs: performance.now() - started }, trace);
       return { content: [{ type: "text" as const, text: JSON.stringify(failed ? { error: details.error } : reply.result) }], details, isError: failed };
     } catch (error) {
-      this.record?.("python_capability_result", { ...identity, outcome: options.signal?.aborted ? "cancelled" : "error",
+      this.emit("python_capability_result", { ...identity, outcome: options.signal?.aborted ? "cancelled" : "error",
         durationMs: performance.now() - started,
         error: { type: error instanceof Error ? error.name : "Error", message: error instanceof Error ? error.message : String(error) } }, trace);
       throw error;

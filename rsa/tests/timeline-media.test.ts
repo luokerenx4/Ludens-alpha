@@ -12,7 +12,9 @@ test("model image versions reference one video source and archive errors do not 
   const workspace = await realpath(await mkdtemp(join(tmpdir(), "rsa-derived-media-")));
   const events: { type: string; data: any }[] = [];
   const record = (type: string, data: unknown) => { events.push({ type, data }); };
-  const runtime = new PerceptionRuntime({ workspace, runDir: join(workspace, "logs", "run"), record });
+  const registered: any[] = [];
+  const runtime = new PerceptionRuntime({ workspace, runDir: join(workspace, "logs", "run"), record,
+    registerMedia: media => { registered.push(media); } });
   const signal = new AbortController().signal;
   try {
     await runtime.reload(); // Writer remains available without a user's sampler.
@@ -46,7 +48,8 @@ test("model image versions reference one video source and archive errors do not 
     expect(await media([{ ...observation, timeline: undefined }], record, {}, async () => { calls++; throw Error("unexpected"); }))
       .toEqual(actual);
     expect(calls).toBe(0); // An unrecorded image cannot acquire persistence here.
-    expect(events.some(event => event.type === "timeline_media" && event.data.media.some((entry: any) => entry.asset === saved.asset))).toBe(true);
+    expect(registered.some(entry => entry.asset === saved.asset)).toBe(true);
+    expect(events.some(event => ["timeline_media", "perception_sample"].includes(event.type))).toBe(false);
     await runtime.stop();
     const root = join(workspace, ".rsa", "timeline");
     expect(JSON.parse(await readFile(join(root, saved.asset + ".json"), "utf8")).status).toBe("ready");
@@ -60,7 +63,7 @@ test("model image versions reference one video source and archive errors do not 
     expect(cold.error).toBeUndefined();
     const coldImage = cold.result.observations![0]!;
     expect(Buffer.from(coldImage.data!, "base64").equals(decoded)).toBe(true);
-    expect(events.findLast(event => event.type === "timeline_media")!.data.media[0]).toMatchObject({
+    expect(registered.at(-1)).toMatchObject({
       asset: saved.asset, video: saved.video, approximate: true,
       sha256: createHash("sha256").update(decoded).digest("hex"), bytes: decoded.length,
     });

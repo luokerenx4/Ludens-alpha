@@ -1,6 +1,8 @@
 "use client";
 import { useEffect, useState } from "react";
 import {
+  checkEvidence,
+  evidenceEvent,
   benchmarkCommand,
   benchmarkReportCommand,
   benchmarkSelection,
@@ -808,7 +810,7 @@ export function BenchmarkCases({
                               <small>{displayCheckValue(check.actual)}</small>
                             </td>
                             <td>
-                              {check.evidenceSeq.length ? (
+                              {checkEvidence(check).length ? (
                                 <button
                                   className="text-button"
                                   aria-expanded={openCheck === check.id}
@@ -818,9 +820,9 @@ export function BenchmarkCases({
                                     )
                                   }
                                 >
-                                  #{check.evidenceSeq[0]}
-                                  {check.evidenceSeq.length > 1
-                                    ? ` +${check.evidenceSeq.length - 1}`
+                                  #{checkEvidence(check)[0]}
+                                  {checkEvidence(check).length > 1
+                                    ? ` +${checkEvidence(check).length - 1}`
                                     : ""}{" "}
                                   {openCheck === check.id ? "↑" : "↓"}
                                 </button>
@@ -850,12 +852,8 @@ export function BenchmarkCases({
                     ) : !proof ? (
                       <p className="muted">正在读取事件…</p>
                     ) : (
-                      selected.checks
-                        .find((check) => check.id === openCheck)
-                        ?.evidenceSeq.map((seq) => {
-                          const event = proof.events.find(
-                            (event) => event.seq === seq,
-                          );
+                      checkEvidence(selected.checks.find((check) => check.id === openCheck)).map((seq) => {
+                          const event = evidenceEvent(proof, seq);
                           if (!event)
                             return (
                               <p key={seq} className="error-text">

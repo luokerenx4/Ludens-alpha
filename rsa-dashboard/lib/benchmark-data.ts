@@ -5,6 +5,7 @@ import { validateDefinition } from "../../rsa/src/benchmark/contract";
 import { readResult as readStoredResult } from "../../rsa/src/benchmark/store";
 import { artifactRoot, catalog, resolveRun } from "./data";
 import { createReadStream } from "node:fs";
+import { readRunEvents } from "../../shared/event-sources";
 import type { Event } from "./types";
 import {
   definitionKey,
@@ -133,6 +134,7 @@ export async function benchmarkEvidence(
 ): Promise<BenchmarkEvidence> {
   const { result, directory } = await readResult(project, run, root, reportId);
   const wanted = new Set(result.checks.flatMap((check) => check.evidenceSeq));
+  const wantedEvents = new Set(result.checks.flatMap(check => check.evidenceEvents ?? []));
   let logAvailable = true;
   const events: Event[] = [], epochs: string[] = [];
   const stream = createReadStream(join(directory, "events.jsonl"), { encoding: "utf8", signal });
@@ -156,11 +158,18 @@ export async function benchmarkEvidence(
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     logAvailable = false;
   } finally { stream.destroy(); }
-  const found = new Set(events.map(event => event.seq));
+  // Numeric references are deliberately local: service sequence numbers are not globally unique.
+  const found = new Set(events.map(event => event.seq)), foundEvents = new Set(events.flatMap(event => event.origin?.eventId ? [event.origin.eventId] : []));
+  if (wantedEvents.size) for await (const raw of readRunEvents(directory, { signal })) {
+    signal?.throwIfAborted();
+    const event = raw as Event, id = event.origin?.eventId;
+    if (id && wantedEvents.has(id) && !foundEvents.has(id)) { events.push(event); foundEvents.add(id); }
+  }
   return {
     result,
     events,
     missingSeq: [...wanted].filter((seq) => !found.has(seq)),
+    missingEvents: [...wantedEvents].filter(id => !foundEvents.has(id)),
     epoch: epochs[0] ?? null,
     epochs,
     logAvailable,

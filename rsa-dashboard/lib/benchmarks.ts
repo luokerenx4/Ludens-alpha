@@ -1,6 +1,7 @@
 import type { Event } from "./types";
 import type {
   BenchmarkDefinition,
+  BenchmarkCheck,
   BenchmarkResult,
   BenchmarkReport,
   BenchmarkStatus,
@@ -35,6 +36,7 @@ export interface BenchmarkEvidence {
   result: BenchmarkResult;
   events: Event[];
   missingSeq: number[];
+  missingEvents?: string[];
   epoch: string | null;
   epochs: string[];
   logAvailable: boolean;
@@ -107,4 +109,13 @@ export function benchmarkSelection(
     baseline: baseline ? resultKey(baseline) : null,
     baselineReport: baseline?.report?.id ?? null,
   };
+}
+
+/** Source identities and old local sequence references are distinct evidence addresses. */
+export function checkEvidence(check?: Pick<BenchmarkCheck, "evidenceSeq" | "evidenceEvents">): (number | string)[] {
+  return [...(check?.evidenceSeq ?? []), ...(check?.evidenceEvents ?? [])];
+}
+export function evidenceEvent(proof: BenchmarkEvidence, reference: number | string) {
+  return typeof reference === "string" ? proof.events.find(event => event.origin?.eventId === reference)
+    : proof.missingSeq.includes(reference) ? undefined : proof.events.find(event => event.seq === reference);
 }

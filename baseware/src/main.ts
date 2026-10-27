@@ -21,10 +21,11 @@ export async function main(args = process.argv.slice(2)) {
   const { values } = parseArgs({ args: args.slice(1), options: {
     driver: { type: "string", default: "mgba" }, port: { type: "string" },
     socket: { type: "string", default: socket }, "data-dir": { type: "string" },
-    "cua-command": { type: "string" },
+    "cua-command": { type: "string" }, diagnostics: { type: "string", default: "normal" },
   } });
   if (!["mgba", "ryubing", "azahar", "cua"].includes(values.driver!)) throw new Error("--driver must be mgba, ryubing, azahar or cua");
   if (values["cua-command"] && values.driver !== "cua") throw new Error("--cua-command is only for the cua driver");
+  if (values.diagnostics !== "normal" && values.diagnostics !== "full") throw new Error("--diagnostics must be normal or full");
   const port = values.driver === "cua" ? undefined : Number(values.port ?? (values.driver === "mgba" ? 47653 : values.driver === "azahar" ? 47673 : 47663));
   if (port !== undefined && (!Number.isInteger(port) || port < 1 || port > 65535)) throw new Error("--port must be between 1 and 65535");
   const dataDir = resolve(values["data-dir"] ?? join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local/state"), "playness/baseware", basename(values.socket!, ".sock")));
@@ -39,13 +40,14 @@ export async function main(args = process.argv.slice(2)) {
   try {
     const serviceId = crypto.randomUUID();
     const clock = { id: serviceId, now: () => performance.now() };
-    const log = new EventLog(dataDir);
+    const log = new EventLog(dataDir, serviceId);
     provider = values.driver === "cua"
       ? await createCuaProvider({ command: values["cua-command"], clock })
       : values.driver === "azahar"
       ? await createAzaharProvider({ port: port!, clock })
       : await (values.driver === "mgba" ? createGbaProvider : createSwitchProvider)({ port: port!, clock });
-    core = new BasewareCore({ capabilities: provider.capabilities, record: log.record, serviceId,
+    core = new BasewareCore({ capabilities: provider.capabilities, record: log.record, serviceId, source: log.source,
+      diagnostics: values.diagnostics,
       drivers: [{ id: values.driver!, version: provider.version ?? (values.driver === "mgba" ? "0.10.5" : "1.3.351-rsa.3") }] });
     provider.onDisconnect(error => { void core!.disconnected(error); });
     core.record("service_start", { driver: values.driver, ...(port !== undefined ? { port } : {}), socket: values.socket, dataDir });

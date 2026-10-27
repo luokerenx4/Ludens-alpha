@@ -16,7 +16,8 @@ import time
 import uuid
 
 from ._capabilities import function_schema, load_function, marked_functions, validate, workspace_sources
-from ._context import current, scope as call_scope
+from . import _context
+from ._context import current, diagnostic_channel, scope as call_scope
 from ._benchmark_report import write_report
 
 
@@ -77,8 +78,8 @@ def _options(marker):
         if marker.args:
             raise ValueError("Benchmark decorator options must be named literals")
         for keyword in marker.keywords:
-            if keyword.arg not in {"targets", "protocol", "title", "scope"} or keyword.arg in options:
-                raise ValueError("Supported benchmark options are targets, protocol, title, and scope")
+            if keyword.arg not in {"targets", "protocol", "title", "scope", "diagnostics"} or keyword.arg in options:
+                raise ValueError("Supported benchmark options are targets, protocol, title, scope, and diagnostics")
             try:
                 options[keyword.arg] = ast.literal_eval(keyword.value)
             except (ValueError, TypeError):
@@ -94,6 +95,8 @@ def _options(marker):
         raise ValueError("Benchmark title must be a nonempty string")
     if not isinstance(options.get("scope", ""), str):
         raise ValueError("Benchmark scope must be a string")
+    if options.get("diagnostics", "normal") not in ("normal", "full"):
+        raise ValueError("Benchmark diagnostics must be normal or full")
     return options
 
 
@@ -114,6 +117,7 @@ def _definition(relative, raw, tree, node, markers):
         "revision": code_sha, "source": "workspace", "protocolVersion": options.get("protocol", "1"),
         "parameters": parameters, "targets": options.get("targets", []),
         "entry": {"kind": "python", "path": relative, "function": node.name, "codeSHA": code_sha},
+        **({"requiredDiagnostics": "full"} if options.get("diagnostics") == "full" else {}),
     }
 
 
@@ -156,7 +160,8 @@ def _new_run(workspace, definition, parameters, parent):
         "runId": run_id, "project": _workspace_id(workspace), "workspace": str(workspace),
         "trace": _child_trace(parent), "parameters": parameters,
         "provenance": {"python": sys.version.split()[0]},
-        "conditions": {}, "subjects": [], "artifacts": [], "limitations": [definition["scope"]] if definition["scope"] else [],
+        "conditions": {"diagnostics": parent.get("diagnostics", "normal")},
+        "subjects": [], "artifacts": [], "limitations": [definition["scope"]] if definition["scope"] else [],
     }
     if parent.get("run_id"):
         result["parentRunId"] = parent["run_id"]
@@ -164,6 +169,7 @@ def _new_run(workspace, definition, parameters, parent):
         "kind": "benchmark", "runId": run_id, "workspace": str(workspace),
         "workspaceId": result["project"], "eventSchemaVersion": 2,
         "drivers": [], "model": None, "seconds": 0, "maxRequests": 0,
+        "logging": {"diagnostics": parent.get("diagnostics", "normal")},
         "trace": result["trace"], **({"parentRunId": result["parentRunId"]} if "parentRunId" in result else {}),
         "benchmark": {"id": definition["id"], "revision": definition["revision"], "protocolVersion": definition["protocolVersion"]},
     })
@@ -277,7 +283,7 @@ class BenchmarkContext:
         self.result.setdefault("limitations", []).extend(messages)
         self._save()
 
-    def record(self, event_type, data, trace=None, *, origin=None, source=None):
+    def record(self, event_type, data, trace=None, *, origin=None, source=None, channel="event"):
         self._sequence += 1
         at, at_ms = _now(), time.monotonic() * 1000
         event = {
@@ -288,13 +294,18 @@ class BenchmarkContext:
             "origin": origin or {"eventId": "%s:%d" % (self.result["runId"], self._sequence),
                                  "clockId": self.result["runId"], "seq": self._sequence, "at": at, "atMs": at_ms},
         }
-        with (self.run_dir / "events.jsonl").open("a", encoding="utf-8") as output:
+        filename = "diagnostics.jsonl" if channel == "diagnostic" else "events.jsonl"
+        with (self.run_dir / filename).open("a", encoding="utf-8") as output:
             output.write(_json(event) + "\n")
         return self._sequence
 
     def _workspace_event(self, context, event_type, data, origin):
-        self.record(event_type, data, context["trace"], origin=origin,
-                    source={"component": "workspace", "implementation": "python"})
+        # Subjects are a local execution observation, independent of persistence.
+        # A connected host owns its call facts; parentRunId + trace locates them.
+        channel = diagnostic_channel(context)
+        if channel and not (context.get("run_id") and context.get("socket_path")):
+            self.record(event_type, data, context["trace"], origin=origin, channel=channel,
+                        source={"component": "workspace", "implementation": "python"})
         if event_type == "python_call_start" and data.get("id") in self.result["definition"]["targets"] and data.get("codeSHA"):
             subject = {"id": data["id"], "revision": data["codeSHA"]}
             subjects = self.result.setdefault("subjects", [])
@@ -333,7 +344,24 @@ def prepared_run(directory, result):
         _prepared.reset(token)
 
 
-def benchmark(function=None, *, targets=None, protocol="1", title=None, scope=""):
+def _recording_conditions(definition, parent):
+    conditions = {"diagnostics": parent.get("diagnostics", "normal")}
+    if parent.get("socket_path"):
+        try:
+            status = _context.request(parent["socket_path"], {"kind": "status", "argv": []}, timeout=5)
+            logging = status.get("logging", {})
+            conditions.update(hostDiagnostics=logging.get("diagnostics"),
+                              basewareDiagnostics=logging.get("basewareDiagnostics"))
+        except (OSError, ValueError, _context.RSAError) as error:
+            conditions.update(hostDiagnostics=None, basewareDiagnostics=None,
+                              diagnosticsStatusError=str(error))
+    if definition.get("requiredDiagnostics") == "full" and any(mode != "full" for mode in conditions.values()):
+        raise ValueError("BENCHMARK_CONDITIONS_UNMET: this benchmark requires full diagnostics; "
+                         "effective modes: " + _json(conditions) + ". Existing processes were not changed.")
+    return conditions
+
+
+def benchmark(function=None, *, targets=None, protocol="1", title=None, scope="", diagnostics="normal"):
     """Mark a synchronous, typed benchmark without exposing a Controller capability."""
     def mark(target):
         workspace = Path(current()["workspace"]).resolve()
@@ -360,6 +388,7 @@ def benchmark(function=None, *, targets=None, protocol="1", title=None, scope=""
             validate(parameters, definition["parameters"])
             parameters = json.loads(_json(parameters))
             parent = current()
+            recording_conditions = _recording_conditions(definition, parent)
             discover(workspace)
             prepared = _prepared.get()
             if prepared is None:
@@ -374,14 +403,14 @@ def benchmark(function=None, *, targets=None, protocol="1", title=None, scope=""
                 if parent.get("run_id"):
                     result["parentRunId"] = parent["run_id"]
             pending_token = _prepared.set(None)
+            result.setdefault("conditions", {}).update(recording_conditions)
             context = BenchmarkContext(directory, result)
             active_token = _active.set(context)
             started = time.monotonic()
             try:
                 context._save()
                 context.record("benchmark_start", {"benchmarkId": definition["id"], "parameters": parameters})
-                # Keep the host run ID: device and nested capability events belong
-                # to that host, while this sink also records them in this run.
+                # Keep host ownership while collecting actual subjects locally.
                 with call_scope({**parent, "trace": result["trace"], "event_sink": context._workspace_event}):
                     report = target(*args, **kwargs)
             except BaseException as error:

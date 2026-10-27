@@ -43,14 +43,18 @@ def evaluate(dataset: str, checkpoint: str) -> dict:
 
 targets 可省略或关联多个能力，title/scope 描述名称/范围。protocol 默认 `"1"`，改数据划分、评分或判定时更新；源码 SHA/revision 独立记录，实现修改不自动改变口径。
 
+默认在当前日常记录模式下测量。需要逐次采样调用链的 case 可声明 `@benchmark(..., diagnostics="full")`，静态定义产生 `requiredDiagnostics: "full"`。执行函数前检查本地有效模式以及 Host/Baseware 的 `status.logging`；任一不是 full 或无法确认，就报告条件不满足，不重启或升级宿主。未配置宿主 socket 的离线评测只检查本地模式；已配置但不可连接仍是条件未知。normal 历史不能事后变成完整采样链证据。
+
+实际本地模式写入 `conditions.diagnostics`；连接宿主时另记 `hostDiagnostics/basewareDiagnostics`，不可用时保留未知及原因。默认评测允许在 full 环境运行，但模式不同是比较条件的差异，不能把 full 的额外追踪开销当成 normal 性能。
+
 报告唯一作者契约是 [report.schema.json](../rsa/python/rsa_tools/report.schema.json)，Python、TypeScript 和 `rsa bench schema/validate` 使用同一份：
 
 | 字段 | 要求 |
 | --- | --- |
 | metrics | 可选 map，key 是稳定 ID；value 为有限数值或 null，unit 非空；label、direction（higher/lower/none）、reason 可选 |
-| checks | 可选 map，key 是稳定 ID；passed 为 true/false/null；label、expected、actual、evidenceSeq 可选 |
+| checks | 可选 map，key 是稳定 ID；passed 为 true/false/null；label、expected、actual、evidenceSeq、evidenceEvents 可选 |
 
-expected/actual 可用任意 JSON 值，null 表示缺测/证据不足，不用 0/NaN 冒充。evidenceSeq 引用本次事件正整数序号，不是帧号。`{}` 合法但不证明任务成功。完整例子见 [clamp.py](../rsa/benchmarks/examples/clamp.py)。
+expected/actual 可用任意 JSON 值，null 表示缺测/证据不足，不用 0/NaN 冒充。`evidenceSeq` 只引用本次 RSA 本地事件正整数序号，不是帧号或全局序号；跨来源使用 `evidenceEvents: ["<origin.eventId>"]`。`{}` 合法但不证明任务成功。完整例子见 [clamp.py](../rsa/benchmarks/examples/clamp.py)。
 
 直接 import 或 `rsa_tools.benchmarks.run(id, arguments)` 在**当前进程**执行、记日志并返回原结果，复用模型；格式问题只记诊断，不抛异常重做动作。CLI 每次独立入口；已有进程需重启才加载改动，记录实际版本。纯本地评测不依赖 Host/Baseware。
 
@@ -66,7 +70,9 @@ record.limitations("Only daylight samples were measured.")
 seq = record.record("sample_verified", {"frame": 42})
 ```
 
-conditions 描述比较条件；subject 引用对象、不复制模型/数据集，应声明版本/SHA，包括内存训练时的被测版本。artifact 归档并记 hash，原文件覆盖不影响附件；可在 `record.run_dir / "artifacts"` 生成后登记。条件是作者声明，实际调用看日志；无日志不证明无副作用。
+conditions 描述比较条件；subject 引用对象、不复制模型/数据集，应声明版本/SHA，包括内存训练时的被测版本。artifact 归档并记 hash，原文件覆盖不影响附件；可在 `record.run_dir / "artifacts"` 生成后登记。作者登记的条件与实际执行证据分开，不能仅凭文件存在判定调用过。
+
+装饰器的本地执行 observer 独立收集 targets 中真正调用的能力及加载 codeSHA，不依赖日志 RPC。normal 连续采样不保存每次 Python start/end，observer 仍能收集 subject；它证明该版本参与执行，不替代逐次调用链或任务成功证据。普通主动 import 仍保留调用元数据，不序列化任意 Python 参数和返回对象。
 
 已有时空轴原件经路径与内容 hash 校验后只登记 `timeline.asset`，不再复制；此时 `path` 相对 workspace，普通归档附件的 `path` 仍相对 run。
 
@@ -81,6 +87,7 @@ workspace/logs/<run-id>/
   reports/<id>.raw.json  验证前原始返回，无法表达为 JSON 时保留 rawText
   reports/<id>.json      不可变报告、验证问题、口径和修正关系
   events.jsonl           生命周期及 source/origin/trace
+  diagnostics.jsonl      full 下的本地内部调用诊断（如有）
   artifacts/            评测产物
 ```
 
@@ -107,7 +114,7 @@ report 只追加报告和 benchmark_report 事件，保留 previousReportId/reas
 
 终态和报告日志统一携带 `benchmarkRunId/executionStatus/reportStatus/verdict/reportId/previousReportId`，报告状态为 missing/valid/invalid。Dashboard 据此区分执行异常、报告无效和目标未达成；CLI 的非零退出码本身不等于执行崩溃。
 
-Python 本地写生命周期，保留 parentRunId/trace；能力事件可转发父 Host，origin 不变，不重复计数。内置隔离 workspace 在 run 内，成绩归调用方；离线无接管不伪造 control，看板读完整 run。详见 [日志](logging.md)。
+Python 本地写 benchmark 生命周期，保留 parentRunId/trace。有宿主时能力事实由宿主保存，benchmark 不再复制相同 Python 正文；独立离线执行保留自己的事实。设备事实通过 manifest 声明的 Baseware canonical 来源读取，跨来源用 origin.eventId、显式 trace/action 关系关联，不按 seq 大小或时间邻近推因果。内置隔离 workspace 在 run 内，成绩归调用方；离线无接管不伪造 control。详见 [日志](logging.md)。
 
 ## 比较和看板
 

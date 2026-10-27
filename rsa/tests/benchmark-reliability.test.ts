@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { readEvents } from "../src/benchmark/fixtures/evidence.ts";
 import type { AuthorReport } from "../src/benchmark/types.ts";
 import { validateAuthorReport } from "../src/benchmark/report.ts";
 
@@ -28,7 +29,7 @@ await Bun.write(${JSON.stringify(join(directory, "outcome.json"))}, JSON.stringi
     expect(validateAuthorReport(result).errors).toEqual([]);
     expect(Object.keys(result.checks!).length).toBeGreaterThanOrEqual(4);
     expect(Object.values(result.checks!).filter(check => check.passed !== true)).toEqual([]);
-    const events = (await readFile(join(runDir, "events.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    const events = await readEvents(runDir);
     for (const type of requiredEvents) expect(events.some(event => event.type === type)).toBe(true);
     const sequences = new Set(events.map(event => event.seq));
     for (const check of Object.values(result.checks!)) {
@@ -48,11 +49,10 @@ import { EventLog } from ${JSON.stringify(resolve(import.meta.dir, "../src/harne
 const control = new AbortController(), beforeFetch = globalThis.fetch, beforeSocket = globalThis.WebSocket;
 const log = new EventLog(${JSON.stringify(runDir)}, {id: "cancel-benchmark", now: () => performance.now()});
 const record = log.record;
-let commands = 0, fired = false, caught = "";
+let fired = false, caught = "";
 Object.defineProperty(log, "record", {value: (type, data, trace, metadata) => {
   record(type, data, trace, metadata);
-  if (type === "command") commands++;
-  const trigger = ${JSON.stringify(id)} === "control-handoff" ? type === "command" && commands === 2
+  const trigger = ${JSON.stringify(id)} === "control-handoff" ? type === "benchmark_handoff_requested" && data.scenario === "nested-python"
     : ${JSON.stringify(id)} === "ws-recovery" ? type === "benchmark_transport_step" : type === "compaction_http_end";
   if (trigger && !fired) { fired = true; queueMicrotask(() => control.abort(new Error("benchmark cancelled"))); }
 }});

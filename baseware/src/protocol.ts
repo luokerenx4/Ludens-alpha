@@ -1,8 +1,11 @@
-export interface Trace extends Record<string, unknown> { traceId?: string; spanId?: string; parentSpanId?: string }
+export interface Trace extends Record<string, unknown> {
+  traceId?: string; spanId?: string; parentSpanId?: string;
+  recordingId?: string; recordingPurpose?: "continuous-perception";
+}
 export interface EventSource { component: string; implementation?: string; implementationVersion?: string }
 export interface EventOrigin { eventId: string; clockId: string; seq: number; at: string; atMs: number }
-export interface EventMetadata { source?: EventSource; origin?: EventOrigin }
-export interface DeviceEvent { type: string; data: unknown; trace: Trace; source: EventSource; origin: EventOrigin }
+export interface EventMetadata { source?: EventSource; origin?: EventOrigin; channel?: "diagnostic"; persisted?: boolean }
+export interface DeviceEvent extends EventMetadata { type: string; data: unknown; trace: Trace; source: EventSource; origin: EventOrigin }
 export type RecordEvent = (type: string, data: unknown, trace?: Trace, metadata?: EventMetadata) => void;
 import type { ToolDefinition, ToolArguments } from "./contracts.ts";
 

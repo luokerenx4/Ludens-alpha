@@ -46,7 +46,7 @@ export interface ReplayItem {
   endAt: number | null;
   label: string;
   status?: string;
-  source: { seq: number; modelCallId?: string; toolCallId?: string; actionId?: string; traceId?: string };
+  source: { seq: number; eventId?: string; sourceId?: string; modelCallId?: string; toolCallId?: string; actionId?: string; traceId?: string };
 }
 
 export interface ReplayWindow {

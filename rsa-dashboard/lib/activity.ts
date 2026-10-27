@@ -234,10 +234,11 @@ function eventHeader(path: string, event: Event): Omit<LogBlock, "text"> {
     const unmet = assessment && data.executionStatus === "completed" && data.reportStatus === "valid" && data.verdict === "failed";
     const failed = !raised && ((assessment && (data.executionStatus === "error" || data.reportStatus === "invalid"))
       || data.outcome === "error" || (event.type === "perception_status" && data.state === "error") || (data.outcome !== "cancelled" && !data.aborted
-      && (event.type.endsWith("_error") || data.isError === true || data.stopReason === "error")));
-  const system = failed || assessment || event.type === "control" || event.type === "perception_status"
+      && (event.type.endsWith("_error") || event.type === "perception_fault" || (event.type === "event_source_gap" && data.phase === "start") || data.isError === true || data.stopReason === "error")));
+  const system = failed || assessment || event.type === "control" || event.type === "perception_status" || event.type === "perception_fault" || event.type === "perception_fault_end"
+    || event.type === "device_sampling_recovered" || event.type === "event_source_gap"
     || event.type.startsWith("background_") || event.type.includes("compaction") || event.type === "run_end";
-  return { id: `event:${path.split("/").at(-1)}:${event.seq}`, kind: system ? "system" : "diagnostic",
+  return { id: `event:${path.split("/").at(-1)}:${(event.serviceId ? event.origin?.eventId ?? `${event.serviceId}:${event.seq}` : event.seq)}`, kind: system ? "system" : "diagnostic",
     at: event.at, title: event.type, ...provenance(event), status: failed ? "error" : "complete",
     ...(raised ? { outcome: "raised" as const } : {}), ...(unmet ? { outcome: "unmet" as const } : {}) };
 }
