@@ -22,6 +22,8 @@ import time
 from typing import Any
 import uuid
 
+from ._sampling import DEFAULT_SAMPLE_HZ, validate_sample_hz
+
 
 TIME_BASE = (1, 1_000_000)
 
@@ -125,6 +127,7 @@ class _Segment:
     started: float
     updated: float
     last_at: float
+    sample_hz: float = DEFAULT_SAMPLE_HZ
     last_pts: int = -1
     queued: int = 0
     frames: int = 0
@@ -165,17 +168,19 @@ class VideoRecorder:
 
     def _metadata(self, segment: _Segment, status: str) -> dict[str, Any]:
         return {"status": status, "startedAt": _iso(segment.started), "durationSeconds": segment.duration,
-                "width": segment.width, "height": segment.height, "frames": segment.frames,
+                "width": segment.width, "height": segment.height, "frames": segment.frames, "sample_hz": segment.sample_hz,
                 **({"error": segment.error} if segment.error else {})}
 
-    def _new_segment(self, width: int, height: int, at: float) -> _Segment:
+    def _new_segment(self, width: int, height: int, at: float, sample_hz: float) -> _Segment:
         path = self.directory / (uuid.uuid4().hex + ".mp4")
-        segment = _Segment(path.relative_to(self.root).as_posix(), path, width, height, at, time.monotonic(), at)
+        segment = _Segment(path.relative_to(self.root).as_posix(), path, width, height, at, time.monotonic(), at, sample_hz)
         _state(path.with_suffix(".mp4.json"), self._metadata(segment, "pending"))
         self.segments[segment.asset] = segment
         return segment
 
-    def submit(self, raw: bytes, channel: str, at: float, size: tuple[int, int] | None = None) -> dict[str, Any]:
+    def submit(self, raw: bytes, channel: str, at: float, size: tuple[int, int] | None = None,
+               *, sample_hz: float = DEFAULT_SAMPLE_HZ) -> dict[str, Any]:
+        sample_hz = validate_sample_hz(sample_hz)
         width, height = image_size(raw) if size is None else size
         # Charge both the submitted compressed input and its decoded RGB frame.
         cost = len(raw) + (width + width % 2) * (height + height % 2) * 3
@@ -193,13 +198,15 @@ class VideoRecorder:
                 asset = (self.directory / (uuid.uuid4().hex + ".mp4")).relative_to(self.root).as_posix()
                 return {"asset": asset, "video": {"pts": 0, "timeBase": list(TIME_BASE),
                         "width": width, "height": height, "status": "gap", "reason": reason}}
-            if segment is None or segment.sealed or (segment.width, segment.height) != (width, height) or at < segment.last_at or at - segment.started >= self.segment_seconds:
+            if (segment is None or segment.sealed or segment.sample_hz != sample_hz
+                    or (segment.width, segment.height) != (width, height)
+                    or at < segment.last_at or at - segment.started >= self.segment_seconds):
                 if segment is not None:
                     segment.sealed = True
                 if channel not in self.channels and len(self.channels) >= self.max_streams:
                     oldest = min(self.channels, key=lambda key: self.channels[key].updated)
                     self.channels.pop(oldest).sealed = True
-                segment = self._new_segment(width, height, at)
+                segment = self._new_segment(width, height, at, sample_hz)
                 self.channels[channel] = segment
             pts = max(segment.last_pts + 1, round((at - segment.started) * 1_000_000))
             segment.last_at, segment.last_pts, segment.updated = at, pts, time.monotonic()
@@ -239,7 +246,7 @@ class VideoRecorder:
             return
         if segment.container is None:
             segment.container = av.open(str(segment.path), mode="w", format="mp4", options={"movflags": "+faststart"})
-            stream = segment.container.add_stream("libx264", rate=30)
+            stream = segment.container.add_stream("libx264", rate=Fraction(str(segment.sample_hz)).limit_denominator(1_000_000))
             stream.width = segment.width + segment.width % 2
             stream.height = segment.height + segment.height % 2
             stream.pix_fmt = "yuv420p"
@@ -256,11 +263,12 @@ class VideoRecorder:
             frame = av.VideoFrame.from_image(image)
         frame.pts = pts
         frame.time_base = Fraction(*TIME_BASE)
-        frame.duration = 33_333
+        duration = max(1, round(1_000_000 / segment.sample_hz))
+        frame.duration = duration
         for packet in segment.stream.encode(frame):
             segment.container.mux(packet)
         segment.frames += 1
-        segment.duration = max(segment.duration, (pts + 33_333) / 1_000_000)
+        segment.duration = max(segment.duration, (pts + duration) / 1_000_000)
 
     def _finish(self, segment: _Segment) -> None:
         try:

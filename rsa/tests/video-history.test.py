@@ -2,10 +2,12 @@
 
 import base64
 from concurrent.futures import ThreadPoolExecutor
+from fractions import Fraction
 from io import BytesIO
 import json
 import os
 from pathlib import Path
+import queue
 import subprocess
 import sys
 import tempfile
@@ -14,6 +16,7 @@ import time
 import unittest
 from unittest.mock import Mock, patch
 
+import av
 from PIL import Image, UnidentifiedImageError
 
 from rsa_tools._observation_history import ObservationHistory
@@ -39,6 +42,110 @@ class VideoHistoryTests(unittest.TestCase):
         self.assertEqual(image.size, size)
         actual = image.getpixel((size[0] // 2, size[1] // 2))
         self.assertLess(max(abs(left - right) for left, right in zip(actual, color)), 8)
+
+    def test_sample_hz_preserves_actual_frame_times_and_cold_queries(self):
+        colors = [(200, 40, 60), (40, 160, 90), (70, 80, 190)]
+        for hz in (1, 12.5, 30, 60, 30000 / 1001, 1 / 3):
+            with self.subTest(sample_hz=hz), tempfile.TemporaryDirectory() as directory:
+                history = ObservationHistory(directory, sample_hz=hz)
+                rows = [history.append(sample(png(color)), "one", SAMPLING, "2026-10-27T00:00:" + at + "Z")
+                        for at, color in zip(("00.000", "00.137", "00.401"), colors)]
+                history.close()
+                refs = [row["media"][0]["timeline"] for row in rows]
+                self.assertEqual(len({ref["asset"] for ref in refs}), 1)
+                video = history.directory / refs[0]["asset"]
+                tail = round(1_000_000 / hz)
+                with av.open(str(video)) as container:
+                    stream = container.streams.video[0]
+                    self.assertEqual(stream.codec_context.framerate, Fraction(str(hz)).limit_denominator(1_000_000))
+                    frames = list(container.decode(stream))
+                    # The configured frequency does not duplicate, drop, or retime samples.
+                    self.assertEqual([frame.pts for frame in frames], [0, 137000, 401000])
+                    self.assertTrue(all(frame.time_base == Fraction(1, 1_000_000) for frame in frames))
+                    self.assertEqual(frames[-1].duration, tail)
+                    self.assertAlmostEqual(float(stream.duration * stream.time_base), 0.401 + tail / 1_000_000)
+                metadata = json.loads(video.with_suffix(".mp4.json").read_text())
+                self.assertEqual(metadata["sample_hz"], hz)
+                self.assertEqual(metadata["frames"], 3)
+                self.assertAlmostEqual(metadata["durationSeconds"], 0.401 + tail / 1_000_000)
+                cold = ObservationHistory(directory)
+                try:
+                    queries = ({"id": rows[1]["id"]}, {"at": "2026-10-27T00:00:00.200Z"},
+                               {"start": "2026-10-27T00:00:00.100Z", "end": "2026-10-27T00:00:00.500Z"})
+                    for query, expected in zip(queries, ([1], [1], [1, 2])):
+                        selected = cold.observe(query)["records"]
+                        self.assertEqual([row["id"] for row in selected], [rows[i]["id"] for i in expected])
+                        for row, index in zip(selected, expected):
+                            self.assert_picture(base64.b64decode(row["media"][0]["data"]), colors[index])
+                finally:
+                    cold.close()
+
+    def test_changing_sample_hz_rotates_video_without_losing_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            history = ObservationHistory(directory)
+            first = history.append(sample(png()), "one", SAMPLING, "2026-10-27T00:00:00Z")
+            history.sample_hz = 12.5
+            second = history.append(sample(png()), "one", SAMPLING, "2026-10-27T00:00:00.2Z")
+            history.close()
+            refs = [row["media"][0]["timeline"] for row in (first, second)]
+            self.assertNotEqual(refs[0]["asset"], refs[1]["asset"])
+            for ref, hz in zip(refs, (30, 12.5)):
+                video = history.directory / ref["asset"]
+                with av.open(str(video)) as container:
+                    self.assertEqual(container.streams.video[0].codec_context.framerate, Fraction(str(hz)))
+                self.assert_picture(decode_frame(history.directory, ref["asset"], ref["video"]), (200, 40, 60))
+
+    def test_worker_default_and_reloaded_rate_reach_the_encoder(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for generation, configured, expected in (("one", "", 30), ("two", "    sample_hz = 12.5\n", 12.5)):
+                source = ("from rsa_tools import perception, record\nclass Perception:\n" + configured +
+                          "    def start(self, context):\n        self.sample()\n"
+                          "    @record\n    @perception\n    def sample(self):\n"
+                          "        return " + repr(sample(png())) + "\n"
+                          "    def close(self):\n        pass\n")
+                with (root / "stderr.log").open("w") as stderr:
+                    process = subprocess.Popen([sys.executable, "-u", "-m", "rsa_tools._perception"], cwd=root,
+                                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr, text=True)
+                    incoming = queue.Queue()
+                    reader = threading.Thread(target=lambda: [incoming.put(json.loads(line)) for line in process.stdout], daemon=True)
+                    reader.start()
+                    try:
+                        process.stdin.write(json.dumps({"id": "start", "action": "start", "workspace": str(root),
+                            "runDir": str(root / "run"), "generation": generation, "source": source}) + "\n")
+                        process.stdin.flush()
+                        start = None
+                        sampled = None
+                        while start is None or sampled is None:
+                            message = incoming.get(timeout=5)
+                            if message.get("id") == "start":
+                                start = message
+                            elif message.get("event") == "sample":
+                                sampled = message
+                        self.assertTrue(start["ok"])
+                        self.assertEqual(start["result"]["sampleHz"], expected)
+                        reference = sampled["mediaReferences"][0]
+                    finally:
+                        process.terminate()
+                        try:
+                            process.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait()
+                        process.stdin.close()
+                        process.stdout.close()
+                        reader.join(timeout=1)
+                    self.assertEqual(process.returncode, 0, (root / "stderr.log").read_text())
+                history = ObservationHistory(root)
+                try:
+                    video = history.directory / reference["asset"]
+                    with av.open(str(video)) as container:
+                        self.assertEqual(container.streams.video[0].codec_context.framerate, Fraction(str(expected)))
+                    row = history.observe({"id": sampled["snapshot"]["id"]})["records"][0]
+                    self.assertEqual(row["generation"], generation)
+                    self.assert_picture(base64.b64decode(row["media"][0]["data"]), (200, 40, 60))
+                finally:
+                    history.close()
 
     def test_two_channels_actual_timestamps_cold_queries_and_no_image_archive(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -42,7 +42,7 @@ def main():
     arguments.output.mkdir(parents=True, exist_ok=False)
     os.environ["RSA_PERCEPTION_HOT_BYTES"] = "1048576"
     os.environ["RSA_PERCEPTION_HOT_SECONDS"] = "1"
-    history = ObservationHistory(arguments.output)
+    history = ObservationHistory(arguments.output, sample_hz=arguments.rate)
     saved, points, png_bytes = [], [], 0
     started = time.monotonic()
     sampling = {"clock": "soak", "startedAtMs": 0, "finishedAtMs": 1}

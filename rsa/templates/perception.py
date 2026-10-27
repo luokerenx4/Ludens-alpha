@@ -4,7 +4,7 @@ from rsa_tools import perception, record
 
 
 class Perception:
-    sample_hz = 2.0  # Target rate; slow samples never overlap or accumulate.
+    sample_hz = 30.0  # Target rate; tune as needed, then reload. Slow samples never overlap or accumulate.
 
     def start(self, context):
         """Initialize models/state once; discover device abilities in baseware.json."""

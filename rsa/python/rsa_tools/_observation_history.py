@@ -17,6 +17,8 @@ import threading
 import time
 import uuid
 
+from ._sampling import DEFAULT_SAMPLE_HZ, validate_sample_hz
+
 
 def timestamp(value, name):
     if not isinstance(value, str):
@@ -99,7 +101,8 @@ def observation_result(record):
 
 
 class ObservationHistory:
-    def __init__(self, workspace):
+    def __init__(self, workspace, *, sample_hz=DEFAULT_SAMPLE_HZ):
+        self.sample_hz = validate_sample_hz(sample_hz)
         self.root = Path(workspace).resolve()
         self.directory = self.root / ".rsa" / "timeline"
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -297,7 +300,7 @@ class ObservationHistory:
                         video_dir = (self.directory if self.persistent else self._temporary) / "video"
                         self._video = VideoRecorder(self.directory, video_dir)
                     channel = json.dumps([identity["id"], identity.get("codeSHA"), index, generation, item["mediaType"]])
-                    location = self._video.submit(raw, channel, at, size)
+                    location = self._video.submit(raw, channel, at, size, sample_hz=self.sample_hz)
                     archived.append({"mediaType": item["mediaType"], "sha256": hashlib.sha256(raw).hexdigest(),
                                      "bytes": len(raw), "timeline": {**reference, **location}})
                     originals[index] = raw

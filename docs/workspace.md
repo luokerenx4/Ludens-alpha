@@ -94,7 +94,9 @@ def temperature() -> dict:
 
 ## 常驻感知与历史读取
 
-`perception.py:Perception` 在专用 Python 进程中运行：`start(context)` 初始化一次；`sample()` 按 `sample_hz` 连续执行（默认 2 Hz）；`close()` 释放自建资源。context 含 `workspace/runDir/generation`。在 `sample()` 上使用 `@perception` 和 `@record`；sampler 不再隐式保存结果。类实例、模块和模型跨模型轮次保留，慢采样不重叠、不补跑。模板见 [perception.py](../rsa/templates/perception.py)。
+`perception.py:Perception` 在专用 Python 进程中运行：`start(context)` 初始化一次；`sample()` 按 `sample_hz` 连续执行（默认 30 Hz）；`close()` 释放自建资源。AI 可修改类上的 `sample_hz`，执行 `rsa perception reload` 生效。context 含 `workspace/runDir/generation`。在 `sample()` 上使用 `@perception` 和 `@record`；sampler 不再隐式保存结果。类实例、模块和模型跨模型轮次保留，慢采样不重叠、不补跑。模板见 [perception.py](../rsa/templates/perception.py)。
+
+装饰器标记的是任意感知能力，不限定屏幕数量或媒体类型；`@record` 在能力实际调用成功时记录。自动定频调度只调用主 `Perception.sample()`，不会为每个被标记的能力另开循环。录像编码器共用 `sample_hz` 作为名义频率，缺省也是 30；没有独立 FPS 配置。独立能力仍按实际调用时间记录，视频不按名义频率重采样；频率改变后开启新视频段。
 
 ```sh
 rsa perception status
@@ -128,7 +130,7 @@ rsa perception stop
 
 持久模式采样完成提交记录元数据，图像由有界后台队列编码。时空轴元数据默认一小时分段，视频默认 10 秒分段；每个视频段的 `.mp4.json` 状态区分 pending/ready/error。热图像可在编码期间直接用于当前观测；冷查询需已完成的视频段，积压丢录制帧明确记为 gap。视频按实际 recordedAt 的间隔赋予 PTS，保留来源 sampledAt，不补造帧。历史解码是高质量有损复原，不声称还原当时模型输入的逐字节内容。冷记录按需查询，不常驻全量索引或图片。关闭持久化后只保留有限临时窗口，停止/reload 清空窗口；响应会携带选中媒体字节，防止读取后淘汰造成交付失效，不另建审计副本。过期由 `availability` 明确返回。持久化开关不删除旧持久档案或用户主动保存的文件，OMP 原生会话仍属独立范围；RSA 模型日志仅引用这些媒体，不让临时窗口变成永久档案。
 
-编码器、Python 和图像库还会使用原生内存，上表不是进程 RSS 上限。冷视频解码在采样锁外执行；Dashboard 离线解码限制为 2 个并发、16 个等待请求，单次 20 秒／32 MiB 输出。MP4 末帧在没有下一次采样时使用 1/30 秒尾长，回放随后保持最后画面，不代表补采了后续帧。
+编码器、Python 和图像库还会使用原生内存，上表不是进程 RSS 上限。冷视频解码在采样锁外执行；Dashboard 离线解码限制为 2 个并发、16 个等待请求，单次 20 秒／32 MiB 输出。MP4 末帧在没有下一次采样时使用 `1 / sample_hz` 秒尾长（按微秒取整，至少一微秒），回放随后保持最后画面，不代表补采了后续帧。
 
 CLI 默认返回 JSON，`--images` 用 OMP 原生终端图像通道交付所选图像，一页最多 32 张/40 MiB；超限需缩小分页，不静默丢图。时空轴可以保存音频/二进制等媒体，但当前模型适配仅直接消费图像及文本/JSON，不宣称支持所有模型模态。普通原生工具图片没有隐式永久归档；若字节与轴中已有媒体相同，Dashboard 可以复用其引用，不猜采集时间。
 

@@ -33,7 +33,7 @@ The same command is available as rsa perception observe.`;
 const PERCEPTION_HELP = `rsa perception status | reload | stop
 ${OBSERVE_HELP}
 Loads workspace/perception.py:Perception in a resident process and calls sample() continuously.
-Set sample_hz to choose a target rate (default 2 Hz). Reload after editing code or weights.
+Set sample_hz to choose a target and video nominal rate (default 30 Hz). Reload after editing code or weights.
 Mark sample() with @perception and @record from rsa_tools. Only marked results enter the timeline.
 Persistent history survives reload and new runs. Defaults: 10-minute hot window, hourly segments.
 Set RSA_PERCEPTION_PERSIST=0 in the host environment for hot-window-only history.

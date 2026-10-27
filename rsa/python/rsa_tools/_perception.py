@@ -5,7 +5,6 @@ import importlib.machinery
 import hashlib
 import inspect
 import json
-import math
 import os
 from pathlib import Path
 import queue
@@ -19,6 +18,7 @@ import uuid
 
 from rsa_tools._context import current, scope
 from rsa_tools._observation_history import ObservationHistory, MAIN_CAPABILITY, observation_result
+from rsa_tools._sampling import DEFAULT_SAMPLE_HZ, validate_sample_hz
 
 
 class WorkspaceSourceLoader(importlib.machinery.SourceFileLoader):
@@ -173,10 +173,8 @@ def main():
                                 raise TypeError("The main sample must be defined as perception.py:Perception.sample")
                             if inspect.iscoroutinefunction(instance.sample):
                                 raise TypeError("Perception.sample must be synchronous; use def sample(), not async def")
-                            sample_hz = getattr(instance, "sample_hz", 2.0)
-                            if (isinstance(sample_hz, bool) or not isinstance(sample_hz, (int, float))
-                                    or not math.isfinite(sample_hz) or sample_hz <= 0):
-                                raise ValueError("Perception.sample_hz must be a positive finite number")
+                            sample_hz = validate_sample_hz(getattr(instance, "sample_hz", DEFAULT_SAMPLE_HZ))
+                            history.sample_hz = sample_hz
                             instance.start({"workspace": str(workspace), "runDir": message["runDir"],
                                             "generation": message["generation"]})
                         result["sampleHz"] = sample_hz
