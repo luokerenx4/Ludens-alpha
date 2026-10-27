@@ -8,6 +8,10 @@ export const perceptionStateLabel: Record<PerceptionStatus["state"], string> = {
   error: "异常",
 };
 
+export function mediaFailureMessage(status: number): string {
+  return status === 410 ? "观测已过期或已移除" : "无法读取观测文件";
+}
+
 /** Age at the actual read, not page viewing time or media archival time. */
 export function perceptionAgeMs(read?: PerceptionRead): number | null {
   if (!read?.snapshot?.recordedAt) return null;

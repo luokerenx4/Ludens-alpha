@@ -62,7 +62,7 @@ nativeTest("native pad timeline survives caller exit and wait cancellation; take
       }
     })();
     await until(() => ready);
-    provider = await createAzaharProvider({ port, artifactsDir: directory, clock: { id: "native-test", now: () => performance.now() } });
+    provider = await createAzaharProvider({ port, clock: { id: "native-test", now: () => performance.now() } });
     const events: DeviceEvent[] = [];
     const core = new BasewareCore({ capabilities: provider.capabilities, drivers: [{ id: "azahar", version: provider.version }],
       record: (type, data, trace = {}, metadata) => events.push({ type, data, trace, source: metadata!.source!, origin: metadata!.origin! }) });

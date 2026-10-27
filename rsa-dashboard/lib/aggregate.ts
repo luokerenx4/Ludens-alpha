@@ -269,6 +269,8 @@ export function aggregate(events: Event[], now = Date.now()) {
         at: event.at,
         controller: observation.controllerId ?? observation.sensorId ?? "",
         mediaType: observation.mediaType,
+        mediaStorage: observation.timeline ? "timeline" : observation.path ? "run" : "unrecorded",
+        timeline: observation.timeline,
         origin: observation.origin ?? "unknown",
         text: observation.text,
         hook: observation.hook,
@@ -289,6 +291,8 @@ export function aggregate(events: Event[], now = Date.now()) {
       } else if (o.hook || o.perception) {
         Object.assign(existing, { hook: o.hook, perception: o.perception, text: o.text, origin: o.origin });
       }
+      if (existing && o.mediaStorage !== "unrecorded")
+        Object.assign(existing, { mediaStorage: o.mediaStorage, timeline: o.timeline });
       if (call && !call.observations.includes(o.id)) call.observations.push(o.id);
     }
     if (event.type === "observation_media") {

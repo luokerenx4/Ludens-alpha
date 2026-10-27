@@ -51,18 +51,22 @@ export function toolExecution(clock: Clock, requestedAtMs: number, result: ToolR
     timing: { clock: clock.id, requestedAtMs, receivedAtMs: clock.now() }, ...extra, result };
 }
 
-/** Log representation only: binary payloads live in observation files, never repeated in JSONL. */
+/** Log representation only: keep references when available, never inline binary payloads. */
 export function archivedToolResult(result: ToolResult, observations: readonly Observation[] = []): Record<string, unknown> {
   return { ...result, content: result.content.map((block, index) => {
     const observation = observations.find(item => item.contentIndex === index);
     if (block.type === "image" || block.type === "audio") {
       const { data, ...rest } = block;
-      return { ...rest, ...(observation ? { dataPath: observation.path } : { dataOmitted: true }), encodedBytes: data.length };
+      return { ...rest, ...(observation?.timeline ? { timeline: observation.timeline }
+        : observation?.path ? { dataPath: observation.path } : { dataOmitted: true }), encodedBytes: data.length };
     }
     if (block.type === "resource" && "blob" in block.resource) {
       const { blob, ...resource } = block.resource;
-      return { ...block, resource: { ...resource, ...(observation ? { blobPath: observation.path } : { blobOmitted: true }), encodedBytes: blob.length } };
+      return { ...block, resource: { ...resource, ...(observation?.timeline ? { timeline: observation.timeline }
+        : observation?.path ? { blobPath: observation.path } : { blobOmitted: true }), encodedBytes: blob.length } };
     }
     return block;
   }) };
 }
+
+export function observationMetadata({ data: _data, ...observation }: Observation): Observation { return observation; }

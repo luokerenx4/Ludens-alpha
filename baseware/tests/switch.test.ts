@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -67,7 +67,7 @@ async function withSwitchBridge(run: (provider: Awaited<ReturnType<typeof create
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const provider = await createSwitchProvider({ port: (server.address() as AddressInfo).port,
-    artifactsDir: directory, clock: { id: "test", now: () => performance.now() } });
+    clock: { id: "test", now: () => performance.now() } });
   try { await run(provider, captures, requests, typed); }
   finally {
     provider.close();
@@ -87,7 +87,8 @@ test("Switch capture defaults to zero delay and includes a requested delay in it
     const second = (await call(screen, { delayMs: 0 }, { signal })).observations![0];
     const delayed = (await call(screen, { delayMs: 40 }, { signal })).observations![0];
     expect(captures).toHaveLength(3);
-    expect(captures.map(capture => capture.path)).toEqual([first.path, second.path, delayed.path]);
+    expect([first.path, second.path, delayed.path]).toEqual([undefined, undefined, undefined]);
+    for (const capture of captures) await expect(access(capture.path)).rejects.toThrow();
     expect(first.sourceSequence).toBe(1);
     expect(second.sourceSequence).toBe(2);
     expect(delayed.sourceSequence).toBe(3);
@@ -208,7 +209,7 @@ test("Switch release waits for a late action result before reporting release or 
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const provider = await createSwitchProvider({ port: (server.address() as AddressInfo).port,
-    artifactsDir: directory, clock: { id: "release-order", now: () => performance.now() } });
+    clock: { id: "release-order", now: () => performance.now() } });
   const tool = (name: string) => provider.capabilities.controllers.find(c => c.tool.name === name)!;
   const pad = tool("pad.play");
   const screen = provider.capabilities.controllers.find(c => c.tool.name === "screen.capture")!;

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Ajv from "ajv";
@@ -13,17 +13,23 @@ import { createTestRuntime } from "./runtime-fixture.ts";
 
 test("observe wire schema accepts unused fields and real OMP calls deliver requested historical pixels", async () => {
   const workspace = await mkdtemp(join(tmpdir(), "rsa-observe-schema-")), runDir = join(workspace, "logs", "run");
-  const history = join(runDir, "perception", "history");
-  await mkdir(history, { recursive: true });
   const path = join(workspace, "historical.png");
   await writeFile(path, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg==", "base64"));
-  const records = [50, 51].map((second, index) => ({
-    id: `historical-${index}`, sequence: index + 1, generation: "previous",
-    recordedAt: `2026-10-22T06:45:${second}Z`, sampling: { clock: "previous", startedAtMs: index, finishedAtMs: index },
-    text: "historical", media: [{ path, mediaType: "image/png" }],
-  }));
-  await writeFile(join(history, "records.jsonl"), records.map(record => JSON.stringify(record)).join("\n") + "\n");
-  await writeFile(join(workspace, "perception.py"), 'class Perception:\n    def start(self, context): pass\n    def sample(self): return {"text": "live"}\n    def close(self): pass\n');
+  const seed = Bun.spawn(["python3", "-B", "-c", `import json, sys
+from unittest.mock import patch
+from rsa_tools._observation_history import ObservationHistory, timestamp
+history = ObservationHistory(sys.argv[1])
+records = []
+for second in (50, 51):
+    with patch("rsa_tools._observation_history.time.time", return_value=timestamp(f"2026-10-22T06:45:{second}Z", "at")):
+        records.append(history.append({"text": "historical", "media": [{"path": "historical.png", "mediaType": "image/png"}]},
+                       "previous", {"clock": "previous", "startedAtMs": second, "finishedAtMs": second}))
+history.close()
+print(json.dumps(records))`, workspace], {env: {...process.env, PYTHONPATH: join(import.meta.dir, "../python")}, stdout: "pipe", stderr: "pipe"});
+  const [seeded, seedError, code] = await Promise.all([new Response(seed.stdout).text(), new Response(seed.stderr).text(), seed.exited]);
+  expect({code, seedError}).toEqual({code: 0, seedError: ""});
+  const records = JSON.parse(seeded) as {id: string}[];
+  await writeFile(join(workspace, "perception.py"), 'from rsa_tools import perception, record\nclass Perception:\n    def start(self, context): pass\n    @record\n    @perception\n    def sample(self): return {"text": "live"}\n    def close(self): pass\n');
   const runtime = createTestRuntime({ controllers: [] });
   runtime.perception = new PerceptionRuntime({ workspace, runDir, record: runtime.record });
   const signal = new AbortController().signal;
@@ -51,7 +57,7 @@ test("observe wire schema accepts unused fields and real OMP calls deliver reque
       const read = result.details as PerceptionRead;
       expect(read.records?.map(record => record.snapshot.id)).toEqual(records.slice(0, expected).map(record => record.id));
       expect(result.content.filter(part => part.type === "image")).toHaveLength(expected);
-      expect(result.content.some(part => part.type === "text" && part.text.includes("recordedAt=2026-10-22T06:45:50Z"))).toBe(true);
+      expect(result.content.some(part => part.type === "text" && part.text.includes("recordedAt=2026-10-22T06:45:50.000Z"))).toBe(true);
     }
     const handlers: Record<string, (event: any) => any> = {};
     await extension.factory({ on(name: string, handler: (event: any) => any) { handlers[name] = handler; } } as ExtensionAPI);

@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { Capabilities, ExecutionResult, Observation, ToolArguments } from "./contracts.ts";
-import { argumentValidator, archivedToolResult } from "./tool-contract.ts";
+import { argumentValidator, archivedToolResult, observationMetadata } from "./tool-contract.ts";
 import type { Catalog, DeviceEvent, RecordEvent, Request, Trace } from "./protocol.ts";
 
 export interface DriverInfo { id: string; version: string }
@@ -156,11 +156,11 @@ export class BasewareCore {
         captureRequestedAfterMs: observation.timing.requestedAtMs - execution.result.timing.receivedAtMs,
         captureReceivedAfterMs: observation.timing.receivedAtMs - execution.result.timing.receivedAtMs,
       } : undefined;
-      this.record("observation", { ...observation, origin, afterExecution,
+      this.record("observation", { ...observationMetadata(observation), origin, afterExecution,
         previousObservationId: sameClock ? previous.id : undefined,
         sourceSequenceDelta: sameClock && previous.sourceSequence !== undefined && observation.sourceSequence !== undefined
           ? observation.sourceSequence - previous.sourceSequence : undefined }, trace);
-      this.previousObservations.set(key, observation);
+      this.previousObservations.set(key, observationMetadata(observation));
     }
   }
 
@@ -194,7 +194,8 @@ export class BasewareCore {
       if (controller.requiresControl && !result.actionId && !result.readOnly && epoch === this.epoch) this.lastExecution = { result, trace };
       const outcome = combined.aborted || result.status === "interrupted" ? "cancelled"
         : result.status === "completed" && result.exitCode === 0 ? "success" : "error";
-      this.record("execution", { ...result, result: archivedToolResult(result.result, result.observations), controllerId: id, requiresControl: controller.requiresControl, outcome }, trace);
+      this.record("execution", { ...result, observations: result.observations?.map(observationMetadata),
+        result: archivedToolResult(result.result, result.observations), controllerId: id, requiresControl: controller.requiresControl, outcome }, trace);
       if (result.observations?.length && !observing) {
         observing = true;
         this.record("observation_start", operation, trace);

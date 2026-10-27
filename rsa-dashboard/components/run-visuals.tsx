@@ -1,8 +1,9 @@
 "use client";
 import { useEffect, useState } from "react";
-import type { Call, Observation, RunData, TraceSpan } from "@/lib/types";
+import type { Call, Observation, PerceptionSnapshot, RunData, TraceSpan } from "@/lib/types";
+import type { TimelineRecordDetail } from "@/lib/timeline-record";
 import { requestWait, sseFallbackReason } from "@/lib/transport";
-import { observationTime, perceptionAgeMs, perceptionStateLabel, samplingDurationMs, selectObservations } from "./observation-model";
+import { mediaFailureMessage, observationTime, perceptionAgeMs, perceptionStateLabel, samplingDurationMs, selectObservations } from "./observation-model";
 
 export const seconds = (ms: number | null | undefined) =>
   ms == null ? "—" : (ms / 1000).toFixed(1) + " s";
@@ -204,7 +205,7 @@ function TextObservation({ url }: { url: string }) {
     const controller = new AbortController();
     fetch(url, { signal: controller.signal })
       .then(async (response) => {
-        if (!response.ok) throw new Error("无法读取文字观测");
+        if (!response.ok) throw new Error(mediaFailureMessage(response.status));
         const value = await response.text();
         if (!controller.signal.aborted) setText(value);
       })
@@ -214,6 +215,61 @@ function TextObservation({ url }: { url: string }) {
     return () => controller.abort();
   }, [url]);
   return <pre className="observation-text">{text}</pre>;
+}
+
+function MediaFailure({ url }: { url: string }) {
+  const [message, setMessage] = useState("无法读取观测文件");
+  useEffect(() => {
+    const controller = new AbortController();
+    // Only failed media requests need a status lookup; normal images stream
+    // directly to the browser without a second copy in application memory.
+    fetch(url, { signal: controller.signal, cache: "no-store" })
+      .then(response => {
+        void response.body?.cancel();
+        if (!controller.signal.aborted) setMessage(mediaFailureMessage(response.status));
+      }).catch(() => {});
+    return () => controller.abort();
+  }, [url]);
+  return <span role="status">{message}</span>;
+}
+
+function ObservationMedia({ observation, url, alt = "", thumbnail = false }: {
+  observation: Observation; url: string; alt?: string; thumbnail?: boolean;
+}) {
+  const [failed, setFailed] = useState(false);
+  if (observation.mediaStorage === "unrecorded") return <span>未录制 · 仅保留交付记录</span>;
+  if (failed) return <MediaFailure url={url} />;
+  if (observation.mediaType.startsWith("image/"))
+    return <img src={url} alt={alt} onError={() => setFailed(true)} />;
+  if (thumbnail) return <span>{observation.mediaType.startsWith("audio/") ? "音频" : "文字"}</span>;
+  if (observation.mediaType.startsWith("audio/"))
+    return <audio controls preload="none" src={url} onError={() => setFailed(true)} />;
+  return <TextObservation url={url} />;
+}
+
+function TimelineRecordData({ url }: { url: string }) {
+  const [record, setRecord] = useState<TimelineRecordDetail | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetch(url, { cache: "no-store", signal: controller.signal }).then(async response => {
+      if (!response.ok) throw new Error(mediaFailureMessage(response.status));
+      setRecord(await response.json());
+    }).catch(error => { if (!controller.signal.aborted) setError(error.message); });
+    return () => controller.abort();
+  }, [url]);
+  if (error) return <p role="status">{error}</p>;
+  if (!record) return <p role="status">正在读取时空记录…</p>;
+  if (record.data === undefined && record.space === undefined) return <p>此记录没有额外的数据或空间标注。</p>;
+  return <pre className="observation-text">{JSON.stringify({ data: record.data, space: record.space }, null, 2)}</pre>;
+}
+
+function TimelineRecordDetails({ snapshot, url }: { snapshot: PerceptionSnapshot; url: string }) {
+  const [open, setOpen] = useState(false);
+  return <details className="observation-metadata" onToggle={event => setOpen(event.currentTarget.open)}>
+    <summary>记录 #{snapshot.sequence} · 感知数据与空间信息</summary>
+    {open && <TimelineRecordData key={url} url={url} />}
+  </details>;
 }
 
 export function ObservationPanel({
@@ -235,6 +291,9 @@ export function ObservationPanel({
   const text = showingInput ? call?.inputText : observation?.text;
   const perception = observation?.perception ?? (showingInput ? call?.perception : undefined);
   const snapshot = perception?.snapshot;
+  const recordRead = showingInput ? call?.perception : perception;
+  const records = (recordRead?.records?.map(record => record.snapshot) ?? (recordRead?.snapshot ? [recordRead.snapshot] : []))
+    .filter(record => record.timeline);
   const age = perceptionAgeMs(perception);
   const samplingMs = samplingDurationMs(snapshot);
   const timestamp = (o: Observation) => o.perception ? o.perception.snapshot?.recordedAt : o.at;
@@ -253,12 +312,8 @@ export function ObservationPanel({
           aria-pressed={o.id === observation?.id}
           title={[o.controller, timestamp(o)].filter(Boolean).join(" · ")}
         >
-          {o.mediaType.startsWith("image/") ? (
-            <img src={media(o)} alt="" />
-          ) : (
-            <span>{o.mediaType.startsWith("audio/") ? "音频" : "文字"}</span>
-          )}
-          <small>{label}</small>
+          <ObservationMedia key={media(o)} observation={o} url={media(o)} thumbnail />
+          <small>{o.mediaStorage === "unrecorded" ? "未录制的观测" : label}</small>
           <small>{observationTime(timestamp(o))}</small>
         </button>
       ))}
@@ -293,7 +348,7 @@ export function ObservationPanel({
             <div><dt>读取时结果年龄</dt><dd>{age === null ? "未知" : seconds(age)}</dd></div>
             <div><dt>记录时间</dt><dd title={snapshot?.recordedAt}>{observationTime(snapshot?.recordedAt)}</dd></div>
             <div><dt>采样耗时</dt><dd title={snapshot?.sampling?.clock}>{samplingMs === null ? "未知" : duration(samplingMs)}</dd></div>
-            <div><dt>记录代次</dt><dd title={snapshot?.generation}>{snapshot?.generation?.slice(0, 12) ?? "未知"}</dd></div>
+            <div><dt>记录代次</dt><dd title={snapshot?.generation ?? undefined}>{snapshot?.generation?.slice(0, 12) ?? "未知"}</dd></div>
             <div><dt>来源时刻</dt><dd title={snapshot?.sampledAt}>{observationTime(snapshot?.sampledAt)}</dd></div>
             {snapshot && <div><dt>记录序号</dt><dd>{snapshot.sequence}</dd></div>}
           </dl>
@@ -313,27 +368,18 @@ export function ObservationPanel({
           )}
         </details>
       )}
+      {records.map(record => <TimelineRecordDetails key={record.timeline!.recordId} snapshot={record}
+        url={"/api/media?" + new URLSearchParams({ project: data.project, run: data.run,
+          record: record.timeline!.recordId, sequence: String(record.timeline!.sequence),
+          ...(showingInput && call ? { call: call.id } : observation ? { id: observation.id } : {}) })} />)}
       <div className="screen">
         {observation ? (
-          observation.mediaType.startsWith("image/") ? (
-            <img
-              key={observation.id}
-              src={media(observation)}
-              alt={
-                (showingInput ? "模型输入" : "保存观测") +
-                " · " +
-                observation.controller +
-                " · " +
-                observationTime(timestamp(observation))
-              }
-            />
-          ) : observation.mediaType.startsWith("audio/") ? (
-            <audio controls src={media(observation)} />
-          ) : (
-            <TextObservation key={observation.id} url={media(observation)} />
-          )
+          <ObservationMedia key={media(observation)} observation={observation} url={media(observation)}
+            alt={(showingInput ? "模型输入" : "保存观测") + " · " + observation.controller + " · " + observationTime(timestamp(observation))} />
         ) : text ? (
           <pre className="observation-text">{text}</pre>
+        ) : records.length ? (
+          <p>本次输入包含 {records.length} 条时空记录。展开上方详情查看感知数据与空间信息。</p>
         ) : (
           <div className="empty-state">
             <span className="empty-symbol">◫</span>
@@ -350,7 +396,7 @@ export function ObservationPanel({
             ? (observationOrigin[observation.origin] ?? observation.origin) +
               " · " +
               (observation.perception ? "记录于 " : "") + observationTime(timestamp(observation))
-            : text ? "文字观测" : "暂无输入媒体"}
+            : text ? "文字观测" : records.length ? "时空记录" : "暂无输入媒体"}
         </span>
         {observation?.sourceSequence != null && (
           <span>源帧 {observation.sourceSequence}</span>
@@ -371,8 +417,8 @@ export function ObservationPanel({
       {!!others.length && (
         <details className="observation-metadata">
           <summary>其他采样与产物 · {others.length}</summary>
-          <p>保留采集和处理过程，默认展示上方的模型输入。</p>
-          {samples(others, "保存的观测")}
+          <p>采集和处理的交付记录；仅录制的观测提供历史媒体。</p>
+          {samples(others, "已录制的观测")}
         </details>
       )}
       {observation && (

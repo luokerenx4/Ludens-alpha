@@ -8,7 +8,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { aggregate } from "../lib/aggregate";
 import { mediaFile } from "../lib/data";
 import { eventObservations, perceptionStatus } from "../lib/observation-events";
-import { observationTime, perceptionAgeMs, samplingDurationMs, selectObservations } from "../components/observation-model";
+import { mediaFailureMessage, observationTime, perceptionAgeMs, samplingDurationMs, selectObservations } from "../components/observation-model";
 import { ObservationPanel } from "../components/run-visuals";
 import { projectTelemetry } from "../lib/telemetry";
 import type { Event, PerceptionSnapshot, RunData } from "../lib/types";
@@ -228,5 +228,105 @@ test("media serving accepts archived perception output and preserves type and ru
       await assert.rejects(mediaFile("project", "run", id, root), /必须位于当前运行目录/);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("timeline media is shared across runs and resolved only within the registered workspace", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "rsa-timeline-media-")));
+  try {
+    const workspace = join(root, "workspace"), timeline = join(workspace, ".rsa/timeline");
+    const state = join(root, "project"), other = join(root, "other-workspace");
+    await mkdir(join(timeline, "objects"), { recursive: true });
+    await mkdir(join(timeline, "window"), { recursive: true });
+    await mkdir(other);
+    await mkdir(state);
+    await writeFile(join(state, "workspace.json"), JSON.stringify({ workspace }));
+    await writeFile(join(timeline, "objects/shared.png"), "one immutable original");
+    await writeFile(join(timeline, "window/recent.png"), "temporary frame");
+    await writeFile(join(other, "secret.png"), "other workspace");
+    await symlink(join(other, "secret.png"), join(timeline, "objects/escape.png"));
+    const observation = (id: string, asset: string) => ({ id, mediaType: "image/png",
+      // This path is deliberately wrong: the explicit reference must own resolution.
+      path: join(other, "secret.png"), timeline: { recordId: "record-one", sequence: 1, asset } });
+    const event = makeEvents();
+    const events = [
+      event("observation", observation("shared", "objects/shared.png")),
+      event("observation", observation("recent", "window/recent.png")),
+      event("observation", observation("expired", "window/expired.png")),
+      event("observation", observation("escape", "objects/escape.png")),
+      event("observation", observation("traversal", "../../../other-workspace/secret.png")),
+      event("observation", observation("absolute", join(other, "secret.png"))),
+      event("observation", { id: "asset-only", mediaType: "image/png", timeline: { asset: "objects/shared.png" } }),
+      event("observation", { id: "asset-only-traversal", mediaType: "image/png", timeline: { asset: "../outside.png" } }),
+      event("observation", { id: "invalid-sequence", mediaType: "image/png", timeline: { asset: "objects/shared.png", sequence: 0 } }),
+      event("observation", { id: "invalid-record", mediaType: "image/png", timeline: { asset: "objects/shared.png", recordId: "" } }),
+      event("observation", { id: "unrecorded", mediaType: "image/png" }),
+    ];
+    for (const run of ["first", "second"]) {
+      const runDir = join(workspace, "logs", run);
+      await mkdir(runDir, { recursive: true });
+      // The registry, not the manifest or event path, chooses the workspace.
+      await writeFile(join(runDir, "manifest.json"), JSON.stringify({ workspace: other }));
+      await writeFile(join(runDir, "events.jsonl"), events.map(item => JSON.stringify(item)).join("\n") + "\n");
+      const media = await mediaFile("project", run, "shared", root);
+      assert.equal(media.bytes.toString(), "one immutable original");
+      assert.match(media.cacheControl, /immutable/);
+    }
+    assert.equal((await mediaFile("project", "first", "recent", root)).cacheControl, "no-store");
+    assert.equal((await mediaFile("project", "first", "asset-only", root)).bytes.toString(), "one immutable original");
+    await rm(join(timeline, "window/recent.png"));
+    for (const id of ["recent", "expired"])
+      await assert.rejects(mediaFile("project", "first", id, root), { code: "OBSERVATION_EXPIRED", status: 410 });
+    await assert.rejects(mediaFile("project", "first", "unrecorded", root), { code: "OBSERVATION_UNRECORDED" });
+    await assert.rejects(mediaFile("project", "first", "escape", root), /必须位于当前工作区时空轴内/);
+    for (const id of ["traversal", "absolute", "asset-only-traversal", "invalid-sequence", "invalid-record"])
+      await assert.rejects(mediaFile("project", "first", id, root), /无效的时空轴媒体引用/);
+    await rm(timeline, { recursive: true });
+    await symlink(other, timeline);
+    await assert.rejects(mediaFile("project", "first", "shared", root), /必须位于当前工作区时空轴内/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("metadata-only deliveries render as unrecorded without broken media requests", () => {
+  const event = makeEvents();
+  const result = aggregate([
+    event("observation", { id: "input", controllerId: "bash", mediaType: "image/png", origin: "tool_result" }),
+    event("model_start", { observations: ["input"] }, { modelCallId: "call" }),
+  ]);
+  assert.equal(result.observations[0].mediaStorage, "unrecorded");
+  const html = renderToStaticMarkup(createElement(ObservationPanel, {
+    data: { ...result, project: "test", run: "test" } as RunData,
+    call: result.calls[0], onImage() {},
+  }));
+  assert.match(html, /未录制 · 仅保留交付记录/);
+  assert.doesNotMatch(html, /<img|\/api\/media/);
+  assert.equal(mediaFailureMessage(410), "观测已过期或已移除");
+});
+
+test("data-only and mixed model inputs expose lazy record details without duplicating data in projections", () => {
+  for (const withImage of [false, true]) {
+    const event = makeEvents();
+    const status = { state: "ready", generation: "sampler" };
+    const snapshots: PerceptionSnapshot[] = [1, 2].map(sequence => ({ id: `record-${sequence}`, sequence,
+      timeline: { recordId: `record-${sequence}`, sequence }, generation: null,
+      recordedAt: new Date(sequence * 1000).toISOString(), sampling: { clock: "sensor", startedAtMs: 0, finishedAtMs: 1 } }));
+    const media = withImage ? [{ id: "frame", mediaType: "image/png", timeline: { ...snapshots[1].timeline!, asset: "objects/frame.bin" } }] : [];
+    const records = snapshots.map((snapshot, index) => ({ snapshot, text: "", observations: index ? media : [] }));
+    const result = aggregate([
+      event("perception_observe_end", { status, snapshot: snapshots[1], records,
+        result: { id: "sensor-input", status: "completed", exitCode: 0, stdout: "", observations: media } }),
+      event("context", { observations: media.map(item => item.id), executions: ["sensor-input"] }),
+      event("model_start", { observations: media.map(item => item.id) }, { modelCallId: "input" }),
+    ]);
+    const html = renderToStaticMarkup(createElement(ObservationPanel, {
+      data: { ...result, project: "test", run: "test" } as RunData, call: result.calls[0], onImage() {},
+    }));
+    assert.match(html, /记录 #1 · 感知数据与空间信息/);
+    assert.match(html, /记录 #2 · 感知数据与空间信息/);
+    assert.doesNotMatch(html, /本次请求没有可展示的输入画面|正在读取时空记录/);
+    if (!withImage) assert.match(html, /本次输入包含 2 条时空记录/);
+    assert.deepEqual(result.calls[0].perception?.records?.map(item => item.snapshot.timeline), snapshots.map(item => item.timeline));
   }
 });

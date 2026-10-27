@@ -51,6 +51,8 @@ export interface Observation {
   controller: string;
   origin: string;
   mediaType: string;
+  mediaStorage?: "timeline" | "run" | "unrecorded";
+  timeline?: { recordId?: string; sequence?: number; asset: string };
   text?: string;
   hook?: { id: string; codeSHA: string; path: string };
   perception?: PerceptionRead;
@@ -74,7 +76,7 @@ export interface PerceptionRead {
   status: PerceptionStatus;
   snapshot?: PerceptionSnapshot;
   records?: { snapshot: PerceptionSnapshot; text: string; observations: { id: string }[] }[];
-  query?: { at?: string; start?: string; end?: string; limit?: number; after?: number };
+  query?: { at?: string; start?: string; end?: string; limit?: number; after?: number; capability?: string; id?: string };
   hasMore?: boolean;
   nextAfter?: number;
   reused?: boolean;
@@ -84,7 +86,9 @@ export interface PerceptionRead {
 export interface PerceptionSnapshot {
   id: string;
   sequence: number;
-  generation: string;
+  timeline?: { recordId: string; sequence: number };
+  capability?: string;
+  generation: string | null;
   recordedAt: string;
   sampling: { clock: string; startedAtMs: number; finishedAtMs: number };
   sampledAt?: string;

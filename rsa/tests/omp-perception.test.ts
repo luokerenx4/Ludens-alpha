@@ -45,11 +45,14 @@ test("OMP bootstraps empty perception and repairs it through the real reload CLI
   const model = modelRegistry.find("openai-codex", "gpt-6.1-sol")!;
   const manager = SessionManager.create(workspace, join(directory, "session"));
   const baseTools = ["read", "write", "edit", "bash", "observe"];
-  const source = (text: string, broken = false) => `class Perception:
+  const source = (text: string, broken = false) => `from rsa_tools import perception, record
+class Perception:
     def start(self, context): pass
     def close(self): pass
+    @record
+    @perception
     def sample(self):
-        ${broken ? 'raise RuntimeError("observer needs repair")' : `return {"sequence": 1, "text": "${text}", "media": [{"path": "raw.png", "mediaType": "image/png"}]}`}
+        ${broken ? 'raise RuntimeError("observer needs repair")' : `return {"text": "${text}", "media": [{"path": "raw.png", "mediaType": "image/png"}]}`}
 `;
   const broken = source("unused", true);
   let session: AgentSession | undefined;
@@ -102,7 +105,7 @@ test("OMP bootstraps empty perception and repairs it through the real reload CLI
     expect(new Set(adapted.map(snapshot => snapshot.observation.perception.codeSHA)).size).toBe(3);
     for (const snapshot of adapted) {
       const observation = snapshot.observation.observations[0];
-      expect(observation.path.startsWith(join(runDir, "observations"))).toBe(true);
+      expect(observation.path.startsWith(join(workspace, ".rsa", "timeline", "objects"))).toBe(true);
       expect(await readFile(observation.path)).toEqual(await readFile(image));
     }
     const file = session.sessionFile!;

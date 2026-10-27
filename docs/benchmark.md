@@ -68,6 +68,8 @@ seq = record.record("sample_verified", {"frame": 42})
 
 conditions 描述比较条件；subject 引用对象、不复制模型/数据集，应声明版本/SHA，包括内存训练时的被测版本。artifact 归档并记 hash，原文件覆盖不影响附件；可在 `record.run_dir / "artifacts"` 生成后登记。条件是作者声明，实际调用看日志；无日志不证明无副作用。
 
+已有时空轴原件经路径与内容 hash 校验后只登记 `timeline.asset`，不再复制；此时 `path` 相对 workspace，普通归档附件的 `path` 仍相对 run。
+
 ## 执行和版本化报告
 
 ```text

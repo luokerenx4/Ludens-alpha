@@ -33,7 +33,8 @@ export class WorkspaceController {
     return {
       capabilities: [
         ...controllers.map(item => ({ ...item, id: `controller/${item.name}` })),
-        ...discovered.capabilities.map(item => ({ id: pythonId(item), description: summary(item.description) })),
+        ...discovered.capabilities.map(item => ({ id: pythonId(item), description: summary(item.description),
+          perception: item.perception ?? false, recorded: item.recorded ?? false })),
       ],
       diagnostics: discovered.diagnostics,
     };
@@ -48,6 +49,7 @@ export class WorkspaceController {
     const capability = await this.pythonCapability(id, signal, trace);
     return JSON.stringify({ id, usage: `rsa controller ${id} --args '<JSON object>'`,
       description: capability.description, parameters: capability.parameters,
+      perception: capability.perception ?? false, recorded: capability.recorded ?? false,
     }, null, 2);
   }
 
@@ -70,7 +72,11 @@ export class WorkspaceController {
     return this.options.devices.catalog.controllers.find(item => id === `controller/${item.name}`);
   }
 
-  requiresControl(id: string) { return this.device(id)?.requiresControl ?? true; }
+  async requiresControl(id: string, signal: AbortSignal, trace: EventTrace = {}) {
+    const device = this.device(id);
+    if (device) return device.requiresControl;
+    return !(await this.pythonCapability(id, signal, trace)).perception;
+  }
 
   private async pythonCapability(id: string, signal: AbortSignal, trace: EventTrace): Promise<PythonCapability> {
     if (id.startsWith("python/")) {

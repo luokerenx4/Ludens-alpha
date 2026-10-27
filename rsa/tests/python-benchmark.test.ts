@@ -177,6 +177,90 @@ print(json.dumps({"values": [first["metrics"]["count"]["value"], second["metrics
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("benchmark artifacts reference shared timeline originals across runs without copying media", async () => {
+  const { root, workspace, artifactRoot } = await fixture();
+  try {
+    await writeFile(join(workspace, "evaluation.py"), `from rsa_tools import benchmark, current_benchmark
+@benchmark
+def evaluate(path: str):
+    """Attach an already recorded observation."""
+    current_benchmark().artifact(path, label="Recorded frame")
+    return {}
+`);
+    const response = await python(workspace, artifactRoot, `import base64, json
+from pathlib import Path
+from rsa_tools._observation_history import ObservationHistory
+import evaluation
+history = ObservationHistory(Path.cwd())
+record = history.append({"media": [{"data": base64.b64encode(b"shared frame").decode(), "mediaType": "image/png"}]}, "fixture",
+                        {"clock": "fixture", "startedAtMs": 1, "finishedAtMs": 2})
+history.close()
+source = Path(record["media"][0]["path"])
+evaluation.evaluate(str(source))
+alias = Path("latest.png")
+alias.symlink_to(source)
+evaluation.evaluate(str(alias))
+print(json.dumps({"path": source.relative_to(Path.cwd()).as_posix(), "asset": record["media"][0]["timeline"]["asset"]}))
+`, { RSA_PERCEPTION_PERSIST: "1" });
+    const runs = await results(workspace);
+    expect(runs).toHaveLength(2);
+    for (const { result, directory } of runs) {
+      expect(result.status).toBe("completed");
+      expect(result.artifacts).toEqual([{ path: response.path, sha256: expect.any(String),
+        timeline: { asset: response.asset }, label: "Recorded frame" }]);
+      expect(await readdir(join(directory, "artifacts"))).toEqual([]);
+    }
+    expect(await readdir(join(workspace, ".rsa", "timeline", "objects"))).toEqual([response.asset.split("/").at(-1)]);
+    expect(await readFile(join(workspace, response.path), "utf8")).toBe("shared frame");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("benchmark timeline references require canonical storage and matching content hashes", async () => {
+  const { root, workspace, artifactRoot } = await fixture();
+  try {
+    const response = await python(workspace, artifactRoot, `import hashlib, json
+from pathlib import Path
+from rsa_tools.benchmarks import BenchmarkContext
+workspace = Path.cwd()
+directory = workspace / "logs" / "fixture"
+directory.mkdir(parents=True)
+context = BenchmarkContext(directory, {"workspace": str(workspace)})
+objects = workspace / ".rsa" / "timeline" / "objects"
+objects.mkdir(parents=True)
+digest = hashlib.sha256(b"original").hexdigest()
+tampered = objects / (digest + ".bin")
+tampered.write_bytes(b"changed")
+changed = context.artifact(tampered)
+outside = workspace.parent / "outside.bin"
+outside.write_bytes(b"outside")
+escape = objects / "escape.bin"
+escape.symlink_to(outside)
+try:
+    context.artifact(escape)
+except ValueError:
+    pass
+else:
+    raise AssertionError("escaped the workspace")
+escape.unlink()
+tampered.unlink()
+objects.rmdir()
+elsewhere = workspace / "ordinary-objects"
+elsewhere.mkdir()
+objects.symlink_to(elsewhere, target_is_directory=True)
+relocated = objects / (digest + ".bin")
+relocated.write_bytes(b"original")
+ordinary = context.artifact(relocated)
+assert "timeline" not in changed and "timeline" not in ordinary
+assert (directory / changed["path"]).read_bytes() == b"changed"
+assert (directory / ordinary["path"]).read_bytes() == b"original"
+print(json.dumps([changed, ordinary]))
+`);
+    expect(response).toHaveLength(2);
+    expect(response.every((artifact: { path: string }) => artifact.path.startsWith("artifacts/"))).toBe(true);
+    expect(await readdir(join(workspace, "logs", "fixture", "artifacts"))).toHaveLength(2);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("production report mistakes collect all errors after one execution, without converting measurements", async () => {
   const { root, workspace, artifactRoot } = await fixture();
   try {

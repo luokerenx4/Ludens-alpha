@@ -12,10 +12,16 @@ test("catalog, CLI JSON/file and Python share the same native arguments without 
   const workspace = await realpath(await mkdtemp(join(tmpdir(), "baseware-catalog-")));
   const socket = join(workspace, "service.sock");
   const inputs: unknown[] = [];
+  const image = { type: "image" as const, mimeType: "image/png", data: Buffer.from("native image").toString("base64") };
   const controller: Controller = { tool: { name: "fixture.echo", description: "native schema", inputSchema: {
     type: "object", properties: { value: { type: "string" }, duration: { type: "number", minimum: 0 } }, required: ["value"], additionalProperties: false,
   }, annotations: { readOnlyHint: true }, _meta: { "fixture/source": "unchanged" } }, requiresControl: false,
-    async execute(args) { inputs.push(args); return toolExecution({ id: "fixture", now: () => 1 }, 0, structuredResult(args)); } };
+    async execute(args) {
+      inputs.push(args);
+      const result = structuredResult(args);
+      result.content.unshift(image);
+      return toolExecution({ id: "fixture", now: () => 1 }, 0, result);
+    } };
   const core = new BasewareCore({ capabilities: { controllers: [controller] }, drivers: [{ id: "fixture", version: "1" }] });
   const close = await listen(socket, core);
   const entry = resolve(import.meta.dir, "../src/main.ts");
@@ -34,12 +40,15 @@ test("catalog, CLI JSON/file and Python share the same native arguments without 
     expect(document.commandEncoding).toBeUndefined();
     expect(inputs).toHaveLength(0);
     const args = { value: "A B; $(do-not-run)\n引号\"", duration: 0.5 };
-    await invoke([process.execPath, entry, "controller", "fixture.echo", "--args", JSON.stringify(args)]);
+    const cliResult = JSON.parse(await invoke([process.execPath, entry, "controller", "fixture.echo", "--args", JSON.stringify(args)]));
+    expect(cliResult.result.content[0]).toEqual(image);
     const file = join(workspace, "args.json");
     await writeFile(file, JSON.stringify(args));
     await invoke([process.execPath, entry, "controller", "fixture.echo", "--file", file]);
     const python = `import sys, json\nsys.path.insert(0, ${JSON.stringify(resolve(import.meta.dir, "../python"))})\nfrom baseware import Client\nargs = json.load(open(${JSON.stringify(file)}))\nprint(json.dumps(Client().controller('fixture.echo', args)))`;
-    expect(JSON.parse(await invoke(["python3", "-B", "-c", python])).result.structuredContent).toEqual(args);
+    const pythonResult = JSON.parse(await invoke(["python3", "-B", "-c", python]));
+    expect(pythonResult.result.structuredContent).toEqual(args);
+    expect(pythonResult.result.content[0]).toEqual(image);
     expect(inputs).toEqual([args, args, args]);
     await invoke([process.execPath, entry, "controller", "fixture.echo", "--args", '{"value":"x","duration":"0.5"}'], 1);
     expect(inputs).toHaveLength(3);

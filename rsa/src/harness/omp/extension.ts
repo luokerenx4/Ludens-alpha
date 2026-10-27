@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import { delimiter, join, resolve } from "node:path";
 import type { ExtensionFactory, CustomTool, ReadToolResultEvent } from "@oh-my-pi/pi-coding-agent";
 import { ASYNC_RESULT_MESSAGE_TYPE } from "@oh-my-pi/pi-coding-agent/session/async-job-delivery";
@@ -11,18 +11,18 @@ import type { Runtime } from "../runtime.ts";
 import { Workspace } from "../workspace.ts";
 import type { EventTrace, RecordEvent } from "../events.ts";
 import { pythonModulePaths } from "../python-capabilities.ts";
-import type { ObservationQuery, PerceptionRead } from "../perception.ts";
+import { observationBytes, observationMetadata, perceptionMetadata, type ObservationQuery, type PerceptionRead } from "../perception.ts";
 
 export async function media(observations: Observation[], record?: RecordEvent, trace?: EventTrace) {
   return Promise.all(observations.map(async (observation) => {
     if (observation.mediaType.startsWith("text/") || observation.mediaType === "application/json") {
-      return { type: "text" as const, text: await readFile(observation.path, "utf8") };
+      return { type: "text" as const, text: (await observationBytes(observation)).toString("utf8") };
     }
     if (!observation.mediaType.startsWith("image/")) throw new Error(`Unsupported model media: ${observation.mediaType}`);
     // Use OMP's normal image path once, before persistence. Re-encoding history
     // during each request would waste work and risk changing cache prefixes.
     const started = performance.now();
-    const bytes = await readFile(observation.path);
+    const bytes = await observationBytes(observation);
     const image = await resizeImage({ bytes, mimeType: observation.mediaType });
     record?.("observation_media", { observationId: observation.id, durationMs: performance.now() - started,
       sourceBytes: bytes.byteLength, modelBytes: Buffer.byteLength(image.data, "base64"),
@@ -56,6 +56,8 @@ export function createRsaExtension(options: {
   let latestContext: { observations: string[]; executions: string[]; skills: Awaited<ReturnType<Workspace["snapshot"]>> };
   const trace = (toolCallId?: string): EventTrace => ({ epoch: options.cycle().epoch, ...options.trace?.(toolCallId), ...(toolCallId ? { toolCallId } : {}) });
   const observeParameters = z.object({
+    capability: z.string().nullable().optional().describe("Perception capability ID, or '*' for all. Default: Perception.sample."),
+    id: z.string().nullable().optional().describe("Read one workspace timeline record by ID."),
     at: z.string().nullable().optional().describe("ISO timestamp: last record at or before recordedAt. Omit or null when using a range."),
     start: z.string().nullable().optional().describe("Inclusive ISO recordedAt range start. Omit or null when unused."),
     end: z.string().nullable().optional().describe("Inclusive ISO recordedAt range end. Omit or null when unused."),
@@ -77,7 +79,7 @@ export function createRsaExtension(options: {
 
   const observe: CustomTool<typeof observeParameters> = {
     name: "observe", label: "Observe", loadMode: "essential", approval: "read",
-    description: "Read recorded workspace perception: latest by default, one past record with at, or a time range with start/end. Records carry timestamps and sampling intervals. Implement perception.py:Perception.sample and load it with rsa perception reload to start continuous recording. Discover raw device capabilities through rsa controller.",
+    description: "Read the workspace timeline: latest main perception by default, a record by id, at a timestamp, or a start/end range. Select another perception capability when needed. Mark Perception.sample with @perception and @record, then rsa perception reload. Discover devices through rsa controller.",
     parameters: observeParameters,
     async execute(id, params, _onUpdate, _ctx, signal) {
       const cycle = options.cycle();
@@ -85,7 +87,7 @@ export function createRsaExtension(options: {
       const content = await perceptionContent(read, trace(id));
       observed = read;
       toolImages.push(...(read.result.observations ?? []));
-      return { content, details: read, isError: read.result.exitCode !== 0 };
+      return { content, details: perceptionMetadata(read, true), isError: read.result.exitCode !== 0 };
     },
   };
 
@@ -117,27 +119,30 @@ export function createRsaExtension(options: {
       read.snapshot = undefined;
       read.records = [];
       if (read.result) read.result = { ...read.result, observations: [], stdout: message, exitCode: 1, status: "failed" };
-      runtime.record("perception_input_error", read, parent);
+      runtime.record("perception_input_error", perceptionMetadata(read), parent);
     }
-    return [{ type: "text" as const, text: JSON.stringify(read) }, ...images];
+    return [{ type: "text" as const, text: JSON.stringify(perceptionMetadata(read, true)) }, ...images];
   }
 
-  // These are already the exact pixels returned by native OMP tools. Archive
-  // them for the dashboard without re-encoding or guessing their capture time.
-  async function archiveToolImages(images: ImageContent[], parent: EventTrace, source: string) {
+  // Native tool images remain in OMP's own history. Delivery metadata is not
+  // permission to create another permanent media archive.
+  async function recordToolImages(images: ImageContent[], parent: EventTrace, source: string) {
     const observations: Observation[] = [];
     for (const image of images) {
       const bytes = Buffer.from(image.data, "base64");
       const hash = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
-      const suffix = ({ "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif" } as Record<string, string>)[image.mimeType] ?? "bin";
-      const directory = join(options.runDir ?? join(workspace.path, "logs", runtime.status().runId), "observations");
-      await mkdir(directory, { recursive: true });
-      const path = join(directory, `input-${hash}.${suffix}`);
-      await writeFile(path, bytes, { flag: "wx" }).catch(error => { if (error.code !== "EEXIST") throw error; });
+      // Exact byte identity can reuse an existing recorded asset. This does
+      // not infer its capture time or which of several records produced it.
+      const root = join(workspace.path, ".rsa", "timeline");
+      const asset = `objects/${hash}.bin`, path = join(root, asset);
+      const retained = await Promise.all([realpath(root), realpath(path), stat(path)])
+        .then(([canonicalRoot, canonicalPath, file]) => canonicalPath === join(canonicalRoot, asset)
+          && file.isFile() && file.size === bytes.length).catch(() => false);
       const now = options.clock?.now() ?? performance.now();
-      const observation: Observation = { id: crypto.randomUUID(), controllerId: source, path, mediaType: image.mimeType,
+      const observation: Observation = { id: crypto.randomUUID(), controllerId: source, mediaType: image.mimeType,
+        ...(retained ? { path, timeline: { asset } } : {}),
         timing: { clock: options.clock?.id ?? runtime.status().runId, requestedAtMs: now, receivedAtMs: now } };
-      runtime.record("observation", { ...observation, origin: "tool_result" }, parent);
+      runtime.record("observation", { ...observation, origin: "tool_result", sha256: hash, recorded: retained }, parent);
       runtime.record("observation_media", { observationId: observation.id, modelBytes: bytes.length, mimeType: image.mimeType }, parent);
       observations.push(observation);
     }
@@ -169,7 +174,7 @@ export function createRsaExtension(options: {
       skillVersion: skills.version, memoryVersion: skills.memory.version }, parent);
     return [{ type: "text" as const, text: JSON.stringify({
       ...(consolidating ? { purpose: cycle.purpose } : {}),
-      control: runtime.status(), observations, skills,
+      control: runtime.status(), observations: observations.map(observationMetadata), skills,
       perception: perception?.status, snapshot: perception?.snapshot,
       query: perception?.query, records: perception?.records?.map(record => record.snapshot),
     }) }, ...content];
@@ -206,7 +211,7 @@ export function createRsaExtension(options: {
       if (event.toolName === "bash") observed = undefined;
       if (event.toolName !== "observe") {
         const images = event.content.filter((part): part is ImageContent => part.type === "image");
-        toolImages.push(...await archiveToolImages(images, trace(event.toolCallId), event.toolName));
+        toolImages.push(...await recordToolImages(images, trace(event.toolCallId), event.toolName));
       }
       if (event.toolName === "read") {
         // OMP resolves selectors such as SKILL.md:19-22. Use its result metadata
@@ -239,7 +244,7 @@ export function createRsaExtension(options: {
         if (deliveredBackground.has(key)) continue;
         deliveredBackground.add(key);
         const images = message.content.filter((part): part is ImageContent => part.type === "image");
-        const inputs = await archiveToolImages(images, { epoch: cycle.epoch }, "background_result");
+        const inputs = await recordToolImages(images, { epoch: cycle.epoch }, "background_result");
         if (!inputs.length) continue;
         latestContext = { ...latestContext, observations: [...latestContext.observations, ...inputs.map(o => o.id)] };
         runtime.record("observation_context", { origin: "background_result", observations: latestContext.observations,

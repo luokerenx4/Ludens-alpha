@@ -1,7 +1,7 @@
-import { mkdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 import type { Capabilities, Clock, Controller } from "../../contracts.ts";
 import { Bridge } from "../bridge.ts";
+import { withCaptureFile } from "../capture.ts";
 import { structuredResult, toolExecution } from "../../tool-contract.ts";
 import { createPadPlayer } from "../pad.ts";
 import { compileTimeline } from "../timeline.ts";
@@ -37,9 +37,8 @@ export function encodeSpans(spans: Span[]): string {
 const PAD_DESCRIPTION = "Native 3DS controller; LX/LY are the Circle Pad and RX/RY the C Stick. Axes are in [-1,1]; X positive=right, Y positive=up, 0=center.";
 
 /** Native pad, single-contact touch and independent hardware screen sources. */
-export async function createAzaharProvider(options: { port: number; artifactsDir: string; clock: Clock }) {
+export async function createAzaharProvider(options: { port: number; clock: Clock }) {
   const { clock } = options;
-  await mkdir(options.artifactsDir, { recursive: true });
   const bridge = await Bridge.open(options.port);
   try {
     const [version] = await bridge.request("HELLO");
@@ -71,7 +70,6 @@ export async function createAzaharProvider(options: { port: number; artifactsDir
         async execute(_args, { signal }) {
           signal.throwIfAborted();
           const id = crypto.randomUUID();
-          const path = join(options.artifactsDir, `${id}.png`);
           const previous = captureTail;
           let release!: () => void;
           captureTail = new Promise<void>(resolve => { release = resolve; });
@@ -80,14 +78,17 @@ export async function createAzaharProvider(options: { port: number; artifactsDir
             await previous;
             signal.throwIfAborted();
             const requestedAtMs = clock.now();
-            const [sequence] = await bridge.request("CAPTURE", [source, path], id);
+            const { sequence, data } = await withCaptureFile(async path => {
+              const [sequence] = await bridge.request("CAPTURE", [source, path], id);
+              return { sequence, data: await readFile(path) };
+            });
             signal.throwIfAborted();
             const timing = { clock: clock.id, requestedAtMs, receivedAtMs: clock.now() };
             const output = { source: controllerId, width: source === "top" ? 400 : 320, height: 240, captureSequence: Number(sequence), timing };
             const result = structuredResult(output);
-            result.content.unshift({ type: "image", mimeType: "image/png", data: (await readFile(path)).toString("base64") });
+            result.content.unshift({ type: "image", mimeType: "image/png", data: data.toString("base64") });
             return { ...toolExecution(clock, requestedAtMs, result, { id }), timing,
-              observations: [{ id, controllerId: `${controllerId}.capture`, mediaType: "image/png", path, timing, contentIndex: 0 }] };
+              observations: [{ id, controllerId: `${controllerId}.capture`, mediaType: "image/png", timing, contentIndex: 0 }] };
           } finally { release(); }
         },
       };

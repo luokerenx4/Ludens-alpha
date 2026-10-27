@@ -5,26 +5,32 @@ import { join } from "node:path";
 import { createSwitchProvider } from "@playness/baseware/drivers/ryubing/provider.ts";
 import { Bridge } from "@playness/baseware/drivers/bridge.ts";
 import { createTestDeviceSession } from "./runtime-fixture.ts";
-import type { ToolArguments, ControllerContext } from "@playness/baseware/contracts";
+import type { ToolArguments, ControllerContext, ToolExecutionResult } from "@playness/baseware/contracts";
 import { Runtime } from "../src/harness/runtime.ts";
+
+function imageBytes(capture: ToolExecutionResult): Buffer {
+  const block = capture.result.content[capture.observations![0].contentIndex!];
+  if (block.type !== "image") throw new Error("Expected native image content");
+  return Buffer.from(block.data, "base64");
+}
 
 test.skipIf(process.env.RSA_SWITCH_TEST !== "1")("Ryubing captures frames, interrupts long actions, hands back control, rejects stale epochs and clears disconnects", async () => {
   const directory = await mkdtemp(join(tmpdir(), "rsa-switch-"));
   const port = Number(process.env.RSA_BRIDGE_PORT ?? 47663);
-  const connect = () => createSwitchProvider({ port, artifactsDir: directory, clock: { id: "switch-test", now: () => performance.now() } });
+  const connect = () => createSwitchProvider({ port, clock: { id: "switch-test", now: () => performance.now() } });
   let provider = await connect();
   const signal = new AbortController().signal;
   try {
     let pad = provider.capabilities.controllers.find(controller => controller.tool.name === "pad.play")!;
     const call = (name: string, args: ToolArguments, context: ControllerContext) => provider.capabilities.controllers.find(controller => controller.tool.name === name)!.execute(args, context);
     const screen = provider.capabilities.controllers.find(controller => controller.tool.name === "screen.capture")!;
-    const first = (await screen.execute({}, { signal })).observations![0]!;
-    const second = (await screen.execute({}, { signal })).observations![0]!;
-    const png = Buffer.from(await Bun.file(second.path).arrayBuffer());
+    const first = await screen.execute({}, { signal });
+    const second = await screen.execute({}, { signal });
+    const png = imageBytes(second);
     expect(png.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
     expect(png.readUInt32BE(16)).toBeGreaterThanOrEqual(640);
-    expect(second.path).not.toBe(first.path);
-    expect(second.sourceSequence!).toBeGreaterThan(first.sourceSequence!);
+    expect(second.observations![0].id).not.toBe(first.observations![0].id);
+    expect(second.observations![0].sourceSequence!).toBeGreaterThan(first.observations![0].sourceSequence!);
     const epoch = crypto.randomUUID();
     await pad.acquire!(epoch);
     const context = {epoch, signal};
@@ -121,7 +127,7 @@ test.skipIf(process.env.RSA_SWITCH_TEST !== "1")("Ryubing captures frames, inter
 
 test.skipIf(process.env.RSA_SWITCH_KEYBOARD_TEST !== "1")("foreground keyboard can be captured while the game is paused, edited, cancelled and handed back", async () => {
   const directory = await mkdtemp(join(tmpdir(), "rsa-keyboard-"));
-  const provider = await createSwitchProvider({ port: Number(process.env.RSA_BRIDGE_PORT ?? 47663), artifactsDir: directory,
+  const provider = await createSwitchProvider({ port: Number(process.env.RSA_BRIDGE_PORT ?? 47663),
     clock: { id: "keyboard-test", now: () => performance.now() } });
   const signal = new AbortController().signal;
   const epoch = crypto.randomUUID();
@@ -132,9 +138,9 @@ test.skipIf(process.env.RSA_SWITCH_KEYBOARD_TEST !== "1")("foreground keyboard c
   try {
     await pad.acquire!(epoch);
     await keyboard.acquire!(epoch); // Both capabilities share the same device ownership.
-    const before = (await screen.execute({}, { signal })).observations![0]!;
-    expect(before.sourceSequence).toBeUndefined();
-    const png = Buffer.from(await Bun.file(before.path).arrayBuffer());
+    const before = await screen.execute({}, { signal });
+    expect(before.observations![0].sourceSequence).toBeUndefined();
+    const png = imageBytes(before);
     expect(png.readUInt32BE(16)).toBeGreaterThan(100);
     await key("keyboard.press", {key: "CTRL+A"});
     await key("keyboard.type", {text: "123456789"}); // Fire Emblem's visible dialog currently limits input to eight characters.
@@ -142,9 +148,9 @@ test.skipIf(process.env.RSA_SWITCH_KEYBOARD_TEST !== "1")("foreground keyboard c
     await key("keyboard.press", {key: "CTRL+A"});
     await key("keyboard.type", {text: "RSA"});
     await key("keyboard.press", {key: "BACKSPACE"});
-    const after = (await screen.execute({}, { signal })).observations![0]!;
-    expect(after.sourceSequence).toBeUndefined();
-    expect(await Bun.file(after.path).arrayBuffer()).not.toEqual(await Bun.file(before.path).arrayBuffer());
+    const after = await screen.execute({}, { signal });
+    expect(after.observations![0].sourceSequence).toBeUndefined();
+    expect(imageBytes(after)).not.toEqual(imageBytes(before));
     await key("keyboard.press", {key: "ESCAPE"});
     await Bun.sleep(300);
     await expect(key("keyboard.type", {text: "x"})).rejects.toThrow("NO_TEXT_INPUT");

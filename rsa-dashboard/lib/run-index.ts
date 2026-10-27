@@ -5,7 +5,7 @@ import { eventObservations, observationExecution, type ArchivedObservation } fro
 import { advanceLivePhase, emptyLivePhase, livePhaseValue, type LivePhaseState } from "./live-phase";
 import type { Call, Event, Manifest, NativeLoop, Observation, RunData, SpanStats, TraceSpan } from "./types";
 
-const VERSION = "files-2";
+const VERSION = "files-3";
 const PAGE_SIZE = 100;
 type Meta = RecordPointer;
 type CycleState = { phase: LivePhaseState; lastControl: Record<string, any> | null; autoStarted?: number;
@@ -108,7 +108,9 @@ async function projectObservation(index: LogIndex, event: Event, position: numbe
       const key = identity(epoch, item.id);
       const previous = await observations.get<{ observation: Observation; archive: ArchivedObservation }>(key);
       const value = previous ? { ...previous.observation,
-        ...(item.hook || item.perception ? { hook: item.hook, perception: item.perception, text: item.text, origin: item.origin } : {}) } : item;
+        ...(item.hook || item.perception ? { hook: item.hook, perception: item.perception, text: item.text,
+          origin: item.origin } : {}),
+        ...(item.mediaStorage !== "unrecorded" ? { mediaStorage: item.mediaStorage, timeline: item.timeline } : {}) } : item;
       const encoded = await index.store("run-encodings").get<number>(item.id);
       if (encoded !== undefined) value.encodeMs = encoded;
       const source = { ...previous?.archive, ...archived.find(raw => raw.id === item.id) } as ArchivedObservation;
@@ -384,4 +386,15 @@ export async function indexedObservation(index: LogIndex, id: string): Promise<A
     if (candidate && (!metadata || candidate.position > metadata.position)) metadata = candidate;
   }
   return metadata ? (await observations.get<{ archive: ArchivedObservation }>(metadata.id))?.archive : undefined;
+}
+
+/** A record detail request must originate from a model input or observation in this run. */
+export async function hasTimelineReference(index: LogIndex, recordId: string, sequence: number,
+  source: { call?: string; observation?: string }) {
+  await refreshRunProjection(index);
+  const perception = source.observation
+    ? (await indexedObservation(index, source.observation))?.perception
+    : source.call ? (await index.store("run-calls").get<Call>(source.call))?.perception : undefined;
+  return [perception?.snapshot, ...(perception?.records?.map(record => record.snapshot) ?? [])]
+    .some(snapshot => snapshot?.timeline?.recordId === recordId && snapshot.timeline.sequence === sequence);
 }

@@ -6,6 +6,7 @@ export interface ArchivedObservation {
   sensorId?: string;
   mediaType: string;
   path?: string;
+  timeline?: { recordId?: string; sequence?: number; asset: string };
   origin?: string;
   sourceSequence?: number;
   sourceSequenceDelta?: number;
@@ -61,7 +62,7 @@ export function successfulObserveHook(event: Event) {
   return { result, hook: event.data.hook as Observation["hook"] };
 }
 
-/** Both direct captures and workspace hook outputs archive media in the run directory. */
+/** Preserve explicit media references; a delivered image need not have an archive. */
 export function eventObservations(event: Event): ArchivedObservation[] {
   if (event.type === "observation") return [event.data as ArchivedObservation];
   const perception = perceptionRead(event);

@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { send } from "../src/harness/transport.ts";
 import { BasewareClient } from "@playness/baseware/client";
 import { defaultSocket } from "@playness/baseware/address";
-import type { ExecutionResult, ToolArguments } from "@playness/baseware/contracts";
+import type { ExecutionResult, ToolArguments, ToolExecutionResult } from "@playness/baseware/contracts";
 import { rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { resolveWorkspaceState } from "../src/harness/workspace-state.ts";
@@ -33,11 +33,13 @@ test.skipIf(process.env.RSA_MGBA !== "1")("real device captures PNG, completes s
     expect(JSON.parse(result.stdout).frames).toBe(6);
     const state = JSON.parse((await command("pad.state", {})).stdout);
     expect(Object.values(state.state).every((v) => v === 0)).toBe(true);
-    const capture = (await baseware.request({ kind: "controller", id: "screen.capture", arguments: {} }) as ExecutionResult).observations!;
-    const png = Buffer.from(await Bun.file(capture[0].path).arrayBuffer());
+    const capture = await baseware.request({ kind: "controller", id: "screen.capture", arguments: {} }) as ToolExecutionResult;
+    const image = capture.result.content[capture.observations![0].contentIndex!];
+    if (image.type !== "image") throw new Error("Expected native image content");
+    const png = Buffer.from(image.data, "base64");
     expect(png.readUInt32BE(16)).toBe(240);
     expect(png.readUInt32BE(20)).toBe(160);
-    expect(capture[0].timing.requestedAtMs).toBeGreaterThan(result.timing.receivedAtMs);
+    expect(capture.observations![0].timing.requestedAtMs).toBeGreaterThan(result.timing.receivedAtMs);
 
     const action = JSON.parse((await command("pad.play", {inputs: [{"atMs":0,"durationMs":30000,"state":{"RIGHT":1}}]})).stdout);
     expect(action.status).toBe("running");

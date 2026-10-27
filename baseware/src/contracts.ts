@@ -10,10 +10,14 @@ export interface Observation {
   id: string;
   controllerId: string;
   mediaType: string;
-  path: string;
+  /** Explicit caller-owned output or a timeline asset; inline media has no path. */
+  path?: string;
+  timeline?: { recordId?: string; sequence?: number; asset: string };
+  /** Transient response bytes; never written into device event logs. */
+  data?: string;
   timing: { clock: string; requestedAtMs: number; receivedAtMs: number };
   sourceSequence?: number;
-  /** Position of the original native content block, when this file archives tool media. */
+  /** Position of the original native media content block. */
   contentIndex?: number;
 }
 

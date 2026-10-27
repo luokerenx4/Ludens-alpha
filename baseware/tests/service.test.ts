@@ -229,17 +229,19 @@ test("device operations have distinct child spans and terminal events for succes
   expect(rejected.data).toMatchObject({ outcome: "error" });
 });
 
-test("native media stays in RPC while event subscribers and journal receive file references", async () => {
+test("native media stays in RPC while event subscribers and journal receive only metadata", async () => {
   const native = { content: [{ type: "image" as const, data: "AAAA", mimeType: "image/png", _meta: { frame: 7 } }],
     structuredContent: { sequence: 7 }, _meta: { source: "native" } };
   const f = await fixture(async () => ({ result: native, id: "media", status: "completed", exitCode: 0, stdout: "", stderr: "",
-    timing: { clock: "device", requestedAtMs: 0, receivedAtMs: 1 }, observations: [{ id: "frame", controllerId: "motor", path: "/tmp/frame.png",
+    timing: { clock: "device", requestedAtMs: 0, receivedAtMs: 1 }, observations: [{ id: "frame", controllerId: "motor", data: "AAAA",
       mediaType: "image/png", contentIndex: 0, timing: { clock: "device", requestedAtMs: 0, receivedAtMs: 1 } }] }));
   await f.client.request({ kind: "acquire", epoch: f.epoch, seconds: 30 });
   const returned = await f.client.request({ kind: "controller", id: "motor", arguments: {}, epoch: f.epoch }) as ToolExecutionResult;
   expect(returned.result).toEqual(native);
   const logged = (f.events.find(e => e.type === "execution")!.data as any).result;
-  expect(logged).toMatchObject({ structuredContent: { sequence: 7 }, _meta: { source: "native" }, content: [{ dataPath: "/tmp/frame.png", _meta: { frame: 7 } }] });
+  expect(logged).toMatchObject({ structuredContent: { sequence: 7 }, _meta: { source: "native" }, content: [{ dataOmitted: true, _meta: { frame: 7 } }] });
+  expect(JSON.stringify(f.events)).not.toContain("AAAA");
+  expect(returned.observations![0].data).toBe("AAAA");
   expect(logged.content[0].data).toBeUndefined();
   expect(native.content[0].data).toBe("AAAA");
   await expect(f.client.request({ kind: "controller", id: "motor", arguments: { wait: "false" }, epoch: f.epoch })).rejects.toThrow("Invalid arguments");

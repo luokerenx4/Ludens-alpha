@@ -19,7 +19,11 @@ export interface AuthorReport {
   metrics?: Record<string, Omit<BenchmarkMetric, "id">>;
 }
 export interface BenchmarkReference { id: string; path?: string; sha256?: string; revision?: string }
-export interface BenchmarkArtifact { path: string; label?: string; sha256?: string }
+export interface BenchmarkArtifact {
+  /** Run-relative archive, or workspace-relative original when timeline is present. */
+  path: string; label?: string; sha256?: string;
+  timeline?: { asset: string };
+}
 export interface CaseMetadata {
   conditions?: Record<string, unknown>; subjects?: BenchmarkReference[];
   artifacts?: BenchmarkArtifact[]; limitations?: string[];

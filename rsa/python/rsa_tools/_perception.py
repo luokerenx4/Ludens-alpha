@@ -1,9 +1,9 @@
-"""Persistent workspace perception runner. The workspace owns all sensing."""
+"""Resident workspace sampler and the workspace timeline's single writer."""
 
 import importlib.abc
 import importlib.machinery
 import hashlib
-from datetime import datetime, timezone
+import inspect
 import json
 import math
 import os
@@ -18,7 +18,7 @@ import types
 import uuid
 
 from rsa_tools._context import current, scope
-from rsa_tools._observation_history import ObservationHistory
+from rsa_tools._observation_history import ObservationHistory, MAIN_CAPABILITY, observation_result
 
 
 class WorkspaceSourceLoader(importlib.machinery.SourceFileLoader):
@@ -31,6 +31,9 @@ class WorkspaceSourceLoader(importlib.machinery.SourceFileLoader):
     def get_code(self, fullname):
         raw = self.get_data(self.path)
         self.remember(Path(self.path), raw)
+        module = sys.modules[fullname]
+        module.__rsa_source_sha__ = hashlib.sha256(raw).hexdigest()
+        module.__rsa_source_bytes__ = raw
         return self.source_to_code(raw, self.path)
 
 
@@ -49,20 +52,29 @@ class WorkspaceImports(importlib.abc.MetaPathFinder):
 
 
 def main():
-    # Keep the protocol on its own descriptor; user/native prints go to stderr.
     protocol = os.fdopen(os.dup(sys.stdout.fileno()), "w", buffering=1)
     os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
     sys.stdout = sys.stderr
     messages = queue.Queue()
     protocol_lock = threading.Lock()
     stopped = threading.Event()
+    instance = sampler = history = None
 
     def send(value):
         encoded = json.dumps(value, allow_nan=False)
         with protocol_lock:
             protocol.write(encoded + "\n")
 
-    def sample_continuously(instance, history, generation, sample_hz, context):
+    def append(*, sample, identity, sampling, generation=None, runId=None, trace=None):
+        if history is None:
+            raise ValueError("Workspace timeline has not started")
+        record = history.append(sample, generation, sampling, identity=identity, run_id=runId, trace=trace)
+        send({"event": "sample", "snapshot": {
+            key: value for key, value in record.items() if key not in ("text", "media", "data", "space", "sources")
+        }, "mediaCount": len(record["media"]), "trace": trace or {}})
+        return observation_result(record)
+
+    def sample_continuously(instance, sample_hz, context):
         previous_status = None
         interval = 1 / sample_hz
         while not stopped.is_set():
@@ -71,20 +83,11 @@ def main():
             if context["trace"].get("spanId"):
                 trace["parentSpanId"] = context["trace"]["spanId"]
             try:
-                with scope({**context, "trace": trace}):
-                    sample = instance.sample()
-                    finished = time.monotonic()
-                    recorded_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-                    record = history.append(sample, generation, {
-                        "clock": "perception:" + generation,
-                        "startedAtMs": started * 1000, "finishedAtMs": finished * 1000,
-                    }, recorded_at)
+                with scope({**context, "trace": trace, "timeline_append": append}):
+                    instance.sample()  # @record owns persistence; never append twice.
                 status = ("ready", None)
                 if previous_status != status:
                     send({"event": "status", "state": "ready"})
-                send({"event": "sample", "snapshot": {
-                    key: value for key, value in record.items() if key not in ("text", "media")
-                }, "mediaCount": len(record["media"]), "trace": trace})
             except Exception as error:
                 state = "unimplemented" if isinstance(error, NotImplementedError) else "error"
                 status = (state, f"{type(error).__name__}: {error}")
@@ -92,7 +95,6 @@ def main():
                     send({"event": "status", "state": state, "error": status[1]})
                     traceback.print_exc(file=sys.stderr)
             previous_status = status
-            # Long samples slow the cadence; never overlap or replay missed ticks.
             stopped.wait(max(0, interval - (time.monotonic() - started)))
 
     def read_requests():
@@ -101,7 +103,6 @@ def main():
                 messages.put(json.loads(line))
             except json.JSONDecodeError as error:
                 print(f"Invalid perception request: {error}", file=sys.stderr)
-        # EOF also ends a process whose sample is currently running.
         os.kill(os.getpid(), signal.SIGTERM)
 
     def terminate(_signum, _frame):
@@ -109,9 +110,6 @@ def main():
 
     signal.signal(signal.SIGTERM, terminate)
     threading.Thread(target=read_requests, daemon=True).start()
-    instance = None
-    sampler = None
-    history = None
     try:
         while True:
             try:
@@ -123,13 +121,23 @@ def main():
             reply = {"id": message["id"]}
             try:
                 action = message["action"]
-                context = {**current(), "epoch": None, "trace": dict(message.get("trace", {}))}
-                context["trace"].pop("epoch", None)
-                with scope(context):
-                    if action == "start":
-                        if sampler is not None:
-                            raise ValueError("Perception has already started")
-                        workspace = Path(message["workspace"]).resolve()
+                if action == "start":
+                    if history is not None:
+                        raise ValueError("Workspace timeline has already started")
+                    workspace = Path(message["workspace"]).resolve()
+                    # The writer survives missing or broken user sensing code.
+                    history = ObservationHistory(workspace)
+                    context = {**current(), "workspace": str(workspace), "run_id": Path(message["runDir"]).name,
+                               "epoch": None, "generation": message["generation"], "trace": dict(message.get("trace", {})),
+                               "timeline_append": append}
+                    context["trace"].pop("epoch", None)
+                    result = {"pid": os.getpid(), "history": history.policy(), "state": "loading"}
+                    try:
+                        source = message.get("source")
+                        if message.get("sourceError"):
+                            raise RuntimeError(message["sourceError"])
+                        if source is None:
+                            raise NotImplementedError("Implement workspace/perception.py:Perception, then reload it.")
                         manifest = {}
                         manifest_lock = threading.Lock()
                         manifest_path = Path(message["runDir"]) / "perception" / message["generation"] / "sources.json"
@@ -146,51 +154,54 @@ def main():
                         sys.meta_path.insert(0, WorkspaceImports(workspace, remember))
                         module = types.ModuleType("perception")
                         module.__file__ = str(workspace / "perception.py")
+                        module.__rsa_source_sha__ = hashlib.sha256(source.encode("utf-8")).hexdigest()
+                        module.__rsa_source_bytes__ = source.encode("utf-8")
                         sys.modules["perception"] = module
-                        remember(Path(module.__file__), message["source"].encode("utf-8"))
-                        exec(compile(message["source"], module.__file__, "exec"), module.__dict__)
-                        instance = module.Perception()
-                        for method in ("start", "sample", "close"):
-                            if not callable(getattr(instance, method, None)):
-                                raise TypeError(f"Perception must implement {method}()")
-                        sample_hz = getattr(instance, "sample_hz", 2.0)
-                        if (isinstance(sample_hz, bool) or not isinstance(sample_hz, (int, float))
-                                or not math.isfinite(sample_hz) or sample_hz <= 0):
-                            raise ValueError("Perception.sample_hz must be a positive finite number")
-                        instance.start({
-                            "workspace": str(workspace),
-                            "runDir": message["runDir"],
-                            "generation": message["generation"],
-                        })
-                        history = ObservationHistory(message["runDir"])
-                        sampler = threading.Thread(target=sample_continuously, args=(
-                            instance, history, message["generation"], sample_hz, context,
-                        ), daemon=True)
-                        send({**reply, "ok": True, "result": {"pid": os.getpid(), "sampleHz": sample_hz,
-                                                             "history": history.policy()}})
+                        remember(Path(module.__file__), module.__rsa_source_bytes__)
+                        with scope(context):
+                            exec(compile(source, module.__file__, "exec"), module.__dict__)
+                            instance = module.Perception()
+                            for method in ("start", "sample", "close"):
+                                if not callable(getattr(instance, method, None)):
+                                    raise TypeError(f"Perception must implement {method}()")
+                            if not getattr(instance.sample, "__rsa_perception__", False) or not getattr(instance.sample, "__rsa_recorded__", False):
+                                raise TypeError("Perception.sample must use @perception and @record; unmarked functions are not archived")
+                            if instance.sample.__rsa_identity__["id"] != MAIN_CAPABILITY:
+                                raise TypeError("The main sample must be defined as perception.py:Perception.sample")
+                            if inspect.iscoroutinefunction(instance.sample):
+                                raise TypeError("Perception.sample must be synchronous; use def sample(), not async def")
+                            sample_hz = getattr(instance, "sample_hz", 2.0)
+                            if (isinstance(sample_hz, bool) or not isinstance(sample_hz, (int, float))
+                                    or not math.isfinite(sample_hz) or sample_hz <= 0):
+                                raise ValueError("Perception.sample_hz must be a positive finite number")
+                            instance.start({"workspace": str(workspace), "runDir": message["runDir"],
+                                            "generation": message["generation"]})
+                        result["sampleHz"] = sample_hz
+                        sampler = threading.Thread(target=sample_continuously, args=(instance, sample_hz, context), daemon=True)
+                    except Exception as error:
+                        result.update(state="unimplemented" if isinstance(error, NotImplementedError) else "error",
+                                      error=f"{type(error).__name__}: {error}")
+                        traceback.print_exc(file=sys.stderr)
+                    send({**reply, "ok": True, "result": result})
+                    if sampler is not None:
                         sampler.start()
-                        continue
-                    elif action == "observe":
-                        if history is None:
-                            raise ValueError("Perception has not started")
-                        result = history.observe(message.get("query"))
-                    elif action == "release":
-                        if history is not None:
-                            history.release()
-                        result = None
-                    else:
-                        raise ValueError(f"Unknown perception action: {action}")
+                    continue
+                if history is None:
+                    raise ValueError("Workspace timeline has not started")
+                if action == "observe":
+                    result = history.observe(message.get("query"))
+                elif action == "append":
+                    result = append(**{key: message.get(key) for key in ("sample", "identity", "sampling", "generation", "runId", "trace")})
+                else:
+                    raise ValueError(f"Unknown perception action: {action}")
                 response = {**reply, "ok": True, "result": result}
             except Exception as error:
                 response = {**reply, "ok": False, "error": {
-                    "type": type(error).__name__, "message": str(error),
-                    "traceback": traceback.format_exc(),
-                }}
+                    "type": type(error).__name__, "message": str(error), "traceback": traceback.format_exc()}}
             send(response)
     finally:
         stopped.set()
         if sampler is not None and sampler.is_alive():
-            # close() cannot race sample(). The host can kill a stuck worker.
             sampler.join()
         if instance is not None:
             try:

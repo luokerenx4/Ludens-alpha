@@ -363,9 +363,12 @@ test("historical CLI images survive native bash, sibling tools and persistence w
     await writeFile(join(f.workspace, "latest.png"), latestPng);
     await writeFile(join(f.workspace, "frame"), "old");
     await writeFile(join(f.workspace, "perception.py"), `from pathlib import Path
+from rsa_tools import perception, record
 class Perception:
     sample_hz = 20
     def start(self, context): pass
+    @record
+    @perception
     def sample(self):
         frame = Path("frame").read_text()
         return {"text": frame, "media": [{"path": frame+".png", "mediaType": "image/png"}]}
@@ -395,7 +398,12 @@ class Perception:
       const delivered = events.find(event => event.type === "observation" && event.data.id === inputIds[0]);
       expect(delivered.trace.toolCallId).toBe(id);
       expect(delivered.data.origin).toBe("tool_result");
-      expect(Buffer.from(await readFile(delivered.data.path)).toString("base64")).toBe(expectedImage.data);
+      // TerminalGraphicsDecoder resizes this image. Only the recorded original
+      // is archived; the transformed model input stays in OMP's native history.
+      expect(delivered.data.path).toBeUndefined();
+      expect(delivered.data.recorded).toBe(false);
+      expect(delivered.data.sha256).toBe(new Bun.CryptoHasher("sha256").update(Buffer.from(expectedImage.data, "base64")).digest("hex"));
+      expect(Buffer.from(await readFile(old.result.observations![0]!.path!))).toEqual(Buffer.from(oldPng));
       const saved = f.session.agent.state.messages.find(message => message.role === "toolResult" && message.toolCallId === id);
       expect(saved?.role === "toolResult" && saved.content).toContainEqual(expectedImage);
       expect(JSON.stringify(saved)).toContain(old.snapshot!.recordedAt);
@@ -413,7 +421,9 @@ class Perception:
     await f.session.settleAsyncWork();
     const backgroundInputs = (await f.events()).filter(event => event.type === "observation" && event.data.controllerId === "background_result");
     expect(backgroundInputs).toHaveLength(1);
-    expect(Buffer.from(await readFile(backgroundInputs[0].data.path)).toString("base64")).toBe(expectedImage.data);
+    expect(backgroundInputs[0].data.path).toBeUndefined();
+    expect(backgroundInputs[0].data.recorded).toBe(false);
+    expect(backgroundInputs[0].data.sha256).toBe(new Bun.CryptoHasher("sha256").update(Buffer.from(expectedImage.data, "base64")).digest("hex"));
     expect(backgroundInputs[0].trace.toolCallId).toBeUndefined();
   } finally { await f.close(); }
 }, 30_000);

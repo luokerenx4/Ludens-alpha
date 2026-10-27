@@ -14,6 +14,7 @@ workspace/
   perception.py            Agent 实现的常驻感知入口
   skills/<name>/SKILL.md    可复用方法，可附带代码
   memory/current.md        当前状态与下一步
+  .rsa/timeline/           跨 run 的感知记录与唯一媒体原件
   .rsa/shiori/
     sessions/              OMP 会话及其同名资源目录
     current-session.json   默认续接指针
@@ -29,7 +30,7 @@ Workspace 的 canonical path 决定独立身份与默认 socket，改名或移�
 
 `SKILL.md` 使用 `name`、`description` frontmatter。循环只注入技能和记忆索引，Agent 按需读写正文，版本关联到日志。
 
-工作区不提交到代码仓库；快照排除根 `logs/`，避免递归复制。
+工作区不提交到代码仓库；快照排除根 `logs/` 和 `.rsa/` 运行状态，避免递归复制及重复打包会话、感知媒体。
 
 ## 发现与调用能力
 
@@ -61,7 +62,7 @@ def sample(controller_id: str, arguments: dict) -> dict:
 | 普通 import 后调用 | 当前 Python 进程，可直接传模型、数组等对象。 |
 | `Client.call("python/…", {...})` | 当前进程导入并调用，复用模块缓存；嵌套调用不经 Host 重开进程。 |
 | `rsa controller python/… --args …` | Host 启动一次 Python 入口，校验参数与源码版本，跨进程结果为 JSON。独立 CLI 调用不共享内存。 |
-| `Client.call("controller/…", {...})` | 连接 RSA，由 Baseware 执行设备能力；输出和媒体进入运行日志。 |
+| `Client.call("controller/…", {...})` | 连接 RSA，由 Baseware 执行设备能力；返回完整原生 JSON / 媒体字节；只有显式标记记录的感知能力才永久归档。 |
 
 设备参数由 Baseware 按原生 schema 校验，Python 能力的跨进程 JSON 参数在调用入口校验；本地 import 和 `Client.call("python/…")` 保留普通 Python 对象。已加载模块按 Python 规则缓存，编辑代码后需重跑相应程序。
 
@@ -69,63 +70,61 @@ def sample(controller_id: str, arguments: dict) -> dict:
 
 评测函数使用 `@benchmark`，通过 `rsa bench` 及现有看板管理，不进入 Controller 目录；完整接口见 [Benchmark](benchmark.md)。
 
-## 常驻感知
+## 感知能力与 workspace 时空轴
 
-`perception.py:Perception` 在专用 Python 进程中持续采样，Agent 实现采样、融合和输出。类实例、模块和模型跨轮保留；RSA 将结果写入 `ObservationHistory`，Shiori 的 `observe` 只读取历史，不触发采样。
-
-| 方法 | 契约 |
-| --- | --- |
-| `start(context)` | 初始化一次。context 含 `workspace`、`runDir`、`generation`。 |
-| `sample()` | 采集并返回一次结果；运行时独立于 Shiori 持续调用。 |
-| `close()` | 停止自己创建的后台线程或任务，释放资源。 |
-
-类属性 `sample_hz` 指定目标采样率，默认 2 Hz。采样串行执行，慢采样不重叠、不补跑积压；目标采样率不是设备帧率。
-
-结果示例：
+`@perception` 声明感知能力，隐含 `@capability` 的发现和调用追踪。加 `@record` 后，成功结果进入 workspace 的 `.rsa/timeline/`；未标记记录的调用没有隐式永久存档。两种装饰顺序均可，类方法可以标注，只有顶层函数进入 Controller 目录。
 
 ```python
-{
-    "text": "可选说明",
-    "media": [{"path": "frames/result.png", "mediaType": "image/png"}],
-    "sampledAt": "2026-10-21T06:00:00Z",
-    "sources": [],
-}
+from rsa_tools import perception, record
+
+@record
+@perception
+def temperature() -> dict:
+    """Read a temperature sensor."""
+    return {"data": {"value": 22.5, "unit": "C"},
+            "space": {"frame": "room"}}
 ```
 
-结果字段均可选。`sampledAt` 是已知的来源时刻，未知就省略；`sources` 可记录来源。路径可相对 workspace 或为绝对路径，返回的媒体保持不变直到下一次 `sample()` 调用。运行时在采样完成后归档媒体并分配序号，记录完成时刻 `recordedAt` 及单调时钟下的采样区间，详见 [logging.md](logging.md)。
+感知信封支持 `text`、`data`（任意 JSON）、`media`、`sampledAt`、`sources`、`space`。字段可省略，未知字段明确报错。媒体为 `{mediaType, path}` 或 `{mediaType, data}`（base64）；路径可相对 workspace。设备原生图片可把其 `data/mimeType` 放入信封，不必自己先存文件。`sampledAt` 只填写已知来源时刻，`space` 按设备/算法实际坐标系描述，Harness 不推断空间含义。
+
+记录后返回信封附 `timeline: {recordId, sequence}`，媒体带同轴 `asset` 引用及本机读取路径。相同媒体按 SHA-256 在 `objects/` 共享一份，观测时间点仍独立。嵌套能力按各自标记记录，可在 `sources` 引用内层结果；不会自动保存所有中间数据。
+
+普通 import、`Client.call("python/…")` 和 CLI 都经过同一装饰器。用户函数仍在原 Python 进程运行；只有结果通过 RSA socket 交给已有感知 worker 的单一写入者。没有可用 writer 或记录失败会报错，不会自动重试采样/动作。声明感知不授予设备输入权限，动作仍受 epoch 控制。
+
+## 常驻感知与历史读取
+
+`perception.py:Perception` 在专用 Python 进程中运行：`start(context)` 初始化一次；`sample()` 按 `sample_hz` 连续执行（默认 2 Hz）；`close()` 释放自建资源。context 含 `workspace/runDir/generation`。在 `sample()` 上使用 `@perception` 和 `@record`；sampler 不再隐式保存结果。类实例、模块和模型跨模型轮次保留，慢采样不重叠、不补跑。模板见 [perception.py](../rsa/templates/perception.py)。
 
 ```sh
 rsa perception status
 rsa perception reload
 rsa observe
-rsa observe --at 2026-10-22T06:00:00Z
-rsa observe --start 2026-10-22T05:59:50Z --end 2026-10-22T06:00:00Z --limit 8 --images
+rsa observe --at 2026-10-27T01:00:00Z
+rsa observe --capability python/sensors.py:temperature
+rsa observe --capability '*' --start 2026-10-27T01:00:00Z --limit 8
+rsa observe --id <record-id> --images
 rsa perception stop
 ```
 
-`observe` 默认读取最新结果；`at` 读取不晚于指定时刻的一条记录；`start/end` 读取含端点的时间范围，可省略一侧。查询时间指 `recordedAt`，不是可选的 `sampledAt`。范围按序号升序分页，默认 8 条、最多 64 条；`hasMore/nextAfter` 表示续页，使用 `--after <nextAfter>` 保留原范围继续查询。`at` 不能和范围混用。OMP 工具使用同名参数；`rsa perception observe` 是同一 CLI 入口。返回的 `records` 包含每条快照、文字和媒体，`snapshot` 指向本页最后一条。
+`observe` 只读轴，不重新采样。默认读取主 `python/perception.py:Perception.sample` 通道；`capability` 选其他能力，`*` 读全轴，`id` 定位记录。`at` 读取不晚于指定时刻的记录；`start/end` 为含端点的范围。查询时间按 `recordedAt`（记录墙钟）；`sampledAt` 和单调时钟采样区间另存，不混用。范围按全局 sequence 升序分页，默认 8 条、最多 64 条；用 `nextAfter` 配合原范围续页。未使用字段可省略或传 `null`。
 
-未使用的参数可省略或传 `null`，空白时间字符串也视为未填写。`after: 0` 从历史开头分页，与 `at` 同传时不改变点查；真正的时间条件冲突仍报错。
+轴跨 run 和 generation 保存。最新主通道读取检查当前采样健康和 generation；历史查询仍可读取旧版本。worker 先初始化轴再加载用户入口，入口缺失、加载失败或采样失败不破坏历史，也不阻止独立感知能力显式记录。没有默认截图回退。`reload` 更换进程并重载代码/helper/权重；`stop` 结束 sampler 和 writer，后续记录需显式 reload。
 
-历史默认保留 **10 分钟热窗口**，采样完成即写入持久化分段，默认按 **1 小时**切分。冷历史通过段内索引按需读取，查询接口不变；内存不常驻全量历史索引或解码图片。热窗口也受字节预算约束，过大时提前退出热层。
-
-在启动宿主的环境中设置以下变量，`rsa up` 会传给宿主，`rsa perception status` 的 `history` 显示生效配置：
+沿用以下宿主环境变量，生效策略在 `rsa perception status` 的 `history` 中可见：
 
 | 环境变量 | 默认值 | 含义 |
 | --- | --- | --- |
-| `RSA_PERCEPTION_HOT_SECONDS` | `600` | 热窗口秒数，按进程单调时钟淘汰 |
-| `RSA_PERCEPTION_PERSIST` | `1` | `0` 关闭历史持久化；也接受 `true/false` |
-| `RSA_PERCEPTION_SEGMENT_SECONDS` | `3600` | 持久化时间段秒数，UTC 时间边界切分 |
-| `RSA_PERCEPTION_HOT_BYTES` | `67108864` | 热层预算（64 MiB），计记录及其压缩媒体大小 |
-| `RSA_PERCEPTION_SEGMENT_BYTES` | `268435456` | 单段预算（256 MiB），达到后下一条另开段 |
+| `RSA_PERCEPTION_HOT_SECONDS` | `600` | 热窗口秒数 |
+| `RSA_PERCEPTION_PERSIST` | `1` | `0` 仅保留短期窗口，接受 true/false |
+| `RSA_PERCEPTION_SEGMENT_SECONDS` | `3600` | UTC 时间分段长度 |
+| `RSA_PERCEPTION_HOT_BYTES` | `67108864` | 热层预算，64 MiB |
+| `RSA_PERCEPTION_SEGMENT_BYTES` | `268435456` | 单段预算，256 MiB |
 
-关闭持久化时只保留窗口内的记录及临时媒体，时间或容量超限就淘汰；停止进程清理临时窗口。单条记录不可拆分，超过热层预算时无法留在非持久化窗口。响应 `availability` 给出保留范围和 `expired`，范围查询可以返回尚存的部分；查不到已淘汰的记录会明确报错。读取中的一页会暂时保留到宿主归档完成。开关只控制感知历史，不删除 Baseware 独立日志、工作区自己保存的文件或已读取的输入审计材料；这些材料不意味着该记录仍能通过 `observe` 查询。
+持久模式采样完成即提交分段，冷记录按需查询，不常驻全量索引或图片。关闭持久化后只保留有限临时窗口，停止/reload 清空窗口；响应会携带选中媒体字节，防止读取后淘汰造成交付失效，不另建审计副本。过期由 `availability` 明确返回。持久化开关不删除旧持久档案或用户主动保存的文件，OMP 原生会话和请求记录也是独立范围。
 
-OMP 的 `observe` 工具直接返回带记录时间的图片。CLI 默认输出 JSON 和文件路径，便于脚本处理；在 bash 中看图用 `--images`，经 OMP 原生终端图片通道交付所选像素。一页超过 32 张图或 40 MiB 时明确报错，缩小 `--limit` 分页，不静默丢图。工具批次已返回图片时不再追加最新截图；没有图片的普通操作仍自动读取最新感知。CLI 查询失败保留非零退出码。
+CLI 默认返回 JSON，`--images` 用 OMP 原生终端图像通道交付所选图像，一页最多 32 张/40 MiB；超限需缩小分页，不静默丢图。时空轴可以保存音频/二进制等媒体，但当前模型适配仅直接消费图像及文本/JSON，不宣称支持所有模型模态。普通原生工具图片没有隐式永久归档；若字节与轴中已有媒体相同，Dashboard 可以复用其引用，不猜采集时间。
 
-`reload` 关闭旧进程并启动新 generation，重新加载入口、helper 和权重并开始持续采样；不会迁移旧实例内存。持久化历史在本 run 内保留；关闭持久化时重载会清空热窗口。首条结果生成前处于 loading。普通模型轮次、一次读取取消都不会重启采样。感知进程不继承控制 epoch，只读采样无需接管；它不能自行取得动作权限。
-
-空实现、无可用结果或采样失败只把文字交给模型修复，**没有默认截图回退**；最新读取不会拿旧 generation 或错误前的记录冒充当前结果，`sample()` 出错时历史查询仍可读取已有记录；入口加载失败则需先修复并 reload，磁盘历史保留。原始设备采样仍通过 Controller。连续记录不等于模型已读取，实际输入另有日志。契约源头是 [模板](../rsa/templates/perception.py) 与 [感知 Runtime](../rsa/src/harness/perception.ts)。
+旧 run 的图片和日志仍可由 Dashboard 查看，不自动导入新轴、不删除旧数据。旧 `Perception.sample()` 和依赖 driver 永久截图路径的脚本需按上述契约适配，Harness 不改写 Agent 的工作区程序。
 
 ## 后台程序与人工交还
 

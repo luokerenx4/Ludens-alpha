@@ -40,12 +40,11 @@ export async function main(args = process.argv.slice(2)) {
     const serviceId = crypto.randomUUID();
     const clock = { id: serviceId, now: () => performance.now() };
     const log = new EventLog(dataDir);
-    const artifactsDir = join(dataDir, "observations", serviceId);
     provider = values.driver === "cua"
-      ? await createCuaProvider({ command: values["cua-command"], artifactsDir, clock })
+      ? await createCuaProvider({ command: values["cua-command"], clock })
       : values.driver === "azahar"
-      ? await createAzaharProvider({ port: port!, artifactsDir, clock })
-      : await (values.driver === "mgba" ? createGbaProvider : createSwitchProvider)({ port: port!, artifactsDir, clock });
+      ? await createAzaharProvider({ port: port!, clock })
+      : await (values.driver === "mgba" ? createGbaProvider : createSwitchProvider)({ port: port!, clock });
     core = new BasewareCore({ capabilities: provider.capabilities, record: log.record, serviceId,
       drivers: [{ id: values.driver!, version: provider.version ?? (values.driver === "mgba" ? "0.10.5" : "1.3.351-rsa.3") }] });
     provider.onDisconnect(error => { void core!.disconnected(error); });

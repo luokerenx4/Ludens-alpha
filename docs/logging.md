@@ -12,9 +12,9 @@
 | `events.jsonl` | schema v2 事件时间线 |
 | `payloads/` | 按 SHA-256 保存的大请求、响应和工具正文，gzip 压缩 |
 | `streams/` | 原始模型流及 source/trace |
-| `observations/` | 归档媒体 |
 | `perception/<generation>/` | 感知入口、实际导入的工作区源码清单 `sources.json`、stderr |
-| `perception/history/segments/<UTC时间>-<序号>-<标识>.*` | 连续观测分段：JSONL 记录、定长 `.idx` 索引、`.meta.json` 段摘要及 `.media/` 媒体 |
+
+新观测统一存放在 `workspace/.rsa/timeline/`，跨 run 使用：`objects/<sha256>.bin` 保存去重的持久媒体，`segments/` 保存 JSONL 记录、定长 `.idx` 索引及 `.meta.json` 段摘要。关闭持久化时仅使用有限的 `window-<pid>-…/` 临时窗口。运行事件只引用记录与媒体，不再生成 `run/observations/` 副本。已有 run 的观测附件和日志保持原样可读，不自动迁移或删除。
 
 manifest 记录 Git commit/dirty、continue/consolidate 提示和可选 workspace AGENTS 的 hash；dirty 不代表代码快照。认证头不入日志。结构见 [events.ts](../rsa/src/harness/events.ts)、[Baseware protocol](../baseware/src/protocol.ts)、[provenance.ts](../rsa/src/harness/provenance.ts)。
 
@@ -34,7 +34,7 @@ manifest 记录 Git commit/dirty、continue/consolidate 提示和可选 workspac
 | `benchmark` | 评测执行与报告 |
 | `dashboard` / `pet` | 日志读取、投影和展示消费 |
 
-顶层时间是接收时间，origin 是源时间；atMs 只能在同一 clockId 内相减。墙钟仅作粗略端到端参考。复制媒体可改本地路径，不改事实身份。
+顶层时间是接收时间，origin 是源时间；atMs 只能在同一 clockId 内相减。墙钟仅作粗略端到端参考。媒体通过明确引用关联，不用文件路径或读取时间推测采样身份。
 
 ## 调用与生命周期
 
@@ -60,13 +60,19 @@ manifest 记录 Git commit/dirty、continue/consolidate 提示和可选 workspac
 
 ## 感知与模型真实输入
 
-`perception_status` 记录状态、generation、PID、源码 hash；`perception_sample` 记录后台生成的快照及媒体数量；`perception_observe_start/end` 记录历史查询及读取结果/耗时。持续采样写入 `ObservationHistory`，不依赖模型是否正在读取。每条快照有 ID、递增 sequence、generation、`recordedAt` 和 `sampling` 区间，以及可选的 `sampledAt/sources`。`recordedAt` 是采样完成墙钟；`sampling.clock/startedAtMs/finishedAtMs` 是同一进程单调时钟区间；`sampledAt` 由 workspace 提供，表示已知的来源时刻，不能用完成时间伪造设备帧时间。
+`perception_status` 记录状态、generation、PID、源码 hash；`perception_sample` 记录新增时空轴快照及媒体数量；`perception_observe_start/end` 记录历史查询及读取结果/耗时。`@perception` 声明感知能力，`@record` 负责将成功结果交给常驻感知进程留档；未标记记录的调用不隐式保存。采样器持续调用 `Perception.sample()`，不再无条件追加；普通 import、CLI 和后台程序也可以调用被标记的能力，写入同一 workspace 时空轴。
 
-持久化开启时，每条记录的媒体在生成时归档到所属段，之后的历史读取不会覆盖它。默认热窗口 600 秒、分段 3600 秒，并受字节预算约束；完整配置见 [Workspace](workspace.md#常驻感知)。关闭持久化时记录和媒体只存在于有限窗口，已读取的媒体另存 `observations/` 用于审计。旧 `records.jsonl` 保持只读、按需查询。查询开始记录原参数；查询结果返回 `records`、规范化后的 `query` 和分页字段 `hasMore/nextAfter`；`snapshot` 是本页最后一条。`reused` 表示与上一次读取返回相同的一组记录，不代表采样器停止。重载保留本 run 的持久化历史、清空非持久化窗口，每条记录仍标明自己的 generation。
+每条记录有 ID、递增 sequence、能力身份及实际加载源码 hash、runId、`recordedAt` 和 `sampling` 区间，以及适用时的 generation、`sampledAt/sources/space`。`recordedAt` 是记录墙钟；`sampling.clock/startedAtMs/finishedAtMs` 是同一进程单调时钟区间；`sampledAt` 由 workspace 提供，表示已知的来源时刻，不能用记录时间伪造设备帧时间。观测可包含文字、任意 JSON 数据和多种媒体，时间与空间信息不局限于视频。记录失败属于能力失败，会抛错；不重试感知调用或动作，也不伪造成功记录。
+
+持久化开启时，媒体按内容哈希保存一次，记录携带 `timeline: {recordId, sequence, asset}` 引用，`asset` 是时空轴根内的相对路径；之后的历史读取不复制或覆盖原件。默认热窗口 600 秒、分段 3600 秒，并受字节预算约束；完整配置见 [Workspace](workspace.md#常驻感知)。关闭持久化时记录和媒体只存在于有限窗口，选中媒体交付期间受保护，必要时随响应携带字节，不另建永久审计副本。窗口淘汰或进程关闭后，对应媒体可以过期。
+
+查询开始记录原参数；查询结果返回 `records`、规范化后的 `query` 和分页字段 `hasMore/nextAfter`；`snapshot` 是本页最后一条。默认读取主 `Perception.sample` 能力，可通过 `capability` 筛选其他能力、`capability: "*"` 查询全轴或 `id` 定位记录。`reused` 表示与上一次读取返回相同的一组记录，不代表采样器停止。持久历史跨 reload 和 run 保留，默认最新主观测仍校验当前 generation 与采样健康，不将旧记录冒充当前采样。
 
 **模型看到什么以 `observation_context` 和 `model_start.observations` 为准**，包括工作区自己融合或处理的媒体；不能用最新 driver 截图代替。输入编码失败另记 `perception_input_error`，读取成功不保证输入成功。空实现或失败只给文字诊断，不回退默认截图。取消读取不杀感知进程，迟到结果不塞回已取消的模型调用。
 
-原生 bash/read 返回的图片按实际输入字节归档为 `observation(origin=tool_result)`，关联对应工具；后台完成图片在 OMP 将其送入模型时记录为本次交付，不能冒认最近一次前台工具。Dashboard 显示这些真实输入。这里的事件时间是交付时间，不推断原始采样时刻；CLI 历史时间和序号保留在输出标签与查询日志中。仅返回 JSON 路径不计作图片交付。
+原生 bash/read 返回的图片记录为 `observation(origin=tool_result)` 并关联对应工具，不再自动创建图片副本。插件仅按实际输入字节的 SHA-256 匹配已经存在的时空轴 `objects/<sha256>.bin`，匹配成功时附 `timeline: {asset}`；无法据此确定采样记录，因此不填 `recordId/sequence`。没有原件时只记交付元数据，不声称已保存。后台完成图片在 OMP 将其送入模型时记录为本次交付，不能冒认最近一次前台工具。事件时间是交付时间，不推断原始采样时刻；CLI 历史时间和序号保留在输出标签与查询日志中。仅返回 JSON 路径不计作图片交付。
+
+Dashboard 从项目注册的 workspace 解析时空轴引用，校验真实路径与目录边界；旧 run 附件仍按原边界读取。记录详情展开时按引用读取单条记录的 `data/space`，不把它们复制回事件；窗口记录仅查询当前宿主，不启动采样。未录制媒体显示交付记录，过期引用返回明确状态并显示过期提示，不渲染失效图片。临时窗口媒体和记录详情不做持久浏览器缓存。OMP 原生 session、请求 payload 和响应 stream 的保存机制不在本次调整范围内。
 
 generation 后台 trace 不继承重载请求或控制 epoch，持续采样与查询分别记录调用；查询不会重新执行 workspace 采样代码。接口及 reload 见 [Workspace](workspace.md)。
 
@@ -122,4 +128,4 @@ python3 rsa/scripts/analyze-run.py /path/to/workspace/logs/run-id \
 
 Benchmark 终态与报告事件携带 `benchmarkRunId/executionStatus/reportStatus/verdict/reportId/previousReportId`。执行完成而评分失败显示“目标未达成”；执行异常和无效报告分别保留错误。修订报告只更新评分，不增加执行次数。CLI 非零退出仍如实记录，它可能表示检查未通过；不能仅凭退出码归因为 Python 崩溃。评测事件位于独立 run，通过 `parentRunId` 关联宿主，不靠 shell 文本关联具体工具；旧事件缺少评分时不推断结果。
 
-设备执行返回的 `result` 保留原生工具结果。日志中的同名字段采用归档表示：image/audio 的 `data` 或 embedded resource 的 `blob` 替换为媒体文件 `dataPath/blobPath`，通过 observation 的 `contentIndex` 对应内容位置，避免重复写入 base64。API/MCP 的实际返回仍保留原生内容；日志归档表示不能直接冒充 MCP 返回值。
+设备执行返回的 `result` 保留原生工具结果。设备日志中的同名字段省略 image/audio 的 `data` 或 embedded resource 的 `blob`，通过 observation 的 `contentIndex` 对应内容位置，保留大小和明确的 `timeline` 或 `dataPath/blobPath` 引用；无原件时使用 `dataOmitted/blobOmitted` 标明未留档。API、CLI、MCP 的实际返回仍保留原生内容；日志表示不能直接冒充 MCP 返回值。

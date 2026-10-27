@@ -3,26 +3,32 @@ import { join, resolve, basename, dirname } from "node:path";
 import { connect } from "node:net";
 import { selectCycle } from "./aggregate";
 import { loadIndexedEvents } from "./log-index";
-import { refreshRunProjection, selectIndexedCycle, readRunProjection, indexedObservation, type RunPage } from "./run-index";
+import { refreshRunProjection, selectIndexedCycle, readRunProjection, indexedObservation, hasTimelineReference, type RunPage } from "./run-index";
 import { latestGameRun } from "./initial-selection";
+import { readTimelineRecord, timelinePath, type TimelineRecordDetail } from "./timeline-record";
 import type { Event, Manifest, Project, RunData, LiveStatus } from "./types";
 // Runtime state lives in artifacts beside the monorepo, outside its Git tree.
 export const artifactRoot = resolve(process.cwd(), "../../artifacts/rsa");
 const safePart = (value: string) =>
   /^[a-zA-Z0-9._-]+$/.test(value) && value !== "." && value !== "..";
-async function runRoots(project: string, root: string) {
+async function projectState(project: string, root: string) {
   if (!safePart(project)) throw new Error("无效的项目 ID");
   const base = await realpath(/* turbopackIgnore: true */ root);
   const state = join(base, project);
   if ((await realpath(state)) !== state)
     throw new Error("工作区索引必须位于 artifacts/rsa 内");
+  return state;
+}
+async function registeredWorkspace(state: string) {
+  const { workspace } = JSON.parse(await readFile(join(state, "workspace.json"), "utf8"));
+  return realpath(workspace);
+}
+async function runRoots(project: string, root: string) {
+  const state = await projectState(project, root);
   const roots = [join(state, "runs")];
   try {
     // The host records its canonical workspace here, including workspaces outside this repo.
-    const { workspace } = JSON.parse(
-      await readFile(join(state, "workspace.json"), "utf8"),
-    );
-    roots.unshift(join(await realpath(workspace), "logs"));
+    roots.unshift(join(await registeredWorkspace(state), "logs"));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
@@ -124,10 +130,10 @@ export async function loadRun(project: string, run: string, root = artifactRoot)
   const indexed = await loadIndexedEvents(path);
   return { path, manifest, ...indexed };
 }
-export function hostRequest(
+export function hostRequest<T = LiveStatus>(
   socketPath: string,
   request: Record<string, unknown>,
-): Promise<LiveStatus> {
+): Promise<T> {
   return new Promise((resolve, reject) => {
     const socket = connect(socketPath);
     let buffer = "";
@@ -261,22 +267,83 @@ export async function mediaFile(project: string, run: string, id: string, root =
   const observation = await indexedObservation(index, id);
   const textMedia = observation?.mediaType.startsWith("text/") || observation?.mediaType === "application/json";
   if (
-    !observation || typeof observation.path !== "string" ||
+    !observation ||
     (!textMedia && !["image/png", "image/jpeg", "image/webp", "audio/wav"].includes(
       observation.mediaType,
     ))
   )
     throw new Error("未找到可展示的观测");
-  const file = await realpath(observation.path);
-  if (file !== join(path, "observations", basename(file)))
-    throw new Error("观测文件必须位于当前运行目录");
+  let file: string;
+  const reference = observation.timeline;
+  if (reference) {
+    if ((reference.recordId !== undefined && (typeof reference.recordId !== "string" || !reference.recordId))
+      || (reference.sequence !== undefined && (!Number.isSafeInteger(reference.sequence) || reference.sequence < 1))
+      || typeof reference.asset !== "string" || !reference.asset.split("/").every(safePart))
+      throw new Error("无效的时空轴媒体引用");
+    const workspace = await registeredWorkspace(await projectState(project, root));
+    const timeline = join(workspace, ".rsa", "timeline");
+    try {
+      file = await timelinePath(timeline, reference.asset);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT")
+        throw Object.assign(new Error("观测已过期或已移除"), { status: 410, code: "OBSERVATION_EXPIRED" });
+      throw error;
+    }
+  } else {
+    if (typeof observation.path !== "string")
+      throw Object.assign(new Error("此观测未录制，仅保留交付记录"), { status: 404, code: "OBSERVATION_UNRECORDED" });
+    file = await realpath(observation.path);
+    if (file !== join(path, "observations", basename(file)))
+      throw new Error("观测文件必须位于当前运行目录");
+  }
+  const bytes = await readFile(file).catch(error => {
+    if (reference && error.code === "ENOENT")
+      throw Object.assign(new Error("观测已过期或已移除"), { status: 410, code: "OBSERVATION_EXPIRED" });
+    throw error;
+  });
   return {
-    bytes: await readFile(file),
+    bytes,
     // Text media (including HTML source) is model input, never executable page content.
     mediaType: textMedia ? "text/plain; charset=utf-8" : observation.mediaType,
+    cacheControl: !reference || reference.asset.startsWith("objects/")
+      ? "private, max-age=31536000, immutable" : "no-store",
   };
   } finally { release(); }
 }
+
+export async function timelineRecord(project: string, run: string, recordId: string, sequence: number,
+  source: { call?: string; observation?: string }, root = artifactRoot): Promise<TimelineRecordDetail> {
+  if (!recordId || !Number.isSafeInteger(sequence) || sequence < 1) throw new Error("无效的时空轴记录引用");
+  const { index, release } = await loadRun(project, run, root);
+  try {
+    if (!await hasTimelineReference(index, recordId, sequence, source)) throw new Error("此运行没有引用指定观测");
+    const workspace = await registeredWorkspace(await projectState(project, root));
+    const stored = await readTimelineRecord(join(workspace, ".rsa", "timeline"), recordId, sequence)
+      .catch(error => { if (error.code === "ENOENT") return undefined; throw error; });
+    if (stored) return stored;
+
+    // Window-only JSON stays in the resident writer. Ask the current registered
+    // workspace host, without starting a sampler or contacting an old run's socket.
+    const latest = latestGameRun((await catalog(root)).find(item => item.id === project));
+    if (latest) {
+      const path = await resolveRun(project, latest.id, root);
+      const manifest = JSON.parse(await readFile(join(path, "manifest.json"), "utf8")) as Manifest;
+      if (typeof manifest.workspace === "string" && await realpath(manifest.workspace) === workspace) {
+        const live = await hostRequest(manifest.socket, { kind: "status", argv: [] }).catch(() => null);
+        if (live?.runId === latest.id) {
+          const response = await hostRequest<{ records?: Array<{ snapshot: { id: string; sequence: number }; data?: unknown; space?: unknown }> }>(
+            manifest.socket, { kind: "perception", argv: ["observe"], query: { id: recordId } },
+          ).catch(() => null);
+          const record = response?.records?.find(item => item.snapshot.id === recordId && item.snapshot.sequence === sequence);
+          if (record) return { recordId, sequence, ...(record.data === undefined ? {} : { data: record.data }),
+            ...(record.space === undefined ? {} : { space: record.space }) };
+        }
+      }
+    }
+    throw Object.assign(new Error("观测已过期或已移除"), { status: 410, code: "OBSERVATION_EXPIRED" });
+  } finally { release(); }
+}
+
 export function localRequest(request: Request, mutation = false) {
   const host = request.headers.get("host")?.split(":")[0];
   if (host !== "127.0.0.1" && host !== "localhost")

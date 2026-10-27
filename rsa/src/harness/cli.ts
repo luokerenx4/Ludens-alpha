@@ -1,7 +1,7 @@
 import { send, type Request } from "./transport.ts";
 import { parseArgs } from "node:util";
 import type { ObservationQuery, PerceptionRead } from "./perception.ts";
-import { archivedToolResult, readToolArguments } from "@playness/baseware/tool-contract";
+import { readToolArguments } from "@playness/baseware/tool-contract";
 import type { ExecutionResult } from "@playness/baseware/contracts";
 
 export const HELP = `rsa status
@@ -9,7 +9,7 @@ rsa auto on [--message <text>]
 rsa auto off
 rsa consolidate [--seconds <n>]
 rsa perception status | reload | stop
-rsa observe [--at <ISO> | --start <ISO> --end <ISO>] [--limit <n>] [--after <sequence>] [--images]
+rsa observe [--capability <id|*>] [--id <record-id> | --at <ISO> | --start <ISO> --end <ISO>] [--limit <n>] [--after <sequence>] [--images]
 rsa controller list | <id> --help | <id> [--args '<JSON object>' | --file <arguments.json>]
 
 Control management is unavailable inside agent cycles carrying BASEWARE_EPOCH.
@@ -17,8 +17,9 @@ The current directory is the workspace; --workspace <path> or RSA_WORKSPACE over
 RSA_SOCKET overrides its default host address. Each workspace resumes its own session.
 Use rsa controller for device and workspace capabilities.`;
 
-export const OBSERVE_HELP = `rsa observe [--at <ISO> | --start <ISO> --end <ISO>] [--limit <n>] [--after <sequence>] [--images]
-Read ObservationHistory without triggering a new sample; no arguments reads the latest record.
+export const OBSERVE_HELP = `rsa observe [--capability <id|*>] [--id <record-id> | --at <ISO> | --start <ISO> --end <ISO>] [--limit <n>] [--after <sequence>] [--images]
+Read the workspace timeline without sampling. Default: latest Perception.sample record.
+--capability selects a perception capability, or '*' for the whole timeline; --id selects a record.
 --at selects the last record at or before the given recordedAt timestamp.
 --start and --end select an inclusive time range; either bound may be omitted.
 Range pages follow recording sequence, default to 8 records (maximum 64), and return hasMore/nextAfter.
@@ -33,17 +34,21 @@ const PERCEPTION_HELP = `rsa perception status | reload | stop
 ${OBSERVE_HELP}
 Loads workspace/perception.py:Perception in a resident process and calls sample() continuously.
 Set sample_hz to choose a target rate (default 2 Hz). Reload after editing code or weights.
-Persistent history survives reload within this run. Defaults: 10-minute hot window, hourly segments.
+Mark sample() with @perception and @record from rsa_tools. Only marked results enter the timeline.
+Persistent history survives reload and new runs. Defaults: 10-minute hot window, hourly segments.
 Set RSA_PERCEPTION_PERSIST=0 in the host environment for hot-window-only history.
 Empty or failed perception supplies no default images.`;
 
 async function observe(argv: string[], socket: string) {
   if (argv.includes("--help")) { console.log(OBSERVE_HELP); return; }
   const { values } = parseArgs({ args: argv, options: {
+    capability: { type: "string" }, id: { type: "string" },
     at: { type: "string" }, start: { type: "string" }, end: { type: "string" },
     limit: { type: "string" }, after: { type: "string" }, images: { type: "boolean", default: false },
   } });
   const query: ObservationQuery = {
+    ...(values.capability !== undefined ? { capability: values.capability } : {}),
+    ...(values.id !== undefined ? { id: values.id } : {}),
     ...(values.at !== undefined ? { at: values.at } : {}),
     ...(values.start !== undefined ? { start: values.start } : {}),
     ...(values.end !== undefined ? { end: values.end } : {}),
@@ -88,8 +93,7 @@ async function controller(argv: string[], socket: string) {
   }
   const value = await send(socket, request);
   const execution = request.action === "call" && id.startsWith("controller/") ? value as ExecutionResult : undefined;
-  const display = execution?.result ? { ...execution, result: archivedToolResult(execution.result, execution.observations) } : value;
-  console.log(typeof display === "string" ? display : JSON.stringify(display, null, 2));
+  console.log(typeof value === "string" ? value : JSON.stringify(value, null, 2));
   if (execution) process.exitCode = execution.exitCode;
 }
 

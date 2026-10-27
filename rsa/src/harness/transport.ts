@@ -2,11 +2,12 @@ import { createServer, connect } from "node:net";
 import { lstat, unlink } from "node:fs/promises";
 import type { Runtime } from "./runtime.ts";
 import { childTrace, type EventTrace, type EventMetadata } from "./events.ts";
-import type { ObservationQuery } from "./perception.ts";
+import type { ObservationQuery, TimelineAppend } from "./perception.ts";
 
 export interface Request {
   kind: string; argv: string[]; epoch?: string; runId?: string; expectedEpoch?: string | null;
-  action?: "list" | "help" | "call"; id?: string; arguments?: unknown; trace?: EventTrace;
+  action?: "list" | "help" | "call" | "append"; id?: string; arguments?: unknown; trace?: EventTrace;
+  sample?: unknown; identity?: TimelineAppend["identity"]; sampling?: TimelineAppend["sampling"]; generation?: string | null;
   query?: ObservationQuery;
   event?: { type: "python_call_start" | "python_call_end"; data: { id: string; [key: string]: unknown }; origin: EventMetadata["origin"] };
 }
@@ -56,6 +57,16 @@ export async function listen(path: string, runtime: Runtime | (() => Runtime)) {
 export async function dispatch(runtime: Runtime, request: Request, signal = new AbortController().signal): Promise<unknown> {
   const { kind, argv, epoch } = request;
   if (kind === "status") return runtime.status();
+  if (kind === "timeline") {
+    if (!runtime.perception) throw new Error("Timeline recorder is unavailable; run rsa perception reload.");
+    if (request.action !== "append" || !request.identity || typeof request.identity.id !== "string" || !request.sampling)
+      throw new Error("Timeline append requires a perception result, capability identity and sampling interval");
+    // Recording a completed observation does not acquire control. Device input
+    // retains its independent epoch checks, including for background programs.
+    return runtime.perception.append({ sample: request.sample, identity: request.identity,
+      sampling: request.sampling, generation: request.generation,
+      runId: request.runId ?? runtime.status().runId, trace: request.trace }, signal);
+  }
   if (kind === "perception") {
     if (!runtime.perception) throw new Error("Perception is not configured");
     if (epoch !== undefined && (runtime.status().mode !== "auto" || runtime.status().epoch !== epoch))

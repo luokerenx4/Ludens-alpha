@@ -154,15 +154,27 @@ def workspace_sources(workspace, diagnostics):
 def discover(workspace):
     capabilities, diagnostics = [], []
     for relative, raw, tree in workspace_sources(workspace, diagnostics):
-        for node, markers in marked_functions(tree):
+        declarations = {}
+        for kind in ("capability", "perception", "record"):
+            for node, markers in marked_functions(tree, kind):
+                declarations.setdefault(node, {})[kind] = markers
+        parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+        for node, kinds in declarations.items():
             try:
+                markers = [marker for items in kinds.values() for marker in items]
+                if any(len(items) != 1 for items in kinds.values()) or len(markers) != len(node.decorator_list):
+                    raise ValueError("Use capability, perception and record decorators once each; other decorators are unsupported")
+                if "record" in kinds and "perception" not in kinds:
+                    raise ValueError("@record requires @perception on the same function")
+                for marker in markers:
+                    if isinstance(marker, ast.Call) and (marker.args or marker.keywords):
+                        raise ValueError("Use capability/perception/record without decorator arguments")
                 if node not in tree.body:
-                    raise ValueError("Capabilities must be top-level functions, not methods or nested functions")
-                if len(markers) != 1 or len(node.decorator_list) != 1:
-                    raise ValueError("A capability function must use only one @capability decorator")
-                marker = markers[0]
-                if isinstance(marker, ast.Call) and (marker.args or marker.keywords):
-                    raise ValueError("Use @capability or @capability() without decorator arguments")
+                    if "perception" in kinds and isinstance(parents.get(node), ast.ClassDef):
+                        # Bound perception methods (including the resident sample)
+                        # are instrumented locally, never exposed as CLI functions.
+                        continue
+                    raise ValueError("CLI capabilities must be top-level functions, not methods or nested functions")
                 if sum(isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and item.name == node.name for item in tree.body) != 1:
                     raise ValueError("A capability function name must be unique within its source file")
                 description, parameters = function_schema(node)
@@ -170,7 +182,8 @@ def discover(workspace):
                 name = re.sub(r"[^a-zA-Z0-9_]", "_", "python_" + relative[:-3] + "_" + node.name)[:53]
                 name += "_" + hashlib.sha256(identity.encode()).hexdigest()[:10]
                 capabilities.append({"id": name, "name": name, "description": description, "parameters": parameters,
-                    "origin": {"path": relative, "function": node.name, "line": node.lineno}, "codeSHA": hashlib.sha256(raw).hexdigest()})
+                    "origin": {"path": relative, "function": node.name, "line": node.lineno}, "codeSHA": hashlib.sha256(raw).hexdigest(),
+                    "perception": "perception" in kinds, "recorded": "record" in kinds})
             except (ValueError, SyntaxError) as error:
                 diagnostics.append({"path": relative, "function": node.name, "line": node.lineno, "message": str(error)})
     return {"capabilities": capabilities, "diagnostics": diagnostics}

@@ -3,6 +3,7 @@
 Run: PYTHONPATH=rsa/python python3 rsa/tests/perception-history.test.py
 """
 
+import base64
 import json
 import gc
 import os
@@ -20,6 +21,8 @@ from unittest.mock import patch
 from rsa_tools._observation_history import ObservationHistory
 
 
+SAMPLING = {"clock": "test", "startedAtMs": 0, "finishedAtMs": 1}
+
 class HistoryTests(unittest.TestCase):
     def test_immutable_media_paged_queries_and_generation_reload(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -29,10 +32,11 @@ class HistoryTests(unittest.TestCase):
             for index in range(5):
                 source.write_text(str(index))
                 history.append({"media": [{"path": str(source), "mediaType": "text/plain"}]},
-                               "first", {}, f"2026-10-22T00:00:0{index}.000Z")
+                               "first", SAMPLING, f"2026-10-22T00:00:0{index}.000Z")
             source.write_text("overwritten")
+            history.close()
             history = ObservationHistory(root)
-            history.append({"text": "new generation"}, "second", {}, "2026-10-22T00:00:05.000Z")
+            history.append({"text": "new generation"}, "second", SAMPLING, "2026-10-22T00:00:05.000Z")
             point = history.observe({"at": "2026-10-22T00:00:02.500Z"})["records"][0]
             self.assertEqual(point["sequence"], 3)
             self.assertEqual(Path(point["media"][0]["path"]).read_text(), "2")
@@ -54,9 +58,10 @@ class HistoryTests(unittest.TestCase):
             source.write_text("unchanged")
             history = ObservationHistory(root)
             sample = {"media": [{"path": str(source), "mediaType": "text/plain"}]}
-            first = history.append(sample, "one", {})
-            second = history.append(sample, "one", {})
-            self.assertEqual(first["media"], second["media"])
+            first = history.append(sample, "one", SAMPLING)
+            second = history.append(sample, "one", SAMPLING)
+            self.assertEqual(first["media"][0]["path"], second["media"][0]["path"])
+            self.assertNotEqual(first["timeline"], second["timeline"])
             records_path = Path(history._active["path"]).with_suffix(".jsonl")
             # A crash can leave a committed payload without its index/summary,
             # followed by an incomplete final write. Recover only complete rows.
@@ -64,17 +69,18 @@ class HistoryTests(unittest.TestCase):
             with records_path.open("ab") as stream:
                 stream.write((json.dumps(third) + "\n").encode())
                 stream.write(b'{"unfinished":')
+            history.close()
             recovered = ObservationHistory(root)
-            self.assertEqual(recovered.append({"text": "recovered"}, "two", {})["sequence"], 4)
-            self.assertEqual(len(list(root.glob("perception/history/segments/*.media/*"))), 1)
+            self.assertEqual(recovered.append({"text": "recovered"}, "two", SAMPLING)["sequence"], 4)
+            self.assertEqual(len(list(root.glob(".rsa/timeline/objects/*"))), 1)
             self.assertEqual([row["sequence"] for row in recovered.observe({"after": 0})["records"]], [1, 2, 3, 4])
             with self.assertRaises(FileNotFoundError):
                 recovered.append({"media": [sample["media"][0], {
                     "path": str(root / "missing.txt"), "mediaType": "text/plain",
-                }]}, "two", {})
+                }]}, "two", SAMPLING)
             self.assertEqual(recovered.observe()["records"][0]["sequence"], 4)
 
-    def test_defaults_and_legacy_history_remain_queryable_without_rewriting(self):
+    def test_defaults_and_old_run_history_remains_untouched(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             legacy = root / "perception/history/records.jsonl"
@@ -88,10 +94,11 @@ class HistoryTests(unittest.TestCase):
             self.assertEqual(history.policy(), {"persistent": True, "hotSeconds": 600,
                              "hotBytes": 67108864, "segmentSeconds": 3600, "segmentBytes": 268435456})
             self.assertEqual(len(history._hot), 0)
-            history.append({"text": "new"}, "new", {}, "2026-10-22T00:00:03Z")
+            history.append({"text": "new"}, "new", SAMPLING, "2026-10-22T00:00:03Z")
+            history.close()
             recovered = ObservationHistory(root)
-            self.assertEqual([row["sequence"] for row in recovered.observe({"after": 0})["records"]], [1, 2, 3])
-            self.assertEqual(recovered.observe({"at": "2026-10-22T00:00:01Z"})["records"][0]["generation"], "legacy")
+            self.assertEqual([row["sequence"] for row in recovered.observe({"after": 0})["records"]], [1])
+            self.assertEqual(recovered.observe({"at": "2026-10-22T00:00:01Z"})["records"], [])
             self.assertEqual(legacy.read_bytes(), original)
 
     def test_hot_expiry_hourly_segments_and_cold_pages_after_reload(self):
@@ -102,7 +109,7 @@ class HistoryTests(unittest.TestCase):
                 history = ObservationHistory(directory)
                 for minute in range(0, 180, 15):
                     clock[0] += 1
-                    history.append({"text": str(minute)}, "one", {},
+                    history.append({"text": str(minute)}, "one", SAMPLING,
                                    f"2026-10-22T{minute // 60:02}:{minute % 60:02}:00Z")
                 self.assertEqual(len(list(history.segment_dir.glob("*.jsonl"))), 3)
                 clock[0] += 11
@@ -126,7 +133,7 @@ class HistoryTests(unittest.TestCase):
                 self.assertEqual(reloaded.observe()["records"][0]["text"], "165")
                 self.assertFalse(page["availability"]["expired"])
 
-    def test_window_only_expiry_pins_and_source_media_ownership(self):
+    def test_window_only_expiry_inline_delivery_and_source_media_ownership(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
                 "RSA_PERCEPTION_PERSIST": "0", "RSA_PERCEPTION_HOT_SECONDS": "10"}):
             root, clock = Path(directory), [0.0]
@@ -135,14 +142,15 @@ class HistoryTests(unittest.TestCase):
             with patch("rsa_tools._observation_history.time.monotonic", side_effect=lambda: clock[0]):
                 history = ObservationHistory(root)
                 saved = history.append({"media": [{"path": str(source), "mediaType": "image/png"}]},
-                                       "one", {}, "2026-10-22T00:00:00Z")
+                                       "one", SAMPLING, "2026-10-22T00:00:00Z")
                 copied = Path(saved["media"][0]["path"])
                 self.assertNotEqual(copied, source)
-                history.observe()  # Hold this returned page during the caller's read.
+                page = history.observe()  # Delivery owns inline bytes before expiry.
                 clock[0] = 11
                 history.prune()
                 self.assertEqual(history.hot_bytes, 0)
-                self.assertTrue(copied.exists())
+                self.assertFalse(copied.exists())
+                self.assertEqual(base64.b64decode(page["records"][0]["media"][0]["data"]), b"compressed frame")
                 expired = history.observe({"at": "2026-10-22T00:00:00Z"})
                 self.assertEqual(expired["records"], [])
                 self.assertTrue(expired["availability"]["expired"])
@@ -151,18 +159,17 @@ class HistoryTests(unittest.TestCase):
                 self.assertTrue(source.exists())
                 self.assertEqual(list(history.segment_dir.glob("*")), [])
                 saved = history.append({"media": [{"path": str(source), "mediaType": "image/png"}]},
-                                       "one", {}, "2026-10-22T00:00:11Z")
+                                       "one", SAMPLING, "2026-10-22T00:00:11Z")
                 copied = Path(saved["media"][0]["path"])
-                history.observe()
+                page = history.observe()
                 clock[0] = 22
                 history.prune()
-                self.assertTrue(copied.exists())
-                history.release()  # The caller finishes copying, without another query.
                 self.assertFalse(copied.exists())
+                self.assertEqual(base64.b64decode(page["records"][0]["media"][0]["data"]), b"compressed frame")
                 history.close()
-                self.assertFalse(list((root / "perception/history").glob("window-*")))
+                self.assertFalse(list((root / ".rsa/timeline").glob("window-*")))
                 reloaded = ObservationHistory(root)
-                self.assertEqual(reloaded.append({"text": "new generation"}, "two", {})["sequence"], 3)
+                self.assertEqual(reloaded.append({"text": "new generation"}, "two", SAMPLING)["sequence"], 3)
                 self.assertEqual(len(reloaded.observe({"after": 0})["records"]), 1)
                 reloaded.close()
 
@@ -182,12 +189,15 @@ class HistoryTests(unittest.TestCase):
                     raise ProcessLookupError()
                 return real_kill(pid, signal)
 
+            with self.assertRaisesRegex(RuntimeError, "already has a writer"):
+                ObservationHistory(directory)
+            self.assertTrue(marker.exists())
+            self.assertTrue(dead.exists())
+            history.close()
             with patch("rsa_tools._observation_history.os.kill", new=owner_status):
                 other = ObservationHistory(directory)
-            self.assertTrue(marker.exists())
             self.assertFalse(dead.exists())
             other.close()
-            history.close()
 
     def test_hot_byte_budget_and_process_allocations_do_not_follow_total_history(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
@@ -196,11 +206,11 @@ class HistoryTests(unittest.TestCase):
             tracemalloc.start()
             try:
                 for index in range(300):
-                    history.append({"text": "x" * 2048}, "one", {})
+                    history.append({"text": "x" * 2048}, "one", SAMPLING)
                 gc.collect()
                 warm = tracemalloc.get_traced_memory()[0]
                 for index in range(1200):
-                    history.append({"text": "x" * 2048}, "one", {})
+                    history.append({"text": "x" * 2048}, "one", SAMPLING)
                 gc.collect()
                 final, peak = tracemalloc.get_traced_memory()
                 self.assertLessEqual(history.hot_bytes, 65536)
@@ -220,7 +230,7 @@ class HistoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             history = ObservationHistory(directory)
             for second in range(3):
-                history.append({"text": str(second)}, "one", {}, f"2026-10-22T06:45:5{second}Z")
+                history.append({"text": str(second)}, "one", SAMPLING, f"2026-10-22T06:45:5{second}Z")
             # Replay the populated-but-unused fields observed in real tool calls.
             ranged = history.observe({"at": "", "start": "2026-10-22T06:45:50Z",
                                       "end": "2026-10-22T06:45:52Z", "limit": 2, "after": 0})
@@ -251,7 +261,7 @@ class HistoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             history = ObservationHistory(directory)
             for second in (3, 1, 2):
-                history.append({"text": str(second)}, "one", {}, f"2026-10-22T00:00:0{second}Z")
+                history.append({"text": str(second)}, "one", SAMPLING, f"2026-10-22T00:00:0{second}Z")
             first = history.observe({"after": 0, "limit": 1})
             second = history.observe({"after": first["nextAfter"], "limit": 1})
             third = history.observe({"after": second["nextAfter"], "limit": 1})
@@ -266,11 +276,14 @@ class HistoryTests(unittest.TestCase):
 import json, time
 from pathlib import Path
 from rsa_tools._context import current
+from rsa_tools import perception, record
 class Perception:
     sample_hz = 20
     def start(self, context):
         self.context = context
         self.count = 0
+    @record
+    @perception
     def sample(self):
         Path('sampling').write_text('yes')
         time.sleep(0.3)

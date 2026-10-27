@@ -78,3 +78,7 @@ rsa controller controller/pad.play --args '{"inputs":[{"atMs":0,"durationMs":500
 ## 可核查的运行事实
 
 Baseware 记录设备事实，RSA 保存模型、工具、能力和感知记录，Shiori 接入 OMP 原生 telemetry。Dashboard 与 Pet 消费日志，不另起推理循环。来源与调用链见 [日志契约](logging.md)，评测见 [Benchmark](benchmark.md)。调用成功、文件增长或帧数增加不等于任务成功。
+
+## 感知持久化边界
+
+workspace 的 `.rsa/timeline/` 是显式记录感知的唯一原件归属。`@perception` 声明感知，`@record` 将结果写入时空轴；已有感知进程负责单写入者与连续采样，用户函数仍在调用方 Python 进程执行。Baseware 返回原生数据，只使用调用临时文件；RSA run 记录引用，Dashboard 解析引用和可重建索引。run 不再要求复制一套媒体。OMP 原生会话、payload 和传输 stream 保持独立，尚未纳入此轮存储重构。契约与生命周期见 [Workspace](workspace.md#感知能力与-workspace-时空轴)，施工依据见 [时空轴方案](workspace-timeline-plan.md)。

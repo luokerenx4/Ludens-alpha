@@ -1,7 +1,7 @@
-import { mkdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 import type { Capabilities, Clock, Controller } from "../../contracts.ts";
 import { Bridge } from "../bridge.ts";
+import { withCaptureFile } from "../capture.ts";
 import { structuredResult, toolExecution } from "../../tool-contract.ts";
 import { createPadPlayer } from "../pad.ts";
 import { compileTimeline } from "../timeline.ts";
@@ -35,9 +35,8 @@ export function encodeSpans(spans: Span[], fps: number): string {
 
 const PAD_DESCRIPTION = "Digital controller.";
 
-export async function createGbaProvider(options: { port: number; artifactsDir: string; clock: Clock }) {
+export async function createGbaProvider(options: { port: number; clock: Clock }) {
   const { clock } = options;
-  await mkdir(options.artifactsDir, { recursive: true });
   const bridge = await Bridge.open(options.port);
   let frequency: string, cycles: string;
   try { [frequency, cycles] = await bridge.request("HELLO"); }
@@ -56,10 +55,11 @@ export async function createGbaProvider(options: { port: number; artifactsDir: s
     async execute(_args, { signal }) {
       signal.throwIfAborted();
       const id = crypto.randomUUID();
-      const path = join(options.artifactsDir, `${id}.png`);
       const requestedAtMs = clock.now();
-      const [frame] = await bridge.request("CAPTURE", [path]);
-      const data = await readFile(path);
+      const { frame, data } = await withCaptureFile(async path => {
+        const [frame] = await bridge.request("CAPTURE", [path]);
+        return { frame, data: await readFile(path) };
+      });
       if (!data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) throw new Error("Capture did not produce a PNG");
       signal.throwIfAborted();
       const timing = { clock: clock.id, requestedAtMs, receivedAtMs: clock.now() };
@@ -67,7 +67,7 @@ export async function createGbaProvider(options: { port: number; artifactsDir: s
       const result = structuredResult(output);
       result.content.unshift({ type: "image", mimeType: "image/png", data: data.toString("base64") });
       return { ...toolExecution(clock, requestedAtMs, result), timing,
-        observations: [{ id, controllerId: "screen.capture", mediaType: "image/png", path, timing,
+        observations: [{ id, controllerId: "screen.capture", mediaType: "image/png", timing,
           sourceSequence: Number(frame), contentIndex: 0 }] };
     },
   };

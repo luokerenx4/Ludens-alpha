@@ -1,27 +1,26 @@
 """Workspace-owned perception. Implement this class, then run rsa perception reload."""
 
+from rsa_tools import perception, record
+
 
 class Perception:
-    sample_hz = 2.0  # Target rate; slow samples do not overlap or accumulate.
+    sample_hz = 2.0  # Target rate; slow samples never overlap or accumulate.
 
     def start(self, context):
-        """Initialize models/state once. context is {workspace, runDir, generation}.
-
-        Read baseware.json to discover read-only device capabilities.
-        """
+        """Initialize models/state once; discover device abilities in baseware.json."""
         self.context = context
 
+    @record
+    @perception
     def sample(self):
-        """Return a result or raise NotImplementedError until it is available.
+        """Return an observation: optional text, JSON data, media, space and sources.
 
-        Result: {"text": str, "media": [{"path": str, "mediaType": str}],
-                 "sampledAt": ISO_timestamp, "sources": [...]}
-        Fields are optional; return text and/or media as useful. Paths are relative
-        to this workspace or absolute. sampledAt is source time, if known.
-        RSA calls this continuously, even while Shiori thinks, and archives each
-        result with its sequence, recordedAt and sampling interval. Keep media
-        unchanged until the next sample call. observe() reads this history:
-        latest by default, or at/start/end timestamps; it does not call sample().
+        media: [{"path": "frame.png", "mediaType": "image/png"}], or base64 data
+        instead of path. sampledAt optionally supplies a known source timestamp.
+        The instance stays alive; choose continuous or on-demand work as useful.
+        @record adds this result to the workspace timeline and returns a timeline
+        reference. observe() reads that history, across runs, without resampling.
+        Plain @perception functions do not record; add @record only where useful.
         """
         raise NotImplementedError("Implement workspace perception, then reload it.")
 

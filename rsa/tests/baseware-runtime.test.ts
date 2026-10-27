@@ -154,7 +154,7 @@ test("owner connection loss revokes a separate caller and disconnects RSA", asyn
   } finally { await f.close(); }
 });
 
-test("remote observations and event paths keep distinct durable files inside the RSA run", async () => {
+test("remote observations preserve references and never copy files into the RSA run", async () => {
   const f = await fixture();
   try {
     const result = await readTestController(f.runtime, "screen", {}, new AbortController().signal,
@@ -171,15 +171,15 @@ test("remote observations and event paths keep distinct durable files inside the
       dataPath: observation.path, encodedBytes: f.pixels[index]!.toString("base64").length })));
     expect(JSON.stringify(f.events)).not.toContain(f.pixels[0]!.toString("base64"));
     for (const [index, observation] of observations.entries()) {
-      expect(observation.path.startsWith(join(f.runDir, "observations") + "/")).toBe(true);
+      expect(observation.path).toBe(f.sources[index]);
       expect(recorded[index]).toMatchObject({ data: { id: observation.id, path: observation.path }, trace: { toolCallId: "capture-call" } });
       const original = f.deviceEvents.find(event => event.type === "observation" && event.data.id === observation.id)!;
       expect(recorded[index]!.source).toEqual({ component: "baseware", implementation: "baseware" });
       expect(recorded[index]!.origin).toEqual(original.origin);
       expect(recorded[index]!.trace).toEqual(original.trace);
-      expect(recorded[index]!.data.path).not.toBe(original.data.path);
+      expect(recorded[index]!.data.path).toBe(original.data.path);
       await rm(f.sources[index]!);
-      expect(await readFile(observation.path)).toEqual(f.pixels[index]!);
+      expect(await Bun.file(join(f.runDir, "observations")).exists()).toBe(false);
     }
   } finally { await f.close(); }
 });

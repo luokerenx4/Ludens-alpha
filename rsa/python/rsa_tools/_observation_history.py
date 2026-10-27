@@ -2,6 +2,9 @@
 
 from collections import Counter, OrderedDict
 from datetime import datetime, timezone
+import base64
+import binascii
+import fcntl
 import hashlib
 import json
 import math
@@ -42,15 +45,87 @@ def _iso(at):
 
 
 # Fixed-size entries can be scanned without retaining an index per observation.
-# Each entry is (wall timestamp, sequence, payload offset, payload length).
-_ENTRY = struct.Struct(">dQQQ")
+# Each entry holds wall time, sequence, payload offset/length, and compact
+# capability/record IDs, so channel queries need not open every JSON record.
+_ENTRY = struct.Struct(">dQQQ16s16s")
+
+
+def _key(value):
+    return hashlib.sha256(value.encode("utf-8")).digest()[:16]
+
+
+MAIN_CAPABILITY = "python/perception.py:Perception.sample"
+SAMPLE_FIELDS = {"text", "data", "media", "sampledAt", "sources", "space", "timeline"}
+
+
+def validate_sample(sample, workspace):
+    """Validate the sensing envelope without silently dropping sensor fields."""
+    if not isinstance(sample, dict):
+        raise TypeError("A perception capability must return an observation object")
+    if set(sample) - SAMPLE_FIELDS:
+        raise ValueError("Unknown observation fields: " + ", ".join(sorted(set(sample) - SAMPLE_FIELDS)))
+    if not isinstance(sample.get("text", ""), str):
+        raise TypeError("sample.text must be a string")
+    if not isinstance(sample.get("media", []), list):
+        raise TypeError("sample.media must be an array")
+    if "sampledAt" in sample:
+        timestamp(sample["sampledAt"], "sampledAt")
+    if "sources" in sample and not isinstance(sample["sources"], list):
+        raise TypeError("sample.sources must be an array")
+    json.dumps(sample, allow_nan=False)
+    for item in sample.get("media", []):
+        if (not isinstance(item, dict) or not isinstance(item.get("mediaType"), str)
+                or not item["mediaType"] or set(item) - {"path", "data", "mediaType", "timeline"}):
+            raise TypeError("sample.media entries require mediaType and path or base64 data")
+        if "data" in item:
+            if not isinstance(item["data"], str):
+                raise TypeError("sample.media.data must be base64 text")
+            try:
+                base64.b64decode(item["data"], validate=True)
+            except (ValueError, binascii.Error):
+                raise ValueError("sample.media.data must be valid base64") from None
+        elif isinstance(item.get("path"), str):
+            source = Path(item["path"])
+            source = source if source.is_absolute() else Path(workspace) / source
+            if not source.is_file():
+                raise FileNotFoundError(str(source))
+        else:
+            raise TypeError("sample.media entries require path or base64 data")
+
+
+def observation_result(record):
+    """Return a composable sensing envelope, rather than storage internals."""
+    return {key: record[key] for key in SAMPLE_FIELDS if key in record}
 
 
 class ObservationHistory:
-    def __init__(self, run_dir):
-        self.root = Path(run_dir).resolve()
-        self.directory = self.root / "perception" / "history"
-        self.path = self.directory / "records.jsonl"  # Existing history is read-only.
+    def __init__(self, workspace):
+        self.root = Path(workspace).resolve()
+        self.directory = self.root / ".rsa" / "timeline"
+        self.directory.mkdir(parents=True, exist_ok=True)
+        self._writer = (self.directory / "writer.lock").open("a+b")
+        try:
+            fcntl.flock(self._writer.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            self._writer.close()
+            raise RuntimeError("This workspace timeline already has a writer") from None
+        try:
+            self._initialize()
+        except BaseException:
+            self._unlock()
+            raise
+
+    def _unlock(self):
+        writer = getattr(self, "_writer", None)
+        if writer is not None and not writer.closed:
+            fcntl.flock(writer.fileno(), fcntl.LOCK_UN)
+            writer.close()
+
+    def __del__(self):
+        self._unlock()
+
+    def _initialize(self):
+        self.objects = self.directory / "objects"
         self.segment_dir = self.directory / "segments"
         self.segment_dir.mkdir(parents=True, exist_ok=True)
         self.hot_seconds = _number("RSA_PERCEPTION_HOT_SECONDS", 600)
@@ -65,13 +140,10 @@ class ObservationHistory:
         self._hot = OrderedDict()
         self.hot_bytes = 0
         self._references = Counter()
-        self._pins = set()
         self._expired = None  # min/max wall time and last evicted sequence, not old records.
         self._temporary = None
         self._active = None
         self._segments = []
-        self._legacy = None
-        self._legacy_bounds = None
         self.sequence = 0
         # SIGKILL cannot run close(). Reclaim only window directories whose
         # recorded owner PID no longer exists; never touch a live instance.
@@ -98,48 +170,18 @@ class ObservationHistory:
         if self._segments:
             self._recover(self._segments[-1])
             self.sequence = max(item["lastSequence"] for item in self._segments)
-        if self.path.exists() and self.path.stat().st_size:
-            # Legacy files are not rewritten. Reading their two ends establishes
-            # sequence continuity; old queries scan complete lines on demand.
-            first = None
-            with self.path.open("rb") as stream:
-                line = stream.readline()
-                if line.endswith(b"\n"):
-                    first = json.loads(line)
-                last = self._last_complete(stream)
-            if first and last:
-                self._legacy = {key: {"recordedAt": row["recordedAt"], "sequence": row["sequence"]}
-                                for key, row in (("first", first), ("last", last))}
-                self.sequence = max(self.sequence, last["sequence"])
         sequence_path = self.directory / "sequence.json"
         if sequence_path.exists():
             self.sequence = max(self.sequence, json.loads(sequence_path.read_text()))
         if not self.persistent:
             # No old persistent history is exposed in window-only mode.
             self._segments = []
-            self._legacy = None
             self._temporary = Path(tempfile.mkdtemp(prefix=f"window-{os.getpid()}-", dir=self.directory))
 
     def policy(self):
         return {"persistent": self.persistent, "hotSeconds": self.hot_seconds,
                 "hotBytes": self.hot_limit, "segmentSeconds": self.segment_seconds,
                 "segmentBytes": self.segment_limit}
-
-    @staticmethod
-    def _last_complete(stream):
-        stream.seek(0, 2)
-        position, tail = stream.tell(), b""
-        while position:
-            size = min(position, 65536)
-            position -= size
-            stream.seek(position)
-            tail = stream.read(size) + tail
-            lines = tail.split(b"\n")
-            if len(lines) >= 3 or position == 0:
-                for line in reversed(lines[1:-1] if position else lines[:-1]):
-                    if line:
-                        return json.loads(line)
-        return None
 
     def _save_meta(self, segment):
         path = Path(segment["path"] + ".meta.json")
@@ -165,7 +207,7 @@ class ObservationHistory:
                     break
                 record = json.loads(line)
                 at = timestamp(record["recordedAt"], "recordedAt")
-                index.write(_ENTRY.pack(at, record["sequence"], offset, len(line)))
+                index.write(_ENTRY.pack(at, record["sequence"], offset, len(line), _key(record["capability"]), _key(record["id"])))
                 self._update_segment(segment, record, offset + len(line))
         self._save_meta(segment)
 
@@ -196,47 +238,52 @@ class ObservationHistory:
         segment["count"] += 1
         segment["recordBytes"] = record_bytes
 
-    def append(self, sample, generation, sampling, recorded_at=None):
-        if not isinstance(sample, dict):
-            raise TypeError("sample() must return an object")
-        text, media = sample.get("text", ""), sample.get("media", [])
-        if not isinstance(text, str):
-            raise TypeError("sample.text must be a string")
-        if not isinstance(media, list):
-            raise TypeError("sample.media must be an array")
-        if "sampledAt" in sample:
-            timestamp(sample["sampledAt"], "sampledAt")
-        if "sources" in sample and not isinstance(sample["sources"], list):
-            raise TypeError("sample.sources must be an array")
-        json.dumps(sample, allow_nan=False)
-        json.dumps(sampling, allow_nan=False)
-        for item in media:
-            if (not isinstance(item, dict) or not isinstance(item.get("path"), str)
-                    or not isinstance(item.get("mediaType"), str) or not item["mediaType"]):
-                raise TypeError("sample.media entries must contain path and mediaType strings")
-            if not Path(item["path"]).is_file():
-                raise FileNotFoundError(item["path"])
+    def append(self, sample, generation, sampling, recorded_at=None, *, identity=None, run_id=None, trace=None):
+        validate_sample(sample, self.root)
+        if not isinstance(sampling, dict) or set(sampling) != {"clock", "startedAtMs", "finishedAtMs"}:
+            raise ValueError("sampling requires clock, startedAtMs and finishedAtMs")
+        if not isinstance(sampling["clock"], str) or not sampling["clock"].strip():
+            raise ValueError("sampling.clock must be a nonempty clock ID")
+        try:
+            finite = all(type(sampling[key]) in (int, float) and math.isfinite(sampling[key])
+                         for key in ("startedAtMs", "finishedAtMs"))
+        except OverflowError:
+            finite = False
+        if not finite:
+            raise ValueError("sampling timestamps must be finite numbers")
+        if sampling["finishedAtMs"] < sampling["startedAtMs"]:
+            raise ValueError("sampling.finishedAtMs must not precede startedAtMs")
+        identity = identity or {"id": MAIN_CAPABILITY}
+        if not isinstance(identity, dict) or not isinstance(identity.get("id"), str) or not identity["id"]:
+            raise ValueError("A recorded observation requires its capability identity")
+        json.dumps({"identity": identity, "sampling": sampling, "trace": trace}, allow_nan=False)
         recorded_at = recorded_at or _iso(time.time())
         at = timestamp(recorded_at, "recordedAt")
         with self.lock:
+            if self._writer.closed:
+                raise RuntimeError("Workspace timeline writer is closed")
             self._prune()
             segment = self._active
             if self.persistent and (segment is None
                     or segment["bucket"] != math.floor(at / self.segment_seconds)
                     or segment["recordBytes"] + segment["mediaBytes"] >= self.segment_limit):
                 segment = self._new_segment(at)
-            media_dir = Path(segment["path"] + ".media") if self.persistent else self._temporary
+            media_dir = self.objects if self.persistent else self._temporary
+            reference = {"recordId": str(uuid.uuid4()), "sequence": self.sequence + 1}
             archived, media_bytes = [], 0
-            for item in media:
-                path, added = self._archive(Path(item["path"]), media_dir)
-                archived.append({"path": str(path), "mediaType": item["mediaType"]})
+            for item in sample.get("media", []):
+                path, added = self._archive(item, media_dir)
+                archived.append({"path": str(path), "mediaType": item["mediaType"],
+                                 "timeline": {**reference, "asset": path.relative_to(self.directory).as_posix()}})
                 media_bytes += path.stat().st_size
                 if segment is not None:
                     segment["mediaBytes"] += added
-            record = {"id": str(uuid.uuid4()), "sequence": self.sequence + 1,
-                      "generation": generation, "recordedAt": recorded_at,
-                      "sampling": sampling, "text": text, "media": archived}
-            for key in ("sampledAt", "sources"):
+            record = {"id": reference["recordId"], "sequence": reference["sequence"],
+                      "timeline": reference, "capability": identity["id"], "identity": identity,
+                      "generation": generation, "runId": run_id, "trace": trace or {},
+                      "recordedAt": recorded_at, "sampling": sampling,
+                      "text": sample.get("text", ""), "media": archived}
+            for key in ("sampledAt", "sources", "data", "space"):
                 if key in sample:
                     record[key] = sample[key]
             encoded = (json.dumps(record, allow_nan=False) + "\n").encode("utf-8")
@@ -246,35 +293,44 @@ class ObservationHistory:
                     offset = records.tell()
                     records.write(encoded)
                 with path.with_suffix(".idx").open("ab") as index:
-                    index.write(_ENTRY.pack(at, record["sequence"], offset, len(encoded)))
+                    index.write(_ENTRY.pack(at, record["sequence"], offset, len(encoded), _key(record["capability"]), _key(record["id"])))
                 self._update_segment(segment, record, offset + len(encoded))
                 self._save_meta(segment)
             self.sequence = record["sequence"]
-            # A scalar cursor is not archived observation content. Preserve it
-            # even in window-only mode so a reload cannot reuse sequence IDs.
             temporary = self.directory / "sequence.tmp"
             temporary.write_text(str(self.sequence))
             temporary.replace(self.directory / "sequence.json")
             paths = tuple(item["path"] for item in archived)
             cost = len(encoded) + media_bytes
-            self._hot[self.sequence] = (time.monotonic(), at, encoded, paths, cost)
+            self._hot[self.sequence] = (time.monotonic(), at, encoded, paths, cost, _key(record["capability"]), _key(record["id"]))
             self.hot_bytes += cost
             self._references.update(paths)
+            # Window media may expire as soon as this call releases the lock.
+            # Deliver its bytes now, without a second permanent archive or lease.
+            result = self._delivery(record)
             self._prune()
-            return record
+            return result
 
-    @staticmethod
-    def _archive(source, directory):
+    def _archive(self, item, directory):
         directory.mkdir(parents=True, exist_ok=True)
         digest = hashlib.sha256()
         descriptor, name = tempfile.mkstemp(prefix=".copy-", dir=directory)
         temporary = Path(name)
         try:
-            with os.fdopen(descriptor, "wb") as output, source.open("rb") as incoming:
-                while block := incoming.read(1024 * 1024):
+            with os.fdopen(descriptor, "wb") as output:
+                if "data" in item:
+                    block = base64.b64decode(item["data"], validate=True)
                     digest.update(block)
                     output.write(block)
-            destination = directory / f"{digest.hexdigest()}{source.suffix.lower()}"
+                else:
+                    source = Path(item["path"])
+                    source = source if source.is_absolute() else self.root / source
+                    with source.open("rb") as incoming:
+                        while block := incoming.read(1024 * 1024):
+                            digest.update(block)
+                            output.write(block)
+            # MIME belongs to each observation, not to the content address.
+            destination = directory / (digest.hexdigest() + ".bin")
             added = 0
             if not destination.exists():
                 added = temporary.stat().st_size
@@ -283,15 +339,21 @@ class ObservationHistory:
         finally:
             temporary.unlink(missing_ok=True)
 
+    def _delivery(self, record):
+        if self.persistent:
+            return record
+        return {**record, "media": [{**item, "data": base64.b64encode(Path(item["path"]).read_bytes()).decode("ascii")}
+                                    for item in record["media"]]}
+
     def _delete_unused(self, path):
-        if not self.persistent and not self._references.get(path) and path not in self._pins:
+        if not self.persistent and not self._references.get(path):
             Path(path).unlink(missing_ok=True)
 
     def _prune(self):
         cutoff = time.monotonic() - self.hot_seconds
         while self._hot:
             sequence, entry = next(iter(self._hot.items()))
-            created, at, _encoded, paths, cost = entry
+            created, at, _encoded, paths, cost = entry[:5]
             if created > cutoff and self.hot_bytes <= self.hot_limit:
                 break
             self._hot.pop(sequence)
@@ -309,47 +371,31 @@ class ObservationHistory:
         with self.lock:
             self._prune()
 
-    def _release(self):
-        paths, self._pins = self._pins, set()
-        for path in paths:
-            self._delete_unused(path)
-        self._prune()
-
-    def release(self):
-        """Release the last query page after its media has been consumed."""
-        with self.lock:
-            self._release()
-
     def close(self):
-        with self.lock:
-            self._pins.clear()
-            self._hot.clear()
-            self._references.clear()
-            self.hot_bytes = 0
-            if self._temporary is not None:
-                shutil.rmtree(self._temporary)
-                self._temporary = None
+        if self._writer.closed:
+            return
+        try:
+            with self.lock:
+                self._hot.clear()
+                self._references.clear()
+                self.hot_bytes = 0
+                if self._temporary is not None:
+                    shutil.rmtree(self._temporary)
+                    self._temporary = None
+        finally:
+            self._unlock()
 
     def _entries(self, segment):
-        if segment is None:
-            with self.path.open("rb") as stream:
-                while True:
-                    offset = stream.tell()
-                    line = stream.readline()
-                    if not line or not line.endswith(b"\n"):
-                        return
-                    record = json.loads(line)
-                    yield timestamp(record["recordedAt"], "recordedAt"), record["sequence"], offset, len(line), self.path
-        else:
-            path = Path(segment["path"])
-            with path.with_suffix(".idx").open("rb") as stream:
-                while raw := stream.read(_ENTRY.size):
-                    if len(raw) != _ENTRY.size:
-                        return
-                    yield (*_ENTRY.unpack(raw), path.with_suffix(".jsonl"))
+        path = Path(segment["path"])
+        with path.with_suffix(".idx").open("rb") as stream:
+            while raw := stream.read(_ENTRY.size):
+                if len(raw) != _ENTRY.size:
+                    return
+                values = _ENTRY.unpack(raw)
+                yield (*values[:4], path.with_suffix(".jsonl"), *values[4:])
 
     def _read(self, entry):
-        _at, sequence, offset, length, path = entry
+        _at, sequence, offset, length, path = entry[:5]
         if sequence in self._hot:
             return json.loads(self._hot[sequence][2])
         with path.open("rb") as stream:
@@ -360,17 +406,6 @@ class ObservationHistory:
         points = []
         for segment in self._segments:
             points.extend(point for point in (segment["minimum"], segment["maximum"]) if point)
-        if self._legacy:
-            if self._legacy_bounds is None:
-                # Legacy rows can also contain a wall-clock correction. Scan
-                # once on demand, retaining only the two range endpoints.
-                minimum = maximum = None
-                for entry in self._entries(None):
-                    pair = entry[:2]
-                    minimum = pair if minimum is None else min(minimum, pair)
-                    maximum = pair if maximum is None else max(maximum, pair)
-                self._legacy_bounds = [point for point in (minimum, maximum) if point]
-            points.extend({"sequence": sequence, "recordedAt": _iso(at)} for at, sequence in self._legacy_bounds)
         points.extend({"sequence": sequence, "recordedAt": _iso(entry[1])} for sequence, entry in self._hot.items())
         by_time = lambda point: (timestamp(point["recordedAt"], "recordedAt"), point["sequence"])
         expired = False
@@ -392,11 +427,20 @@ class ObservationHistory:
         query = {} if query is None else query
         if not isinstance(query, dict):
             raise ValueError("Observation query must be an object")
-        if set(query) - {"at", "start", "end", "limit", "after"}:
+        if set(query) - {"at", "start", "end", "limit", "after", "capability", "id"}:
             raise ValueError("Unknown observation query parameter")
         query = {key: value for key, value in query.items()
-                 if value is not None and not (key in {"at", "start", "end"}
+                 if value is not None and not (key in {"at", "start", "end", "capability", "id"}
                                                and isinstance(value, str) and not value.strip())}
+        capability, record_id = query.get("capability", MAIN_CAPABILITY), query.get("id")
+        if not isinstance(capability, str) or not capability:
+            raise ValueError("capability must be a nonempty capability ID or *")
+        if record_id is not None and (not isinstance(record_id, str) or not record_id):
+            raise ValueError("id must be a nonempty record ID")
+        if record_id is not None and any(key in query for key in ("at", "start", "end", "after")):
+            raise ValueError("id cannot be combined with a time or sequence query")
+        if record_id is not None and "capability" not in query:
+            capability = "*"
         limit, after = query.get("limit", 8), query.get("after", 0)
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 64:
             raise ValueError("limit must be an integer from 1 to 64")
@@ -413,16 +457,13 @@ class ObservationHistory:
             raise ValueError("start must not be later than end")
         latest = at is None and not any(key in query for key in ("start", "end", "after"))
         with self.lock:
-            self._release()
+            self._prune()
             selected = []
             if not self.persistent:
-                entries = ((entry[1], sequence, 0, 0, None) for sequence, entry in self._hot.items())
-                selected = self._select(entries, at, start, end, after, limit, latest)
-            elif latest and self._hot:
-                sequence = next(reversed(self._hot))
-                selected = [(self._hot[sequence][1], sequence, 0, 0, None)]
+                entries = ((entry[1], sequence, 0, 0, None, entry[5], entry[6]) for sequence, entry in self._hot.items())
+                selected = self._select(entries, at, start, end, after, limit, latest, capability, record_id)
             else:
-                segments = ([None] if self._legacy else []) + self._segments
+                segments = list(self._segments)
                 # Newer recording sequences win latest; point queries use wall
                 # time and retain correctness when that clock moves backwards.
                 if latest:
@@ -443,11 +484,7 @@ class ObservationHistory:
                             continue
                         if at is None and not latest and (high < start or low > end):
                             continue
-                    elif at is not None and self._legacy_bounds:
-                        low, high = self._legacy_bounds[0][0], self._legacy_bounds[-1][0]
-                        if low > at or (selected and high < selected[0][0]):
-                            continue
-                    found = self._select(self._entries(segment), at, start, end, after, limit, latest)
+                    found = self._select(self._entries(segment), at, start, end, after, limit, latest, capability, record_id)
                     if at is not None or latest:
                         if found and (not selected or (found[0][1] if latest else found[0][:2]) >
                                       (selected[0][1] if latest else selected[0][:2])):
@@ -459,18 +496,22 @@ class ObservationHistory:
                         if len(selected) > limit:
                             break
             has_more = len(selected) > limit
-            records = [self._read(entry) for entry in selected[:limit]]
-            self._pins = {item["path"] for record in records for item in record["media"]}
+            records = [self._delivery(self._read(entry)) for entry in selected[:limit]]
             result = {"records": records, "query": query, "hasMore": has_more,
                       "availability": self._availability(query, records)}
             if has_more:
                 result["nextAfter"] = records[-1]["sequence"]
             return result
 
-    @staticmethod
-    def _select(entries, at, start, end, after, limit, latest):
+    def _select(self, entries, at, start, end, after, limit, latest, capability, record_id):
         selected = []
+        capability_key = None if capability == "*" else _key(capability)
+        record_key = None if record_id is None else _key(record_id)
         for entry in entries:
+            if (not latest and at is None and (entry[1] <= after or not start <= entry[0] <= end)) or (at is not None and entry[0] > at):
+                continue
+            if (capability_key is not None and entry[5] != capability_key) or (record_key is not None and entry[6] != record_key):
+                continue
             if latest or at is not None:
                 key = entry[1] if latest else entry[:2]
                 previous = (selected[0][1] if latest else selected[0][:2]) if selected else None

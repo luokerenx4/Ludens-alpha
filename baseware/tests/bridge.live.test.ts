@@ -8,7 +8,7 @@ test.skipIf(process.env.RSA_BRIDGE_TEST !== "1")("bridge survives repeated disco
   const directory = await mkdtemp(join(tmpdir(), "rsa-bridge-"));
   try {
     for (let i = 0; i < 5; i++) {
-      const provider = await createGbaProvider({ port: 47653, artifactsDir: directory, clock: { id: "test", now: () => performance.now() } });
+      const provider = await createGbaProvider({ port: 47653, clock: { id: "test", now: () => performance.now() } });
       const tool = (name: string) => provider.capabilities.controllers.find(c => c.tool.name === name)!;
       const controller = tool("pad.play");
       const epoch = crypto.randomUUID();
@@ -25,8 +25,10 @@ test.skipIf(process.env.RSA_BRIDGE_TEST !== "1")("bridge survives repeated disco
       } else {
         const result = await tool("pad.state").execute({}, { epoch, signal: new AbortController().signal });
         expect(Object.values(JSON.parse(result.stdout).state).every((v) => v === 0)).toBe(true);
-        const observation = (await tool("screen.capture").execute({}, { signal: new AbortController().signal })).observations!;
-        expect((await Bun.file(observation[0].path).arrayBuffer()).byteLength).toBeGreaterThan(100);
+        const captured = await tool("screen.capture").execute({}, { signal: new AbortController().signal });
+        const block = captured.result.content[captured.observations![0].contentIndex!];
+        expect(block.type).toBe("image");
+        if (block.type === "image") expect(Buffer.from(block.data, "base64").length).toBeGreaterThan(100);
         await controller.release!(epoch);
         provider.close();
       }

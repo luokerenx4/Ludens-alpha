@@ -50,7 +50,7 @@ export class Runtime {
 
   async callController(id: string, args: unknown, epoch: string | undefined, signal: AbortSignal, trace: EventTrace = {}) {
     if (!this.controller) throw new Error("Workspace controller is unavailable");
-    if ((epoch !== undefined || this.controller.requiresControl(id)) && (this.mode !== "auto" || !epoch || epoch !== this.epoch)) {
+    if ((epoch !== undefined || await this.controller.requiresControl(id, signal, trace)) && (this.mode !== "auto" || !epoch || epoch !== this.epoch)) {
       throw new Error("STALE_EPOCH: use the current control epoch");
     }
     const combined = epoch ? AbortSignal.any([signal, this.control!.signal]) : signal;

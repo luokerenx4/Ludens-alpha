@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -35,7 +35,7 @@ test("Cua retains the full native catalog, schemas and metadata without a portab
     _meta: { "cua/capabilities": ["future.operation"], "vendor/unknown": { keep: true } },
   };
   tools.push(futureTool);
-  const capabilities = cuaCapabilities({ tools, client, artifactsDir: "/unused", clock });
+  const capabilities = cuaCapabilities({ tools, client, clock });
   const core = new BasewareCore({ capabilities, drivers: [{ id: "cua", version: nativeDocs.version }] });
   const catalog = core.list().controllers;
   expect(nativeDocs.version).toBe("0.36.0");
@@ -108,7 +108,7 @@ test("a real MCP client roundtrip preserves native tool and content extensions a
     const tools = await listCuaTools(client);
     expect(listCursors).toEqual([undefined, "second"]);
     expect(tools[1]).toEqual(definition);
-    const capabilities = cuaCapabilities({ tools, client, artifactsDir: directory, clock });
+    const capabilities = cuaCapabilities({ tools, client, clock });
     const execution = await capabilities.controllers[1]!.execute({}, { signal: new AbortController().signal });
     expect(execution.result).toEqual(result);
     expect(execution.stdout).toBe("native output");
@@ -120,7 +120,7 @@ test("a real MCP client roundtrip preserves native tool and content extensions a
   } finally { await client.close(); await server.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
-test("Cua persists binary media and preserves text, resources and structured output without duplicating payloads", async () => {
+test("Cua returns native binary media without creating a second archive", async () => {
   const directory = await mkdtemp(join(tmpdir(), "baseware-cua-media-"));
   const png = Buffer.from("fixture image"), audio = Buffer.from("fixture audio"), binary = Buffer.from("fixture resource");
   const result: CallToolResult = {
@@ -135,7 +135,7 @@ test("Cua persists binary media and preserves text, resources and structured out
     structuredContent: { windowId: 42, tree: { role: "AXWindow", children: [{ role: "AXButton" }] } },
   };
   const client = { async callTool() { return result; } } as CuaClient;
-  const { controllers } = cuaCapabilities({ tools: [tool("observe", true)], client, artifactsDir: directory, clock });
+  const { controllers } = cuaCapabilities({ tools: [tool("observe", true)], client, clock });
   try {
     const execution = await controllers[0]!.execute({}, { signal: new AbortController().signal });
     expect(execution).toMatchObject({ status: "completed", exitCode: 0 });
@@ -150,15 +150,15 @@ test("Cua persists binary media and preserves text, resources and structured out
     expect(execution.stdout).not.toContain(audio.toString("base64"));
     expect(execution.stdout).not.toContain(binary.toString("base64"));
     expect(execution.observations!.map(item => item.mediaType)).toEqual(["image/png", "audio/wav", "application/octet-stream"]);
-    const contents = await Promise.all(execution.observations!.map(item => readFile(item.path)));
-    expect(contents).toEqual([png, audio, binary]);
-    expect(new Set(execution.observations!.map(item => item.path)).size).toBe(3);
+    expect(execution.observations!.every(item => item.path === undefined)).toBe(true);
+    expect(await readdir(directory)).toEqual([]);
+    expect(archived.content).toMatchObject([{}, { dataOmitted: true }, { dataOmitted: true }, { resource: { blobOmitted: true } }, {}]);
     expect(execution.observations!.map(item => item.contentIndex)).toEqual([1, 2, 3]);
     expect(execution.observations!.every(item => item.controllerId === "observe" && item.timing === execution.timing)).toBe(true);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
-test("native screenshot file output stays intact and gets an immutable observation copy", async () => {
+test("native screenshot file output remains caller-owned without an automatic copy", async () => {
   const directory = await mkdtemp(join(tmpdir(), "baseware-cua-file-"));
   const source = join(directory, "latest.png");
   const bytes = Buffer.from("saved screenshot");
@@ -168,7 +168,7 @@ test("native screenshot file output stays intact and gets an immutable observati
   } };
   const calls: { name: string; arguments?: unknown }[] = [];
   const client = { async callTool(args) { calls.push(args); return args.name === "start_session" ? { content: [] } : result; } } as CuaClient;
-  const { controllers } = cuaCapabilities({ tools: [tool("get_desktop_state", true)], client, artifactsDir: directory, clock });
+  const { controllers } = cuaCapabilities({ tools: [tool("get_desktop_state", true)], client, clock });
   try {
     const args = { screenshot_out_file: source };
     const execution = await controllers[0]!.execute(args, { signal: new AbortController().signal });
@@ -177,9 +177,11 @@ test("native screenshot file output stays intact and gets an immutable observati
     expect(execution.observations).toHaveLength(1);
     const observation = execution.observations![0]!;
     expect(observation.contentIndex).toBeUndefined();
-    expect(observation.path).not.toBe(source);
+    expect(observation.path).toBe(source);
+    expect(await readFile(source)).toEqual(bytes);
+    expect(await readdir(directory)).toEqual(["latest.png"]);
     await writeFile(source, "next screenshot");
-    expect(await readFile(observation.path)).toEqual(bytes);
+    expect(await readFile(source, "utf8")).toBe("next screenshot");
     expect(execution.result.structuredContent!.screenshot_file_path).toBe(source);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
@@ -192,7 +194,7 @@ test("native refusal and unverifiable effect remain distinguishable from API com
   };
   let native = refusal;
   const client = { async callTool(args) { return args.name === "start_session" ? { content: [] } : native; } } as CuaClient;
-  const { controllers } = cuaCapabilities({ tools: [tool("click", false)], client, artifactsDir: "/unused", clock });
+  const { controllers } = cuaCapabilities({ tools: [tool("click", false)], client, clock });
   const controller = controllers[0]!;
   const context = { signal: new AbortController().signal };
   const failed = await controller.execute({}, context);
@@ -225,7 +227,7 @@ test("the lease blocks Cua input, forwards cancellation, and revives ended sessi
     },
   } as CuaClient;
   const capabilities = cuaCapabilities({ tools: [tool("get_windows", true), tool("click", false), tool("type", false)],
-    client, artifactsDir: "/unused", clock });
+    client, clock });
   const core = new BasewareCore({ capabilities, drivers: [{ id: "cua", version: "test" }] });
   const signal = new AbortController().signal;
   try {

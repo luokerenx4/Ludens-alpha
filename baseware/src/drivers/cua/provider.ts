@@ -1,5 +1,3 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { CallToolResultSchema, ListToolsResultSchema, type CallToolResult, type ListToolsResult, type Tool } from "@modelcontextprotocol/sdk/types.js";
@@ -30,7 +28,7 @@ export async function listCuaTools(client: Pick<Client, "request">): Promise<Too
 }
 
 /** Keep upstream tools and schemas intact; Baseware owns admission and the transport session. */
-export function cuaCapabilities(options: { tools: Tool[]; client: CuaClient; artifactsDir: string; clock: Clock }) {
+export function cuaCapabilities(options: { tools: Tool[]; client: CuaClient; clock: Clock }) {
   const { client, clock } = options;
   const sessions = new Map<string | undefined, Promise<void>>();
   let owner: string | undefined;
@@ -88,28 +86,21 @@ export function cuaCapabilities(options: { tools: Tool[]; client: CuaClient; art
       if (tool.name === "end_session" && !result.isError) sessions.delete(session);
       const execution = toolExecution(clock, requestedAtMs, result);
       const observations: Observation[] = [];
-      const archive = async (data: Buffer, mediaType: string, contentIndex?: number) => {
-        const id = crypto.randomUUID();
-        const suffix = mediaType.split("/")[1]?.replace(/[^a-zA-Z0-9]/g, "") || "bin";
-        const path = join(options.artifactsDir, `${id}.${suffix}`);
-        await writeFile(path, data);
-        observations.push({ id, controllerId: tool.name, mediaType, path, timing: execution.timing,
-          ...(contentIndex === undefined ? {} : { contentIndex }) });
-      };
       for (const [index, block] of result.content.entries()) {
         const payload = block.type === "image" || block.type === "audio" ? block
           : block.type === "resource" && "blob" in block.resource ? {
             data: block.resource.blob, mimeType: block.resource.mimeType ?? "application/octet-stream",
           } : undefined;
-        if (payload) await archive(Buffer.from(payload.data, "base64"), payload.mimeType, index);
+        if (payload) observations.push({ id: crypto.randomUUID(), controllerId: tool.name,
+          mediaType: payload.mimeType, timing: execution.timing, contentIndex: index });
       }
-      // Native screenshot_out_file returns a path instead of an image block. Keep
-      // that payload intact and archive a copy before the next capture overwrites it.
+      // Explicit native file output belongs to the caller; do not copy or delete it.
       const screenshot = result.structuredContent?.screenshot_file_path;
       if (!result.isError && typeof screenshot === "string") {
         const mediaType = typeof result.structuredContent?.screenshot_mime_type === "string"
           ? result.structuredContent.screenshot_mime_type : "image/png";
-        await archive(await readFile(screenshot), mediaType);
+        observations.push({ id: crypto.randomUUID(), controllerId: tool.name, mediaType,
+          path: screenshot, timing: execution.timing });
       }
       return { ...execution, ...(observations.length ? { observations } : {}) };
     },
@@ -117,8 +108,7 @@ export function cuaCapabilities(options: { tools: Tool[]; client: CuaClient; art
   return { controllers } satisfies Capabilities;
 }
 
-export async function createCuaProvider(options: { command?: string; artifactsDir: string; clock: Clock }) {
-  await mkdir(options.artifactsDir, { recursive: true });
+export async function createCuaProvider(options: { command?: string; clock: Clock }) {
   const transport = new StdioClientTransport({ command: options.command ?? "cua-driver", args: ["mcp"] });
   const client = new Client({ name: "playness-baseware", version: "0.1.0" }, { capabilities: {} });
   let onDisconnect: ((error: Error) => void) | undefined;

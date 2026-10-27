@@ -1,5 +1,5 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { join } from "node:path";
 import { PerceptionRuntime, type PerceptionRead } from "../../harness/perception.ts";
 import type { BenchmarkContext, AuthorReport } from "../types.ts";
 import { readEvents, seqs } from "../fixtures/evidence.ts";
@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 import json, os
 from helper import transform
 
+from rsa_tools import perception, record
 class Perception:
     sample_hz = 20
     def start(self, context):
@@ -20,11 +21,13 @@ class Perception:
         with Path("initializations.txt").open("a") as output:
             output.write(str(os.getpid()) + "\\n")
 
+    @record
+    @perception
     def sample(self):
         self.sequence += 1
         value = {"pid": os.getpid(), "version": self.version, "sequence": self.sequence}
         Path("sample.txt").write_text(json.dumps(value))
-        return {"sequence": self.sequence, "text": json.dumps(value),
+        return {"text": json.dumps(value),
                 "sampledAt": datetime.now(timezone.utc).isoformat(),
                 "sources": [{"kind": "benchmark", "model": self.version}],
                 "media": [{"path": "sample.txt", "mediaType": "text/plain"}]}
@@ -68,7 +71,7 @@ export async function run(ctx: BenchmarkContext): Promise<AuthorReport> {
     await reload();
     first = await read("first");
     coldMs = performance.now() - started;
-    archived = first.result.observations![0]!.path;
+    archived = first.result.observations![0]!.path!;
     const original = await readFile(archived, "utf8");
     await Bun.sleep(100); // Recorder advances while the agent does no reads.
     const warmStarted = performance.now();
@@ -100,7 +103,8 @@ export async function run(ctx: BenchmarkContext): Promise<AuthorReport> {
     event.type === "benchmark_perception_step" && stages.includes(event.data.stage));
   const v1 = value(first), v2 = value(second), held = value(beforeReload), fresh = value(reloaded), fixed = value(repaired);
   const closed = (await readFile(join(ctx.workspace, "closed.txt"), "utf8")).trim().split("\n").map(Number);
-  ctx.metadata.artifacts = [{ path: relative(ctx.runDir, archived), label: "首次感知结果的不可变归档" }];
+  // Evidence references the workspace timeline; it is not copied into this run.
+  record("benchmark_timeline_reference", { timeline: first.result.observations![0]!.timeline });
   ctx.metadata.limitations = ["真实 Python 进程与生产感知管理器；JSON 数值代替模型权重，不代表 PyTorch 初始化或推理性能。未调用在线模型或设备；空状态可读不等于 Agent 已自主修复。"];
   return {
     checks: {

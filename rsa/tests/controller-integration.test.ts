@@ -171,14 +171,14 @@ print(json.dumps(Client().call("python/scripts/actions.py:combined", {"label": "
     expect(captured.exitCode).toBe(0);
     const captureDisplay = JSON.parse(captured.stdout);
     const [observation] = captureDisplay.observations;
-    expect(captureDisplay.result.content[0].resource).toMatchObject({uri: "fixture:///frame", blobPath: observation.path});
-    expect(captured.stdout).not.toContain(Buffer.from('{"visible":true}').toString("base64"));
+    expect(captureDisplay.result.content[0].resource).toMatchObject({uri: "fixture:///frame", blob: Buffer.from('{"visible":true}').toString("base64")});
     const apiCapture = await f.python('import json; from rsa_tools import Client; print(json.dumps(Client().call("controller/screen.capture")))', epoch);
     expect(JSON.parse(apiCapture.stdout).result).toMatchObject({ _meta: { original: true }, content: [{type: "resource", resource: {
       uri: "fixture:///frame", blob: Buffer.from('{"visible":true}').toString("base64") }}] });
-    expect(observation.path.startsWith(join(f.runDir, "observations") + "/")).toBe(true);
+    expect(observation.path).toBe(f.source);
     await rm(f.source);
-    expect(await readFile(observation.path, "utf8")).toBe('{"visible":true}');
+    expect(await Bun.file(join(f.runDir, "observations")).exists()).toBe(false);
+    expect(Buffer.from(captureDisplay.result.content[0].resource.blob, "base64").toString()).toBe('{"visible":true}');
     expect(f.events.findLast(event => event.type === "observation")).toMatchObject({data: {path: observation.path}, trace: {epoch, toolCallId: "integration-call"}});
 
     await writeFile(path, source.replace('"v1:"', '"v2:"'));

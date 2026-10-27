@@ -192,13 +192,28 @@ class BenchmarkContext:
         return item
 
     def artifact(self, path, *, label=None):
-        """Archive a workspace file; relative paths are relative to the workspace."""
+        """Archive a workspace file, or reference an existing timeline object."""
         path = Path(path)
-        workspace = Path(self.result["workspace"])
+        workspace = Path(self.result["workspace"]).resolve()
         source = (workspace / path).resolve() if not path.is_absolute() else path.resolve()
         source.relative_to(workspace)
         if label is not None and not isinstance(label, str):
             raise ValueError("Benchmark artifact label must be a string")
+        timeline = workspace / ".rsa" / "timeline"
+        objects = timeline / "objects"
+        if source.parent == objects and objects.resolve() == objects:
+            digest = hashlib.sha256()
+            with source.open("rb") as incoming:
+                while block := incoming.read(1024 * 1024):
+                    digest.update(block)
+            sha256 = digest.hexdigest()
+            if source.name == sha256 + ".bin":
+                item = {"path": source.relative_to(workspace).as_posix(), "sha256": sha256,
+                        "timeline": {"asset": source.relative_to(timeline).as_posix()},
+                        **({"label": label} if label is not None else {})}
+                self.result.setdefault("artifacts", []).append(item)
+                self._save()
+                return item
         data = source.read_bytes()
         sha256 = hashlib.sha256(data).hexdigest()
         directory = self.run_dir / "artifacts"

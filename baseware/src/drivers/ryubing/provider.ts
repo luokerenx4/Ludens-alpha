@@ -1,8 +1,8 @@
-import { mkdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Capabilities, Clock, Controller } from "../../contracts.ts";
 import { Bridge } from "../bridge.ts";
+import { withCaptureFile } from "../capture.ts";
 import { structuredResult, toolExecution } from "../../tool-contract.ts";
 import { createPadPlayer } from "../pad.ts";
 import { compileTimeline } from "../timeline.ts";
@@ -38,9 +38,8 @@ export function encodeSpans(spans: Span[]): string {
 
 const PAD_DESCRIPTION = "Native controller, player 1. Axes are in [-1,1]; X positive=right, Y positive=up, 0=center.";
 
-export async function createSwitchProvider(options: { port: number; artifactsDir: string; clock: Clock }) {
+export async function createSwitchProvider(options: { port: number; clock: Clock }) {
   const { clock } = options;
-  await mkdir(options.artifactsDir, { recursive: true });
   const bridge = await Bridge.open(options.port);
   try {
     const [version] = await bridge.request("HELLO");
@@ -72,19 +71,21 @@ export async function createSwitchProvider(options: { port: number; artifactsDir
       }
       signal.throwIfAborted();
       const id = crypto.randomUUID();
-      const path = join(options.artifactsDir, `${id}.png`);
       const requestedAtMs = clock.now();
       if (delayMs > 0) await delay(delayMs, undefined, { signal });
       signal.throwIfAborted();
-      const [frame, surface] = await bridge.request("CAPTURE", [path]);
+      const { frame, surface, data } = await withCaptureFile(async path => {
+        const [frame, surface] = await bridge.request("CAPTURE", [path]);
+        return { frame, surface, data: await readFile(path) };
+      });
       signal.throwIfAborted();
       const timing = { clock: clock.id, requestedAtMs, receivedAtMs: clock.now() };
       const sequence = surface === "keyboard" ? {} : { sourceSequence: Number(frame) };
       const output = { source: surface === "keyboard" ? "keyboard" : "screen", ...sequence, timing };
       const result = structuredResult(output);
-      result.content.unshift({ type: "image", mimeType: "image/png", data: (await readFile(path)).toString("base64") });
+      result.content.unshift({ type: "image", mimeType: "image/png", data: data.toString("base64") });
       return { ...toolExecution(clock, requestedAtMs, result), timing,
-        observations: [{ id, controllerId: "screen.capture", mediaType: "image/png", path, timing, ...sequence, contentIndex: 0 }] };
+        observations: [{ id, controllerId: "screen.capture", mediaType: "image/png", timing, ...sequence, contentIndex: 0 }] };
     },
   };
   const pads: Controller[] = padTools(BUTTONS, AXES, POLLED_TIMING).map(tool => ({

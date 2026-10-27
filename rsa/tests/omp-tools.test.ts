@@ -72,11 +72,14 @@ test("OMP's SDK adapter delivers the abort signal correctly and returns real ima
   }] }, () => {});
   const work = join(directory, "workspace");
   if (await Bun.file(join(directory, "sample.png")).exists()) {
-    await Bun.write(join(work, "perception.py"), `class Perception:
+    await Bun.write(join(work, "perception.py"), `from rsa_tools import perception, record
+class Perception:
     def start(self, context): pass
     def close(self): pass
+    @record
+    @perception
     def sample(self):
-        return {"sequence": 1, "text": "active-window:Document", "media": [{"path": "../sample.png", "mediaType": "image/png"}, {"path": "../tree.json", "mediaType": "application/json"}]}
+        return {"text": "active-window:Document", "media": [{"path": "../sample.png", "mediaType": "image/png"}, {"path": "../tree.json", "mediaType": "application/json"}]}
 `);
     runtime.perception = new PerceptionRuntime({ workspace: work, runDir: join(directory, "run"), record: runtime.record });
     await runtime.perception.reload();
@@ -114,12 +117,15 @@ test("text-only perception reaches automatic context and explicit reads are not 
       return { ...captureResult([]), id: `windows-${++calls}`, stdout: JSON.stringify({ title: `Window ${calls}` }) };
     },
   }] }, () => {});
-  await Bun.write(join(workspace, "perception.py"), `class Perception:
+  await Bun.write(join(workspace, "perception.py"), `from rsa_tools import perception, record
+class Perception:
     def start(self, context): self.count = 0
     def close(self): pass
+    @record
+    @perception
     def sample(self):
         self.count += 1
-        return {"sequence": self.count, "text": "Window " + str(self.count)}
+        return {"text": "Window " + str(self.count)}
 `);
   runtime.perception = new PerceptionRuntime({ workspace, runDir: join(directory, "run"), record: runtime.record });
   await runtime.perception.reload();

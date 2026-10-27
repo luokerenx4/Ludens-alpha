@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, readFile, realpath, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { PerceptionRuntime, type ObservationQuery } from "../src/harness/perception.ts";
+import { PerceptionRuntime, observationBytes, type ObservationQuery } from "../src/harness/perception.ts";
 
 async function fixture(options: { startTimeoutMs?: number; observeTimeoutMs?: number; env?: NodeJS.ProcessEnv } = {}) {
   const workspace = await realpath(await mkdtemp(join(tmpdir(), "rsa-perception-")));
@@ -33,11 +33,14 @@ function source(body: string, start = "", close = "", hz = 20) {
   return `from pathlib import Path
 import os, time
 from rsa_tools._context import current
+from rsa_tools import perception, record
 class Perception:
     sample_hz = ${hz}
     def start(self, context):
         self.count = 0
 ${start || "        pass"}
+    @record
+    @perception
     def sample(self):
 ${body}
     def close(self):
@@ -71,19 +74,19 @@ test("retention policy reaches the worker and expired history cannot invalidate 
     expect(f.runtime.status().history?.persistent).toBe(false);
     expect(f.runtime.status().history?.hotSeconds).toBe(0.15);
     const delivered = await f.observe();
-    const file = delivered.result.observations![0]!.path;
-    expect(await readFile(file, "utf8")).toBe(delivered.result.stdout);
+    const file = delivered.result.observations![0]!;
+    expect((await observationBytes(file)).toString("utf8")).toBe(delivered.result.stdout);
     const first = delivered.snapshot!;
     await f.wait(() => f.samples().length >= 8);
     const expired = await f.observe({ at: first.recordedAt });
     expect(expired.error).toContain("expired");
     expect(expired.availability?.expired).toBe(true);
     expect(expired.availability?.earliest?.sequence).toBeGreaterThan(first.sequence);
-    expect(await readFile(file, "utf8")).toBe(delivered.result.stdout);
+    expect((await observationBytes(file)).toString("utf8")).toBe(delivered.result.stdout);
     const reads = await Promise.all([f.observe(), f.observe(), f.observe()]);
     for (const read of reads) {
       expect(read.error).toBeUndefined();
-      expect(await readFile(read.result.observations![0]!.path, "utf8")).toBe(read.result.stdout);
+      expect((await observationBytes(read.result.observations![0]!)).toString("utf8")).toBe(read.result.stdout);
     }
   } finally { await f.cleanup(); }
 });
@@ -125,7 +128,7 @@ test("sampling continues without reads, archives overwritten files, and queries 
     const exact = await f.observe({ at: first.recordedAt });
     expect(exact.snapshot?.id).toBe(first.id);
     expect(exact.result.stdout).toBe("1");
-    expect(await readFile(exact.result.observations![0]!.path, "utf8")).toBe("1");
+    expect((await observationBytes(exact.result.observations![0]!)).toString("utf8")).toBe("1");
     expect(exact.result.observations![0]!.timing.clock).toBe(first.sampling.clock);
     const gap = new Date((Date.parse(first.recordedAt) + Date.parse(f.samples()[1]!.data.snapshot.recordedAt)) / 2).toISOString();
     expect((await f.observe({ at: gap })).snapshot?.id).toBe(first.id);

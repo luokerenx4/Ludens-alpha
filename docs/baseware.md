@@ -1,6 +1,6 @@
 # Baseware 设计理念与能力契约
 
-Baseware 是环境的驱动服务。它把设备已有的能力交给调用者，并管理连接、控制权、执行记录和媒体；如何感知、组合动作、训练或完成任务，由 workspace 中的程序决定。
+Baseware 是环境的驱动服务。它把设备已有的能力交给调用者，并管理连接、控制权、执行记录和媒体交付；如何感知、留档、组合动作、训练或完成任务，由 workspace 中的程序决定。
 
 我们以 CUA Driver 的原生工具契约为参照，在 Baseware 内独立保存契约。CUA 与模拟器都实现这套调用约定，不把其他硬件塞进 CUA，也不要求每台设备表现成电脑。
 
@@ -42,12 +42,13 @@ rsa controller controller/pad.status --args '{"actionId":"<returned-id>"}'
 ```python
 from baseware import Client
 result = Client().controller("screen.top.capture", {})
-# result["result"] 是原生工具返回值；observations 含本机媒体路径。
+# result["result"] 是原生工具返回值，包含媒体内容；
+# observations[].contentIndex 指向该结果中的内容位置，不保证存在永久文件路径。
 ```
 
 CLI 的 `--file` 接受与 `--args` 完全相同的**完整参数对象**。数字与布尔值保留 JSON 类型。原 argv/bindings、分组子命令和 `cua.` 前缀不再提供兼容入口。RSA 保留 `controller/<name>` 命名空间，以区分 workspace 的 `python/<path>:<function>` 能力。
 
-TS/Python API 返回执行信封：`id/status/exitCode/timing/observations` 加 `result`。`result` 保留原生 `content`、`structuredContent`、`isError` 与元数据。`stdout/stderr` 只是便于人阅读的文字摘要，不是完整结果契约。CLI 展示同一信封，但二进制内容使用已归档的文件引用，避免向终端输出大段 base64；API 保留原始字节内容。MCP 直接返回原生 `result`，使用原生工具名和 schema，不增加 argv、epoch 参数，也不向 OMP 默认注入工具。
+TS/Python API 返回执行信封：`id/status/exitCode/timing/observations` 加 `result`。`result` 保留原生 `content`、`structuredContent`、`isError` 与元数据。`stdout/stderr` 只是便于人阅读的文字摘要，不是完整结果契约。CLI 输出同一完整信封，保留原生媒体内容，调用者按需保存；不能删去字节后只留下临时路径。MCP 直接返回原生 `result`，使用原生工具名和 schema，不增加 argv、epoch 参数，也不向 OMP 默认注入工具。
 
 设备调用与手柄动作是不同生命周期：异步 `pad.play` 返回 `actionId` 表示提交成功；通过 `pad.status/wait/cancel` 查看或操作该动作。每个输入通道有独立起止时间，组合与采样语义不因此次契约调整改变。
 
@@ -61,7 +62,11 @@ RSA 的持久连接持有有期限的 epoch，CLI/API/MCP 继承该上下文，�
 
 ## 媒体、时间与日志
 
-原生媒体内容及其顺序、标注在调用返回值中保留。Driver 将二进制内容归档到媒体文件，`observations[].contentIndex` 对应原生内容位置。日志中的 `result` 是归档表示：二进制 `data/blob` 换成 `dataPath/blobPath`，保留媒体类型和元数据，避免把图片重复塞进 JSONL。日志表示不是可以直接转发的原生工具结果。
+原生媒体内容及其顺序、标注在调用返回值中保留，`observations[].contentIndex` 对应原生内容位置。模拟器采集所需的文件仅在调用期间存在，读取字节后清理；CUA 内联媒体直接交付，调用者显式指定的输出文件保留。Baseware 不为每次采集建立永久截图档案，`Observation.path` 可以缺省。
+
+观测是否留档由 workspace 感知能力的 `@perception` / `@record` 声明决定。常驻感知进程把标记结果写入 workspace 的 `.rsa/timeline`，持久媒体按内容去重；RSA 与 Dashboard 引用原件，不复制到 run。调用者自行保存的数据集或输出文件仍属于普通 workspace 文件。契约见 [Workspace](workspace.md#常驻感知)。
+
+设备日志中的 `result` 是诊断表示：二进制 `data/blob` 被省略，保留媒体类型、内容位置及大小；若已有明确时空轴引用或文件路径则记录引用，否则标明 `dataOmitted/blobOmitted`。API、CLI、MCP 的真实结果保持完整，日志表示不能直接转发为原生工具结果。
 
 `timing.clock` 标明单调时钟；不同进程的时钟不能直接相减。设备确实提供源序号时才记录 `sourceSequence`。Baseware 的调用完成、设备动作完成、Agent 读取观测、游戏推进分别记录，不互相冒充。连续采样、时序融合与历史查询由 RSA 的感知层承担。
 

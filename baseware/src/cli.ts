@@ -1,5 +1,4 @@
-import type { ToolExecutionResult } from "./contracts.ts";
-import { archivedToolResult, readToolArguments } from "./tool-contract.ts";
+import { readToolArguments } from "./tool-contract.ts";
 import { BasewareClient } from "./client.ts";
 import { writeCapabilityDocument } from "./catalog.ts";
 import type { Catalog, Request } from "./protocol.ts";
@@ -53,9 +52,7 @@ export async function cli(argv: string[], socket: string) {
       return output;
     }
     if (select) value = (value as Record<string, unknown>)[select];
-    const execution = request.kind === "controller" ? value as ToolExecutionResult : undefined;
-    const printed = execution?.result ? { ...execution, result: archivedToolResult(execution.result, execution.observations) } : value;
-    console.log(typeof printed === "string" ? printed : JSON.stringify(printed, null, 2));
+    console.log(typeof value === "string" ? value : JSON.stringify(value, null, 2));
     if (value && typeof value === "object" && "exitCode" in value) process.exitCode = Number(value.exitCode);
     return value;
   } finally { client.close(); }

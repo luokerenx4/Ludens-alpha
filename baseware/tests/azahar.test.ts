@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type AddressInfo, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -40,7 +40,7 @@ async function fixture(run: (provider: Awaited<ReturnType<typeof createAzaharPro
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const provider = await createAzaharProvider({ port: (server.address() as AddressInfo).port,
-    artifactsDir: directory, clock: { id: "test", now: () => performance.now() } });
+    clock: { id: "test", now: () => performance.now() } });
   try { await run(provider, requests, directory); }
   finally {
     provider.close();
@@ -103,15 +103,17 @@ test("Azahar samples independent hardware screens without combining or inventing
       const result = await call(screen, {}, { signal });
       const observation = result.observations![0];
       expect(result.observations).toHaveLength(1);
-      expect(await readFile(observation.path)).toEqual(pngs[source]);
+      expect(observation.path).toBeUndefined();
       expect(observation.controllerId).toBe(`screen.${source}.capture`);
       expect(observation.sourceSequence).toBeUndefined();
       expect(result.result.structuredContent).toMatchObject({ source: `screen.${source}`, captureSequence: 17, timing: result.timing });
       expect(result.result.content[observation.contentIndex!]).toEqual({ type: "image", data: pngs[source].toString("base64"), mimeType: "image/png" });
-      expect(requests.filter(r => r.op === "CAPTURE").at(-1)!.args).toEqual([source, observation.path]);
+      const capture = requests.filter(r => r.op === "CAPTURE").at(-1)!;
+      expect(capture.args[0]).toBe(source);
+      await expect(access(capture.args[1])).rejects.toThrow();
       expect(screen.tool.description).toContain(source === "top" ? "400×240" : "320×240");
       await expect(call(screen, { crop: "bottom" }, { signal })).rejects.toThrow();
-      paths.push(observation.path);
+      paths.push(capture.args[1]);
     }
     expect(paths[0]).not.toBe(paths[1]);
     expect(requests.filter(r => r.op === "OWN")).toHaveLength(0);
@@ -130,12 +132,13 @@ test("Azahar serializes concurrent source captures without merging their observa
     ]);
     expect(requests.filter(r => r.op === "CAPTURE").map(r => r.args[0])).toEqual(["top", "bottom"]);
     expect(results.map(r => r.observations![0].controllerId)).toEqual(["screen.top.capture", "screen.bottom.capture"]);
-    expect(results[0].observations![0].path).not.toBe(results[1].observations![0].path);
+    expect(results.every(result => result.observations![0].path === undefined)).toBe(true);
     expect(results[1].timing.requestedAtMs).toBeGreaterThanOrEqual(results[0].timing.receivedAtMs);
     expect(results[1].timing.receivedAtMs).toBeGreaterThan(results[0].timing.receivedAtMs);
     for (let index = 0; index < results.length; index++) {
       expect(results[index].observations).toHaveLength(1);
-      expect(await readFile(results[index].observations![0].path)).toEqual(index === 0 ? pngs.top : pngs.bottom);
+      expect(results[index].result.content[0]).toMatchObject({ type: "image", data: (index === 0 ? pngs.top : pngs.bottom).toString("base64") });
+      await expect(access(requests.filter(r => r.op === "CAPTURE")[index].args[1])).rejects.toThrow();
     }
     const abort = new AbortController();
     const first = call(top, {}, { signal });
