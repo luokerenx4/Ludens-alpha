@@ -13,6 +13,7 @@ import { listen as listenRsa } from "../src/harness/transport.ts";
 import { renderBoard } from "../src/benchmark/fixtures/reuse-board.ts";
 import { ReuseEnvironment } from "../src/benchmark/fixtures/reuse-environment.ts";
 import { evaluateReuse, type ReuseEvent } from "../src/benchmark/fixtures/reuse-evaluator.ts";
+import { readArtifactSync } from "../../shared/log-archive.ts";
 
 const passed = (events: ReuseEvent[], epoch: string, id: string, runDir?: string) =>
   evaluateReuse(events, epoch, runDir).checks![id]?.passed;
@@ -128,6 +129,18 @@ def configure(values: list[int]) -> dict:
     const check = (records: ReuseEvent[], id: string) => passed(records, epoch, id, runDir);
     const outcome = judge(events);
     expect(Object.values(outcome.checks!).filter(check => check.passed !== true)).toEqual([]);
+    // The same execution evidence must keep its verdict when argument/result
+    // bodies become shared references; accepting an async launch is still not completion.
+    await writeFile(join(runDir, "manifest.json"), JSON.stringify({ workspace }));
+    const indexed = new EventLog(runDir, log.clock, workspace);
+    const referenced = events.map(event => {
+      if (event.type === "tool_end" && event.data.result) return { ...event, data: { ...event.data,
+        result: indexed.artifact(readArtifactSync(runDir, event.data.result, { media: "reference" })) } };
+      if (event.type !== "tool_start") return event;
+      const { args, ...metadata } = event.data;
+      return { ...event, data: { ...metadata, argsRef: indexed.artifact(args) } };
+    });
+    expect(judge(referenced)).toEqual(outcome);
     expect(outcome.metrics!["productive-capability-calls"]?.value).toBe(6);
     expect(outcome.metrics!["productive-reuse-calls"]?.value).toBe(3);
     expect(outcome.metrics!["phase-1-orders"]?.value).toBe(3);
@@ -137,6 +150,17 @@ def configure(values: list[int]) -> dict:
     expect(outcome.metrics!["controller-discovered"]?.value).toBe(route !== "import" ? 1 : 0);
 
     if (route === "import") {
+      for (const details of [{ async: { state: "running", jobId: "bg_1" } }, { exitCode: 1 }]) {
+        const incomplete = referenced.map(event => event.type === "tool_end" && event.data.toolName === "bash"
+          ? { ...event, data: { ...event.data, result: indexed.artifact({ content: [], details }) } } : event);
+        expect(check(incomplete, "capability-reused")).toBeNull();
+      }
+      const missing = { encoding: "rsa-json-v1", path: `objects/${"0".repeat(64)}.json.gz`, sha256: "0".repeat(64), bytes: 0 };
+      for (const field of ["argsRef", "result"]) {
+        const absent = referenced.map(event => event.data.toolName === "bash" && field in event.data
+          ? { ...event, data: { ...event.data, [field]: missing } } : event);
+        expect(check(absent, "capability-reused")).toBeNull();
+      }
       for (const code of [
         "from scripts.bench import configure", // Import alone is not an invocation.
         "from scripts.bench import configure\nif False: configure([1,2,3])", // Dead branch.

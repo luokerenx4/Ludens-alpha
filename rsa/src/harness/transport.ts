@@ -2,13 +2,14 @@ import { createServer, connect } from "node:net";
 import { lstat, unlink } from "node:fs/promises";
 import type { Runtime } from "./runtime.ts";
 import { childTrace, type EventTrace, type EventMetadata } from "./events.ts";
-import type { ObservationQuery, TimelineAppend } from "./perception.ts";
+import type { ObservationQuery, TimelineAppend, TimelineDerive } from "./perception.ts";
 
 export interface Request {
   kind: string; argv: string[]; epoch?: string; runId?: string; expectedEpoch?: string | null;
-  action?: "list" | "help" | "call" | "append"; id?: string; arguments?: unknown; trace?: EventTrace;
+  action?: "list" | "help" | "call" | "append" | "derive"; id?: string; arguments?: unknown; trace?: EventTrace;
   sample?: unknown; identity?: TimelineAppend["identity"]; sampling?: TimelineAppend["sampling"]; generation?: string | null;
   query?: ObservationQuery;
+  media?: TimelineDerive;
   event?: { type: "python_call_start" | "python_call_end"; data: { id: string; [key: string]: unknown }; origin: EventMetadata["origin"] };
 }
 type Response = { ok: true; value: unknown } | { ok: false; error: string };
@@ -59,6 +60,13 @@ export async function dispatch(runtime: Runtime, request: Request, signal = new 
   if (kind === "status") return runtime.status();
   if (kind === "timeline") {
     if (!runtime.perception) throw new Error("Timeline recorder is unavailable; run rsa perception reload.");
+    if (request.action === "derive") {
+      if (!request.media) throw new Error("Timeline derive requires encoded media and its recorded source");
+      const modelMedia = await runtime.perception.deriveMedia(request.media, signal);
+      runtime.record("observation_media", { observationId: request.id, modelMedia,
+        modelBytes: modelMedia.bytes, mimeType: modelMedia.mediaType }, request.trace);
+      return modelMedia;
+    }
     if (request.action !== "append" || !request.identity || typeof request.identity.id !== "string" || !request.sampling)
       throw new Error("Timeline append requires a perception result, capability identity and sampling interval");
     // Recording a completed observation does not acquire control. Device input

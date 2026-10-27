@@ -398,10 +398,16 @@ class Perception:
       const delivered = events.find(event => event.type === "observation" && event.data.id === inputIds[0]);
       expect(delivered.trace.toolCallId).toBe(id);
       expect(delivered.data.origin).toBe("tool_result");
-      // TerminalGraphicsDecoder resizes this image. Only the recorded original
-      // is archived; the transformed model input stays in OMP's native history.
-      expect(delivered.data.path).toBeUndefined();
-      expect(delivered.data.recorded).toBe(false);
+      // The CLI records the actual decoder version through the timeline writer.
+      // Its source record is the requested historical frame, never latest.
+      expect(delivered.data.path).toBe(join(f.workspace, ".rsa", "timeline", "objects", `${delivered.data.sha256}.bin`));
+      expect(delivered.data.recorded).toBe(true);
+      const derivative = events.find(event => event.type === "observation_media"
+        && event.data.observationId === old.result.observations![0]!.id
+        && event.data.modelMedia?.transform === "omp.terminalGraphics");
+      expect(derivative?.data.modelMedia).toMatchObject({ recordId: old.snapshot!.id,
+        sequence: old.snapshot!.sequence, sourceAsset: old.result.observations![0]!.timeline!.asset });
+      expect(await readFile(delivered.data.path)).toEqual(Buffer.from(expectedImage.data, "base64"));
       expect(delivered.data.sha256).toBe(new Bun.CryptoHasher("sha256").update(Buffer.from(expectedImage.data, "base64")).digest("hex"));
       expect(Buffer.from(await readFile(old.result.observations![0]!.path!))).toEqual(Buffer.from(oldPng));
       const saved = f.session.agent.state.messages.find(message => message.role === "toolResult" && message.toolCallId === id);
@@ -421,8 +427,8 @@ class Perception:
     await f.session.settleAsyncWork();
     const backgroundInputs = (await f.events()).filter(event => event.type === "observation" && event.data.controllerId === "background_result");
     expect(backgroundInputs).toHaveLength(1);
-    expect(backgroundInputs[0].data.path).toBeUndefined();
-    expect(backgroundInputs[0].data.recorded).toBe(false);
+    expect(backgroundInputs[0].data.path).toBeString();
+    expect(backgroundInputs[0].data.recorded).toBe(true);
     expect(backgroundInputs[0].data.sha256).toBe(new Bun.CryptoHasher("sha256").update(Buffer.from(expectedImage.data, "base64")).digest("hex"));
     expect(backgroundInputs[0].trace.toolCallId).toBeUndefined();
   } finally { await f.close(); }

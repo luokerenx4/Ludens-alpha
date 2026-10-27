@@ -3,11 +3,13 @@
 import argparse
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
+from functools import lru_cache
 import json
 import math
 from pathlib import Path
 import re
 import statistics
+import subprocess
 
 
 def stats(values):
@@ -44,6 +46,35 @@ def read_events(path):
             else:
                 raise
     return events, partial
+
+
+def skill_paths(args):
+    if not isinstance(args, dict):
+        raise ValueError("Tool arguments are not a JSON object")
+    return sorted(set(re.findall(r"(?:^|[\s\[/])(skills/[^\s#\]\"']+?SKILL\.md)",
+                                str(args.get("path", "")) + "\n" + str(args.get("input", "")))))
+
+
+def archived_skill_paths(run):
+    # Reuse the shared archive reader; retain only small extracted evidence, never
+    # decoded tool bodies. This CLI dispatch does not initialize a host/workspace.
+    @lru_cache(maxsize=64)
+    def read(reference):
+        try:
+            result = subprocess.run([str(Path(__file__).resolve().parents[1] / "bin" / "rsa"),
+                "logs", "read", "--run", str(run), "--ref", reference],
+                capture_output=True, text=True, check=True, timeout=30)
+            return skill_paths(json.loads(result.stdout)), None
+        except subprocess.CalledProcessError as error:
+            return None, (error.stderr.strip() or f"Archive reader exited {error.returncode}")[:1000]
+        except (OSError, subprocess.TimeoutExpired, ValueError) as error:
+            return None, str(error)[:1000]
+    return read
+
+
+def wire_bytes(body):
+    # Indexed ref.bytes measures decoded JSON structure, not the prepared body.
+    return body.get("wire", {}).get("bytes") if body.get("encoding") == "rsa-json-v1" else body.get("bytes")
 
 
 def trace_key(event, *fields):
@@ -291,7 +322,7 @@ def model_attempts(related):
             "startSeq": first["seq"] if first else group[0]["seq"],
             "endSeq": finish["seq"] if finish else None,
             "builtBodyBytes": request["data"].get("bodyBytes") if request else None,
-            "wireBytes": first["data"].get("body", {}).get("bytes") if first else None,
+            "wireBytes": wire_bytes(first["data"].get("body", {})) if first else None,
             "incremental": None, "dispatchSeq": dispatch["seq"] if dispatch else None,
             "dispatchAtMs": detail.get("dispatchAtMs", dispatch["atMs"] if dispatch else None),
             "status": detail.get("status"),
@@ -524,22 +555,34 @@ def analyze(run, epoch=None):
             "endAt": finish["at"] if finish else None, "endAtMs": finish["atMs"] if finish else None,
             "durationMs": finish["atMs"] - start["atMs"] if finish else None,
             "state": "pending" if not finish else "error" if is_error else "completed",
-            "isError": is_error, "args": start["data"].get("args", {}),
+            "isError": is_error,
+            **({"argsRef": start["data"]["argsRef"]} if "argsRef" in start["data"]
+               else {"args": start["data"].get("args", {})}),
             "result": finish["data"].get("result") if finish else None, "exec": command})
     skills = []
+    skill_argument_errors = []
+    read_skill_paths = archived_skill_paths(run)
     for event in tool_starts:
         data = event["data"]
         if data["toolName"] not in ("read", "write", "edit"):
             continue
-        args = data.get("args", {})
-        paths = sorted(set(re.findall(r"(?:^|[\s\[/])(skills/[^\s#\]\"']+?SKILL\.md)",
-                                     str(args.get("path", "")) + "\n" + str(args.get("input", "")))))
+        if "argsRef" in data:
+            paths, error = read_skill_paths(json.dumps(data["argsRef"], sort_keys=True))
+            if error:
+                skill_argument_errors.append({"seq": event["seq"], "tool": data["toolName"],
+                                              "argsRef": data["argsRef"], "error": error})
+                continue
+        else:
+            paths = skill_paths(data.get("args", {}))
         if not paths:
             continue
         finish = tool_ends.get(trace_key(event, "modelCallId", "toolCallId"))
         skills.append({"seq": event["seq"], "tool": data["toolName"], "paths": paths,
                        "endSeq": finish["seq"] if finish else None,
                        "success": not finish["data"].get("isError", False) if finish else None})
+    skill_counts = {tool: sum(item["tool"] == tool and item["success"] is True for item in skills)
+                    for tool in ("read", "edit", "write")}
+    unknown_skill_tools = {item["tool"] for item in skill_argument_errors}
     compactions = []
     for event in inside:
         if event["type"] not in ("auto_compaction_start", "auto_compaction_end"):
@@ -638,9 +681,11 @@ def analyze(run, epoch=None):
         "controllerActionsPerMinute": ratio(successful_actions * 60000, elapsed_ms),
         "independentObserveRequests": sum(call["state"] == "completed" and call["tools"] == ["observe"] for call in calls),
         "observeToolCalls": tool_counts["observe"],
-        "skillReads": sum(item["tool"] == "read" and item["success"] is True for item in skills),
-        "skillEdits": sum(item["tool"] == "edit" and item["success"] is True for item in skills),
-        "skillWrites": sum(item["tool"] == "write" and item["success"] is True for item in skills),
+        "skillReads": None if "read" in unknown_skill_tools else skill_counts["read"],
+        "skillEdits": None if "edit" in unknown_skill_tools else skill_counts["edit"],
+        "skillWrites": None if "write" in unknown_skill_tools else skill_counts["write"],
+        "skillEvidence": {"state": "incomplete" if skill_argument_errors else "complete",
+                          "unknownArguments": len(skill_argument_errors), "knownSuccessful": skill_counts},
         "compactionStarts": sum(item["type"] == "auto_compaction_start" for item in compactions),
         "compactionEnds": sum(item["type"] == "auto_compaction_end" for item in compactions),
         "compactionMaintenance": {
@@ -685,7 +730,7 @@ def analyze(run, epoch=None):
         "capabilityDiscovery": span_summary(discovery),
         "perception": perception_summary,
         "shiori": {"spans": span_summary(shiori_spans), "nativeLoops": len(native_runs)}}
-    return {"analysisVersion": 5, "runDir": str(run), "generatedAt": datetime.now(timezone.utc).isoformat(),
+    return {"analysisVersion": 6, "runDir": str(run), "generatedAt": datetime.now(timezone.utc).isoformat(),
         "source": {"path": "events.jsonl", "eventCount": len(events), "lastSeq": events[-1]["seq"] if events else None,
                    "lastEventAt": events[-1]["at"] if events else None, "ignoredPartialLastLine": partial},
         "window": {"epoch": selected_epoch,
@@ -696,7 +741,8 @@ def analyze(run, epoch=None):
         "summary": summary, "firstRequest": calls[0] if calls else None,
         "calls": calls, "tools": tool_details, "executions": executions, "actions": actions, "observations": observations,
         "controllerExecutionErrors": execution_errors,
-        "skills": skills, "compactions": compactions, "compactionMaintenance": compaction_maintenance,
+        "skills": skills, "skillArgumentErrors": skill_argument_errors,
+        "compactions": compactions, "compactionMaintenance": compaction_maintenance,
         "compactionSpeculation": speculation,
         "compactionRetries": compaction_retries,
         "compactionHttpAttempts": compaction_http,
@@ -722,8 +768,8 @@ def analyze(run, epoch=None):
             "Cache denominator is usage.input + cacheRead + cacheWrite. Warm excludes request index 1, not later post-compaction cache resets.",
             "controllerActions counts completed asynchronous action lifetimes and control-requiring executions without actionId or readOnly=true. Submission/status/wait/cancel RPCs with actionId do not count as additional input; actions retains their actual execution lifetime, including late endings and pending actions. asyncActionMs measures submission to terminal on the same Baseware clock, not game frames or successful task progress. Sampling calls with requiresControl=false are excluded. Older executions retain their original action meaning; inspect argv for state queries/releases. independentObserveRequests counts completed requests whose sole executed tool is observe.",
             "controllerExecutionErrors counts explicit execution_error events belonging to the selected epoch, including late events and those marked aborted. Details retain the original error and match command by epoch/operationId. This is independent of toolErrors: a shell batch can finish successfully after an inner controller command fails. Stderr is not parsed to infer errors.",
-            "toolExecution measures tool_start to tool_end, including result preparation. Native bash/background tool completion is not the lifetime or exit status of a background process. Tool args and result artifact references are retained without opening payloads; execCommandMs only measures historical exec to exec_result events. These durations overlap and must not be added. Pending spans have no duration, and command text is not parsed to infer waiting or action time.",
-            "Skill read/write/edit counts use successful tool completion and named SKILL.md paths. They do not prove the quality of learned content or that an edit changed its hash.",
+            "toolExecution measures tool_start to tool_end, including result preparation. Native bash/background tool completion is not the lifetime or exit status of a background process. Tool arguments remain inline for old logs or as argsRef for indexed logs; only read/write/edit arguments are opened in reference mode for skill-path evidence. Tool results remain references; execCommandMs only measures historical exec to exec_result events. These durations overlap and must not be added. Pending spans have no duration, and command text is not parsed to infer waiting or action time.",
+            "Skill read/write/edit counts use successful tool completion and named SKILL.md paths. Unreadable argument references make the affected count unknown (null); skillEvidence keeps known successes and skillArgumentErrors records missing evidence. Counts do not prove the quality of learned content or that an edit changed its hash.",
             "Capture intervals include waiting, GPU readback and file encoding. sourceSequence advance does not prove that the frame reflects the preceding action.",
             "perception measures explicitly traced snapshot reads, including late ends, not background sampling or controller actions. New/reused counts use the recorded reused flag; unique snapshot IDs are separate from read count. sampleAgeMs is read-end wall time minus the declared sampledAt only when both have timezones and the age is nonnegative; missing/invalid/future timestamps remain unknown. It does not measure model-dispatch age, sample freshness guarantees, or sensor capture duration. Status events without the selected epoch are not assigned by time.",
             "perception.inputErrors separately records post-read model-input/media-encoding failures, linked by epoch and result.id. A successful perception read does not imply successful delivery to the model; read outcomes are retained rather than overwritten by encoding failures.",

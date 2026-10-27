@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { JsonArchive } from "../../shared/log-archive.ts";
 
 const script = new URL("../scripts/analyze-run.py", import.meta.url).pathname;
 const emptyStats = { count: 0, min: null, median: null, p95: null, max: null, sum: 0 };
@@ -15,10 +16,11 @@ function fixture() {
   };
 }
 
-async function analyze(events: unknown[], epoch?: string) {
+async function analyze(events: unknown[] | ((directory: string) => Promise<unknown[]>), epoch?: string) {
   const directory = await mkdtemp(join(tmpdir(), "rsa-analysis-"));
   try {
-    await writeFile(join(directory, "events.jsonl"), events.map(event => JSON.stringify(event)).join("\n") + "\n");
+    const rows = typeof events === "function" ? await events(directory) : events;
+    await writeFile(join(directory, "events.jsonl"), rows.map(event => JSON.stringify(event)).join("\n") + "\n");
     const result = Bun.spawnSync(["python3", script, directory, ...(epoch ? ["--epoch", epoch] : [])]);
     if (result.exitCode !== 0) throw new Error(result.stderr.toString());
     return JSON.parse(await readFile(join(directory, "analysis.json"), "utf8"));
@@ -26,6 +28,68 @@ async function analyze(events: unknown[], epoch?: string) {
     await rm(directory, { recursive: true, force: true });
   }
 }
+
+test("analysis resolves indexed skill arguments without copying bodies or losing legacy evidence", async () => {
+  const input = [
+    { toolName: "read", args: { path: "skills/jump/SKILL.md" } },
+    { toolName: "read", args: { path: "skills/jump/SKILL.md" } },
+    { toolName: "write", args: { path: "skills/land/SKILL.md", content: "large body ".repeat(500) } },
+    { toolName: "edit", args: { input: "*** Update File: skills/jump/SKILL.md\nmodified" } },
+    { toolName: "write", args: { path: "skills/failed/SKILL.md" }, isError: true },
+    { toolName: "read", args: { path: "memory.md" } },
+  ];
+  const events = (archive?: JsonArchive) => {
+    const e = fixture();
+    return [e("control", "one", { mode: "auto", epoch: "one" }), ...input.flatMap((item, index) => {
+      const trace = { modelCallId: "model", toolCallId: String(index) };
+      return [e("tool_start", "one", { toolName: item.toolName,
+        ...(archive ? { argsRef: archive.write(item.args) } : { args: item.args }) }, trace),
+      e("tool_end", "one", { isError: item.isError ?? false }, trace)];
+    })];
+  };
+  const legacy = await analyze(events());
+  const indexed = await analyze(async directory => {
+    await writeFile(join(directory, "manifest.json"), JSON.stringify({ workspace: directory }));
+    return events(new JsonArchive(directory));
+  });
+  expect(indexed.skills).toEqual(legacy.skills);
+  expect(indexed.summary).toMatchObject({ skillReads: 2, skillWrites: 1, skillEdits: 1,
+    skillEvidence: { state: "complete", unknownArguments: 0, knownSuccessful: { read: 2, write: 1, edit: 1 } } });
+  expect(indexed.skillArgumentErrors).toEqual([]);
+  expect(indexed.tools[2].argsRef.encoding).toBe("rsa-json-v1");
+  expect(indexed.tools[2]).not.toHaveProperty("args");
+  expect(JSON.stringify(indexed)).not.toContain("large body");
+}, 30_000);
+
+test("analysis marks missing argument evidence unknown and keeps real wire byte counts", async () => {
+  const report = await analyze(async directory => {
+    await writeFile(join(directory, "manifest.json"), JSON.stringify({ workspace: directory }));
+    const archive = new JsonArchive(directory);
+    const present = archive.write({ path: "skills/present/SKILL.md" });
+    const missing = { ...present, sha256: "f".repeat(64), path: `objects/${"f".repeat(64)}.json.gz` };
+    const e = fixture(), trace = { modelCallId: "model", requestId: "request", httpId: "http" };
+    return [e("control", "one", { mode: "auto", epoch: "one" }),
+      e("model_start", "one", {}, trace),
+      e("model_http_start", "one", { body: { ...present, bytes: 99999, wire: { bytes: 123 } } }, trace),
+      e("model_http_end", "one", { status: 200 }, trace),
+      e("model_end", "one", { stopReason: "stop" }, trace),
+      e("tool_start", "one", { toolName: "read", argsRef: present }, { modelCallId: "model", toolCallId: "known" }),
+      e("tool_end", "one", { isError: false }, { modelCallId: "model", toolCallId: "known" }),
+      e("tool_start", "one", { toolName: "read", argsRef: missing,
+        args: { path: "skills/not-evidence/SKILL.md" } }, { modelCallId: "model", toolCallId: "unknown" }),
+      e("tool_end", "one", { isError: false }, { modelCallId: "model", toolCallId: "unknown" }),
+      e("tool_start", "one", { toolName: "bash", argsRef: missing }, { modelCallId: "model", toolCallId: "not-needed" }),
+    ];
+  });
+  expect(report.summary).toMatchObject({ skillReads: null, skillWrites: 0, skillEdits: 0,
+    skillEvidence: { state: "incomplete", unknownArguments: 1, knownSuccessful: { read: 1, write: 0, edit: 0 } },
+    attemptedWireBytes: 123, transports: { httpWireBytes: { sum: 123 } } });
+  expect(report.skillArgumentErrors).toHaveLength(1);
+  expect(report.skillArgumentErrors[0]).toMatchObject({ seq: 8, tool: "read" });
+  expect(report.skillArgumentErrors[0].error.length).toBeGreaterThan(0);
+  expect(report.skills.map((item: any) => item.paths)).toEqual([["skills/present/SKILL.md"]]);
+  expect(report.tools[1]).not.toHaveProperty("args");
+}, 30_000);
 
 test("analysis counts async input completion once and keeps its lifetime after the submitting RPC", async () => {
   const e = fixture();

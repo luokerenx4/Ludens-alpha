@@ -1,8 +1,6 @@
 import { readFile, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { gunzip } from "node:zlib";
-import { promisify } from "node:util";
 import { catalog, hostRequest, loadRun } from "./data";
 import { latestGameRun } from "./initial-selection";
 import { LogIndex, SourceChanged, type RecordPointer } from "./log-index";
@@ -11,6 +9,7 @@ import { advanceLivePhase, emptyLivePhase, livePhaseValue, type LivePhaseState }
 import { eventObservations } from "./observation-events";
 import type { Event } from "./types";
 import { projectPythonCall } from "./python-activity";
+import { readArtifact } from "../../shared/log-archive";
 
 export interface LogBlock {
   id: string;
@@ -35,16 +34,22 @@ const provenance = (event: Partial<Event>) => ({ source: event.source, trace: ev
   eventId: event.origin?.eventId, seq: event.seq, updatedAt: event.at });
 
 type Json = Record<string, any>;
-const unpack = promisify(gunzip);
 const callId = (id: string) => id.split("|")[0];
 const toolId = (model: string, id: string) => `${model}:tool:${callId(id)}`;
 const hidden = new Set(["encrypted_content", "thinkingSignature", "signature", "redactedThinking"]);
+function mediaReferences(value: unknown): unknown[] {
+  if (!value || typeof value !== "object") return [];
+  if ("$media" in value) return [value];
+  return Object.values(value).flatMap(mediaReferences);
+}
 function readable(value: unknown): string {
   if (typeof value === "string") return value;
   return JSON.stringify(value, (key, item) => {
     if (hidden.has(key)) return undefined;
-    if (item && typeof item === "object" && ["image", "input_image", "audio"].includes(item.type))
-      return { type: item.type, mimeType: item.mimeType };
+    if (item && typeof item === "object" && ["image", "input_image", "audio"].includes(item.type)) {
+      const media = mediaReferences(item);
+      return { type: item.type, mimeType: item.mimeType, ...(media.length ? { media } : {}) };
+    }
     return item;
   }, 2) ?? "";
 }
@@ -58,8 +63,8 @@ function structuredText(text: string): unknown {
 }
 function resultText(value: any): string {
   if (Array.isArray(value?.content)) return value.content
-    .filter((part: Json) => part.type === "text" && typeof part.text === "string")
-    .map((part: Json) => argumentsText(part.text)).join("\n\n");
+    .flatMap((part: Json) => part.type === "text" && typeof part.text === "string"
+      ? [argumentsText(part.text)] : mediaReferences(part).length ? [readable(part)] : []).join("\n\n");
   return readable(value);
 }
 
@@ -69,7 +74,7 @@ interface StreamState {
   seen: string[]; responseId: string; line: number; terminal: boolean;
 }
 const emptyStream = (): StreamState => ({ blocks: [], aliases: [], toolNames: [], seen: [], responseId: "", line: 0, terminal: false });
-function advanceStream(text: string, model: string, anchor: Pick<Event, "at" | "atMs"> & Partial<Event>, state: StreamState): LogBlock[] {
+function advanceStream(rows: Iterable<Json>, model: string, anchor: Pick<Event, "at" | "atMs"> & Partial<Event>, state: StreamState): LogBlock[] {
   const blocks = new Map(state.blocks);
   const aliases = new Map(state.aliases);
   const toolNames = new Map(state.toolNames);
@@ -100,17 +105,18 @@ function advanceStream(text: string, model: string, anchor: Pick<Event, "at" | "
       }
     }
   };
-  const lines = text.split("\n");
-  lines.pop();
-  for (const line of lines) {
+  for (const row of rows) {
     const lineIndex = state.line++;
-    if (!line.trim()) continue;
-    const row = JSON.parse(line);
     origin = { ...provenance(anchor), source: row.source ?? anchor.source, trace: { ...anchor.trace, ...row.trace } };
     const wire = row.event ?? row;
     // A WS upload may contain the entire conversation and base64 observations.
     if (wire.event === "response.create" || wire.type === "response.create" || wire.data === "[DONE]") continue;
-    const value: Json = typeof wire.data === "string" ? JSON.parse(wire.data) : wire.data ?? wire;
+    let value: Json = wire.data ?? wire;
+    if (typeof value === "string") {
+      try { value = JSON.parse(value); }
+      catch { value = { type: wire.event ?? "stream", data: value }; }
+    }
+    if (!value || typeof value !== "object") value = { type: wire.event ?? "stream", data: value };
     const type = value.type ?? value.object ?? wire.event ?? "stream";
     if (type === "response.create") continue;
     const at = Number.isFinite(row.atMs) ? new Date(clock + row.atMs).toISOString() : anchor.at;
@@ -173,41 +179,59 @@ function advanceStream(text: string, model: string, anchor: Pick<Event, "at" | "
       tool: { args: structuredText(argumentsText(block.text)) } } : block);
 }
 
-export function streamBlocks(text: string, model: string, anchor: Pick<Event, "at" | "atMs"> & Partial<Event>): LogBlock[] {
-  return advanceStream(text, model, anchor, emptyStream());
+function* streamRows(text: string): Generator<Json> {
+  const lines = text.split("\n"); lines.pop();
+  for (const line of lines) if (line.trim()) yield JSON.parse(line);
 }
-async function streamFile(path: string, model: string, anchor: Event): Promise<LogBlock[]> {
+async function artifact(path: string, reference: any, workspace?: string | null) {
+  return readArtifact(path, { encoding: "gzip", ...reference }, { media: "reference", workspace });
+}
+async function storedStream(text: string, path: string, model: string, anchor: Event, state: StreamState, workspace?: string | null) {
+  const rows: Json[] = [];
+  for (const row of streamRows(text)) {
+    const wire = row.event ?? row;
+    // Skip uploads before dereferencing: their entire input history is not activity.
+    if (row.format === "rsa-stream-v1" && wire.event !== "response.create" && wire.type !== "response.create") {
+      const data = await artifact(path, wire.dataRef, workspace);
+      rows.push({ ...row, event: { ...wire, data } });
+    } else rows.push(row);
+  }
+  return advanceStream(rows, model, anchor, state);
+}
+
+export function streamBlocks(text: string, model: string, anchor: Pick<Event, "at" | "atMs"> & Partial<Event>): LogBlock[] {
+  return advanceStream(streamRows(text), model, anchor, emptyStream());
+}
+async function streamFile(path: string, model: string, anchor: Event, workspace?: string | null): Promise<LogBlock[]> {
   if (!/^[a-zA-Z0-9_-]+$/.test(model)) throw new Error("无效的模型调用 ID");
   const file = join(path, "streams", `${model}.jsonl`);
   try {
     if (await realpath(file) !== file) throw new Error("流日志必须位于运行目录内");
-    return streamBlocks(await readFile(file, "utf8"), model, anchor);
+    return storedStream(await readFile(file, "utf8"), path, model, anchor, emptyStream(), workspace);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
   }
 }
-async function payloadText(path: string, value: any, index?: LogIndex): Promise<string> {
+async function payloadText(path: string, value: any, index?: LogIndex, workspace?: string | null): Promise<string> {
   if (!value?.path) return resultText(value);
-  if (!/^payloads\/[a-f0-9]{64}\.json\.gz$/.test(value.path)) throw new Error("无效的工具结果路径");
-  const saved = await index?.store("payloads").get<string>(value.path);
+  const key = `${value.encoding ?? "gzip"}:${value.path}`;
+  const saved = await index?.store("payloads").get<string>(key);
   if (saved !== undefined) return saved;
-  const file = join(path, value.path);
-  if (await realpath(file) !== file) throw new Error("工具结果必须位于运行目录内");
-  const text = resultText(JSON.parse((await unpack(await readFile(file))).toString("utf8")));
-  await index?.store("payloads").put(value.path, text);
+  const text = resultText(await artifact(path, value, workspace));
+  await index?.store("payloads").put(key, text);
   return text;
 }
 
-export async function activityBlocks(path: string, events: Event[]): Promise<LogBlock[]> {
+export async function activityBlocks(path: string, events: Event[], workspace?: string | null): Promise<LogBlock[]> {
   const calls = new Map<string, Event>();
   for (const event of events) if (event.trace.modelCallId && !calls.has(event.trace.modelCallId)) calls.set(event.trace.modelCallId, event);
-  const blocks = new Map((await Promise.all([...calls].map(([id, anchor]) => streamFile(path, id, anchor))))
+  const blocks = new Map((await Promise.all([...calls].map(([id, anchor]) => streamFile(path, id, anchor, workspace))))
     .flat().map(block => [block.id, { ...block }]));
-  await overlayEvents(path, events, blocks);
+  await overlayEvents(path, events, blocks, undefined, workspace);
   return [...blocks.values()].sort((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id));
 }
-async function overlayEvents(path: string, events: Event[], blocks: Map<string, LogBlock>, index?: LogIndex) {
+async function overlayEvents(path: string, events: Event[], blocks: Map<string, LogBlock>, index?: LogIndex, workspace = index?.archiveWorkspace) {
   const pythonMembers = new Map<string, { group: string; root: boolean }>();
   const executingTools = new Set(events.filter(event => event.type === "tool_start" && event.trace.modelCallId && event.trace.toolCallId)
     .map(event => toolId(event.trace.modelCallId, event.trace.toolCallId)));
@@ -221,11 +245,12 @@ async function overlayEvents(path: string, events: Event[], blocks: Map<string, 
       const tool = tools.get(id) ?? { name: previous?.title ?? "工具", intent: "", args: previous?.text ?? "", result: "" };
       if (data.toolName) tool.name = data.toolName;
       if (data.intent) tool.intent = data.intent;
-      if (event.type === "tool_start") tool.args = argumentsText(data.args);
+      if (event.type === "tool_start") tool.args = argumentsText(data.argsRef
+        ? await artifact(path, data.argsRef, workspace) : data.args);
       if (event.type === "exec" && !tool.args) tool.args = argumentsText({ command: data.command });
       if (event.type === "exec_result") tool.result = readable(data);
       if (["tool_update", "tool_end"].includes(event.type) && data.result !== undefined)
-        tool.result = await payloadText(path, data.result, index);
+        tool.result = await payloadText(path, data.result, index, workspace);
       tools.set(id, tool);
       blocks.set(id, { id, kind: "tool", at: previous?.at ?? event.at, title: tool.name, ...provenance(event),
         text: [tool.intent && `意图：${tool.intent}`, tool.args && `参数：\n${tool.args}`, tool.result && `结果：\n${tool.result}`].filter(Boolean).join("\n\n"),
@@ -347,11 +372,11 @@ async function projectModel(index: LogIndex, model: string, changed: boolean) {
   if (!changed && !next?.changed) return;
   const saved = (await index.store("streams").get<{ anchor: Event; state: StreamState }>(model))!;
   const { anchor, state } = saved;
-  let projected = advanceStream("", model, anchor, state);
+  let projected = advanceStream([], model, anchor, state);
   let lastOffset = -1;
   while (next?.changed && next.state.offset !== lastOffset) {
     lastOffset = next.state.offset;
-    projected = advanceStream(next.text, model, anchor, state);
+    projected = await storedStream(next.text, index.path, model, anchor, state, index.archiveWorkspace);
     index.saveFile(next.state);
     if (next.state.offset === next.state.size || !next.text) break;
     next = await index.readAppend(relative);
@@ -378,7 +403,7 @@ export function refreshActivity(index: LogIndex) {
       for (let attempt = 0; ; attempt++) {
         try {
           // Presentation changes invalidate only the disposable index, never source logs.
-          if (index.meta("activitySemantics") !== "3") { index.resetActivity(); index.setMeta("activitySemantics", "3"); }
+          if (index.meta("activitySemantics") !== "4") { index.resetActivity(); index.setMeta("activitySemantics", "4"); }
           await index.appendEvents();
           const dirty = await projectEvents(index);
           // Checking file metadata also notices a late stream append or replacement

@@ -1,6 +1,6 @@
 import { send, type Request } from "./transport.ts";
 import { parseArgs } from "node:util";
-import type { ObservationQuery, PerceptionRead } from "./perception.ts";
+import type { ObservationQuery, PerceptionRead, TimelineMedia } from "./perception.ts";
 import { readToolArguments } from "@playness/baseware/tool-contract";
 import type { ExecutionResult } from "@playness/baseware/contracts";
 
@@ -60,7 +60,9 @@ async function observe(argv: string[], socket: string) {
     trace: process.env.BASEWARE_TRACE ? JSON.parse(process.env.BASEWARE_TRACE) : undefined }) as PerceptionRead;
   process.exitCode = value.result.exitCode;
   const output = values.images
-    ? await (await import("./omp/terminal-observation.ts")).terminalObservation(value)
+    ? await (await import("./omp/terminal-observation.ts")).terminalObservation(value,
+      (media, id) => send(socket, { kind: "timeline", action: "derive", argv: [], media, id,
+        trace: process.env.BASEWARE_TRACE ? JSON.parse(process.env.BASEWARE_TRACE) : undefined }) as Promise<TimelineMedia>)
     : JSON.stringify(value, null, 2);
   console.log(output);
 }

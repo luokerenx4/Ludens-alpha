@@ -1,7 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { join, posix } from "node:path";
-import { gunzipSync } from "node:zlib";
+import { posix } from "node:path";
+import { readArtifactSync } from "../../../../shared/log-archive.ts";
 import type { EventTrace } from "../../harness/events.ts";
 import type { AuthorReport, CaseMetadata } from "../types.ts";
 
@@ -34,9 +33,9 @@ function successfulShellEnd(event: ReuseEvent, runDir?: string): boolean {
   if (event.type === "exec_result") return event.data.exitCode === 0;
   if (event.type !== "tool_end" || event.data.toolName !== "bash" || event.data.isError !== false) return false;
   let result = event.data.result;
-  if (result?.encoding === "gzip") {
+  if (result?.encoding === "gzip" || result?.encoding === "rsa-json-v1") {
     if (!runDir) return false;
-    try { result = JSON.parse(gunzipSync(readFileSync(join(runDir, result.path))).toString("utf8")); }
+    try { result = readArtifactSync(runDir, result, { media: "reference" }); }
     catch { return false; }
   }
   // Native bash omits exitCode on success. A background/service launch is only
@@ -65,7 +64,12 @@ function parsePython(events: ReuseEvent[]) {
 
 /** Judge the environment's facts and causality; agent prose is never a verdict. */
 export function evaluateReuse(all: ReuseEvent[], epoch: string, runDir?: string, metadata: CaseMetadata = {}): AuthorReport {
-  const events = all.filter(event => event.trace.epoch === epoch).sort((a, b) => a.seq - b.seq);
+  const events = all.filter(event => event.trace.epoch === epoch).map(event => {
+    if (event.type !== "tool_start" || !event.data.argsRef || !runDir) return event;
+    try { return { ...event, data: { ...event.data,
+      args: readArtifactSync(runDir, event.data.argsRef, { media: "reference" }) } }; }
+    catch { return event; } // Missing evidence cannot establish reuse.
+  }).sort((a, b) => a.seq - b.seq);
   const benchmark = (type: string) => events.filter(event => event.type === type && event.source?.component === "benchmark");
   const baseline = benchmark("benchmark_reuse_workspace")[0];
   const before = new Set<string>(baseline?.data.pythonFiles ?? []);

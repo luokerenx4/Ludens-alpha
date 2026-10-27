@@ -1,11 +1,12 @@
 import type { LogIndex, RecordPointer } from "./log-index";
+import { readArtifact } from "../../shared/log-archive";
 import { aggregate, isCompletedControllerAction } from "./aggregate";
 import { projectTelemetry } from "./telemetry";
 import { eventObservations, observationExecution, type ArchivedObservation } from "./observation-events";
 import { advanceLivePhase, emptyLivePhase, livePhaseValue, type LivePhaseState } from "./live-phase";
 import type { Call, Event, Manifest, NativeLoop, Observation, RunData, SpanStats, TraceSpan } from "./types";
 
-const VERSION = "files-3";
+const VERSION = "files-4";
 const PAGE_SIZE = 100;
 type Meta = RecordPointer;
 type CycleState = { phase: LivePhaseState; lastControl: Record<string, any> | null; autoStarted?: number;
@@ -64,6 +65,14 @@ async function projectCall(index: LogIndex, id: string) {
   const start = index.store("run-starts").meta(id);
   if (!start) return;
   const events = await relatedEvents(index, { model: id, epoch: start.epoch });
+  // Only skill evidence needs parameters during projection. The cache retains
+  // references; full arguments are read for the selected call below.
+  for (let i = 0; i < events.length; i++) {
+    const event = events[i]!;
+    if (event.type === "tool_start" && event.data.argsRef && ["read", "edit", "write"].includes(event.data.toolName))
+      events[i] = { ...event, data: { ...event.data,
+        args: await readArtifact(index.path, event.data.argsRef, { media: "reference", workspace: index.archiveWorkspace }) } };
+  }
   const contextMeta = newest(rows(index, "run-contexts"), 1,
     item => item.epoch === start.epoch && item.position < start.position)[0];
   const context = contextMeta ? await index.store("run-contexts").get<Event>(contextMeta.id) : undefined;
@@ -76,6 +85,7 @@ async function projectCall(index: LogIndex, id: string) {
   const call = projected.calls.find(item => item.id === id);
   if (!call) return;
   call.index = Number(start.number);
+  for (const tool of call.tools) if (tool.argsRef) tool.args = {};
   const completed = call.durationMs !== null && !["error", "aborted"].includes(call.status);
   await index.store("run-calls").put(id, call, { epoch: start.epoch, number: call.index, position: start.position,
     duration: call.durationMs, headers: call.transport === "sse" ? call.headersMs : null,
@@ -261,7 +271,10 @@ export async function readRunProjection(index: LogIndex, epoch: string | null, p
   const visible = newest(callPage(), PAGE_SIZE);
   const calls = (await Promise.all(visible.map(item => callStore.get<Call>(item.id)))).filter((call): call is Call => !!call);
   const selectedMeta = page.call ? callStore.meta(page.call) : undefined;
-  const selected = selectedMeta && scoped(selectedMeta) ? await callStore.get<Call>(selectedMeta.id) : undefined;
+  const selectedStored = selectedMeta && scoped(selectedMeta) ? await callStore.get<Call>(selectedMeta.id) : calls.at(-1);
+  const selected = selectedStored ? { ...selectedStored, tools: await Promise.all(selectedStored.tools.map(async tool =>
+    tool.argsRef ? { ...tool, args: await readArtifact(index.path, tool.argsRef,
+      { media: "reference", workspace: index.archiveWorkspace }) as Record<string, any> } : tool)) } : undefined;
   const pageCallIds = new Set([...calls, ...(selected ? [selected] : [])].map(call => call.id));
   const ids = new Set([...calls, ...(selected ? [selected] : [])].flatMap(call => [...call.inputObservations, ...call.observations]));
   if (page.image) ids.add(page.image);

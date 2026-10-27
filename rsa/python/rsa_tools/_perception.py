@@ -192,6 +192,9 @@ def main():
                     result = history.observe(message.get("query"))
                 elif action == "append":
                     result = append(**{key: message.get(key) for key in ("sample", "identity", "sampling", "generation", "runId", "trace")})
+                elif action == "derive":
+                    result = history.derive(message.get("source"), message.get("data"),
+                                            message.get("mediaType"), message.get("transform"))
                 else:
                     raise ValueError(f"Unknown perception action: {action}")
                 response = {**reply, "ok": True, "result": result}

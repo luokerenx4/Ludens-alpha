@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { channel } from "node:diagnostics_channel";
 import type { StreamFn } from "@oh-my-pi/pi-agent-core";
+import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import { getOpenAICodexTransportDetails } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent";
@@ -24,6 +25,30 @@ function errorDetails(error: unknown) {
   if (!(error instanceof Error)) return {};
   const cause = error.cause instanceof Error ? error.cause : undefined;
   return { code: errorCode(error), cause: cause && { name: cause.name, code: errorCode(cause), message: cause.message } };
+}
+
+// Full job/service details are in the shared tool/custom-message artifact.
+// Keep only lifecycle evidence here, not structured outputs or readiness logs.
+function backgroundMetadata(value: object) {
+  const fields = new Set(["jobId", "type", "status", "agentId", "label", "durationMs", "name", "id", "state", "pid",
+    "createdAt", "startedAt", "readyAt", "exitedAt", "exitCode", "exitReason", "restartCount", "outputBytes", "owner", "persist", "detached"]);
+  return Object.fromEntries(Object.entries(value).filter(([key, item]) => fields.has(key)
+    && ["string", "number", "boolean"].includes(typeof item)));
+}
+
+function compactionMetadata(result: CompactionResult) {
+  const remote = result.preserveData?.openaiRemoteCompaction;
+  const detail = remote && typeof remote === "object" ? remote as Record<string, unknown> : {};
+  const usage = detail.usage && typeof detail.usage === "object" ? detail.usage as Record<string, unknown> : {};
+  const counts = Object.fromEntries(["inputTokens", "outputTokens", "cachedInputTokens", "totalTokens", "reasoningOutputTokens"]
+    .flatMap(key => typeof usage[key] === "number" && Number.isFinite(usage[key]) ? [[key, usage[key]]] : []));
+  const summary = {
+    ...(Object.keys(counts).length ? { usage: counts } : {}),
+    ...(typeof detail.retainedImageCount === "number" ? { retainedImageCount: detail.retainedImageCount } : {}),
+  };
+  return { tokensBefore: result.tokensBefore,
+    ...(Object.keys(summary).length ? { preserveData: { openaiRemoteCompaction: summary } } : {}),
+  };
 }
 
 function compactionRequest(input: Parameters<typeof fetch>[0], init?: RequestInit) {
@@ -119,7 +144,9 @@ export function installCompactionHttpTrace(log: EventLog, context: () => EventTr
     record("compaction_http_start", {
       method: init?.method ?? (input instanceof Request ? input.method : "GET"),
       endpoint: `${request.url.origin}${request.url.pathname}`, bodyBytes: bytes?.byteLength,
-      body: bytes === undefined ? undefined : log.bytes(bytes),
+      body: bytes === undefined ? undefined : log.bytes(bytes, "bin", {
+        contentType: request.headers.get("content-type"), contentEncoding: request.headers.get("content-encoding"),
+      }),
       contentType: request.headers.get("content-type"), contentEncoding: request.headers.get("content-encoding"),
     }, trace);
     const dispatchAtMs = log.clock.now();
@@ -192,7 +219,11 @@ export class ModelTrace {
     const background = new Map<string, EventTrace>();
     const serviceKey = (name: string, pid?: number) => JSON.stringify(["service", name, pid]);
     const unsubscribe = session.subscribe((event) => {
-      if (event.type === "tool_execution_start") this.record("tool_start", event, this.current(event.toolCallId));
+      if (event.type === "tool_execution_start") {
+        const { args, ...metadata } = event;
+        this.record("tool_start", this.log.archive && args !== undefined
+          ? { ...metadata, argsRef: this.log.artifact(args) } : event, this.current(event.toolCallId));
+      }
       if (event.type === "tool_execution_update") this.record("tool_update", {
         toolName: event.toolName, toolCallId: event.toolCallId, result: this.log.artifact(event.partialResult),
       }, this.current(event.toolCallId));
@@ -210,7 +241,7 @@ export class ModelTrace {
             const owner = childTrace(trace);
             background.set(key, owner);
             this.record("background_start", {
-              kind: job ? "job" : "service", ...(job ?? service), result,
+              kind: job ? "job" : "service", ...(this.log.archive ? backgroundMetadata(job ?? service) : job ?? service), result,
             }, owner);
           }
         }
@@ -225,13 +256,13 @@ export class ModelTrace {
           const result = this.log.artifact(message);
           for (const job of jobs ?? []) {
             const key = `job:${job.jobId}`;
-            this.record("background_result", { kind: "job", ...job, result,
+            this.record("background_result", { kind: "job", ...(this.log.archive ? backgroundMetadata(job) : job), result,
               isError: job.status === "failed" }, background.get(key) ?? {});
             background.delete(key);
           }
           for (const daemon of daemons ?? []) {
             const key = serviceKey(daemon.name, daemon.pid);
-            this.record("background_result", { kind: "service", ...daemon, result,
+            this.record("background_result", { kind: "service", ...(this.log.archive ? backgroundMetadata(daemon) : daemon), result,
               isError: daemon.state === "failed" }, background.get(key) ?? {});
             background.delete(key);
           }
@@ -240,7 +271,9 @@ export class ModelTrace {
       if (event.type === "auto_compaction_start" || event.type === "auto_compaction_end") {
         if (event.type === "auto_compaction_start")
           this.maintenance = { trace: { ...childTrace(this.compactionParent()), operationId: crypto.randomUUID() }, startedAt: this.log.clock.now() };
-        this.record(event.type, { ...event, ...(event.type === "auto_compaction_end" && this.maintenance
+        const data = event.type === "auto_compaction_end" && event.result && this.log.archive
+          ? { ...event, result: compactionMetadata(event.result), resultRef: this.log.artifact(event.result) } : event;
+        this.record(event.type, { ...data, ...(event.type === "auto_compaction_end" && this.maintenance
           ? { durationMs: this.log.clock.now() - this.maintenance.startedAt } : {}) }, this.maintenance?.trace ?? {});
         if (event.type === "auto_compaction_end") this.maintenance = undefined;
       }
@@ -309,7 +342,9 @@ export class ModelTrace {
             const url = new URL(request.url);
             this.record("model_http_start", { attempt: ++httpAttempts, method: request.method,
               endpoint: `${url.origin}${url.pathname}`, contentType: request.headers.get("content-type"),
-              contentEncoding: request.headers.get("content-encoding"), body: this.log.bytes(bytes) }, httpTrace);
+              contentEncoding: request.headers.get("content-encoding"), body: this.log.bytes(bytes, "bin", {
+                contentType: request.headers.get("content-type"), contentEncoding: request.headers.get("content-encoding"),
+              }) }, httpTrace);
             const inspectionMs = this.log.clock.now() - start;
             httpInspectionMs += inspectionMs;
             this.record("model_http_dispatch", { inspectionMs, modelElapsedMs: this.log.clock.now() - started }, httpTrace);
@@ -321,7 +356,10 @@ export class ModelTrace {
               this.record("model_http_end", { status: response.status,
                 headers: responseHeaders(response.headers), durationMs: headersAtMs - start,
                 dispatchAtMs, headersAtMs, fetchToHeadersMs: headersAtMs - dispatchAtMs,
-                errorBody: response.ok ? undefined : this.log.bytes(new Uint8Array(await response.clone().arrayBuffer())),
+                errorBody: response.ok ? undefined : this.log.bytes(new Uint8Array(await response.clone().arrayBuffer()), "bin", {
+                  contentType: response.headers.get("content-type"),
+                  // Fetch has already decoded response Content-Encoding.
+                }),
               }, httpTrace);
               return response;
             } catch (error) {

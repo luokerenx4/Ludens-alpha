@@ -22,6 +22,8 @@ export class LogIndex {
   private eventPosition = 0;
   private dirty = false;
   private relationRefresh = new Map<string, Promise<void>>();
+  // Set by loadRun from the project registry; null disallows workspace archives.
+  archiveWorkspace?: string | null;
   leases = 0;
   lastUsed = Date.now();
   retain() { this.leases++; this.lastUsed = Date.now(); let done = false; return () => { if (!done) { done = true; this.leases--; this.lastUsed = Date.now(); } }; }
@@ -66,7 +68,7 @@ export class LogIndex {
   /** Re-project presentation while retaining raw-event pointers, images and other readers' caches. */
   resetActivity() {
     this.markDirty();
-    for (const name of ["blocks", "streams", "python-groups"]) {
+    for (const name of ["blocks", "streams", "python-groups", "payloads"]) {
       this.stores.get(name)?.close(); this.stores.delete(name);
       rmSync(join(this.directory, name), { recursive: true, force: true });
     }

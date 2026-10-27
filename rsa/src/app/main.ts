@@ -16,6 +16,7 @@ import { readCurrentSession, resolveWorkspaceState } from "../harness/workspace-
 import { migrateWorkspaceSessions, validateSessionWorkspace } from "../harness/omp/workspace-session.ts";
 import perceptionTemplate from "../../templates/perception.py" with { type: "text" };
 import { WORKSPACE_HELP, workspaceCommand } from "./workspace.ts";
+import { LOG_HELP, logCommand } from "./log-archive.ts";
 
 // Workspace registry and experience versions live outside the monorepo.
 const artifactRoot = resolve(import.meta.dir, "../../../../artifacts/rsa");
@@ -37,10 +38,11 @@ async function main() {
     args.splice(0, 2);
   }
   if (!args.length || args[0] === "--help" || (args[0] === "run" && args.includes("--help"))) {
-    console.log(`${WORKSPACE_HELP}\n\n${RUN_HELP}\n${HELP}\nrsa bench <list|help|run|history|compare> — unified benchmarks; rsa bench --help`);
+    console.log(`${WORKSPACE_HELP}\n\n${RUN_HELP}\n${HELP}\nrsa bench <list|help|run|history|compare> — unified benchmarks; rsa bench --help\n${LOG_HELP}`);
     return;
   }
   if (args[0] === "bench") return (await import("../benchmark/runner.ts")).benchmarkCommand(args.slice(1), artifactRoot, selectedWorkspace);
+  if (args[0] === "logs") return logCommand(args.slice(1));
   if (["init", "up", "services", "down"].includes(args[0]!)) return workspaceCommand(args[0]!, args.slice(1), selectedWorkspace);
   if (args[0] !== "run") {
     const socket = process.env.RSA_SOCKET ?? (await resolveWorkspaceState(selectedWorkspace, artifactRoot)).socket;
@@ -108,7 +110,7 @@ async function main() {
     // Let the dashboard locate logs even when this workspace is outside the checkout.
     await writeFile(join(state.dir, "workspace.json"), JSON.stringify({ workspace }, null, 2));
     const clock = { id: runId, now: () => performance.now() };
-    log = new EventLog(runDir, clock);
+    log = new EventLog(runDir, clock, workspace);
     log.record("run_start", { workspace, workspaceId: state.id });
     devices = await connectBaseware({ socket: basewareSocket, seconds, runDir, record: log.record });
     await writeCapabilityDocument(devices.catalog, join(workspace, "baseware.json"));

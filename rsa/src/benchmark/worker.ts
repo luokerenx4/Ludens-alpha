@@ -7,7 +7,7 @@ import { saveReport, writeResult } from "./store.ts";
 const input: WorkerInput = JSON.parse(await readFile(process.argv[2]!, "utf8"));
 const { runDir, result } = input;
 const started = performance.now();
-const log = new EventLog(runDir, { id: result.runId, now: () => performance.now() });
+const log = new EventLog(runDir, { id: result.runId, now: () => performance.now() }, result.workspace);
 const record = log.recorder({ component: "benchmark", implementation: input.caseId, implementationVersion: result.definition.revision });
 const cancellation = new AbortController();
 const cancel = () => cancellation.abort(new Error("Benchmark worker interrupted"));

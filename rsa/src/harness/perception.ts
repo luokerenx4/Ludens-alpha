@@ -45,6 +45,15 @@ export interface TimelineAppend {
   sampling: { clock: string; startedAtMs: number; finishedAtMs: number };
   generation?: string | null; runId?: string; trace?: EventTrace;
 }
+export interface TimelineDerive {
+  source: { asset: string; recordId: string; sequence: number };
+  data: string; mediaType: string; transform: string;
+}
+export interface TimelineMedia {
+  sha256: string; asset: string; mediaType: string; bytes: number;
+  recordId: string; sequence: number; sourceAsset: string; transform: string;
+}
+export type DeriveMedia = (input: TimelineDerive, observationId?: string) => Promise<TimelineMedia>;
 export interface PerceptionRead {
   status: PerceptionStatus;
   result: ExecutionResult;
@@ -119,6 +128,14 @@ export class PerceptionRuntime {
     const reply = await this.request(worker, { ...input, action: "append" }, 30_000, signal);
     if (!reply.ok) throw new Error(`${reply.error?.type}: ${reply.error?.message}`);
     return reply.result;
+  }
+
+  async deriveMedia(input: TimelineDerive, signal: AbortSignal): Promise<TimelineMedia> {
+    const worker = this.worker;
+    if (!worker || worker.expectedExit) throw new Error("Timeline recorder is unavailable; run rsa perception reload.");
+    const reply = await this.request(worker, { ...input, action: "derive" }, 30_000, signal);
+    if (!reply.ok) throw new Error(`${reply.error?.type}: ${reply.error?.message}`);
+    return reply.result as TimelineMedia;
   }
 
   private async read(signal: AbortSignal, parent: EventTrace, query: ObservationQuery): Promise<PerceptionRead> {

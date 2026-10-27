@@ -24,6 +24,61 @@ from rsa_tools._observation_history import ObservationHistory
 SAMPLING = {"clock": "test", "startedAtMs": 0, "finishedAtMs": 1}
 
 class HistoryTests(unittest.TestCase):
+    def test_derived_media_keeps_exact_record_provenance_and_cold_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            history = ObservationHistory(directory)
+            raw = base64.b64encode(b"original").decode()
+            first = history.append({"media": [{"data": raw, "mediaType": "image/png"}]}, "one", SAMPLING)
+            second = history.append({"media": [{"data": raw, "mediaType": "image/png"}]}, "one", SAMPLING)
+            source = first["media"][0]["timeline"]
+            history.close()
+            history = ObservationHistory(directory)  # Source is not in the hot cache.
+            encoded = base64.b64encode(b"model version").decode()
+            derived = history.derive(source, encoded, "image/jpeg", "omp.resizeImage")
+            self.assertEqual(derived["recordId"], first["id"])
+            self.assertNotEqual(derived["recordId"], second["id"])
+            self.assertEqual(derived["sourceAsset"], source["asset"])
+            self.assertEqual((history.directory / derived["asset"]).read_bytes(), b"model version")
+            self.assertNotEqual(derived["asset"], source["asset"])
+            self.assertEqual(history.derive(source, raw, "image/png", "identity")["asset"], source["asset"])
+            self.assertEqual(history.sequence, second["sequence"])  # Encoding isn't a new sample.
+            self.assertEqual(len(list(history.objects.iterdir())), 2)
+            with self.assertRaisesRegex(ValueError, "record is missing"):
+                history.derive({**source, "recordId": "not-the-record"}, encoded, "image/jpeg", "resize")
+            with self.assertRaisesRegex(ValueError, "does not belong"):
+                history.derive({**source, "asset": "../other.bin"}, encoded, "image/jpeg", "resize")
+            (history.directory / source["asset"]).unlink()
+            with self.assertRaisesRegex(ValueError, "asset is missing"):
+                history.derive(source, encoded, "image/jpeg", "resize")
+            history.close()
+
+    def test_window_derivatives_expire_with_the_source_without_promotion(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+                "RSA_PERCEPTION_PERSIST": "0", "RSA_PERCEPTION_HOT_SECONDS": "10"}):
+            clock = [0.0]
+            with patch("rsa_tools._observation_history.time.monotonic", side_effect=lambda: clock[0]):
+                history = ObservationHistory(directory)
+                saved = history.append({"media": [{"data": base64.b64encode(b"source").decode(),
+                                                    "mediaType": "image/png"}]}, "one", SAMPLING)
+                source = saved["media"][0]["timeline"]
+                encoded = base64.b64encode(b"derived").decode()
+                derived = history.derive(source, encoded, "image/jpeg", "resize")
+                path = history.directory / derived["asset"]
+                self.assertTrue(derived["asset"].startswith("window-"))
+                self.assertTrue(path.is_file())
+                self.assertFalse(history.objects.exists())
+                self.assertEqual(list(history.segment_dir.iterdir()), [])
+                size = history.hot_bytes
+                history.derive(source, encoded, "image/jpeg", "resize")
+                self.assertEqual(history.hot_bytes, size)  # Same record/version has one lease.
+                clock[0] = 11
+                history.prune()
+                self.assertFalse(path.exists())
+                self.assertEqual(history.hot_bytes, 0)
+                with self.assertRaisesRegex(ValueError, "record is missing or expired"):
+                    history.derive(source, encoded, "image/jpeg", "resize")
+                history.close()
+
     def test_immutable_media_paged_queries_and_generation_reload(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

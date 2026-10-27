@@ -85,6 +85,19 @@ test("run summary retains controller, cache, compaction and skill evidence", () 
   ]);
 });
 
+test("HTTP request sizes use wire bytes rather than archived semantic JSON size", () => {
+  const bodies = [
+    { encoding: "gzip", bytes: 321 },
+    { encoding: "rsa-json-v1", bytes: 5000, wire: { bytes: 456, encoding: "gzip" } },
+    { encoding: "rsa-json-v1", bytes: 9000 },
+  ];
+  const events: Event[] = bodies.flatMap((body, index) => ["model_start", "model_http_start"].map((type, step) => ({
+    seq: index * 2 + step + 1, at: new Date(index * 1000).toISOString(), atMs: index * 1000,
+    type, data: type === "model_http_start" ? { body } : {}, trace: { epoch: "cycle", modelCallId: `model-${index}` },
+  })));
+  assert.deepEqual(aggregate(events).calls.map(call => call.wireBytes), [321, 456, null]);
+});
+
 test("epoch-only shell actions count in the run without being attributed to a nearby model request", () => {
   let seq = 0;
   const event = (type: string, data = {}, trace = {}): Event => ({

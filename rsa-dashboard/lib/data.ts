@@ -127,7 +127,18 @@ async function scanCatalog(root: string, includeEmpty: boolean): Promise<Project
 export async function loadRun(project: string, run: string, root = artifactRoot) {
   const path = await resolveRun(project, run, root);
   const manifest = JSON.parse(await readFile(join(path, "manifest.json"), "utf8")) as Manifest;
+  let workspace: string | null = null;
+  try {
+    workspace = await registeredWorkspace(await projectState(project, root));
+    // Old run/media readers use the registry independently of a retained manifest.
+    // A mismatch only denies new workspace archive resolution.
+    if (manifest.workspace && await realpath(manifest.workspace) !== workspace) workspace = null;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    workspace = null;
+  }
   const indexed = await loadIndexedEvents(path);
+  indexed.index.archiveWorkspace = workspace;
   return { path, manifest, ...indexed };
 }
 export function hostRequest<T = LiveStatus>(

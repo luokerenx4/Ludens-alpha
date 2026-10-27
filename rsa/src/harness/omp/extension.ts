@@ -11,9 +11,9 @@ import type { Runtime } from "../runtime.ts";
 import { Workspace } from "../workspace.ts";
 import type { EventTrace, RecordEvent } from "../events.ts";
 import { pythonModulePaths } from "../python-capabilities.ts";
-import { observationBytes, observationMetadata, perceptionMetadata, type ObservationQuery, type PerceptionRead } from "../perception.ts";
+import { observationBytes, observationMetadata, perceptionMetadata, type DeriveMedia, type TimelineMedia, type ObservationQuery, type PerceptionRead } from "../perception.ts";
 
-export async function media(observations: Observation[], record?: RecordEvent, trace?: EventTrace) {
+export async function media(observations: Observation[], record?: RecordEvent, trace?: EventTrace, derive?: DeriveMedia) {
   return Promise.all(observations.map(async (observation) => {
     if (observation.mediaType.startsWith("text/") || observation.mediaType === "application/json") {
       return { type: "text" as const, text: (await observationBytes(observation)).toString("utf8") };
@@ -24,9 +24,24 @@ export async function media(observations: Observation[], record?: RecordEvent, t
     const started = performance.now();
     const bytes = await observationBytes(observation);
     const image = await resizeImage({ bytes, mimeType: observation.mediaType });
-    record?.("observation_media", { observationId: observation.id, durationMs: performance.now() - started,
+    const encodingMs = performance.now() - started;
+    const archiveStarted = performance.now();
+    let modelMedia: TimelineMedia | undefined, archiveError: string | undefined;
+    const source = observation.timeline;
+    if (derive && source?.recordId && source.sequence !== undefined) {
+      try {
+        modelMedia = await derive({ source: { asset: source.asset, recordId: source.recordId, sequence: source.sequence },
+          data: image.data, mediaType: image.mimeType, transform: "omp.resizeImage" });
+      } catch (error) {
+        // Logging must not replace a valid model input with a failed capture.
+        // An expired window remains unavailable, never copied into another store.
+        archiveError = String(error);
+      }
+    }
+    record?.("observation_media", { observationId: observation.id, durationMs: encodingMs,
       sourceBytes: bytes.byteLength, modelBytes: Buffer.byteLength(image.data, "base64"),
       mimeType: image.mimeType, width: image.width, height: image.height, decodeFailed: image.decodeFailed,
+      modelMedia, archiveError, archiveMs: performance.now() - archiveStarted,
     }, trace);
     return { type: "image" as const, data: image.data, mimeType: image.mimeType };
   }));
@@ -103,13 +118,15 @@ export function createRsaExtension(options: {
 
   async function perceptionContent(read: PerceptionRead, parent: EventTrace) {
     let images: Awaited<ReturnType<typeof media>> = [];
+    const derive: DeriveMedia | undefined = runtime.perception
+      ? input => runtime.perception!.deriveMedia(input, options.cycle().signal) : undefined;
     try {
       if (read.records?.length) {
         images = (await Promise.all(read.records.map(async record => [
           { type: "text" as const, text: `Recorded observation #${record.snapshot.sequence} recordedAt=${record.snapshot.recordedAt}` },
-          ...await media(record.observations, runtime.record, parent),
+          ...await media(record.observations, runtime.record, parent, derive),
         ]))).flat();
-      } else images = await media(read.result?.observations ?? [], runtime.record, parent);
+      } else images = await media(read.result?.observations ?? [], runtime.record, parent, derive);
     }
     catch (error) {
       options.cycle().signal.throwIfAborted();

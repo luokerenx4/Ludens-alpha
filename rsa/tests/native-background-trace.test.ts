@@ -2,15 +2,15 @@ import { expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gunzipSync } from "node:zlib";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent";
 import { getBundledModels } from "@oh-my-pi/pi-catalog";
 import { EventLog } from "../src/harness/events.ts";
 import { ModelTrace } from "../src/harness/omp/trace.ts";
+import { readArtifact } from "../../shared/log-archive.ts";
 
 test("native background deliveries retain launch traces across turns and reused service names", async () => {
   const directory = await mkdtemp(join(tmpdir(), "rsa-native-background-"));
-  const log = new EventLog(directory, { id: "background-fixture", now: () => performance.now() });
+  const log = new EventLog(directory, { id: "background-fixture", now: () => performance.now() }, directory);
   let epoch = "first";
   const trace = new ModelTrace(log, () => ({ epoch }));
   let emit: Parameters<AgentSession["subscribe"]>[0];
@@ -35,6 +35,8 @@ test("native background deliveries retain launch traces across turns and reused 
   });
   try {
     const first = await turn();
+    const args = { command: "python worker.py", async: true };
+    emit!({ type: "tool_execution_start", toolName: "bash", toolCallId: "job-first", args });
     start("job-first", { async: { jobId: "job-one", type: "bash", state: "running" } });
     start("service-first", { service: { name: "worker", pid: 101, state: "running" } });
     epoch = "second";
@@ -45,7 +47,8 @@ test("native background deliveries retain launch traces across turns and reused 
     epoch = "third";
     await turn();
     delivered("async-result", { jobs: [
-      { jobId: "job-one", type: "bash", status: "completed", durationMs: 100 },
+      { jobId: "job-one", type: "bash", status: "completed", durationMs: 100,
+        schema: { status: "valid", data: { proof: "structured body only in artifact" } } },
       { jobId: "job-two", type: "bash", status: "failed", durationMs: 200 },
       { jobId: "unobserved-launch", type: "bash", status: "completed" },
     ] });
@@ -57,6 +60,9 @@ test("native background deliveries retain launch traces across turns and reused 
     const events = (await readFile(join(directory, "events.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
     const starts = events.filter(event => event.type === "background_start");
     const results = events.filter(event => event.type === "background_result");
+    const toolStart = events.find(event => event.type === "tool_start");
+    expect(toolStart.data).not.toHaveProperty("args");
+    expect(await readArtifact(directory, toolStart.data.argsRef, { media: "reference", workspace: directory })).toEqual(args);
     expect(starts).toHaveLength(5);
     expect(results).toHaveLength(6); // No invented completion for the suppressed job.
     for (const [index, original, toolCallId] of [
@@ -71,8 +77,14 @@ test("native background deliveries retain launch traces across turns and reused 
     expect(results[2].trace).toEqual({});
     expect(results[5].trace).toEqual({}); // Same service name does not authorize PID guessing.
     expect(results.map(event => event.data.isError)).toEqual([false, true, false, false, true, false]);
-    const payload = JSON.parse(gunzipSync(await readFile(join(directory, results[0].data.result.path))).toString());
+    const payload = await readArtifact(directory, results[0].data.result, { media: "full", workspace: directory });
     expect(payload).toMatchObject({ role: "custom", customType: "async-result", content: "native result body" });
+    expect(payload).toMatchObject({ details: { jobs: [{ jobId: "job-one", type: "bash", status: "completed", durationMs: 100,
+      schema: { status: "valid", data: { proof: "structured body only in artifact" } } },
+      { jobId: "job-two", type: "bash", status: "failed", durationMs: 200 },
+      { jobId: "unobserved-launch", type: "bash", status: "completed" }] } });
+    expect(JSON.stringify(events)).not.toContain("structured body only in artifact");
+    expect(results[0].data).not.toHaveProperty("schema");
     expect(events.some(event => event.type === "exec" || event.type === "exec_result")).toBe(false);
   } finally {
     detach();

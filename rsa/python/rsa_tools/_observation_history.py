@@ -339,6 +339,78 @@ class ObservationHistory:
         finally:
             temporary.unlink(missing_ok=True)
 
+    def derive(self, source, data, media_type, transform):
+        """Retain an encoding of one proven record; never promote window media."""
+        if (not isinstance(source, dict) or set(source) != {"asset", "recordId", "sequence"}
+                or not isinstance(source["asset"], str) or not isinstance(source["recordId"], str)
+                or type(source["sequence"]) is not int or source["sequence"] < 1):
+            raise ValueError("A derived media source requires asset, recordId and sequence")
+        if not isinstance(media_type, str) or not media_type or not isinstance(transform, str) or not transform:
+            raise ValueError("Derived media requires mediaType and transform")
+        if not isinstance(data, str):
+            raise ValueError("Derived media requires base64 data")
+        try:
+            raw = base64.b64decode(data, validate=True)
+        except (ValueError, binascii.Error):
+            raise ValueError("Derived media requires valid base64 data") from None
+        with self.lock:
+            if self._writer.closed:
+                raise RuntimeError("Workspace timeline writer is closed")
+            self._prune()
+            record = self._record_at(source["sequence"])
+            if record is None or record["id"] != source["recordId"]:
+                raise ValueError("Derived media source record is missing or expired")
+            original = next((item for item in record["media"]
+                             if item["timeline"]["asset"] == source["asset"]), None)
+            if original is None:
+                raise ValueError("Derived media source asset does not belong to the record")
+            path = self.directory / source["asset"]
+            directory = self.objects if self.persistent else self._temporary
+            # Only writer-owned immutable media is a source, never an arbitrary
+            # file path supplied by the encoder or a symlink outside this axis.
+            if (path.parent != directory or path.resolve() != path or not path.is_file()
+                    or Path(original["path"]) != path):
+                raise ValueError("Derived media source asset is missing or outside the timeline")
+            digest = hashlib.sha256(raw).hexdigest()
+            destination = directory / (digest + ".bin")
+            if destination.exists() and (destination.resolve() != destination or not destination.is_file()):
+                raise ValueError("Derived media destination must be a timeline object")
+            destination, _added = self._archive({"data": data}, directory)
+            if not self.persistent:
+                entry = self._hot[source["sequence"]]
+                path_text = str(destination)
+                if path_text not in entry[3]:
+                    cost = destination.stat().st_size
+                    self._hot[source["sequence"]] = (*entry[:3], (*entry[3], path_text), entry[4] + cost, *entry[5:])
+                    self._references[path_text] += 1
+                    self.hot_bytes += cost
+                # A large derivative may itself exhaust the window. Its caller
+                # still holds the delivered bytes; a later reader sees expiry.
+                self._prune()
+            return {"sha256": digest, "asset": destination.relative_to(self.directory).as_posix(),
+                    "mediaType": media_type, "bytes": len(raw), "recordId": source["recordId"],
+                    "sequence": source["sequence"], "sourceAsset": source["asset"], "transform": transform}
+
+    def _record_at(self, sequence):
+        if sequence in self._hot:
+            return json.loads(self._hot[sequence][2])
+        if not self.persistent:
+            return None
+        for segment in self._segments:
+            if not segment["firstSequence"] <= sequence <= segment["lastSequence"]:
+                continue
+            path = Path(segment["path"])
+            with path.with_suffix(".idx").open("rb") as index:
+                index.seek((sequence - segment["firstSequence"]) * _ENTRY.size)
+                raw = index.read(_ENTRY.size)
+            if len(raw) != _ENTRY.size:
+                return None
+            values = _ENTRY.unpack(raw)
+            if values[1] != sequence:
+                return None
+            return self._read((*values[:4], path.with_suffix(".jsonl"), *values[4:]))
+        return None
+
     def _delivery(self, record):
         if self.persistent:
             return record

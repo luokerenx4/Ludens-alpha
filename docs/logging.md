@@ -10,11 +10,19 @@
 | --- | --- |
 | `manifest.json` | 工作区、模型、driver、预算、Shiori 实现和运行来源 |
 | `events.jsonl` | schema v2 事件时间线 |
-| `payloads/` | 按 SHA-256 保存的大请求、响应和工具正文，gzip 压缩 |
-| `streams/` | 原始模型流及 source/trace |
+| `streams/` | 模型流事件及 source/trace；新版正文使用内容引用，小事件内联 |
+| `payloads/` | 旧版 gzip 请求、响应和工具正文；保留可读，新宿主不再写此副本 |
 | `perception/<generation>/` | 感知入口、实际导入的工作区源码清单 `sources.json`、stderr |
 
 新观测统一存放在 `workspace/.rsa/timeline/`，跨 run 使用：`objects/<sha256>.bin` 保存去重的持久媒体，`segments/` 保存 JSONL 记录、定长 `.idx` 索引及 `.meta.json` 段摘要。关闭持久化时仅使用有限的 `window-<pid>-…/` 临时窗口。运行事件只引用记录与媒体，不再生成 `run/observations/` 副本。已有 run 的观测附件和日志保持原样可读，不自动迁移或删除。
+
+模型与工具档案位于 `workspace/.rsa/archive/objects/<sha256>.json.gz`，只存文本和结构，大消息、工具定义和正文按内容共享，跨请求、跨 run 去重。引用使用 `encoding: "rsa-json-v1"`、对象路径、内容 hash 和原始 JSON 字节数；对象用 tagged JSON 区分用户数据与内部引用，不占用用户的 `$ref` 等字段。流事件使用 `rsa-stream-v1`，`dataRef` 中不超过 2 KiB 的编码根节点可以内联，避免每个 token delta 占一个文件；大子节点仍共享。所有读者使用 [同一个 codec](../shared/log-archive.ts)。
+
+已知 image/audio 字段、data URL 和 JSON 工具文本中的媒体引用时空轴已有资产；JSON 字符转义不产生媒体副本。未录制媒体只保存 hash、大小和不可恢复原因，不由日志永久留存。默认读取返回媒体引用；完整读取才加载字节并核验 hash，过期、删除或未录制时明确失败。媒体引用不能冒充 provider 输入。
+
+`events.jsonl` 保留调用身份和统计；工具参数放 `argsRef`，结果和模型消息放 artifact 引用。后台 job 和压缩结果只内联必要的生命周期/数值诊断，完整结构在结果引用中。HTTP 请求保留 wire hash、字节数和编码，JSON/gzip JSON 的正文复用语义对象；恢复 JSON 不等于还原压缩后的网络字节。stream 只存一份 data，raw 中对应的 data 行仅留位置与前缀。
+
+OMP 原生 session、blob 和恢复机制不改，真实模型输入不替换为日志引用。共享 archive 与 timeline 不是单个 run 的附属文件：只复制或删除 `logs/<run-id>` 不会复制或回收它们。本次不迁移旧日志、不实现自动垃圾回收，避免让历史引用失效；具体施工与验收见 [模型日志引用化方案](indexed-model-log-plan.md)。
 
 manifest 记录 Git commit/dirty、continue/consolidate 提示和可选 workspace AGENTS 的 hash；dirty 不代表代码快照。认证头不入日志。结构见 [events.ts](../rsa/src/harness/events.ts)、[Baseware protocol](../baseware/src/protocol.ts)、[provenance.ts](../rsa/src/harness/provenance.ts)。
 
@@ -72,7 +80,9 @@ manifest 记录 Git commit/dirty、continue/consolidate 提示和可选 workspac
 
 原生 bash/read 返回的图片记录为 `observation(origin=tool_result)` 并关联对应工具，不再自动创建图片副本。插件仅按实际输入字节的 SHA-256 匹配已经存在的时空轴 `objects/<sha256>.bin`，匹配成功时附 `timeline: {asset}`；无法据此确定采样记录，因此不填 `recordId/sequence`。没有原件时只记交付元数据，不声称已保存。后台完成图片在 OMP 将其送入模型时记录为本次交付，不能冒认最近一次前台工具。事件时间是交付时间，不推断原始采样时刻；CLI 历史时间和序号保留在输出标签与查询日志中。仅返回 JSON 路径不计作图片交付。
 
-Dashboard 从项目注册的 workspace 解析时空轴引用，校验真实路径与目录边界；旧 run 附件仍按原边界读取。记录详情展开时按引用读取单条记录的 `data/space`，不把它们复制回事件；窗口记录仅查询当前宿主，不启动采样。未录制媒体显示交付记录，过期引用返回明确状态并显示过期提示，不渲染失效图片。临时窗口媒体和记录详情不做持久浏览器缓存。OMP 原生 session、请求 payload 和响应 stream 的保存机制不在本次调整范围内。
+模型输入重编码产生的版本由同一感知 writer 保存为派生资产，`observation_media.modelMedia` 记录实际 hash、源 asset/record/sequence 和转换名称。只有明确来源才能派生，不按最近截图猜测；临时窗口的派生版本随源记录淘汰。派生存档失败只记诊断，不替换有效模型输入。
+
+Dashboard 从项目注册的 workspace 解析时空轴引用，校验真实路径与目录边界；旧 run 附件仍按原边界读取。记录详情展开时按引用读取单条记录的 `data/space`，不把它们复制回事件；窗口记录仅查询当前宿主，不启动采样。未录制媒体显示交付记录，过期引用返回明确状态并显示过期提示，不渲染失效图片。临时窗口媒体和记录详情不做持久浏览器缓存。
 
 generation 后台 trace 不继承重载请求或控制 epoch，持续采样与查询分别记录调用；查询不会重新执行 workspace 采样代码。接口及 reload 见 [Workspace](workspace.md)。
 
@@ -100,6 +110,8 @@ Dashboard 负责日志解析和投影，网页与 Alice Pet 共用增量读取�
 
 活动投影读取 events 和模型流，默认展示 thinking/text/tool/system，diagnostic 可选；不读加密推理、不额外请求模型解说。流式内容更新同一块，详情定位原 run/epoch/block；展示筛选不改变日志消费。
 
+Dashboard 的一次性与增量读取共用模型档案 reader，兼容旧 gzip payload 和新 `rsa-json-v1` 引用。新 `rsa-stream-v1` 先跳过出站 `response.create`，只展开入站内容；文字完整还原，媒体保留 `$media` 摘要和时空轴引用，不读取图片/音频字节。新模型档案只在项目注册 workspace 与 manifest 一致时解析，不能由日志引用另一个目录；旧 run 媒体仍以注册工作区为准。新版活动投影重建其可丢弃缓存，包含工具正文缓存；不改变原始日志或 Pet 协议。
+
 每个运行的 `.dashboard-index/` 是可重建的文件缓存：原始事件以字节偏移索引，投影正文追加到分段 JSONL。索引本身也分页落盘：最新指针按 ID 分页，事件和活动块另存按位置/版本递增的历史页；每页最多 1024 条，超过 256 KiB 时拆分（单条记录不可再拆）。内存只保留稀疏页目录和有上限的共享热缓存，正文按需读取。模型/调用跨度的事件关系也存磁盘，不为查询常驻一份全量映射。
 
 共享索引页缓存默认 32 MiB，按序列化大小的四倍估算解码对象占用；`RSA_DASHBOARD_INDEX_CACHE_BYTES` 可调整，超出预算的单页直接读取，不留缓存。最多保留 3 个闲置/可回收 run，5 分钟无访问后淘汰；对应 `RSA_DASHBOARD_INDEX_MAX_RUNS`、`RSA_DASHBOARD_INDEX_IDLE_MS`。正在读取或刷新的 run 持有租约，不被回收；淘汰只关闭文件和释放索引缓存，历史仍可重新打开。此上限不是整个 Next 进程的内存上限，页目录、单次查询结果及精确统计另占少量内存。
@@ -117,12 +129,17 @@ Dashboard 负责日志解析和投影，网页与 Alice Pet 共用增量读取�
 ```sh
 python3 rsa/scripts/analyze-run.py /path/to/workspace/logs/run-id \
   --epoch epoch-id --output /path/to/analysis.json
+
+# 展开指定事件的正文，默认媒体只显示引用；不启动宿主或模型
+rsa/bin/rsa logs read --run /path/to/workspace/logs/run-id --event 123 --field payload
+# --ref '<artifact JSON>' 或 --file reference.json 也可定位；--full 才恢复媒体字节
 ```
 
 - 模型延迟统计完成请求，p95 用 nearest-rank。缓存率按 token 加权，分母为 `input + cacheRead + cacheWrite`；warm 仅去掉首请求，不排除后续压缩造成的缓存重置。
 - 动作频率计成功的 `action_end`，以及不带 actionId、需要控制权且非 readOnly 的成功 execution；提交、查询和等待不重复算动作，采样也不算动作。已提交动作按 `action_start/end` 与 actionId 核查。旧日志缺少这些标记时保留原统计，需查看 argv 区分状态查询。一次 play 可以含多个输入片段，不代表单个按钮次数。独立 observe 是该请求唯一执行的工具为 observe。
 - 能力、discovery、本地 Python、Shiori 分层统计，依显式 span 配对，保留 late/pending；本地 Python 不并入设备动作数。
 - Shiori usage 与 model usage、工具耗时与内部设备/能力耗时、能力 span 与 Python 详情是包含关系，不能相加。
+- 新版工具参数只为技能路径证据按需解引用；缺失时对应计数为未知，`skillArgumentErrors` 保留原因，`skillEvidence` 保留已知成功数，不把缺证据报成零次使用。
 
 帧号变化、exit 0、技能读写均不证明任务推进。Benchmark 故障注入的预期错误不是真实任务故障率；执行、报告、复用证据及其限制统一见 [Benchmark](benchmark.md)。
 

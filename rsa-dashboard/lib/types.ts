@@ -99,6 +99,7 @@ export interface Tool {
   name: string;
   intent: string;
   args: Record<string, any>;
+  argsRef?: { encoding: "rsa-json-v1"; path: string; sha256: string; bytes: number };
   at: string;
   ok: boolean | null;
   commandMs: number | null;

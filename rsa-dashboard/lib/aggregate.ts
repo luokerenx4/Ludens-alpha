@@ -152,7 +152,7 @@ export function aggregate(events: Event[], now = Date.now()) {
     }
     if (event.type === "model_http_start" && call) {
       call.transport = "sse";
-      call.wireBytes = finite(d.body?.bytes);
+      call.wireBytes = finite(d.body?.encoding === "rsa-json-v1" ? d.body.wire?.bytes : d.body?.bytes);
       call.attempts++;
       if (call.attempts === 1)
         call.phases.preparationMs = event.atMs - call.atMs;
@@ -196,6 +196,7 @@ export function aggregate(events: Event[], now = Date.now()) {
         name: d.toolName,
         intent: d.intent ?? "",
         args: d.args ?? {},
+        ...(d.argsRef ? { argsRef: d.argsRef } : {}),
         at: event.at,
         ok: null,
         commandMs: null,

@@ -52,7 +52,7 @@ export class ShioriTelemetry {
     this.config = {
       tracer: this.provider.getTracer("playness.shiori.omp", SHIORI_SOURCE.implementationVersion),
       agent: { name: "shiori" },
-      // Bodies already live in payloads/ and streams/. Do not capture another
+      // Bodies already have shared archive references. Do not capture another
       // prompt/response/tool-result copy in native telemetry attributes.
       captureMessageContent: "none",
       onSpanStart: (event) => {
