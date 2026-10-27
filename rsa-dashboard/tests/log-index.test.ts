@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { appendFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LogIndex, closeLogIndexes, FileRecords, getLogIndex, indexCacheStats, loadIndexedEvents, pruneLogIndexes } from "../lib/log-index";
+import { LogIndex, closeLogIndexes, FileRecords, getLogIndex, indexCacheStats, indexStorageRoot, loadIndexedEvents, pruneLogIndexes, resetStorageMetrics, storageMetrics } from "../lib/log-index";
 import { refreshActivity } from "../lib/activity";
 
 test("latest-only records discard old pointers and reopen the last data segment after deletion", async () => {
@@ -131,7 +131,7 @@ test("canonical event addresses and small relations preserve late source time, p
     await index.exclusive(async () => 42); await new Promise<void>(resolve => setImmediate(resolve));
     assert.equal((index as any).pending, undefined, "idle queue does not retain its completed promise chain");
     await closeLogIndexes();
-    const checkpointPath = join(path, ".dashboard-index", "checkpoint.json");
+    const checkpointPath = join(index.directory, "checkpoint.json");
     const checkpoint = JSON.parse(await readFile(checkpointPath, "utf8"));
     delete checkpoint.metadata["source:minTime"]; delete checkpoint.metadata["source:maxTime"];
     await writeFile(checkpointPath, JSON.stringify(checkpoint));
@@ -191,5 +191,94 @@ test("shutdown drains queued preparation continuations before closing the index"
     }));
     await index.drain(); order.push("drained"); await preparation;
     assert.deepEqual(order, ["source", "projection", "drained"]);
+  } finally { index.close(); await rm(path, { recursive: true, force: true }); }
+});
+
+test("cold scan feeds each event once at a fixed cutoff, then appends without loss", async () => {
+  const path = await realpath(await mkdtemp(join(tmpdir(), "rsa-cold-scan-")));
+  let index = new LogIndex(path, join(path, "index"));
+  const events = Array.from({ length: 3500 }, (_, i) => ({ seq: i + 1, at: "2026-10-27T00:00:00Z", atMs: i,
+    type: "tick", trace: { modelCallId: "model" }, data: { value: i } }));
+  const file = join(path, "events.jsonl"), line = (event: typeof events[number]) => JSON.stringify(event) + "\n";
+  try {
+    await writeFile(file, events.map(line).join(""));
+    const info = await stat(file);
+    index.setSourceSnapshot({ "events.jsonl": { identity: `${info.dev}:${info.ino}`, size: info.size, mtime: info.mtimeMs } });
+    index.beginBulk(); resetStorageMetrics();
+    let fed = 0;
+    await index.bulkEvents({ onEvent: async (event, position, ref) => {
+      assert.equal(ref.position, position); assert.equal(event.seq, ++fed);
+      assert.equal(index.store("events").meta(ref.id)?.position, position);
+      if (position === 1) await appendFile(file, line({ ...events[0], seq: 3501 }));
+    } });
+    index.finishBulk(); index.flush();
+    assert.equal(index.progress.bytes, info.size); assert.equal(index.eventRevision, 3500);
+    assert.equal(storageMetrics.eventParses, 3500); assert.equal(storageMetrics.bodyReadCalls, 0);
+    assert.deepEqual((await index.queryEventRefs({ model: "model", afterPosition: 3488, beforePosition: 3493 })).map(row => row.position), [3489, 3490, 3491, 3492]);
+    assert.deepEqual((await index.queryEventRefs({ model: "model", afterPosition: 3488, beforePosition: 3493, reverse: true })).map(row => row.position), [3492, 3491, 3490, 3489]);
+    index.close(); index = new LogIndex(path, join(path, "index")); await index.refreshEvents();
+    assert.equal(index.eventRevision, 3501); assert.equal((await index.readEvent(3501))?.seq, 3501);
+  } finally { index.close(); await rm(path, { recursive: true, force: true }); }
+});
+
+test("generation switching keeps leased readers alive and reclaims retired directories afterwards", async () => {
+  const path = await realpath(await mkdtemp(join(tmpdir(), "rsa-generation-")));
+  let release: (() => void) | undefined;
+  try {
+    await writeFile(join(path, "events.jsonl"), JSON.stringify({ seq: 1, at: "2026-10-27T00:00:00Z", type: "tick", trace: {}, data: {} }) + "\n");
+    const previous = getLogIndex(path); await previous.refreshEvents(); release = previous.retain();
+    await previous.freeze(); assert.equal(previous.frozen, true);
+    assert.throws(() => previous.store("test").index("a", {}), (error: any) => error.code === "ARCHIVE_PREPARING");
+    const root = indexStorageRoot(path), next = new LogIndex(path, join(root, "generations", "next"));
+    await next.refreshEvents(); next.close();
+    await writeFile(join(root, "active.json"), JSON.stringify({ generation: "next" }));
+    const current = getLogIndex(path);
+    assert.notEqual(current, previous); assert.equal(indexCacheStats().retired, 1);
+    assert.equal((await previous.readEvent(1))?.type, "tick");
+    release(); release = undefined;
+    assert.equal(indexCacheStats().retired, 0);
+    await assert.rejects(stat(previous.directory), { code: "ENOENT" });
+    assert.equal((await current.readEvent(1))?.type, "tick");
+  } finally { release?.(); await closeLogIndexes(); await rm(path, { recursive: true, force: true }); }
+});
+
+test("invalidating a published generation cannot reuse a still-leased placeholder directory", async () => {
+  const path = await realpath(await mkdtemp(join(tmpdir(), "rsa-placeholder-generation-")));
+  let release: (() => void) | undefined;
+  try {
+    await writeFile(join(path, "events.jsonl"), JSON.stringify({ seq: 1, at: "2026-10-27T00:00:00Z", type: "tick", trace: {}, data: {} }) + "\n");
+    const placeholder = getLogIndex(path); await placeholder.refreshEvents(); release = placeholder.retain();
+    const root = indexStorageRoot(path), next = new LogIndex(path, join(root, "generations", "published"));
+    await next.refreshEvents(); next.setMeta("cold:ready", "1"); next.close();
+    await writeFile(join(root, "active.json"), JSON.stringify({ generation: "published" }));
+    const published = getLogIndex(path); published.invalidate();
+    assert.throws(() => published.meta("cold:ready")); assert.throws(() => published.store("run-states"));
+    await rm(join(root, "active.json"));
+    const fresh = getLogIndex(path);
+    assert.notEqual(fresh.directory, placeholder.directory);
+    assert.equal(getLogIndex(path), fresh);
+    await fresh.refreshEvents();
+    release(); release = undefined;
+    await stat(fresh.directory);
+    assert.equal((await fresh.readEvent(1))?.seq, 1);
+  } finally { release?.(); await closeLogIndexes(); await rm(path, { recursive: true, force: true }); }
+});
+
+test("an unfinished JSONL tail does not block readable history and is ingested after completion", async () => {
+  const path = await realpath(await mkdtemp(join(tmpdir(), "rsa-partial-tail-")));
+  let index = new LogIndex(path, join(path, "index"));
+  const first = JSON.stringify({ seq: 1, at: "2026-10-27T00:00:00Z", type: "tick", trace: {}, data: {} }) + "\n";
+  const second = JSON.stringify({ seq: 2, at: "2026-10-27T00:00:01Z", type: "tick", trace: {}, data: {} }) + "\n";
+  const split = 20, file = join(path, "events.jsonl");
+  try {
+    await writeFile(file, first + second.slice(0, split));
+    await index.refreshEvents();
+    assert.deepEqual(index.progress, { bytes: Buffer.byteLength(first), totalBytes: Buffer.byteLength(first) + split,
+      eventPosition: 1, partialBytes: split, complete: true });
+    index.close(); index = new LogIndex(path, join(path, "index"));
+    await index.refreshEvents(); assert.equal(index.progress.complete, true); assert.equal(index.eventRevision, 1);
+    await appendFile(file, second.slice(split)); await index.refreshEvents();
+    assert.equal(index.eventRevision, 2); assert.equal(index.progress.partialBytes, 0); assert.equal(index.progress.complete, true);
+    assert.deepEqual((await index.queryEvents()).map(row => row.event.seq), [1, 2]);
   } finally { index.close(); await rm(path, { recursive: true, force: true }); }
 });

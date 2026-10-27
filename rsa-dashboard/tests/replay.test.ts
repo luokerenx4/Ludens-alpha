@@ -115,7 +115,7 @@ test("replay exposes control cycles and resolves latest without building run sta
     const frames = await f.query({ mode: "frames", epoch: latest.epoch!, start: latest.startAt, end: latest.endAt }) as ReplayWindow;
     assert.ok(frames.frames.length);
     assert.ok(frames.frames.flatMap(frame => frame.media).every(media => new URL(media.url, "http://localhost").searchParams.get("epoch") === "two"));
-    const directories = await readdir(join(f.run, ".dashboard-index"));
+    const directories = await readdir(getLogIndex(f.run).directory);
     assert.equal(directories.some(name => name.startsWith("run-")), false, "cycle selection only reads canonical control metadata");
   } finally { await f.close(); }
 });

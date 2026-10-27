@@ -1924,3 +1924,7 @@ pre {
     font-size: 12px;
   }
 }
+/* Build progress is independent of playback and the run's game controls. */
+.archive-build { display: flex; align-items: center; justify-content: space-between; gap: 1.5rem; padding: 1rem 1.25rem; margin-bottom: 1rem; border: 1px solid var(--border, #343b32); border-radius: 10px; }
+.archive-build p { margin: .35rem 0 0; color: var(--muted, #9ca596); font-size: .875rem; }
+.archive-build button { flex-shrink: 0; }

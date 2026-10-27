@@ -9,7 +9,7 @@ import { activitySearchText } from "../components/activity-feed-model";
 import { advanceLivePhase, emptyLivePhase, livePhaseValue, type LivePhaseState } from "./live-phase";
 import { eventObservations } from "./observation-events";
 import type { Event } from "./types";
-import { projectPythonCall, pythonSummaryBlock, type PythonSummary } from "./python-activity";
+import { projectPythonCall, pythonSummaryBlock, advancePythonSummary, type PythonSummary } from "./python-activity";
 import { readArtifact } from "../../shared/log-archive";
 
 export interface LogBlock {
@@ -227,6 +227,20 @@ export async function activityBlocks(path: string, events: Event[], workspace?: 
   await overlayEvents(path, events, blocks, undefined, workspace);
   return [...blocks.values()].sort((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id));
 }
+function eventHeader(path: string, event: Event): Omit<LogBlock, "text"> {
+  const { data } = event;
+    const raised = event.type === "python_call_end" && data.outcome === "error";
+    const assessment = ["benchmark_end", "benchmark_report", "benchmark_supervisor_end"].includes(event.type);
+    const unmet = assessment && data.executionStatus === "completed" && data.reportStatus === "valid" && data.verdict === "failed";
+    const failed = !raised && ((assessment && (data.executionStatus === "error" || data.reportStatus === "invalid"))
+      || data.outcome === "error" || (event.type === "perception_status" && data.state === "error") || (data.outcome !== "cancelled" && !data.aborted
+      && (event.type.endsWith("_error") || data.isError === true || data.stopReason === "error")));
+  const system = failed || assessment || event.type === "control" || event.type === "perception_status"
+    || event.type.startsWith("background_") || event.type.includes("compaction") || event.type === "run_end";
+  return { id: `event:${path.split("/").at(-1)}:${event.seq}`, kind: system ? "system" : "diagnostic",
+    at: event.at, title: event.type, ...provenance(event), status: failed ? "error" : "complete",
+    ...(raised ? { outcome: "raised" as const } : {}), ...(unmet ? { outcome: "unmet" as const } : {}) };
+}
 async function overlayEvents(path: string, events: Event[], blocks: Map<string, LogBlock>, index?: LogIndex, workspace = index?.archiveWorkspace) {
   const pythonMembers = new Map<string, { group: string; root: boolean }>();
   const executingTools = new Set(events.filter(event => event.type === "tool_start" && event.trace.modelCallId && event.trace.toolCallId)
@@ -255,12 +269,8 @@ async function overlayEvents(path: string, events: Event[], blocks: Map<string, 
         status: data.isError || previous?.status === "error" || (event.type === "exec_result" && data.exitCode !== 0) ? "error" : event.type === "tool_end" ? "complete" : "running" });
       continue;
     }
-    const raised = event.type === "python_call_end" && data.outcome === "error";
-    const assessment = ["benchmark_end", "benchmark_report", "benchmark_supervisor_end"].includes(event.type);
-    const unmet = assessment && data.executionStatus === "completed" && data.reportStatus === "valid" && data.verdict === "failed";
-    const failed = !raised && ((assessment && (data.executionStatus === "error" || data.reportStatus === "invalid"))
-      || data.outcome === "error" || (event.type === "perception_status" && data.state === "error") || (data.outcome !== "cancelled" && !data.aborted
-      && (event.type.endsWith("_error") || data.isError === true || data.stopReason === "error")));
+    const header = eventHeader(path, event);
+    const failed = header.status === "error";
     if (event.type === "model_end") {
       for (const block of blocks.values()) {
         if (!block.id.startsWith(`${trace.modelCallId}:`) || block.status !== "running") continue;
@@ -272,16 +282,8 @@ async function overlayEvents(path: string, events: Event[], blocks: Map<string, 
         }
       }
     }
-    const system = failed || assessment || event.type === "control" || event.type === "perception_status"
-      || event.type.startsWith("background_") || event.type.includes("compaction") || event.type === "run_end";
-    blocks.set(`event:${path.split("/").at(-1)}:${event.seq}`, {
-      id: `event:${path.split("/").at(-1)}:${event.seq}`, kind: system ? "system" : "diagnostic",
-      at: event.at, title: event.type, text: readable(data), data: structuredText(readable(data)) as Record<string, unknown>,
-      ...provenance(event),
-      status: failed ? "error" : "complete",
-      ...(raised ? { outcome: "raised" as const } : {}),
-      ...(unmet ? { outcome: "unmet" as const } : {}),
-    });
+    const text = readable(data);
+    blocks.set(header.id, { ...header, text, data: structuredText(text) as Record<string, unknown> });
   }
 }
 
@@ -290,51 +292,64 @@ const TOOL_EVENTS = ["tool_start", "tool_update", "tool_end", "exec", "exec_resu
 type BlockRecipe = { kind: "event"; position: number }
   | { kind: "model"; model: string; anchorPosition: number; streamOffset: number; eventCutoff: number }
   | { kind: "python"; position: number; summary: PythonSummary; exceptionPosition?: number };
-async function saveBlock(index: LogIndex, block: LogBlock, recipe: BlockRecipe) {
+async function saveBlock(index: LogIndex, block: LogBlock, recipe: BlockRecipe, cold = false) {
   const store = index.store("blocks"), prior = store.meta(block.id);
   const { createdRevision: _created, revision: _revision, ...content } = block;
   const digest = recipe.kind === "event" ? undefined : createHash("sha256").update(JSON.stringify(content)).digest("hex");
   if (prior && (recipe.kind === "event" || prior.digest === digest)) return;
-  const revision = index.revision + 1, createdRevision = prior ? Number(prior.createdRevision ?? prior.revision) : revision;
+  const revision = cold && prior ? Number(prior.revision) : index.revision + 1;
+  const createdRevision = prior ? Number(prior.createdRevision ?? prior.revision) : revision;
   store.index(block.id, { recipe, ...(block.trace?.epoch ? { epoch: block.trace.epoch } : {}), at: block.at, kind: block.kind,
     status: block.status, ...(recipe.kind === "python" ? { updatedAt: block.updatedAt } : {}),
     ...(createdRevision !== revision ? { createdRevision } : {}), revision, ...(digest ? { digest } : {}) });
-  index.setMeta("revision", revision);
+  index.setMeta("revision", Math.max(index.revision, revision));
 }
 
-/** Source cutoffs make a delivery version immutable without copying its rendered text. */
-async function modelBlocks(index: LogIndex, recipe: Extract<BlockRecipe, { kind: "model" }>, signal?: AbortSignal): Promise<LogBlock[]> {
-  const anchor = await index.readEvent(recipe.anchorPosition);
-  if (!anchor) throw new Error("模型来源事件不存在");
-  const state = emptyStream(), path = join(index.path, "streams", `${recipe.model}.jsonl`);
-  let projected: LogBlock[] = [], pending = Buffer.alloc(0), offset = 0;
-  if (recipe.streamOffset) {
-    if (await realpath(path) !== path) throw new Error("流日志必须位于运行目录内");
-    const file = await open(path, "r");
-    try {
-      while (offset < recipe.streamOffset) {
-        signal?.throwIfAborted();
-        const buffer = Buffer.alloc(Math.min(1024 * 1024, recipe.streamOffset - offset));
-        const { bytesRead } = await file.read(buffer, 0, buffer.length, offset);
-        if (!bytesRead) throw new SourceChanged(path);
-        offset += bytesRead; pending = Buffer.concat([pending, buffer.subarray(0, bytesRead)]);
-        const end = pending.lastIndexOf(10) + 1;
-        if (end) { projected = await storedStream(pending.subarray(0, end).toString("utf8"), index.path,
-          recipe.model, anchor, state, index.archiveWorkspace); pending = pending.subarray(end); }
-      }
-    } finally { await file.close(); }
-  }
-  const blocks = new Map(projected.map(block => [block.id, block])), events: Event[] = [];
+/** Parse a byte range into one model's live parser; no completed stream body is persisted. */
+async function parseStreamRange(index: LogIndex, model: string, anchor: Event, state: StreamState,
+  from: number, to: number, signal?: AbortSignal) {
+  if (from >= to) return;
+  const path = join(index.path, "streams", `${model}.jsonl`);
+  if (await realpath(path) !== path) throw new Error("流日志必须位于运行目录内");
+  const file = await open(path, "r");
+  let offset = from, pending = Buffer.alloc(0);
+  try {
+    while (offset < to) {
+      signal?.throwIfAborted();
+      const buffer = Buffer.alloc(Math.min(1024 * 1024, to - offset));
+      const { bytesRead } = await file.read(buffer, 0, buffer.length, offset);
+      if (!bytesRead) throw new SourceChanged(path);
+      offset += bytesRead; pending = Buffer.concat([pending, buffer.subarray(0, bytesRead)]);
+      const end = pending.lastIndexOf(10) + 1;
+      if (end) { await storedStream(pending.subarray(0, end).toString("utf8"), index.path,
+        model, anchor, state, index.archiveWorkspace); pending = pending.subarray(end); }
+    }
+    if (pending.length) throw new Error("模型流截止必须位于完整 JSONL 边界");
+  } finally { await file.close(); }
+}
+async function overlayModel(index: LogIndex, recipe: Extract<BlockRecipe, { kind: "model" }>,
+  projected: LogBlock[], signal?: AbortSignal) {
+  const blocks = new Map(projected.map(block => [block.id, { ...block }])), events: Event[] = [];
   let position = 0;
   for (;;) {
     const page = await index.queryEvents({ model: recipe.model, afterPosition: position,
       beforePosition: recipe.eventCutoff + 1, types: TOOL_EVENTS, signal });
     if (!page.length) break;
     events.push(...page.map(row => row.event)); position = page.at(-1)!.position;
+    if (page.length < 500) break;
   }
   await overlayEvents(index.path, events, blocks, undefined, index.archiveWorkspace);
   return [...blocks.values()];
 }
+/** Source cutoffs make a delivery version immutable without copying its rendered text. */
+async function modelBlocks(index: LogIndex, recipe: Extract<BlockRecipe, { kind: "model" }>, signal?: AbortSignal): Promise<LogBlock[]> {
+  const anchor = await index.readEvent(recipe.anchorPosition);
+  if (!anchor) throw new Error("模型来源事件不存在");
+  const state = emptyStream();
+  await parseStreamRange(index, recipe.model, anchor, state, 0, recipe.streamOffset, signal);
+  return overlayModel(index, recipe, advanceStream([], recipe.model, anchor, state), signal);
+}
+
 function blockReader(index: LogIndex, signal?: AbortSignal) {
   const cached = new Map<string, { blocks: Map<string, LogBlock>; bytes: number }>();
   let bytes = 0;
@@ -380,47 +395,121 @@ interface CurrentState {
   updatedAt: string | null; error: string | null;
 }
 const emptyCurrent = (): CurrentState => ({ phase: emptyLivePhase(), intent: null, observationId: null, updatedAt: null, error: null });
-async function projectEvents(index: LogIndex, options: ActivityBatch = {}) {
-  let processed = 0;
-  let position = Number(index.meta("activityPosition") ?? 0);
-  const dirty = new Set<string>(JSON.parse(index.meta("activityDirty") ?? "[]"));
-  for (;;) {
+type ModelParser = { anchor: Event; state: StreamState; offset: number };
+// Only unfinished provider parsers survive a refresh; immutable completed text stays in the source.
+const activeParsers = new WeakMap<LogIndex, { generation: string; models: Map<string, ModelParser> }>();
+async function projectModel(index: LogIndex, model: string, changed: boolean,
+  options: { cold?: boolean; signal?: AbortSignal; streamLimits?: ReadonlyMap<string, number> }) {
+  if (!/^[a-zA-Z0-9_-]+$/.test(model)) throw new Error("无效的模型调用 ID");
+  const relative = `streams/${model}.jsonl`, saved = index.store("streams").meta(model)!;
+  const limit = options.streamLimits?.get(relative) ?? (options.streamLimits ? 0 : Infinity);
+  let offset = Number(saved.offset ?? 0);
+  let next = offset < limit ? await index.readAppend(relative, Math.min(1024 * 1024, limit - offset)) : null;
+  if (!changed && !next?.changed) return;
+  let cache = activeParsers.get(index);
+  if (!cache || cache.generation !== index.generation) {
+    cache = { generation: index.generation, models: new Map() }; activeParsers.set(index, cache);
+  }
+  let parser = cache.models.get(model);
+  if (!parser || parser.offset !== offset) {
+    const anchor = await index.readEvent(saved.anchorPosition);
+    if (!anchor) throw new Error("模型来源事件不存在");
+    parser = { anchor, state: emptyStream(), offset: 0 };
+    await parseStreamRange(index, model, anchor, parser.state, 0, offset, options.signal);
+    parser.offset = offset;
+  }
+  while (next?.changed) {
     options.signal?.throwIfAborted();
-    if (processed >= (options.maxEvents ?? Infinity)) break;
-    const page = await index.queryEvents({ afterPosition: position, limit: Math.min(250, (options.maxEvents ?? Infinity) - processed) });
-    if (!page.length) break;
-    processed += page.length;
-    const ordinary = new Map<string, LogBlock>();
-    const current = new Map<string, CurrentState>();
-    const phases = new Map<string, Event[]>();
-    await overlayEvents(index.path, page.map(row => row.event).filter(event =>
-      !(event.trace?.modelCallId && TOOL_EVENTS.includes(event.type))), ordinary, index);
-    const positions = new Map(page.map(row => [row.event.seq, row.position]));
-    for (const block of ordinary.values()) {
-      const previous = index.store("blocks").meta(block.id)?.recipe as BlockRecipe | undefined;
-      const position = positions.get(block.seq!) ?? (previous && "position" in previous ? previous.position : undefined);
-      if (!position) throw new Error("活动块缺少原始事件位置");
-      let recipe: BlockRecipe = { kind: "event", position };
-      if (block.id.startsWith("python:")) {
-        const summary = structuredClone(block.data) as PythonSummary;
-        const exceptionPosition = summary.lastException ? positions.get(summary.lastException.seq)
-          ?? (previous?.kind === "python" ? previous.exceptionPosition : undefined) : undefined;
-        if (summary.lastException) delete summary.lastException.error;
-        recipe = { kind: "python", position, summary, ...(exceptionPosition ? { exceptionPosition } : {}) };
-      }
-      await saveBlock(index, block, recipe);
+    const oldOffset = offset;
+    if (next.text) await storedStream(next.text, index.path, model, parser.anchor, parser.state, index.archiveWorkspace);
+    offset = next.state.offset; parser.offset = offset; index.saveFile(next.state);
+    if (offset >= limit || offset === next.state.size || offset === oldOffset || !next.text) break;
+    next = await index.readAppend(relative, Math.min(1024 * 1024, limit - offset));
+  }
+  if (next) index.saveFile(next.state);
+  index.store("streams").index(model, { anchorPosition: saved.anchorPosition, offset });
+  const recipe: BlockRecipe = { kind: "model", model, anchorPosition: saved.anchorPosition,
+    streamOffset: offset, eventCutoff: Number(index.meta("activityPosition") ?? 0) };
+  const blocks = await overlayModel(index, recipe, advanceStream([], model, parser.anchor, parser.state), options.signal);
+  for (const block of blocks) await saveBlock(index, block, recipe, options.cold);
+  const ended = index.store("activity-model-ends").meta(model);
+  if (options.cold || parser.state.terminal || ended) cache.models.delete(model);
+  else cache.models.set(model, parser);
+}
+export interface ActivityBatch { maxEvents?: number; maxBytes?: number; signal?: AbortSignal; ingest?: boolean }
+export function activityProgress(index: LogIndex) {
+  const position = Number(index.meta("activityPosition") ?? 0);
+  return { position, total: index.eventRevision, complete: position >= index.eventRevision && index.progress.complete };
+}
+
+/** Feed the scanner's parsed event directly; cold construction publishes only final recipes. */
+export async function createActivityReducer(index: LogIndex, options: {
+  cold?: boolean; signal?: AbortSignal; streamLimits?: ReadonlyMap<string, number>;
+} = {}) {
+  if (index.meta("activitySemantics") !== "6") {
+    index.resetActivity(); index.resetStores(["activity-model-ends"]);
+    index.setMeta("activitySemantics", "6"); activeParsers.delete(index);
+  }
+  let position = Number(index.meta("activityPosition") ?? 0);
+  const current = new Map<string, CurrentState>();
+  const roots = new Map<string, { root: Event; position: number }>();
+  const dirty = new Set<string>(JSON.parse(index.meta("activityDirty") ?? "[]"));
+  const checkpoint = () => {
+    for (const [key, state] of current) index.setMeta(key, JSON.stringify(state));
+    index.setMeta("activityPosition", position);
+    index.setMeta("activityDirty", JSON.stringify([...dirty]));
+  };
+  async function python(event: Event, sourcePosition: number) {
+    if (!["python_call_start", "python_call_end"].includes(event.type) || !event.trace.traceId || !event.trace.spanId) return;
+    const trace = event.trace, key = (span: string) => JSON.stringify([trace.epoch ?? "", trace.traceId, span]);
+    const members = index.store("python-groups");
+    let member = members.meta(key(trace.spanId));
+    if (event.type === "python_call_start") {
+      const parent = trace.parentSpanId ? members.meta(key(trace.parentSpanId)) : undefined;
+      const group = parent?.group ?? `python:${key(trace.spanId)}`;
+      member = { id: key(trace.spanId), group, root: !parent };
+      members.index(member.id, { group, root: !parent });
+      if (!parent) roots.set(group, { root: { ...event, data: { id: event.data.id } }, position: sourcePosition });
     }
-    for (const { event, position: eventPosition } of page) {
-      const model = event.trace?.modelCallId;
+    if (!member) return;
+    const previous = index.store("blocks").meta(member.group)?.recipe as Extract<BlockRecipe, { kind: "python" }> | undefined;
+    let initial = roots.get(member.group);
+    if (!initial && previous) {
+      const root = await index.readEvent(previous.position);
+      if (root) initial = { root, position: previous.position };
+    }
+    if (!initial) return;
+    const summary = advancePythonSummary(previous?.summary, event, member.root);
+    const block = pythonSummaryBlock(initial.root, member.group, summary, event.at);
+    const exceptionPosition = summary.lastException?.seq === event.seq ? sourcePosition : previous?.exceptionPosition;
+    const stored = structuredClone(summary); if (stored.lastException) delete stored.lastException.error;
+    await saveBlock(index, block, { kind: "python", position: initial.position, summary: stored,
+      ...(exceptionPosition ? { exceptionPosition } : {}) }, options.cold);
+    if (event.type === "python_call_end" && member.root) roots.delete(member.group);
+    else roots.set(member.group, initial);
+  }
+  return {
+    checkpoint,
+    async feed(row: { event: Event; position: number }) {
+      options.signal?.throwIfAborted();
+      if (row.position <= position) return;
+      const { event } = row, model = event.trace?.modelCallId;
+      position = row.position;
       if (model) {
-        if (!index.store("streams").meta(model)) index.store("streams").index(model, { anchorPosition: eventPosition, offset: 0 });
-        dirty.add(model);
+        if (!index.store("streams").meta(model)) {
+          index.store("streams").index(model, { anchorPosition: position, offset: 0 }); dirty.add(model);
+        }
+        if (TOOL_EVENTS.includes(event.type)) dirty.add(model);
+        if (event.type === "model_end") index.store("activity-model-ends").index(model, { position });
+      }
+      if (!(model && TOOL_EVENTS.includes(event.type))) {
+        // Filtering metadata does not require serializing, redacting or retaining a diagnostic body.
+        await saveBlock(index, { ...eventHeader(index.path, event), text: "" }, { kind: "event", position }, options.cold);
+        await python(event, position);
       }
       const key = `current:${event.trace?.epoch ?? ""}`;
       let state = current.get(key);
       if (!state) { state = JSON.parse(index.meta(key) ?? "null") ?? emptyCurrent(); current.set(key, state!); }
-      const phaseEvents = phases.get(key) ?? [];
-      phaseEvents.push(event); phases.set(key, phaseEvents);
       state!.updatedAt = event.at;
       if (event.type === "model_start") state!.error = null;
       if (event.type === "tool_start" && event.data.intent) state!.intent = event.data.intent;
@@ -438,46 +527,21 @@ async function projectEvents(index: LogIndex, options: ActivityBatch = {}) {
         if (event.trace.epoch && !epochs.includes(event.trace.epoch)) epochs.push(event.trace.epoch);
         index.setMeta("activityEpochs", JSON.stringify(epochs));
       }
+      advanceLivePhase(state!.phase, [event]);
       index.setMeta(`latest:${event.trace?.epoch ?? ""}`, JSON.stringify({ seq: event.seq, at: event.at, origin: event.origin }));
       index.setMeta("activityLatest", JSON.stringify({ seq: event.seq, at: event.at, origin: event.origin }));
-    }
-    for (const [key, state] of current) {
-      advanceLivePhase(state.phase, phases.get(key)!);
-      index.setMeta(key, JSON.stringify(state));
-    }
-    position = page.at(-1)!.position;
-    index.setMeta("activityPosition", position);
-    index.setMeta("activityDirty", JSON.stringify([...dirty]));
-    await new Promise<void>(resolve => setImmediate(resolve));
-  }
-  return dirty;
-}
-async function projectModel(index: LogIndex, model: string, changed: boolean, signal?: AbortSignal) {
-  if (!/^[a-zA-Z0-9_-]+$/.test(model)) throw new Error("无效的模型调用 ID");
-  const relative = `streams/${model}.jsonl`;
-  let next = await index.readAppend(relative);
-  if (!changed && !next?.changed) return;
-  const saved = index.store("streams").meta(model)!;
-  let streamOffset = Number(saved.offset ?? 0), lastOffset = -1;
-  while (next?.changed && next.state.offset !== lastOffset) {
-    lastOffset = next.state.offset; streamOffset = next.state.offset;
-    index.saveFile(next.state);
-    if (next.state.offset === next.state.size || !next.text) break;
-    next = await index.readAppend(relative);
-  }
-  if (next) index.saveFile(next.state);
-  index.store("streams").index(model, { anchorPosition: saved.anchorPosition, offset: streamOffset });
-  const recipe: BlockRecipe = { kind: "model", model, anchorPosition: saved.anchorPosition,
-    streamOffset, eventCutoff: Number(index.meta("activityPosition") ?? 0) };
-  for (const block of await modelBlocks(index, recipe, signal)) await saveBlock(index, block, recipe);
-}
-export interface ActivityBatch { maxEvents?: number; maxBytes?: number; signal?: AbortSignal; ingest?: boolean }
-export function activityProgress(index: LogIndex) {
-  const position = Number(index.meta("activityPosition") ?? 0);
-  return { position, total: index.eventRevision, complete: position >= index.eventRevision && index.progress.complete };
+    },
+    async finish() {
+      checkpoint();
+      options.signal?.throwIfAborted();
+      for (const row of index.store("streams").entries()) {
+        options.signal?.throwIfAborted(); await projectModel(index, row.id, dirty.has(row.id), options);
+      }
+      dirty.clear(); roots.clear(); index.setMeta("activityDirty", "[]");
+    },
+  };
 }
 const refreshes = new WeakMap<LogIndex, { promise: Promise<void>; signal?: AbortSignal }>();
-/** Incremental source ingestion; no historical Event[] or global block array. */
 export function refreshActivity(index: LogIndex, options: ActivityBatch = {}) {
   let pending = refreshes.get(index);
   if (!pending || pending.signal?.aborted) {
@@ -485,20 +549,24 @@ export function refreshActivity(index: LogIndex, options: ActivityBatch = {}) {
     next.promise = index.exclusive(async () => {
       for (let attempt = 0; ; attempt++) {
         try {
-          // Presentation changes invalidate only the disposable index, never source logs.
-          if (index.meta("activitySemantics") !== "5") { index.resetActivity(); index.setMeta("activitySemantics", "5"); }
           if (options.ingest !== false) await index.appendEvents({ maxBytes: options.maxBytes, signal: options.signal });
-          const dirty = await projectEvents(index, options);
-          // Checking file metadata also notices a late stream append or replacement
-          // after model_end. Parser states are loaded only for changed calls.
-          for (const row of index.store("streams").entries()) {
-            options.signal?.throwIfAborted(); await projectModel(index, row.id, dirty.has(row.id), options.signal);
+          const reducer = await createActivityReducer(index, options);
+          let position = Number(index.meta("activityPosition") ?? 0), consumed = 0;
+          for (;;) {
+            options.signal?.throwIfAborted();
+            if (consumed >= (options.maxEvents ?? Infinity)) break;
+            const page = await index.queryEvents({ afterPosition: position,
+              limit: Math.min(500, (options.maxEvents ?? Infinity) - consumed), signal: options.signal });
+            if (!page.length) break;
+            try { for (const row of page) await reducer.feed(row); }
+            finally { reducer.checkpoint(); }
+            position = page.at(-1)!.position; consumed += page.length;
+            await new Promise<void>(resolve => setImmediate(resolve));
           }
-          index.setMeta("activityDirty", "[]");
-          break;
+          await reducer.finish(); break;
         } catch (error) {
           if (!(error instanceof SourceChanged) || attempt) throw error;
-          await index.reset();
+          activeParsers.delete(index); await index.reset();
         }
       }
     }).finally(() => { if (refreshes.get(index) === next) refreshes.delete(index); });
@@ -647,11 +715,13 @@ export async function getActivity(project: string, run?: string, epoch?: string,
     progress: () => activityProgress(index), signal });
   // Readers may leave; shared projection work remains available to other consumers.
   signal?.throwIfAborted();
-  const selectedState = await index.exclusive(async () => {
+  // Read both metadata values synchronously under the outer generation lease.
+  // A published generation remains readable while its writer is frozen for rebuild.
+  const selectedState = (() => {
     const scope = { project, runId, epoch: selectedEpoch(index, epoch) };
     const state: CurrentState = JSON.parse(index.meta(`current:${scope.epoch ?? ""}`) ?? "null") ?? emptyCurrent();
     return { scope, state };
-  });
+  })();
   // Pointer snapshots refer to immutable versions. A long history search does
   // not hold the writer lock or delay Pet's next incremental page.
   const result = { ...await queryActivity(index, selectedState.scope, query, signal), state: selectedState.state };

@@ -6,14 +6,17 @@ import type { Event } from "./types";
 
 const FORMAT = "files-3";
 const CHUNK = 1024 * 1024;
-export type FileState = { path: string; identity: string; size: number; mtime: number; offset: number; head: string; tail: string };
+export type FileState = { path: string; identity: string; size: number; mtime: number; offset: number; head: string; tail: string; partialTailBytes?: number };
 export { FileRecords, SourceChanged } from "./record-store";
 export type { RecordPointer } from "./record-store";
-import { FileRecords, SourceChanged, recordCacheStats, type RecordPointer } from "./record-store";
+import { BulkBudget, FileRecords, SourceChanged, recordCacheStats, storageMetrics, type RecordPointer } from "./record-store";
+export { storageMetrics, resetStorageMetrics } from "./record-store";
 const digest = (value: Uint8Array) => createHash("sha256").update(value).digest("hex");
 
 export type IndexBatch = { maxBytes?: number; signal?: AbortSignal };
-export type EventProgress = { bytes: number; totalBytes: number; eventPosition: number; complete: boolean };
+import type { SourceSnapshot } from "./cold-build-protocol";
+export type { SourceSnapshot } from "./cold-build-protocol";
+export type EventProgress = { bytes: number; totalBytes: number; eventPosition: number; complete: boolean; partialBytes: number };
 export type EventRef = RecordPointer & { position: number; seq: number; at: string; timeMs: number; type: string;
   epoch: string | null; model: string | null; offset: number; length: number; traceId?: string; spanId?: string;
   parentSpanId?: string; toolCallId?: string; operationId?: string };
@@ -63,11 +66,16 @@ export class LogIndex {
   private files: Record<string, FileState> = {};
   private eventPosition = 0;
   private dirty = false;
+  private bulk?: BulkBudget;
+  private snapshot?: SourceSnapshot;
+  private freezing = false;
+  private invalidated = false;
+  frozen = false;
   // Set by loadRun from the project registry; null disallows workspace archives.
   archiveWorkspace?: string | null;
   leases = 0;
   lastUsed = Date.now();
-  retain() { this.leases++; this.lastUsed = Date.now(); let done = false; return () => { if (!done) { done = true; this.leases--; this.lastUsed = Date.now(); } }; }
+  retain() { this.leases++; this.lastUsed = Date.now(); let done = false; return () => { if (!done) { done = true; this.leases--; this.lastUsed = Date.now(); reapRetired(); } }; }
   constructor(readonly path: string, readonly directory: string) {
     mkdirSync(directory, { recursive: true });
     const checkpoint = join(directory, "checkpoint.json");
@@ -80,16 +88,19 @@ export class LogIndex {
     this.eventPosition = Number(this.metadata.eventPosition ?? 0);
   }
   store(name: string) {
+    if (this.invalidated) throw new SourceChanged(this.path);
     if (!/^[a-zA-Z0-9_-]+$/.test(name)) throw new Error("无效的索引文件名");
     let store = this.stores.get(name);
     if (!store) {
       store = new FileRecords(join(this.directory, name), () => this.markDirty(), name === "blocks", name === "events" ? join(this.path, "events.jsonl") : undefined);
+      if (this.bulk) store.beginBulk(this.bulk);
       this.stores.set(name, store);
     }
     return store;
   }
-  meta(key: string) { return this.metadata[key]; }
+  meta(key: string) { if (this.invalidated) throw new SourceChanged(this.path); return this.metadata[key]; }
   private markDirty() {
+    if (this.frozen) throw Object.assign(new Error("正在构建新的历史目录"), { status: 202, code: "ARCHIVE_PREPARING" });
     if (this.dirty) return;
     closeSync(openSync(join(this.directory, ".writing"), "w")); this.dirty = true;
   }
@@ -99,6 +110,21 @@ export class LogIndex {
   get generation() { return this.metadata.generation; }
   get revision() { return Number(this.metadata.revision ?? 0); }
   get eventRevision() { return this.eventPosition; }
+  beginBulk(bytes?: number) {
+    if (this.bulk) return;
+    this.bulk = new BulkBudget(bytes);
+    for (const store of this.stores.values()) store.beginBulk(this.bulk);
+  }
+  finishBulk() {
+    for (const store of this.stores.values()) store.flushBulk();
+    for (const store of this.stores.values()) store.finishBulk();
+    this.bulk = undefined;
+  }
+  setSourceSnapshot(snapshot?: SourceSnapshot) { this.snapshot = snapshot; }
+  async freeze() { this.freezing = true; await this.drain(); this.frozen = true; }
+  resume() { if (!this.invalidated) { this.frozen = false; this.freezing = false; } }
+  invalidate() { this.invalidated = true; this.frozen = true; }
+  get invalid() { return this.invalidated; }
   get timeBounds(): { startAt?: string; endAt?: string } {
     // Existing files-3 directories already have per-page time summaries. They
     // can be opened without rebuilding or scanning the raw event history.
@@ -143,6 +169,7 @@ export class LogIndex {
     rmSync(join(this.directory, ".writing"), { force: true }); this.dirty = false;
   }
   exclusive<T>(work: () => Promise<T>): Promise<T> {
+    if (this.freezing || this.frozen) return Promise.reject(Object.assign(new Error("正在构建新的历史目录"), { status: 202, code: "ARCHIVE_PREPARING" }));
     const release = this.retain();
     const result = (this.pending ?? Promise.resolve()).then(async () => {
       try {
@@ -162,6 +189,8 @@ export class LogIndex {
     return result;
   }
   async readAppend(relative: string, maxBytes = CHUNK): Promise<{ text: string; state: FileState; changed: boolean } | null> {
+    const cutoff = this.snapshot?.[relative];
+    if (this.snapshot && !cutoff) return null;
     const file = join(this.path, relative);
     let info;
     try {
@@ -171,28 +200,33 @@ export class LogIndex {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
       throw error;
     }
-    const previous = this.files[relative], identity = `${info.dev}:${info.ino}`;
-    if (previous && (previous.identity !== identity || info.size < previous.size ||
-      (info.size === previous.size && info.mtimeMs !== previous.mtime))) throw new SourceChanged(relative);
-    if (previous && previous.size === info.size && previous.mtime === info.mtimeMs && previous.offset === info.size)
+    const identity = `${info.dev}:${info.ino}`;
+    if (cutoff && (identity !== cutoff.identity || info.size < cutoff.size)) throw new SourceChanged(relative);
+    const sourceSize = cutoff?.size ?? info.size, sourceMtime = cutoff?.mtime ?? info.mtimeMs;
+    const previous = this.files[relative];
+    if (previous && (previous.identity !== identity || sourceSize < previous.size ||
+      (sourceSize === previous.size && sourceMtime !== previous.mtime))) throw new SourceChanged(relative);
+    if (previous && previous.size === sourceSize && previous.mtime === sourceMtime && previous.offset === sourceSize)
       return { text: "", state: previous, changed: false };
     const handle = await open(file, "r");
     try {
       const slice = async (position: number, size: number) => {
         const buffer = Buffer.alloc(size);
         const { bytesRead } = await handle.read(buffer, 0, size, position);
+        storageMetrics.sourceReadCalls++; storageMetrics.sourceReadBytes += bytesRead;
         return buffer.subarray(0, bytesRead);
       };
       const offset = previous?.offset ?? 0;
       if (previous && offset && (digest(await slice(0, Math.min(offset, 4096))) !== previous.head ||
         digest(await slice(Math.max(0, offset - 256), Math.min(offset, 256))) !== previous.tail)) throw new SourceChanged(relative);
-      let incoming = await slice(offset, Math.min(Math.max(1, maxBytes), CHUNK, info.size - offset));
+      let incoming = await slice(offset, Math.min(Math.max(1, maxBytes), sourceSize - offset));
       // One exceptionally long JSON value is indivisible, but unrelated history stays on disk.
-      while (!incoming.includes(10) && offset + incoming.length < info.size)
-        incoming = Buffer.concat([incoming, await slice(offset + incoming.length, Math.min(Math.max(1, maxBytes), CHUNK, info.size - offset - incoming.length))]);
+      while (!incoming.includes(10) && offset + incoming.length < sourceSize)
+        incoming = Buffer.concat([incoming, await slice(offset + incoming.length, Math.min(Math.max(1, maxBytes), sourceSize - offset - incoming.length))]);
       const complete = incoming.lastIndexOf(10) + 1;
       const nextOffset = offset + complete;
-      const state = { path: relative, identity, size: info.size, mtime: info.mtimeMs, offset: nextOffset,
+      const state = { path: relative, identity, size: sourceSize, mtime: sourceMtime, offset: nextOffset,
+        partialTailBytes: offset + incoming.length === sourceSize ? sourceSize - nextOffset : 0,
         head: digest(await slice(0, Math.min(nextOffset, 4096))),
         tail: digest(await slice(Math.max(0, nextOffset - 256), Math.min(nextOffset, 256))) };
       return { text: incoming.subarray(0, complete).toString("utf8"), state, changed: complete > 0 };
@@ -206,15 +240,25 @@ export class LogIndex {
   get progress(): EventProgress {
     const file = this.files["events.jsonl"];
     return { bytes: file?.offset ?? 0, totalBytes: file?.size ?? 0, eventPosition: this.eventPosition,
-      complete: !!file && file.offset === file.size };
+      partialBytes: file?.partialTailBytes ?? 0,
+      complete: !!file && file.offset + (file.partialTailBytes ?? 0) === file.size };
   }
-  async appendEvents(options: IndexBatch = {}): Promise<EventProgress> {
+  async bulkEvents(options: { signal?: AbortSignal; onEvent?: (event: Event, position: number, ref: EventRef) => void | Promise<void>;
+    onProgress?: (progress: EventProgress) => void } = {}): Promise<EventProgress> {
+    if (this.eventRevision) throw new Error("Bulk event import requires a new directory");
+    if (!this.snapshot?.["events.jsonl"]) throw new Error("Bulk event import requires a fixed source snapshot");
+    return this.appendEvents({ ...options, chunkBytes: 16 * CHUNK });
+  }
+  async appendEvents(options: IndexBatch & { chunkBytes?: number;
+    onEvent?: (event: Event, position: number, ref: EventRef) => void | Promise<void>;
+    onProgress?: (progress: EventProgress) => void } = {}): Promise<EventProgress> {
+    if (this.frozen || this.freezing) return this.progress;
     let consumed = 0;
     for (;;) {
       options.signal?.throwIfAborted();
       let next;
-      try { next = await this.readAppend("events.jsonl", Math.min(CHUNK, (options.maxBytes ?? Infinity) - consumed)); }
-      catch (error) { if (!(error instanceof SourceChanged)) throw error; this.reset(); next = await this.readAppend("events.jsonl"); }
+      try { next = await this.readAppend("events.jsonl", Math.min(options.chunkBytes ?? CHUNK, (options.maxBytes ?? Infinity) - consumed)); }
+      catch (error) { if (!(error instanceof SourceChanged) || this.snapshot) throw error; this.reset(); next = await this.readAppend("events.jsonl"); }
       if (!next) throw new Error("未找到事件日志");
       if (!next.changed) { this.saveFile(next.state); return this.progress; }
       let offset = next.state.offset - Buffer.byteLength(next.text);
@@ -225,34 +269,41 @@ export class LogIndex {
       for (const line of next.text.split("\n").slice(0, -1)) {
         if (!line) { offset++; continue; }
         const event = JSON.parse(line) as Event;
+        storageMetrics.eventParses++;
         const length = Buffer.byteLength(line) + 1, position = ++this.eventPosition;
         const trace = event.trace ?? {}, timeMs = Date.parse(event.origin?.at ?? event.at);
         if (Number.isFinite(timeMs)) { minTime = Math.min(minTime, timeMs); maxTime = Math.max(maxTime, timeMs); }
-        store.index(positionKey(position), { position, seq: event.seq, offset, length, timeMs,
+        const ref: EventRef = { id: positionKey(position), position, seq: event.seq, offset, length, timeMs,
           model: trace.modelCallId ?? null, epoch: trace.epoch ?? null, type: event.type, at: event.at,
           ...(trace.traceId ? { traceId: trace.traceId } : {}), ...(trace.spanId ? { spanId: trace.spanId } : {}),
           ...(trace.parentSpanId ? { parentSpanId: trace.parentSpanId } : {}),
           ...(trace.toolCallId ? { toolCallId: trace.toolCallId } : {}),
-          ...(trace.operationId ? { operationId: trace.operationId } : {}) });
+          ...(trace.operationId ? { operationId: trace.operationId } : {}) };
+        store.index(ref.id, ref);
         for (const relation of eventRelations(event)) this.store("relations").index(relationKey(relation, position), { position });
         offset += length;
+        if (options.onEvent) await options.onEvent(event, position, ref);
       }
       consumed += Buffer.byteLength(next.text);
       this.saveFile(next.state); this.setMeta("eventPosition", this.eventPosition);
       if (Number.isFinite(minTime)) this.setMeta("source:minTime", minTime);
       if (Number.isFinite(maxTime)) this.setMeta("source:maxTime", maxTime);
+      options.onProgress?.(this.progress);
       // A complete source chunk is the commit/cancellation boundary.
       if (next.state.offset === next.state.size || consumed >= (options.maxBytes ?? Infinity)) return this.progress;
       await new Promise<void>(resolve => setImmediate(resolve));
     }
   }
   async queryEventRefs(options: EventQuery = {}): Promise<EventRef[]> {
+    if (this.invalidated) throw new SourceChanged(this.path);
     options.signal?.throwIfAborted();
     const found: EventRef[] = [], limit = Math.max(1, Math.min(5000, Math.floor(options.limit ?? 500) || 500));
     const epoch = options.epoch === "" ? null : options.epoch;
     const store = this.store("events"), relations = queryRelations(options);
     const time = { from: timeValue(options.fromAt), to: timeValue(options.toAt) };
-    const candidates = relations.length ? this.store("relations").entries({ prefix: relationKey(relations[0]), reverse: options.reverse })
+    const candidates = relations.length ? this.store("relations").entries({ prefix: relationKey(relations[0]),
+      afterId: relationKey(relations[0], options.afterPosition ?? 0),
+      ...(options.beforePosition !== undefined ? { beforeId: relationKey(relations[0], options.beforePosition) } : {}), reverse: options.reverse })
       : store.entries({ afterId: positionKey(options.afterPosition ?? 0),
         ...(options.beforePosition !== undefined ? { beforeId: positionKey(options.beforePosition) } : {}),
         reverse: options.reverse, where: { ...(epoch !== undefined ? { epoch } : {}),
@@ -272,6 +323,7 @@ export class LogIndex {
     options.signal?.throwIfAborted(); return found;
   }
   async readEvent(value: number | EventRef): Promise<Event | undefined> {
+    if (this.invalidated) throw new SourceChanged(this.path);
     const ref = typeof value === "number" ? this.store("events").meta(positionKey(value)) : value;
     return ref ? this.store("events").read<Event>(ref) : undefined;
   }
@@ -281,6 +333,7 @@ export class LogIndex {
   }
   refreshEvents(options: IndexBatch = {}): Promise<EventProgress> {
     options.signal?.throwIfAborted();
+    if (this.frozen || this.freezing) return Promise.resolve(this.progress);
     if (!this.refreshing || (this.refreshing.controller.signal.aborted && !this.refreshing.subscribers)) {
       const controller = new AbortController();
       const task = { controller, subscribers: 0, promise: undefined as unknown as Promise<EventProgress> };
@@ -310,12 +363,41 @@ export class LogIndex {
       await new Promise<void>(resolve => setImmediate(resolve));
     } while (this.pending);
   }
-  close() { this.flush(); for (const store of this.stores.values()) store.close(); this.stores.clear(); }
+  close() { this.finishBulk(); this.flush(); for (const store of this.stores.values()) store.close(); this.stores.clear(); }
 }
 
 const registryKey = Symbol.for("ludens.dashboard.paged-file-index");
 const registry = ((globalThis as any)[registryKey] ??= new Map<string, LogIndex>()) as Map<string, LogIndex>;
+const retired = new Set<LogIndex>();
+function reapRetired() {
+  for (const index of retired) if (!index.leases) {
+    retired.delete(index); index.close();
+    rmSync(index.directory, { recursive: true, force: true });
+  }
+}
+export function indexStorageRoot(path: string) {
+  return process.env.RSA_DASHBOARD_INDEX_ROOT ? join(process.env.RSA_DASHBOARD_INDEX_ROOT, path.split("/").at(-1)!) : join(path, ".dashboard-index");
+}
+function activeDirectory(path: string) {
+  const root = indexStorageRoot(path), pointer = join(root, "active.json");
+  let generation: string;
+  if (existsSync(pointer)) {
+    const active = JSON.parse(readFileSync(pointer, "utf8"));
+    if (typeof active.generation !== "string" || !/^[a-zA-Z0-9_-]+$/.test(active.generation)) throw new Error("无效的历史目录版本");
+    generation = active.generation;
+  } else {
+    const current = registry.get(path);
+    if (current && !current.invalid && /^empty(?:-|$)/.test(current.directory.split("/").at(-1)!)) return current.directory;
+    const empty = join(root, "generations", "empty");
+    // A leased placeholder can outlive a publication and a subsequent invalidation.
+    // Never let its eventual cleanup remove a new placeholder at the same path.
+    const occupied = [...retired, ...(current ? [current] : [])].some(index => index.directory === empty);
+    generation = occupied ? `empty-${randomUUID()}` : "empty";
+  }
+  return join(root, "generations", generation);
+}
 export function pruneLogIndexes(now = Date.now()) {
+  reapRetired();
   const max = Math.max(1, Number(process.env.RSA_DASHBOARD_INDEX_MAX_RUNS) || 3);
   const idle = Math.max(1, Number(process.env.RSA_DASHBOARD_INDEX_IDLE_MS) || 300_000);
   for (const [path, index] of [...registry].sort((a, b) => a[1].lastUsed - b[1].lastUsed)) {
@@ -323,14 +405,18 @@ export function pruneLogIndexes(now = Date.now()) {
     index.close(); registry.delete(path);
   }
 }
-export function indexCacheStats() { return { runs: registry.size, leased: [...registry.values()].filter(i => i.leases).length, ...recordCacheStats() }; }
+export function indexCacheStats() { return { runs: registry.size, retired: retired.size,
+  leased: [...registry.values(), ...retired].filter(i => i.leases).length, ...recordCacheStats() }; }
 // Idle runs are reclaimed even when there is no subsequent HTTP request.
 const timerKey = Symbol.for("ludens.dashboard.paged-file-index.timer");
 if (!(globalThis as any)[timerKey]) (globalThis as any)[timerKey] = setInterval(() => pruneLogIndexes(), 30_000).unref();
 export function getLogIndex(path: string): LogIndex {
+  const directory = activeDirectory(path);
   let index = registry.get(path);
+  if (index && index.directory !== directory) {
+    registry.delete(path); retired.add(index); index = undefined;
+  }
   if (!index) {
-    const directory = process.env.RSA_DASHBOARD_INDEX_ROOT ? join(process.env.RSA_DASHBOARD_INDEX_ROOT, path.split("/").at(-1)!) : join(path, ".dashboard-index");
     mkdirSync(directory, { recursive: true });
     if (realpathSync(directory) !== directory) throw new Error("日志索引必须位于运行目录内");
     index = new LogIndex(path, directory); registry.set(path, index);
@@ -347,6 +433,6 @@ export async function loadIndexedEvents(path: string) {
   } catch (error) { release(); throw error; }
 }
 export async function closeLogIndexes() {
-  const entries = [...registry.values()]; registry.clear();
+  const entries = [...registry.values(), ...retired]; registry.clear(); retired.clear();
   for (const entry of entries) { await entry.drain(); entry.close(); }
 }

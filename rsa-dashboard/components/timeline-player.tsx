@@ -120,9 +120,10 @@ function ReplayDetails({ scope, selection, onClose }: { scope: string; selection
   </section>;
 }
 
-export function TimelinePlayer({ project, run, epoch, position, onPosition, onOverview }: {
+export function TimelinePlayer({ project, run, epoch, position, onPosition, onOverview, archiveRevision }: {
   project: string; run: string; epoch?: string; position?: string | null; onPosition(at: number): void;
   onOverview?(value: ReplayOverviewResult): void;
+  archiveRevision?: number;
 }) {
   const requestedScope = new URLSearchParams({ project, run, ...(epoch ? { epoch } : {}) }).toString();
   const [overview, setOverview] = useState<ReplayOverview | null>(null);
@@ -184,7 +185,7 @@ export function TimelinePlayer({ project, run, epoch, position, onPosition, onOv
     }).catch(error => { if (!controller.signal.aborted) setOverviewError(error.message); })
       .finally(() => { if (!controller.signal.aborted) setRefreshing(false); });
     return () => controller.abort();
-  }, [requestedScope, project, run, refresh, overviewPoll, move, onOverview]);
+  }, [requestedScope, project, run, refresh, overviewPoll, move, onOverview, archiveRevision]);
 
   useEffect(() => {
     if (!coverage || coverage.complete || overviewError) return;
@@ -247,7 +248,7 @@ export function TimelinePlayer({ project, run, epoch, position, onPosition, onOv
     return () => controller.abort();
     // Events have their own cursor and never gate frame readiness.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scope, bounds.startAt, bounds.endAt, eventPage, retry, overview?.coverage?.complete]);
+  }, [scope, bounds.startAt, bounds.endAt, eventPage, retry, overview?.coverage?.complete, archiveRevision]);
 
   const moreFrameRequest = useRef<AbortController | null>(null);
   const frameTail = activeWindow?.frames.at(-1)?.at;

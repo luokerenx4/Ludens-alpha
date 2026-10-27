@@ -1,24 +1,24 @@
-import { prepareArchive } from "./prepare-run";
 import type { LogIndex, RecordPointer } from "./log-index";
 import { readArtifact } from "../../shared/log-archive";
 import { aggregate, isCompletedControllerAction } from "./aggregate";
 import { projectTelemetry } from "./telemetry";
+import { advanceTelemetry, telemetryFromState, telemetryFactKeys, type TelemetryState, type TelemetryRecipe } from "./telemetry-reducer";
 import { eventObservations, observationExecution, type ArchivedObservation } from "./observation-events";
 import { advanceLivePhase, emptyLivePhase, livePhaseValue, type LivePhaseState } from "./live-phase";
 import type { Call, Event, Manifest, NativeLoop, Observation, RunData, SpanStats, TraceSpan } from "./types";
 
-const VERSION = "locators-2";
+const VERSION = "reducers-4";
 const PAGE_SIZE = 100;
 type Meta = RecordPointer;
 type CycleState = { phase: LivePhaseState; lastControl: Record<string, any> | null; autoStarted?: number;
-  elapsedMs: number; callCount: number; counts: Record<string, number>; compaction: { startedAt: string; reason: string } | null };
+  elapsedMs: number; callCount: number; contextPosition?: number; counts: Record<string, number>; compaction: { startedAt: string; reason: string } | null };
 const blankState = (): CycleState => ({ phase: emptyLivePhase(), lastControl: null, elapsedMs: 0, callCount: 0, counts: {}, compaction: null });
 const epochOf = (event: Event) => event.trace?.epoch ?? "";
 const identity = (...parts: unknown[]) => JSON.stringify(parts);
 const spanKey = (event: Event) => identity(epochOf(event), event.trace.traceId, event.trace.spanId);
 const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 const stores = ["run-calls", "run-starts", "run-observations", "run-spans", "run-loops", "run-notices", "run-skills",
-  "run-states", "run-contexts", "run-inputs", "run-requests", "run-encodings", "run-cycles"];
+  "run-states", "run-contexts", "run-inputs", "run-requests", "run-encodings", "run-cycles", "run-model-state", "run-span-state", "run-error-spans"];
 const rows = (index: LogIndex, name: string) => index.store(name).entries();
 async function readPage<T, R>(values: T[], read: (value: T) => Promise<R>, signal?: AbortSignal): Promise<R[]> {
   const result = new Array<R>(values.length);
@@ -90,9 +90,7 @@ async function hydrateCall(index: LogIndex, id: string, signal?: AbortSignal) {
         args: await readArtifact(index.path, event.data.argsRef, { media: "reference", workspace: index.archiveWorkspace }) } };
     signal?.throwIfAborted();
   }
-  const contextMeta = newest(rows(index, "run-contexts"), 1,
-    item => item.epoch === start.epoch && item.position < start.position)[0];
-  const context = contextMeta ? await index.readEvent(contextMeta.position) : undefined;
+  const context = start.contextPosition ? await index.readEvent(start.contextPosition) : undefined;
   const inputs: Event[] = [];
   for (const resultId of context?.data.executions ?? []) {
     signal?.throwIfAborted();
@@ -108,29 +106,79 @@ async function hydrateCall(index: LogIndex, id: string, signal?: AbortSignal) {
   for (const tool of call.tools) if (tool.argsRef) tool.args = {};
   return { call, skills: projected.skills };
 }
-async function projectCall(index: LogIndex, id: string) {
-  const projected = await hydrateCall(index, id), start = index.store("run-starts").meta(id);
-  if (!projected || !start) return;
-  const { call } = projected;
-  const completed = call.durationMs !== null && !["error", "aborted"].includes(call.status);
-  index.store("run-calls").index(id, { epoch: start.epoch, number: call.index, position: start.position,
-    duration: call.durationMs, headers: call.transport === "sse" ? call.headersMs : null,
-    wsWait: call.transport === "websocket" ? call.phases.afterDispatchMs ?? null : null,
-    completed, input: call.inputTokens, cached: call.cachedTokens, observes: call.tools.filter(tool => tool.name === "observe").length });
+type CallState = { duration: number | null; status: string; transport: "sse" | "websocket" | null;
+  headers: number | null; wsWait: number | null; input: number; cached: number; observes: number };
+const CALL_EVENTS = new Set(["model_start", "model_request", "model_ws_dispatch", "model_stream_start", "model_http_start", "model_http_end", "model_http_error", "model_end", "tool_start"]);
+function projectCallEvent(index: LogIndex, event: Event) {
+  const id = event.trace.modelCallId;
+  if (!id || !CALL_EVENTS.has(event.type)) return;
+  const store = index.store("run-model-state");
+  const state = { ...(store.meta(id)?.state as CallState | undefined ?? {
+    duration: null, status: "pending", transport: null, headers: null, wsWait: null, input: 0, cached: 0, observes: 0 }) };
+  const d = event.data;
+  if (event.type === "model_request") state.transport = d.transport === "websocket" ? "websocket" : null;
+  if (event.type === "model_ws_dispatch") state.transport = "websocket";
+  if (event.type === "model_http_start") state.transport = "sse";
+  if (event.type === "model_stream_start") state.wsWait = finite(d.afterDispatchMs) ? d.afterDispatchMs : null;
+  if (event.type === "model_http_end" || event.type === "model_http_error") {
+    const value = event.type === "model_http_end" ? d.fetchToHeadersMs : d.fetchDurationMs;
+    const duration = finite(value) ? value : finite(d.durationMs) ? d.durationMs : null;
+    if (duration !== null) state.headers = (state.headers ?? 0) + duration;
+  }
+  if (event.type === "model_end") {
+    state.duration = finite(d.durationMs) ? d.durationMs : null;
+    state.status = d.stopReason ?? "done";
+    state.input = (d.usage?.input ?? 0) + (d.usage?.cacheRead ?? 0) + (d.usage?.cacheWrite ?? 0);
+    state.cached = d.usage?.cacheRead ?? 0;
+  }
+  if (event.type === "tool_start" && d.toolName === "observe") state.observes++;
+  store.index(id, { state });
+  const start = index.store("run-starts").meta(id);
+  if (start) index.store("run-calls").index(id, { epoch: start.epoch, number: start.number, position: start.position,
+    duration: state.duration, headers: state.transport === "sse" ? state.headers : null,
+    wsWait: state.transport === "websocket" ? state.wsWait : null,
+    completed: state.duration !== null && !["error", "aborted"].includes(state.status),
+    input: state.input, cached: state.cached, observes: state.observes });
 }
 
-async function projectSpan(index: LogIndex, key: string) {
-  const [epoch, traceId, spanId] = JSON.parse(key) as string[];
-  const events = await relatedEvents(index, { epoch, traceId, spanId });
-  const telemetry = projectTelemetry(events);
-  const target = index.store("run-spans");
-  // RPC and asynchronous input lifetimes have separate stable IDs on the same trace.
-  for (const item of telemetry.spans) target.index(identity(epoch, item.id), {
+async function projectSpanEvent(index: LogIndex, event: Event, position: number, pending: Map<string, TelemetryState>) {
+  if (!event.trace.traceId || !event.trace.spanId) return;
+  const key = spanKey(event), epoch = epochOf(event), states = index.store("run-span-state");
+  const previous = states.meta(key)?.recipe as TelemetryRecipe | undefined;
+  const trace = { ...previous?.trace, ...event.trace }, facts = telemetryFactKeys(event);
+  if (previous && !facts.starts.length && !facts.ends.length && !facts.native && JSON.stringify(trace) === JSON.stringify(previous.trace)) return;
+  let state = pending.get(key);
+  // A finished span normally needs no more work. Truly late facts restore only
+  // its explicit lifecycle endpoints, never the complete relation group.
+  if (!state && previous) {
+    state = { trace: previous.trace, starts: {}, ends: {} };
+    const positions = new Set([...Object.values(previous.starts), ...Object.values(previous.ends),
+      ...(previous.nativeEnd ? [previous.nativeEnd] : [])]);
+    for (const sourcePosition of [...positions].sort((a, b) => a - b)) {
+      const source = await index.readEvent(sourcePosition);
+      if (!source) throw new Error("生命周期来源事件不存在");
+      state = advanceTelemetry(state, source) ?? state;
+    }
+    state.trace = previous.trace;
+  }
+  state = advanceTelemetry(state, event);
+  if (!state) return;
+  const recipe: TelemetryRecipe = { trace, starts: { ...previous?.starts }, ends: { ...previous?.ends },
+    ...(previous?.nativeEnd ? { nativeEnd: previous.nativeEnd } : {}) };
+  for (const name of facts.starts) recipe.starts[name] = position;
+  for (const name of facts.ends) recipe.ends[name] ??= position;
+  if (facts.native) recipe.nativeEnd = position;
+  states.index(key, { recipe });
+  const unfinished = Object.keys(recipe.starts).some(name => !recipe.ends[name])
+    || Object.keys(recipe.ends).some(name => !recipe.starts[name]);
+  if (unfinished) pending.set(key, state); else pending.delete(key);
+  const telemetry = telemetryFromState(state);
+  for (const item of telemetry.spans) index.store("run-spans").index(identity(epoch, item.id), {
     epoch, trace: item.traceId, span: item.spanId, parent: item.parentSpanId ?? null, model: item.modelCallId ?? null,
     kind: item.kind, outcome: item.outcome, duration: item.durationMs, position: item.startSeq, telemetryId: item.id,
   });
   for (const loop of telemetry.shiori.nativeLoops)
-    await index.store("run-loops").put(key, loop, { epoch, position: events.at(-1)!.seq });
+    await index.store("run-loops").put(key, loop, { epoch, position: state.nativeEnd!.seq });
 }
 
 type ObservationRecipe = Meta & { positions: number[]; requestPosition?: number; encoded?: number | null };
@@ -193,68 +241,88 @@ export function runProgress(index: LogIndex) {
   return { position, total: index.eventRevision, complete: position >= index.eventRevision };
 }
 
+export type ProjectionRow = { event: Event; position: number };
+/** Consume each source fact once. Stores retain small resumable state and source recipes. */
+export async function createRunReducer(index: LogIndex, options: { cold?: boolean; signal?: AbortSignal } = {}) {
+  await initialise(index);
+  let position = Number(index.meta("run_position") ?? 0);
+  const states = new Map<string, CycleState>();
+  const pendingSpans = new Map<string, TelemetryState>();
+  return {
+    async feed(row: ProjectionRow) {
+      options.signal?.throwIfAborted();
+      if (row.position <= position) return;
+      const event = row.event, epoch = epochOf(event), d = event.data;
+      position = row.position;
+      let state = states.get(epoch);
+      if (!state) { state = await index.store("run-states").get<CycleState>(epoch) ?? blankState(); states.set(epoch, state); }
+      const increment = (name: string) => state!.counts[name] = (state!.counts[name] ?? 0) + 1;
+      increment(`source:${event.source?.component ?? "unlabelled"}`);
+      if (isCompletedControllerAction(event)) increment("actions");
+      if (event.type === "auto_compaction_end") increment("compactions");
+      if (event.type === "model_start") {
+        index.store("run-starts").index(event.trace.modelCallId, { epoch, position, number: ++state.callCount,
+          contextPosition: state.contextPosition });
+      }
+      if (event.type === "context") {
+        state.contextPosition = position;
+        index.store("run-contexts").index(String(position), { epoch, position });
+      }
+      const execution = observationExecution(event);
+      if (execution?.result) index.store("run-inputs").index(identity(epoch, execution.result.id), { position });
+      if (event.type === "observation_start" && event.trace.operationId)
+        index.store("run-requests").index(identity(epoch, event.trace.operationId), { position });
+      if (event.type === "control") {
+        state.lastControl = { ...d, at: event.at };
+        if (d.mode === "auto") {
+          state.autoStarted = Date.parse(event.at);
+          if (event.trace.epoch) await index.store("run-cycles").put(epoch, { epoch, startedAt: event.at }, { position, epoch });
+        } else if (state.autoStarted !== undefined) {
+          state.elapsedMs += Date.parse(event.at) - state.autoStarted;
+          delete state.autoStarted;
+        }
+      }
+      if (event.type === "auto_compaction_start") state.compaction = { startedAt: event.at, reason: String(d.reason ?? d.action ?? "") };
+      if (event.type === "auto_compaction_end") state.compaction = null;
+      advanceLivePhase(state.phase, [event]);
+      await projectObservation(index, event, position);
+      const errorKey = spanKey(event), errorStore = index.store("run-error-spans"), priorError = errorStore.meta(errorKey);
+      if (event.type === "execution_error" && event.trace.traceId && event.trace.spanId) {
+        if (priorError?.notice) await index.store("run-notices").delete(String(priorError.notice));
+        errorStore.index(errorKey, { execution: true });
+      }
+      if (event.type.includes("error") || event.type.includes("compaction") || event.type === "disconnected" || event.type === "perception_observe_end" || event.type === "action_end") {
+        const notice = event.type === "observation_error" && priorError?.execution ? undefined : aggregate([event]).notices[0];
+        if (notice) {
+          index.store("run-notices").index(String(position), { epoch, position, failed: !!notice.failed,
+            type: event.type, trace: event.trace.traceId, span: event.trace.spanId });
+          if (event.type === "observation_error" && event.trace.traceId && event.trace.spanId)
+            errorStore.index(errorKey, { notice: position });
+        }
+      }
+      projectCallEvent(index, event);
+      await projectSpanEvent(index, event, position, pendingSpans);
+    },
+    async finish() {
+      // Commit the completed prefix even when the caller cancelled before its next event.
+      for (const [epoch, state] of states) await index.store("run-states").put(epoch, state);
+      index.setMeta("run_position", position);
+    },
+  };
+}
+
 async function projectRun(index: LogIndex, options: ProjectionBatch = {}) {
   if (options.ingest !== false) await index.refreshEvents({ signal: options.signal });
   await index.exclusive(async () => {
-    await initialise(index);
-    let position = Number(index.meta("run_position") ?? 0);
-    let consumed = 0;
+    const reducer = await createRunReducer(index, options);
+    let position = Number(index.meta("run_position") ?? 0), consumed = 0;
     while (position < index.eventRevision && consumed < (options.maxEvents ?? Infinity)) {
       options.signal?.throwIfAborted();
       const batch = await index.queryEvents({ afterPosition: position, limit: Math.min(500, (options.maxEvents ?? Infinity) - consumed), signal: options.signal });
       if (!batch.length) break;
-      const models = new Set<string>(), spans = new Set<string>(), states = new Map<string, CycleState>();
-      const phases = new Map<string, Event[]>();
-      for (const row of batch) {
-        const event = row.event, epoch = epochOf(event), d = event.data;
-        position = row.position;
-        if (event.trace.modelCallId) models.add(event.trace.modelCallId);
-        if (event.trace.traceId && event.trace.spanId) spans.add(spanKey(event));
-        let state = states.get(epoch);
-        if (!state) { state = await index.store("run-states").get<CycleState>(epoch) ?? blankState(); states.set(epoch, state); }
-        const increment = (name: string) => state!.counts[name] = (state!.counts[name] ?? 0) + 1;
-        increment(`source:${event.source?.component ?? "unlabelled"}`);
-        if (isCompletedControllerAction(event)) increment("actions");
-        if (event.type === "auto_compaction_end") increment("compactions");
-        if (event.type === "model_start") {
-          index.store("run-starts").index(event.trace.modelCallId, { epoch, position, number: ++state.callCount });
-        }
-        if (event.type === "context") index.store("run-contexts").index(String(position), { epoch, position });
-        const execution = observationExecution(event);
-        if (execution?.result) index.store("run-inputs").index(identity(epoch, execution.result.id), { position });
-        if (event.type === "observation_start" && event.trace.operationId)
-          index.store("run-requests").index(identity(epoch, event.trace.operationId), { position });
-        const phaseEvents = phases.get(epoch) ?? []; phaseEvents.push(event); phases.set(epoch, phaseEvents);
-        if (event.type === "control") {
-          state.lastControl = { ...d, at: event.at };
-          if (d.mode === "auto") {
-            state.autoStarted = Date.parse(event.at);
-            if (event.trace.epoch) await index.store("run-cycles").put(epoch, { epoch, startedAt: event.at }, { position, epoch });
-          } else if (state.autoStarted !== undefined) {
-            state.elapsedMs += Date.parse(event.at) - state.autoStarted;
-            delete state.autoStarted;
-          }
-        }
-        if (event.type === "auto_compaction_start") state.compaction = { startedAt: event.at, reason: String(d.reason ?? d.action ?? "") };
-        if (event.type === "auto_compaction_end") state.compaction = null;
-        await projectObservation(index, event, position);
-        if (event.type === "execution_error" && event.trace.traceId && event.trace.spanId) {
-          for (const notice of index.store("run-notices").entries())
-            if (notice.epoch === epoch && notice.type === "observation_error" && notice.trace === event.trace.traceId && notice.span === event.trace.spanId)
-              await index.store("run-notices").delete(notice.id);
-        }
-        if (event.type.includes("error") || event.type.includes("compaction") || event.type === "disconnected" || event.type === "perception_observe_end" || event.type === "action_end") {
-          const notice = await hydrateNotice(index, position, undefined, event);
-          if (notice) index.store("run-notices").index(String(position), { epoch, position, failed: !!notice.failed, type: event.type, trace: event.trace.traceId, span: event.trace.spanId });
-        }
-      }
-      for (const id of models) await projectCall(index, id);
-      for (const id of spans) await projectSpan(index, id);
-      for (const [epoch, state] of states) {
-        advanceLivePhase(state.phase, phases.get(epoch)!);
-        await index.store("run-states").put(epoch, state);
-      }
-      index.setMeta("run_position", position);
+      try { for (const row of batch) await reducer.feed(row); }
+      finally { await reducer.finish(); }
+      position = batch.at(-1)!.position;
       consumed += batch.length;
       await new Promise<void>(resolve => setImmediate(resolve));
     }
@@ -446,12 +514,8 @@ export async function readRunProjection(index: LogIndex, epoch: string | null, p
   };
 }
 
-async function prepareSource(index: LogIndex, signal?: AbortSignal) {
-  await prepareArchive(index, { kind: "source", signal, step: async () => {},
-    progress: () => ({ position: index.eventRevision, total: index.eventRevision, complete: true }) });
-}
 export async function indexedObservation(index: LogIndex, id: string, signal?: AbortSignal): Promise<ArchivedObservation | undefined> {
-  await prepareSource(index, signal);
+  signal?.throwIfAborted();
   let position = 0, value: ArchivedObservation | undefined, epoch: string | undefined;
   for (;;) {
     const refs = await index.queryEventRefs({ observationId: id, afterPosition: position, limit: 500, signal });
@@ -472,7 +536,7 @@ export async function indexedObservation(index: LogIndex, id: string, signal?: A
 /** Exact context/result identities authorize model-input history; no nearest-frame inference. */
 export async function hasTimelineReference(index: LogIndex, recordId: string, sequence: number,
   source: { call?: string; observation?: string }, signal?: AbortSignal) {
-  await prepareSource(index, signal);
+  signal?.throwIfAborted();
   let perception;
   if (source.observation) perception = (await indexedObservation(index, source.observation, signal))?.perception;
   else if (source.call) {

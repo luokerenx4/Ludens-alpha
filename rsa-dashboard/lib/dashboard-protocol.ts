@@ -1,13 +1,14 @@
 import type { getActivity, ActivityQuery } from "./activity";
 import type { aliceState, recordAliceConsumer, setAliceTarget } from "./alice-state";
 import type { benchmarkCatalog, benchmarkEvidence } from "./benchmark-data";
-import type { catalog, getRun, mediaFile, stopRun, timelineRecord } from "./data";
+import type { archiveBuild, catalog, getRun, mediaFile, stopRun, timelineRecord } from "./data";
 import type { getReplay, ReplayQuery } from "./replay";
 import type { RunPage } from "./run-index";
 import type { indexCacheStats } from "./log-index";
 
 /** Only existing Dashboard operations cross the worker boundary, never arbitrary code or paths. */
 export interface DashboardMethods {
+  archiveBuild: { args: [project: string, run: string, action?: "cancel" | "retry", buildId?: string]; result: Awaited<ReturnType<typeof archiveBuild>> };
   diagnostics: { args: []; result: { memory: NodeJS.MemoryUsage; index: ReturnType<typeof indexCacheStats>; activeRequests: number } };
   catalog: { args: []; result: Awaited<ReturnType<typeof catalog>> };
   run: { args: [project: string, run: string, epoch?: string, page?: RunPage]; result: Awaited<ReturnType<typeof getRun>> };

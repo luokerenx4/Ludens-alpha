@@ -2,9 +2,10 @@ import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { join, resolve, basename, dirname } from "node:path";
 import { connect } from "node:net";
 import { selectCycle } from "./aggregate";
-import { getLogIndex } from "./log-index";
+import { getLogIndex, type LogIndex } from "./log-index";
 import { refreshRunProjection, selectIndexedCycle, readRunProjection, indexedObservation, hasTimelineReference, runProgress, type RunPage } from "./run-index";
 import { prepareArchive } from "./prepare-run";
+import { controlArchiveBuild } from "./cold-build";
 import { latestGameRun } from "./initial-selection";
 import { readTimelineRecord, timelinePath, type TimelineRecordDetail } from "./timeline-record";
 import type { Event, Manifest, Project, RunData, LiveStatus } from "./types";
@@ -143,6 +144,12 @@ export async function openRun(project: string, run: string, root = artifactRoot)
   index.archiveWorkspace = workspace;
   return { path, manifest, index, release, archiveWorkspace: workspace };
 }
+export async function archiveBuild(project: string, run: string, action?: "cancel" | "retry", buildId?: string) {
+  const { index, release } = await openRun(project, run);
+  try {
+    return await controlArchiveBuild(index, { action, buildId });
+  } finally { release(); }
+}
 export function hostRequest<T = LiveStatus>(
   socketPath: string,
   request: Record<string, unknown>,
@@ -201,6 +208,9 @@ export function selectRunEvents(manifest: Manifest, events: Event[], epoch?: str
     return { ...selected, events };
   return selected;
 }
+const prepareRun = (index: LogIndex, signal?: AbortSignal) => prepareArchive(index, { kind: "run", signal,
+  step: signal => refreshRunProjection(index, { maxEvents: 2000, ingest: false, signal }),
+  progress: () => runProgress(index) });
 export async function getRun(
   project: string,
   run: string,
@@ -211,9 +221,7 @@ export async function getRun(
   const { manifest, index, release } = await openRun(project, run);
   try {
   const projects = await catalog();
-  await prepareArchive(index, { kind: "run", signal,
-    step: signal => refreshRunProjection(index, { maxEvents: 2000, ingest: false, signal }),
-    progress: () => runProgress(index) });
+  await prepareRun(index, signal);
   const cycle = await selectIndexedCycle(index, manifest, epoch);
   const { phase, ...projection } = await readRunProjection(index, cycle.selectedEpoch, page, cycle.wholeRun, Date.now(), signal);
   const latest = latestGameRun(projects.find((p) => p.id === project))?.id;
@@ -291,6 +299,7 @@ export async function stopRun(
 export async function mediaFile(project: string, run: string, id: string, root = artifactRoot, signal?: AbortSignal) {
   const { path, index, release } = await openRun(project, run, root);
   try {
+  await prepareRun(index, signal);
   const observation = await indexedObservation(index, id, signal);
   const textMedia = observation?.mediaType.startsWith("text/") || observation?.mediaType === "application/json";
   if (
@@ -347,6 +356,7 @@ export async function timelineRecord(project: string, run: string, recordId: str
   if (!recordId || !Number.isSafeInteger(sequence) || sequence < 1) throw new Error("无效的时空轴记录引用");
   const { index, release } = await openRun(project, run, root);
   try {
+    await prepareRun(index, signal);
     if (!await hasTimelineReference(index, recordId, sequence, source, signal)) throw new Error("此运行没有引用指定观测");
     const workspace = await registeredWorkspace(await projectState(project, root));
     const stored = await readTimelineRecord(join(workspace, ".rsa", "timeline"), recordId, sequence, signal)

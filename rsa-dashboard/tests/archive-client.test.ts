@@ -18,3 +18,15 @@ test("leaving the view cancels preparation retries without another HTTP request"
   try { await assert.rejects(readArchiveJson("http://localhost/api/run", controller.signal), { name: "AbortError" }); assert.equal(calls, 1); }
   finally { global.fetch = previous; }
 });
+
+test("cancelled and failed builds leave polling with an explicit error until the user retries", async () => {
+  const previous = global.fetch;
+  try {
+    for (const code of ["ARCHIVE_BUILD_CANCELLED", "ARCHIVE_BUILD_FAILED"]) {
+      let calls = 0;
+      global.fetch = async () => { calls++; return Response.json({ error: "构建已停止", code }, { status: 409 }); };
+      await assert.rejects(readArchiveJson("http://localhost/api/run"), { message: "构建已停止", code });
+      assert.equal(calls, 1);
+    }
+  } finally { global.fetch = previous; }
+});

@@ -5,7 +5,9 @@ import { createServer } from "node:net";
 import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { clearCatalogCache, timelineRecord } from "../lib/data";
+import { clearCatalogCache, timelineRecord as readTimelineRecord } from "../lib/data";
+import { awaitArchive } from "./fixtures/await-archive";
+const timelineRecord = (...args: Parameters<typeof readTimelineRecord>) => awaitArchive(() => readTimelineRecord(...args));
 
 const reference = { recordId: "temperature", sequence: 2 };
 const details = { recordId: "temperature", sequence: 2, data: { temperature: 21.5 }, space: { frame: "room" } };

@@ -1,14 +1,26 @@
 import type { LogIndex } from "./log-index";
+import { ensureArchiveBuild } from "./cold-build";
 
 type Progress = { position: number; total: number; complete: boolean };
 type Work = { controller: AbortController; consumers: number; promise: Promise<void> };
 const work = new WeakMap<LogIndex, Map<string, Work>>();
 
-/** Cold preparation is resumable, time-sliced, and owned by active readers.
- * A 202 response is progress, never an empty successful history page. */
+function requirePublished(index: LogIndex) {
+  if (index.meta("cold:ready") === "1") return;
+  const progress = ensureArchiveBuild(index);
+  if (progress.state === "cancelled" || progress.state === "failed")
+    throw Object.assign(new Error(progress.error ?? "目录构建已取消，请明确重试"), {
+      status: 409, code: progress.state === "cancelled" ? "ARCHIVE_CANCELLED" : "ARCHIVE_BUILD_FAILED", progress });
+  throw Object.assign(new Error("正在准备历史目录"), { status: 202, code: "ARCHIVE_PREPARING", progress });
+}
+
+/** Cold construction belongs to a finite child job. Only small warm tails follow the HTTP reader. */
 export async function prepareArchive(index: LogIndex, options: { kind: string;
   step: (signal: AbortSignal) => Promise<unknown>; progress: () => Progress; signal?: AbortSignal }) {
   options.signal?.throwIfAborted();
+  requirePublished(index);
+  // A rebuild freezes an already published generation. Existing snapshots remain readable.
+  if (index.frozen) return;
   let jobs = work.get(index);
   if (!jobs) { jobs = new Map(); work.set(index, jobs); }
   let job = jobs.get(options.kind);
@@ -42,6 +54,9 @@ export async function prepareArchive(index: LogIndex, options: { kind: string;
     if (--job.consumers === 0) job.controller.abort();
   }
   options.signal?.throwIfAborted();
+  // A source replacement can reset the index during warm refresh. Its partial
+  // rebuild is not a published snapshot and must enter the cold path again.
+  requirePublished(index);
   const progress = { ...index.progress, projection: options.progress() };
   if (!progress.complete || !progress.projection.complete)
     throw Object.assign(new Error("正在准备历史目录"), { status: 202, code: "ARCHIVE_PREPARING", progress });

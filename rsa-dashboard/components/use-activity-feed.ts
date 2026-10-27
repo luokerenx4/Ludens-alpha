@@ -33,9 +33,9 @@ const scopeParams = (scope: ActivityScope) => new URLSearchParams({ project: sco
   ...(scope.epoch ? { epoch: scope.epoch } : {}) });
 
 export function useActivityFeed(options: {
-  project: string; run: string; epoch?: string; enabled: boolean; refresh: boolean; selectedBlock?: string;
+  project: string; run: string; epoch?: string; enabled: boolean; refresh: boolean; selectedBlock?: string; archiveRevision?: number;
 }) {
-  const { project, run, epoch, enabled, refresh, selectedBlock } = options;
+  const { project, run, epoch, enabled, refresh, selectedBlock, archiveRevision } = options;
   const [filter, setFilter] = useState<ActivityFilter>("all");
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
@@ -98,7 +98,7 @@ export function useActivityFeed(options: {
     };
     void load();
     return () => { controller.abort(); historyRequest.current?.abort(); clearTimeout(timer); };
-  }, [project, run, epoch, enabled, refresh, update]);
+  }, [project, run, epoch, enabled, refresh, archiveRevision, update]);
 
   const scope = state.scope;
   const generation = state.generation;

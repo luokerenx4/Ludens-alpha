@@ -5,6 +5,19 @@ import type { LogIndex } from "./log-index";
 type Membership = { group: string; root: boolean };
 export type PythonSummary = { calls: number; raised: number; pending: number; rootOutcome: string;
   lastException?: { seq: number; spanId: string; name: string; error?: unknown } };
+export function advancePythonSummary(previous: PythonSummary | undefined, event: Event, root: boolean): PythonSummary {
+  const summary = previous ? { ...previous } : { calls: 0, raised: 0, pending: 0, rootOutcome: "pending" };
+  if (event.type === "python_call_start") { summary.calls++; summary.pending++; }
+  else {
+    summary.pending = Math.max(0, summary.pending - 1);
+    if (root) summary.rootOutcome = event.data.outcome ?? "unknown";
+    if (event.data.outcome === "error") {
+      summary.raised++;
+      summary.lastException = { seq: event.seq, spanId: event.trace.spanId, name: String(event.data.id), error: event.data.error };
+    }
+  }
+  return summary;
+}
 
 /** Only explicit Python parents form a group. Native bash does not supply a per-tool parent. */
 export async function projectPythonCall(event: Event, blocks: Map<string, LogBlock>,
@@ -27,17 +40,7 @@ export async function projectPythonCall(event: Event, blocks: Map<string, LogBlo
   const root = saved?.recipe?.position ? await index?.readEvent(saved.recipe.position) : undefined;
   const previous = blocks.get(member.group) ?? (root && saved?.recipe?.summary
     ? pythonSummaryBlock(root, member.group, saved.recipe.summary, saved.updatedAt) : undefined);
-  const summary: PythonSummary = previous?.data ? { ...previous.data } as PythonSummary
-    : { calls: 0, raised: 0, pending: 0, rootOutcome: "pending" };
-  if (event.type === "python_call_start") { summary.calls++; summary.pending++; }
-  else {
-    summary.pending = Math.max(0, summary.pending - 1);
-    if (member.root) summary.rootOutcome = data.outcome ?? "unknown";
-    if (data.outcome === "error") {
-      summary.raised++;
-      summary.lastException = { seq: event.seq, spanId: trace.spanId, name: String(data.id), error: data.error };
-    }
-  }
+  const summary = advancePythonSummary(previous?.data as PythonSummary | undefined, event, member.root);
   blocks.set(member.group, pythonSummaryBlock(previous ? { ...event, at: previous.at, seq: previous.seq!,
     data: { id: previous.title.replace(/^Python 调用 · /, "") }, source: previous.source, trace: previous.trace ?? trace,
     origin: { ...event.origin!, eventId: previous.eventId! } } : event, member.group, summary, event.at));

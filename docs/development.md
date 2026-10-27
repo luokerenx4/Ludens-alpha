@@ -159,7 +159,9 @@ rsa run --model openai-codex/gpt-6.1-sol --seconds 300 --requests 50
 
 档案读取在 Dashboard 自己的 Node worker 中运行，不进入 Next/React 的编译和异步调试环境。开发模式修改 `lib/` 后端或 `worker/` 时需要重启 Dashboard；前端仍使用 Next HMR。worker 没有独立服务或端口，随 Dashboard 退出。停止/重载 Dashboard 无需重启游戏 Host、Baseware 或模拟器。
 
-冷历史目录按请求分批补建。HTTP `202 ARCHIVE_PREPARING` 带进度，浏览器和 Pet 会取消可中断地续读；不是空历史页。关闭页面会取消后续构建，已提交目录可继续使用。录像通过现有时空轴直接读取，不等待完整活动日志整理。`.dashboard-index` 只是可重建目录，升级格式会使旧分页游标失效，不修改原日志、session 或录像。
+冷历史目录由临时 builder 子进程构建，全局同时一个。首次读取触发，HTTP `202 ARCHIVE_PREPARING` 带进度；浏览器和 Pet 继续读取，不能把它当作空历史。关闭页面只取消查询，有限构建继续；界面的“取消整理/重新整理”控制构建任务。取消和失败不会被轮询自动重启。Dashboard 关闭会终止 builder；成功后 builder 退出，新目录通过 `.dashboard-index/active.json` 发布，旧目录等在途读者结束后回收。未发布的中间目录不续建，重试从头开始。录像直接查现有时空轴，不等待完整统计。原日志、session 和录像不变。
+
+查询页缓存默认 256 MiB（`RSA_DASHBOARD_INDEX_CACHE_BYTES`），冷构建共享工作集目标 2 GiB（`RSA_DASHBOARD_BUILD_BYTES`）；超过工作集时批量落盘。默认查询 worker 堆上限 1 GiB、builder 堆上限 4 GiB，随配置留出余量；这些不是 RSS 硬上限。构建中的内存与完成后的常驻内存分开衡量。
 
 真实档案的离线压力检查使用独立缓存，避免改写正在使用的目录：
 
@@ -171,7 +173,7 @@ node --expose-gc --max-old-space-size=1024 --import tsx scripts/check-index-memo
   --output /absolute/path/to/report.json --epoch epoch-id
 ```
 
-该脚本记录重建、分页和释放后的内存及目录体积；Next 开发/生产 HTTP 与实际播放仍需单独验证，不能用离线结果代替。
+该脚本记录子进程阶段、解析/页写工作量、父子进程采样 RSS、分页、目录体积和退出后缓存释放；`--cache-bytes` / `--build-bytes` 可覆盖工作预算，`--compare report.json` 对比事件、统计与历史结果。必须使用独立空目录测冷构建。Next HTTP 与实际播放仍需单独验证，不能用离线结果代替。
 
 Dashboard 共享日志客户端有变化时，重新构建 `rsa-companion` 并重启 Electron 主进程；只刷新窗口不会更新已打包的 Pet 消费器。
 

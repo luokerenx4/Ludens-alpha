@@ -81,7 +81,7 @@ rsa controller controller/pad.play --args '{"inputs":[{"atMs":0,"durationMs":500
 
 Baseware 记录设备事实，RSA 保存模型、工具、能力和感知记录，Shiori 接入 OMP 原生 telemetry。Dashboard 与 Pet 消费日志，不另起推理循环。来源与调用链见 [日志契约](logging.md)，评测见 [Benchmark](benchmark.md)。调用成功、文件增长或帧数增加不等于任务成功。
 
-Dashboard 将归档读取放在独立的 Node worker 线程中，Next 路由负责请求和响应。worker 共享一份可重建目录：原始事件位置、身份关系、展示所需的位置与截止点，以及小型统计；正文仍从原始 events、streams、archive 按需读取。Activity、运行概览和回放共用这个目录，Pet 只消费 Activity 增量。冷目录分批构建并报告进度，取消的读者退出订阅，不取消其他读者；没有读者时停止后续批次。默认产品入口使用生产构建，开发热更新与归档消费分开。细节见 [日志消费](logging.md#消费与指标解释) 和 [归档重构方案](dashboard-archive-refactor-plan.md)。
+Dashboard 将归档读取放在独立的 Node worker 线程中，Next 路由负责请求和响应。worker 共享一份可重建目录：原始事件位置、身份关系、展示所需的位置与截止点，以及小型统计；正文仍从原始 events、streams、archive 按需读取。Activity、运行概览和回放共用这个目录，Pet 只消费 Activity 增量。冷目录由查询 worker 按需启动一个临时子进程，固定输入截止、顺序聚合并批量写入新 generation；完成后原子发布，子进程退出释放工作集。全局只同时构建一个 run，查询仍使用已有可读目录。HTTP 取消只结束读取，构建独立继续；显式取消/失败保留状态，用户重试才重新开始。默认产品入口使用生产构建，开发热更新与归档消费分开。细节见 [日志消费](logging.md#消费与指标解释) 和 [归档重构方案](dashboard-archive-refactor-plan.md)。
 
 ## TypeScript 与 Python
 

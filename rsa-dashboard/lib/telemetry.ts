@@ -8,7 +8,7 @@ import type {
 } from "./types";
 
 type SpanKind = TraceSpan["kind"];
-const operations: {
+export const telemetryOperations: {
   kind: SpanKind;
   start: string;
   ends: string[];
@@ -144,7 +144,7 @@ export function projectTelemetry(
   const deviceCommands = new Set(
     allEvents.filter((event) => event.type === "command" && identified(event)).map(key),
   );
-  for (const definition of operations) {
+  for (const definition of telemetryOperations) {
     const operationKey = (event: Event) => definition.start === "action_start"
       ? JSON.stringify([key(event), event.data.actionId]) : key(event);
     const finishes = new Map<string, Event>();

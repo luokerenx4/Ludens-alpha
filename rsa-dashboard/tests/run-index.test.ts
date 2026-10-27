@@ -146,7 +146,7 @@ test("late controller errors replace sampling notices instead of double-counting
     assert.equal(result.notices[0].type, "execution_error");
     assert.match(result.notices[0].text, /device failed/);
     assert.ok([...index.store("run-notices").entries()].every(row => row.text === undefined && row.file === undefined));
-    assert.ok((await readdir(join(path, ".dashboard-index", "run-notices"))).every(file => !file.startsWith("data-")));
+    assert.ok((await readdir(join(index.directory, "run-notices"))).every(file => !file.startsWith("data-")));
   });
 });
 

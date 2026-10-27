@@ -9,6 +9,7 @@ import { readArtifact } from "../../shared/log-archive";
 import type { Event } from "./types";
 import type { ReplayCoverage, ReplayDetail, ReplayFrame, ReplayItem, ReplayOverview, ReplayOverviewResult, ReplayPreparing, ReplayWindow } from "./replay-types";
 import { decodeTimelineFrame, type VideoFrameReference } from "../../shared/timeline-media";
+import { archiveBuildState } from "./cold-build";
 import type { FileMedia } from "./file-response";
 
 const PAGE = 500, MAX_WINDOW = 60_000, INDEX_BATCH = 4 * 1024 * 1024;
@@ -27,7 +28,9 @@ const url = (scope: Pick<Scope, "project" | "run" | "epoch">, values: Record<str
 
 /** A short source-index batch makes progress visible without waiting for unrelated projections. */
 async function scopeFor(index: LogIndex, project: string, run: string, epoch: string | undefined, refresh: boolean, signal?: AbortSignal): Promise<Scope | ReplayPreparing> {
-  if (refresh || !index.eventRevision) await index.refreshEvents({ maxBytes: INDEX_BATCH, signal });
+  const build = archiveBuildState(index);
+  const building = build?.state === "queued" || build?.state === "building";
+  if (!building && (refresh || !index.eventRevision)) await index.refreshEvents({ maxBytes: INDEX_BATCH, signal });
   const controls: { position: number; epoch?: string; at: string; mode: unknown }[] = [];
   let position = 0;
   for (;;) {
@@ -37,12 +40,25 @@ async function scopeFor(index: LogIndex, project: string, run: string, epoch: st
       at: row.event.origin?.at ?? row.event.at, mode: row.event.data.mode });
     position = page.at(-1)!.position;
   }
+  // The unpublished directory stays private. Only its small scanned bounds are
+  // needed to read original timeline media while statistics are still building.
+  if (building && build.replayHint) {
+    for (const row of build.replayHint.controls) if (!controls.some(value => value.position === row.position)) controls.push(row);
+    controls.sort((a, b) => a.position - b.position);
+  }
   const cycles: ReplayOverview["cycles"] = [];
   for (const row of controls) if (row.mode === "auto" && row.epoch && !cycles.some(cycle => cycle.epoch === row.epoch))
     cycles.push({ epoch: row.epoch, startedAt: row.at });
   const selected = epoch === "latest" ? cycles.at(-1)?.epoch ?? null : epoch === "all" ? null : epoch ?? null;
-  const coverage: ReplayCoverage = { ...index.progress };
-  const bounds = index.timeBounds;
+  const coverage: ReplayCoverage = building
+    ? { bytes: build.bytes ?? 0, totalBytes: build.totalBytes ?? index.progress.totalBytes, complete: false }
+    : { ...index.progress };
+  const bounds = { ...index.timeBounds };
+  if (building && build.replayHint) {
+    const hint = build.replayHint;
+    if (hint.startAt && (!bounds.startAt || hint.startAt < bounds.startAt)) bounds.startAt = hint.startAt;
+    if (hint.endAt && (!bounds.endAt || hint.endAt > bounds.endAt)) bounds.endAt = hint.endAt;
+  }
   let startAt: number | undefined = bounds.startAt ? Date.parse(bounds.startAt) : undefined;
   let endAt: number | undefined = bounds.endAt ? Date.parse(bounds.endAt) : undefined;
   if (selected !== null) {
@@ -167,6 +183,12 @@ async function eventsWindow(scope: Scope, query: ReplayQuery): Promise<ReplayWin
     ...(positions.length > PAGE ? { nextCursor: encodeCursor({ ...cursor, after: selected.at(-1)! }) } : {}) };
 }
 async function prepareOperations(scope: Scope) {
+  if (scope.index.frozen) {
+    if (scope.index.meta("cold:ready") === "1") return;
+    throw Object.assign(new Error("正在整理动作与调用目录"), {
+      status: 202, code: "ARCHIVE_PREPARING", progress: archiveBuildState(scope.index),
+    });
+  }
   const progress = await refreshOperationIndex(scope.index, { maxEvents: 5000, signal: scope.signal });
   if (!progress.complete) throw Object.assign(new Error("正在整理动作与调用目录"), {
     status: 202, code: "ARCHIVE_PREPARING", progress: { kind: "operations", ...progress, total: scope.index.eventRevision },
@@ -192,9 +214,9 @@ async function expandEvent(event: Event, index: LogIndex) {
 }
 async function itemDetail(scope: Scope, id: string | undefined): Promise<ReplayDetail> {
   if (!id || !/^event:\d+$/.test(id)) fail("无效的回放事件引用");
+  await prepareOperations(scope);
   const index = scope.index, position = Number(id.slice(6)), start = await index.readEvent(position);
   if (!start || !scoped(start, scope.epoch)) fail("事件不属于所选运行或周期", 404);
-  await prepareOperations(scope);
   const operation = await getOperation(index, position), projected = item(position, start, operation), events = [start];
   if (operation?.endPosition) { const end = await index.readEvent(operation.endPosition); if (end) events.push(end); }
   const epoch = start.trace?.epoch ?? null;

@@ -10,6 +10,7 @@ import { AliceFollowCard, useAliceFollow } from "@/components/alice-follow";
 import { DesktopBridge } from "@/components/desktop-bridge";
 import { BenchmarkCases } from "@/components/benchmark-cases";
 import { TimelinePlayer } from "@/components/timeline-player";
+import { ArchiveBuild } from "@/components/archive-build";
 import {
   Metric,
   ObservationPanel,
@@ -122,6 +123,8 @@ export default function Dashboard() {
   }, []);
   const [error, setError] = useState("");
   const [preparing, setPreparing] = useState<{ key: string; progress: ArchiveProgress } | null>(null);
+  const [archiveRevision, setArchiveRevision] = useState(0);
+  const archiveReady = useCallback(() => setArchiveRevision(value => value + 1), []);
   const [refresh, setRefresh] = useState(true);
   const alice = useAliceFollow();
   const [stopping, setStopping] = useState(false);
@@ -140,7 +143,7 @@ export default function Dashboard() {
     ? replayCycles?.key === JSON.stringify([selection.project, run]) ? replayCycles.cycles : []
     : data?.cycles ?? [];
   const activity = useActivityFeed({ project: selection.project, run, epoch: selection.epoch || undefined,
-    enabled: view === "live", refresh, selectedBlock: query.get("block") ?? undefined });
+    enabled: view === "live", refresh, archiveRevision, selectedBlock: query.get("block") ?? undefined });
   const call =
     data?.selectedCall ?? data?.calls.find((c) => c.id === requestedCall) ?? data?.calls.at(-1);
   const navigateUrl = useCallback((target: string) => {
@@ -240,6 +243,7 @@ export default function Dashboard() {
     refresh,
     view,
     benchmarkCases,
+    archiveRevision,
   ]);
   const live = data?.live;
   const isCurrent =
@@ -495,6 +499,8 @@ export default function Dashboard() {
               ))}
             </nav>
           )}
+          {!benchmarkCases && view !== "alice" && <ArchiveBuild key={selection.project + "/" + run}
+            project={selection.project} run={run} onReady={archiveReady} />}
           {!benchmarkCases && (catalogError || (view !== "replay" && error)) && (
             <div className="error-banner" role="alert">
               {catalogError || error}
@@ -507,7 +513,7 @@ export default function Dashboard() {
             <AliceSettings follow={alice} projects={projects} />
           ) : view === "replay" ? (
             <TimelinePlayer key={scopeKey} project={selection.project} run={run} epoch={selection.epoch || "latest"}
-              onOverview={onReplayOverview}
+              onOverview={onReplayOverview} archiveRevision={archiveRevision}
               position={query.get("at")} onPosition={at => navigate({ project: selection.project, run, at: String(at) })} />
           ) : benchmarkCases ? (
             <BenchmarkCases

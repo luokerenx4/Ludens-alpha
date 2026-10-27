@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FileRecords, recordCacheStats, type RecordPointer } from "../lib/record-store";
+import { BulkBudget, FileRecords, recordCacheStats, resetStorageMetrics, storageMetrics, type RecordPointer } from "../lib/record-store";
 
 const id = (n: number) => `record-${String(n).padStart(5, "0")}`;
 async function fixture(work: (path: string) => Promise<void>) {
@@ -247,5 +247,63 @@ test("range reads skip other pages and reverse only the selected interval", asyn
     assert.deepEqual(forward, Array.from({ length: 9 }, (_, i) => String(i + 996).padStart(5, "0")));
     assert.deepEqual([...store.entries({ ...options, reverse: true })].map(entry => entry.id), forward.toReversed());
     assert.deepEqual([...store.entries({ afterId: "99999", beforeId: "zzzzz" })], []);
+  } finally { store.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("cold tables share a spill budget and preserve reads, replacement and deletion across spill", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "records-cold-budget-"));
+  const budget = new BulkBudget(12 * 1024);
+  let first = new FileRecords(join(directory, "first")), second = new FileRecords(join(directory, "second"));
+  resetStorageMetrics(); first.beginBulk(budget); second.beginBulk(budget);
+  try {
+    for (let i = 0; i < 150; i++) {
+      first.index(`key-${i}`, { value: i });
+      await second.put(`key-${i}`, { value: i });
+      assert.ok(budget.bytes <= budget.limit);
+      assert.equal(first.meta(`key-${i}`)?.value, i);
+      assert.deepEqual(await second.get(`key-${i}`), { value: i });
+    }
+    first.index("key-0", { value: 999 }); await second.put("key-0", { value: 999 });
+    await first.delete("key-1"); await second.delete("key-1");
+    assert.equal(first.meta("key-1"), undefined); assert.equal(await second.get("key-1"), undefined);
+    first.finishBulk(); second.finishBulk();
+    assert.equal(budget.bytes, 0); assert.equal(budget.stores.size, 0);
+    assert.ok(storageMetrics.bulkSpills > 0);
+    assert.equal(first.count(), 149); assert.equal(second.count(), 149);
+    first.close(); second.close();
+    first = new FileRecords(join(directory, "first")); second = new FileRecords(join(directory, "second"));
+    assert.equal(first.meta("key-0")?.value, 999); assert.deepEqual(await second.get("key-0"), { value: 999 });
+    assert.equal(first.meta("key-1"), undefined); assert.equal(await second.get("key-1"), undefined);
+  } finally { first.close(); second.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("a cold table fitting its workset writes final pages without random intermediate rewrites", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "records-cold-pages-"));
+  const store = new FileRecords(directory), budget = new BulkBudget(16 * 1024 * 1024);
+  resetStorageMetrics(); store.beginBulk(budget);
+  try {
+    for (let i = 4999; i >= 0; i--) store.index(String(i).padStart(6, "0"), { value: i });
+    for (let i = 0; i < 5000; i++) store.index(String(i).padStart(6, "0"), { value: i + 1 });
+    assert.equal(storageMetrics.pageWrites, 0);
+    store.finishBulk(); store.flush();
+    assert.equal(store.count(), 5000); assert.equal(store.meta("000000")?.value, 1);
+    assert.equal(storageMetrics.pageWrites, 5);
+  } finally { store.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("cold snapshot history contains one final version per block after repeated spills", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "records-cold-history-"));
+  const store = new FileRecords(directory, () => {}, true), budget = new BulkBudget(1024);
+  store.beginBulk(budget);
+  try {
+    for (let pass = 0; pass < 3; pass++) for (let i = 29; i >= 0; i--)
+      store.index(`block-${i}`, { revision: i + 1, createdRevision: i + 1, pass });
+    store.finishBulk(); store.flush();
+    const versions = [...store.versions()];
+    assert.equal(versions.length, 30);
+    assert.deepEqual(versions.map(row => row.revision), Array.from({ length: 30 }, (_, i) => i + 1));
+    assert.ok(versions.every(row => row.pass === 2));
+    store.index("block-0", { revision: 31, createdRevision: 1, pass: 3 });
+    assert.deepEqual([...store.versions({ after: 30 })].map(row => row.revision), [31]);
   } finally { store.close(); await rm(directory, { recursive: true, force: true }); }
 });

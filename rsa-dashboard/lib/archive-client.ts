@@ -1,6 +1,6 @@
-/** A cold directory can advance across bounded HTTP requests. It is never an
- * empty history page. Abort also cancels the delay and the next request. */
+/** HTTP reads wait for a finite archive build; abort only stops this reader. */
 export type ArchiveProgress = { bytes: number; totalBytes: number; projection?: { position: number; total: number; complete: boolean } };
+export type { ArchiveBuildState } from "./cold-build-protocol";
 export async function readArchiveJson<T>(url: string, signal?: AbortSignal,
   onProgress?: (progress: ArchiveProgress) => void): Promise<T> {
   for (;;) {
@@ -18,7 +18,8 @@ export async function readArchiveJson<T>(url: string, signal?: AbortSignal,
       });
       continue;
     }
-    if (!response.ok) throw new Error(body.error ?? `读取失败 · HTTP ${response.status}`);
+    if (!response.ok) throw Object.assign(new Error(body.error ?? `读取失败 · HTTP ${response.status}`),
+      { code: body.code, progress: body.progress });
     return body;
   }
 }

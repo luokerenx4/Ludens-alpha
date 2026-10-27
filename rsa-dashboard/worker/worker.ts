@@ -1,16 +1,18 @@
 import { parentPort } from "node:worker_threads";
-import { catalog, getRun, mediaFile, stopRun, timelineRecord } from "../lib/data";
+import { archiveBuild, catalog, getRun, mediaFile, stopRun, timelineRecord } from "../lib/data";
 import { getActivity } from "../lib/activity";
 import { getReplay } from "../lib/replay";
 import { benchmarkCatalog, benchmarkEvidence } from "../lib/benchmark-data";
 import { aliceState, setAliceTarget, recordAliceConsumer } from "../lib/alice-state";
 import { closeLogIndexes, indexCacheStats } from "../lib/log-index";
 import { workerFailure, type DashboardMethods, type DashboardMethod, type WorkerRequest, type WorkerResponse } from "../lib/dashboard-protocol";
+import { closeArchiveBuilds } from "../lib/cold-build";
 
 const port = parentPort!;
 const handlers: { [K in DashboardMethod]: (args: DashboardMethods[K]["args"], signal: AbortSignal) => unknown } = {
   diagnostics: () => ({ memory: process.memoryUsage(), index: indexCacheStats(), activeRequests: requests.size - 1 }),
   catalog: () => catalog(),
+  archiveBuild: ([project, run, action, buildId]) => archiveBuild(project, run, action, buildId),
   run: ([project, run, epoch, page], signal) => getRun(project, run, epoch, page, signal),
   activity: ([project, run, epoch, query], signal) => getActivity(project, run, epoch, query, signal),
   replay: ([project, run, query], signal) => getReplay(project, run, query, undefined, signal),
@@ -31,7 +33,7 @@ port.on("message", (message: WorkerRequest) => {
     closing = true;
     for (const request of requests.values()) request.abort.abort();
     void Promise.allSettled([...requests.values()].map(request => request.work)).then(async () => {
-      await closeLogIndexes(); port.close();
+      await closeArchiveBuilds(); await closeLogIndexes(); port.close();
     });
     return;
   }

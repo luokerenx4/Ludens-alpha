@@ -1,6 +1,7 @@
 import { Worker } from "node:worker_threads";
 import { resolve } from "node:path";
 import type { DashboardMethod, DashboardMethods, WorkerRequest, WorkerResponse } from "./dashboard-protocol";
+import { archiveBudget } from "./archive-budget";
 
 type Waiting = { resolve(value: unknown): void; reject(error: unknown): void; cleanup(): void };
 interface WorkerOptions { file?: string; env?: NodeJS.ProcessEnv; maxPending?: number; timeoutMs?: number }
@@ -22,7 +23,7 @@ export class DashboardWorker {
     // and would otherwise bundle the TypeScript backend back into the React runtime.
     const file = this.options.file ?? resolve(process.cwd(), "worker/bootstrap.mjs");
     const worker: Worker = Reflect.construct(Worker, [file, { execArgv: [], env: this.options.env,
-      resourceLimits: { maxOldGenerationSizeMb: 512 } }]);
+      resourceLimits: { maxOldGenerationSizeMb: archiveBudget(this.options.env).readerHeapMiB } }]);
     this.worker = worker;
     worker.on("message", (message: WorkerResponse) => {
       if (message.type === "ready") return;
@@ -77,7 +78,7 @@ export class DashboardWorker {
     this.rejectAll(unavailable("Dashboard reader is closing"));
     if (!worker) return;
     await new Promise<void>(resolve => {
-      const timer = setTimeout(() => { void worker.terminate(); }, 2000);
+      const timer = setTimeout(() => { void worker.terminate(); }, 5000);
       worker.once("exit", () => { clearTimeout(timer); resolve(); });
       worker.ref();
       try { worker.postMessage({ type: "close" } satisfies WorkerRequest); } catch { void worker.terminate(); }

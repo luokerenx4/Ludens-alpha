@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { DashboardWorker } from "../lib/dashboard-worker";
@@ -78,6 +78,12 @@ test("real TypeScript backend boots outside Next and reads only its configured a
   try {
     assert.deepEqual(await worker.call("catalog", []), []);
     await assert.rejects(worker.call("run", ["../outside", "run"]), /无效|Invalid/);
+    const run = join(root, "project/runs/run");
+    await mkdir(run, { recursive: true });
+    await writeFile(join(run, "manifest.json"), JSON.stringify({ runId: "run" }));
+    await writeFile(join(run, "events.jsonl"), "");
+    assert.equal(await worker.call("archiveBuild", ["project", "run"]), null,
+      "build status is available through the real CommonJS worker without starting work");
     const diagnostics = await worker.call("diagnostics", []);
     assert.equal(diagnostics.activeRequests, 0); assert.equal(diagnostics.index.leased, 0);
     assert.equal(worker.pendingCount, 0);

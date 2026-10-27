@@ -5,7 +5,8 @@
 import assert from "node:assert/strict";
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
-import { mkdirSync, statSync, writeFileSync, readdirSync } from "node:fs";
+import { mkdirSync, statSync, writeFileSync, readdirSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 const args = process.argv.slice(2);
@@ -15,39 +16,57 @@ const run = resolve(option("--run")!), cacheRoot = resolve(option("--cache-root"
 assert.ok(!cacheRoot.startsWith(run + "/"), "Use an isolated disposable directory");
 process.env.RSA_DASHBOARD_INDEX_ROOT = cacheRoot;
 process.env.RSA_DASHBOARD_INDEX_IDLE_MS = "1";
-process.env.RSA_DASHBOARD_INDEX_CACHE_BYTES = String(32 * 1024 * 1024);
+if (option("--cache-bytes")) process.env.RSA_DASHBOARD_INDEX_CACHE_BYTES = option("--cache-bytes");
+if (option("--build-bytes")) process.env.RSA_DASHBOARD_BUILD_BYTES = option("--build-bytes");
 mkdirSync(dirname(output), { recursive: true });
 const memory = () => process.memoryUsage();
 const sourceBefore = statSync(join(run, "events.jsonl"));
 const report: Record<string, any> = { run, startedAt: new Date().toISOString(), sourceBytes: sourceBefore.size,
   before: memory(), phases: [], samples: [], limitations: ["Offline worker-equivalent reader; separate HTTP validation covers Next dev and production."] };
 const save = () => writeFileSync(output, JSON.stringify(report, null, 2) + "\n");
-let peakHeap = 0, peakRss = 0;
+let peakHeap = 0, peakRss = 0, peakCombinedRss = 0;
+const childPids = new Set<number>();
 const timer = setInterval(() => { const m = memory(); peakHeap = Math.max(peakHeap, m.heapUsed); peakRss = Math.max(peakRss, m.rss); }, 50).unref();
 const bytes = (path: string): number => readdirSync(path, { withFileTypes: true }).reduce((n, entry) => n +
   (entry.isDirectory() ? bytes(join(path, entry.name)) : statSync(join(path, entry.name)).size), 0);
 async function main() {
-  const { getLogIndex, closeLogIndexes, indexCacheStats, pruneLogIndexes } = await import("../lib/log-index");
-  const { refreshRunProjection, readRunProjection, runProgress } = await import("../lib/run-index");
-  const { refreshActivity, activityProgress, queryActivity } = await import("../lib/activity");
-  const { refreshOperationIndex, queryOperationRefs } = await import("../lib/operation-index");
-  const index = getLogIndex(run), release = index.retain();
+  const { getLogIndex, closeLogIndexes, indexCacheStats, pruneLogIndexes, storageMetrics } = await import("../lib/log-index");
+  const { readRunProjection } = await import("../lib/run-index");
+  const { queryActivity } = await import("../lib/activity");
+  const { queryOperationRefs } = await import("../lib/operation-index");
+  const { ensureArchiveBuild, controlArchiveBuild, closeArchiveBuilds } = await import("../lib/cold-build");
+  const { archiveBudget } = await import("../lib/archive-budget");
+  report.budget = archiveBudget();
+  let index = getLogIndex(run);
+  try { index.archiveWorkspace = JSON.parse(readFileSync(join(run, "manifest.json"), "utf8")).workspace; } catch { /* Offline fixtures may omit manifests. */ }
   const phase = async (name: string, step: () => Promise<void>) => {
     const started = performance.now(); await step(); global.gc?.();
     const value = { name, ms: performance.now() - started, memory: memory(), cache: indexCacheStats(), bytes: bytes(index.directory) };
     report.phases.push(value); save(); process.stderr.write(JSON.stringify(value) + "\n");
   };
-  await phase("source-directory", async () => {
-    do { await index.refreshEvents({ maxBytes: 4 * 1024 * 1024 }); } while (!index.progress.complete);
-    report.events = index.eventRevision;
+  await phase("cold-build", async () => {
+    ensureArchiveBuild(index);
+    const started = Date.now();
+    for (;;) {
+      const state = await controlArchiveBuild(index, {});
+      assert.ok(state, "Build state missing");
+      report.build = state;
+      if (state.pid) {
+        childPids.add(state.pid);
+        try {
+          const rssKiB = execFileSync("ps", ["-o", "rss=", "-p", `${process.pid},${state.pid}`], { encoding: "utf8" })
+            .trim().split(/\s+/).reduce((sum, value) => sum + Number(value), 0);
+          peakCombinedRss = Math.max(peakCombinedRss, rssKiB * 1024);
+        } catch { /* Child may exit between progress and process sampling. */ }
+      }
+      if (state.state === "ready") break;
+      assert.ok(state.state === "queued" || state.state === "building", state.error ?? state.state);
+      assert.ok(Date.now() - started < 15 * 60_000, "Archive build exceeded benchmark timeout");
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+    index = getLogIndex(run); report.events = index.eventRevision;
   });
-  await phase("run-summary-locators", async () => {
-    do { await refreshRunProjection(index, { maxEvents: 2000, ingest: false }); } while (!runProgress(index).complete);
-  });
-  await phase("activity-recipes", async () => {
-    do { await refreshActivity(index, { maxEvents: 2000, ingest: false }); } while (!activityProgress(index).complete);
-  });
-  await phase("sparse-operations", async () => { await refreshOperationIndex(index); });
+  const release = index.retain();
   const epoch = option("--epoch") ?? null;
   await phase("history-and-repeat", async () => {
     const scope = { project: "offline", runId: run.split("/").at(-1)!, epoch };
@@ -84,12 +103,27 @@ async function main() {
       }
     }
   });
+  report.queryMetrics = { ...storageMetrics };
+  if (option("--compare")) {
+    const expected = JSON.parse(readFileSync(option("--compare")!, "utf8"));
+    for (const field of ["events", "calls", "summary", "history", "samples"]) assert.deepEqual(report[field], expected[field], `Mismatch: ${field}`);
+    report.baselineMatches = true;
+  }
   report.directories = Object.fromEntries(readdirSync(index.directory, { withFileTypes: true }).filter(e => e.isDirectory()).map(e => [e.name, bytes(join(index.directory, e.name))]));
-  release(); pruneLogIndexes(Date.now() + 10_000); await closeLogIndexes(); global.gc?.();
+  release(); await closeArchiveBuilds(); pruneLogIndexes(Date.now() + 10_000); await closeLogIndexes(); global.gc?.();
   report.afterClose = memory(); report.afterCloseCache = indexCacheStats();
   assert.equal(statSync(join(run, "events.jsonl")).size, sourceBefore.size);
   assert.equal(statSync(join(run, "events.jsonl")).mtimeMs, sourceBefore.mtimeMs);
   report.peakHeapSampled = peakHeap; report.peakRssSampled = peakRss;
+  report.peakCombinedRssSampled = peakCombinedRss;
+  report.builderPids = [...childPids];
+  report.buildersExited = [...childPids].every(pid => { try { process.kill(pid, 0); return false; } catch { return true; } });
+  assert.ok(report.buildersExited, "Builder process did not exit");
   report.completedAt = new Date().toISOString(); report.ok = true; save(); clearInterval(timer);
 }
-main().catch(error => { report.error = String(error.stack ?? error); save(); process.stderr.write(report.error + "\n"); process.exitCode = 1; clearInterval(timer); });
+main().catch(async error => {
+  report.error = String(error.stack ?? error); save(); process.stderr.write(report.error + "\n"); process.exitCode = 1;
+  const { closeArchiveBuilds } = await import("../lib/cold-build");
+  const { closeLogIndexes } = await import("../lib/log-index");
+  await closeArchiveBuilds(); await closeLogIndexes(); clearInterval(timer);
+});

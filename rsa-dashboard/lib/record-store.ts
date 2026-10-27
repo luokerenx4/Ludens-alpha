@@ -11,7 +11,25 @@ type Cached = { owner: FileRecords; page: Page; rows: RecordPointer[]; dirty: bo
 const cacheKey = Symbol.for("ludens.dashboard.index-pages");
 const cacheState = ((globalThis as any)[cacheKey] ??= { entries: new Map<string, Cached>(), bytes: 0 }) as { entries: Map<string, Cached>; bytes: number };
 const cache = cacheState.entries;
-const cacheLimit = () => Math.max(CHUNK, Number(process.env.RSA_DASHBOARD_INDEX_CACHE_BYTES) || 32 * CHUNK);
+const cacheLimit = () => Math.max(CHUNK, Number(process.env.RSA_DASHBOARD_INDEX_CACHE_BYTES) || 256 * CHUNK);
+export const storageMetrics = { sourceReadCalls: 0, sourceReadBytes: 0, eventParses: 0,
+  bodyReadCalls: 0, bodyReadBytes: 0, bodyParses: 0, pageLoads: 0, pageHits: 0,
+  pageWrites: 0, pageWriteBytes: 0, bulkSpills: 0 };
+export function resetStorageMetrics() { for (const key of Object.keys(storageMetrics) as (keyof typeof storageMetrics)[]) storageMetrics[key] = 0; }
+/** One budget shared by every table of a cold build, not a budget per table. */
+export class BulkBudget {
+  bytes = 0;
+  readonly stores = new Set<FileRecords>();
+  constructor(readonly limit = Math.max(CHUNK, Number(process.env.RSA_DASHBOARD_BUILD_BYTES) || 2 * 1024 * CHUNK)) {}
+  trim() {
+    while (this.bytes > this.limit) {
+      let largest: FileRecords | undefined;
+      for (const store of this.stores) if (!largest || store.bulkBytes > largest.bulkBytes) largest = store;
+      if (!largest?.bulkBytes) break;
+      storageMetrics.bulkSpills++; largest.flushBulk();
+    }
+  }
+}
 const fields = ["epoch", "kind", "status", "type"];
 const key = (v: unknown) => JSON.stringify(v ?? null);
 const matches = (row: RecordPointer, where: Where = {}) => Object.entries(where).every(([k, v]) => row[k] === v);
@@ -26,7 +44,9 @@ export function recordCacheStats() { return { pages: cache.size, bytes: cacheSta
 function save(entry: Cached) {
   if (!entry.dirty) return;
   const path = join(entry.owner.pageDirectory, entry.page.file);
-  writeFileSync(path + ".tmp", entry.rows.map(row => JSON.stringify(row)).join("\n") + (entry.rows.length ? "\n" : ""));
+  const text = entry.rows.map(row => JSON.stringify(row)).join("\n") + (entry.rows.length ? "\n" : "");
+  writeFileSync(path + ".tmp", text);
+  storageMetrics.pageWrites++; storageMetrics.pageWriteBytes += Buffer.byteLength(text);
   renameSync(path + ".tmp", path); entry.dirty = false;
 }
 function trim() {
@@ -55,12 +75,12 @@ export function* lines(path: string, chunkSize = CHUNK): Generator<{ line: strin
   } finally { closeSync(fd); }
 }
 
-type ImportRow = { ordinal: number; pointer: RecordPointer };
+type ImportRow = { ordinal: number; pointer: RecordPointer; sortKey?: string };
 function* legacyPointers(path: string): Generator<RecordPointer> {
   for (const { line } of lines(path)) yield JSON.parse(line) as RecordPointer;
 }
-const importOrder = (a: ImportRow, b: ImportRow) => a.pointer.id === b.pointer.id
-  ? a.ordinal - b.ordinal : a.pointer.id < b.pointer.id ? -1 : 1;
+const importOrder = (a: ImportRow, b: ImportRow) => (a.sortKey ?? a.pointer.id) === (b.sortKey ?? b.pointer.id)
+  ? a.ordinal - b.ordinal : (a.sortKey ?? a.pointer.id) < (b.sortKey ?? b.pointer.id) ? -1 : 1;
 /** Merge sorted chunks with one head and an 8 KiB read buffer per input. */
 function* mergeChunks(paths: string[]): Generator<ImportRow> {
   const inputs = paths.map(path => lines(path, 8192));
@@ -103,6 +123,8 @@ export class FileRecords {
   private dataFile = "";
   private dataOffset = 0;
   private part = 0;
+  private bulk?: { budget: BulkBudget; rows: Map<string, { pointer: RecordPointer; weight: number }> };
+  bulkBytes = 0;
   constructor(readonly directory: string, private onWrite = () => {}, private keepHistory = false, private sourceFile?: string) {
     mkdirSync(directory, { recursive: true });
     this.pageDirectory = join(directory, "pages");
@@ -124,12 +146,81 @@ export class FileRecords {
     }
   }
   /** Initialize a new derived store from a bounded stream; existing indexes are never replaced. */
-  seed(records: Iterable<RecordPointer>) {
+  seed(records: Iterable<RecordPointer>, options: { sorted?: boolean; maxBytes?: number } = {}) {
     if (this.manifest.pages.length || this.manifest.history.length)
       throw new Error("Bulk initialization requires an empty store");
-    this.onWrite(); this.importRecords(records); this.changed = true; this.flush();
+    this.onWrite(); this.importRecords(records, options); this.changed = true; this.flush();
   }
-  private importRecords(records: Iterable<RecordPointer>) {
+  beginBulk(budget: BulkBudget) {
+    if (this.bulk) return;
+    this.bulk = { budget, rows: new Map() }; budget.stores.add(this);
+  }
+  /** Spill sorted batches through the ordinary paged store, preserving random reads. */
+  flushBulk() {
+    if (!this.bulk?.rows.size) return;
+    const bulk = this.bulk, rows = [...bulk.rows.values()].map(row => row.pointer);
+    bulk.rows.clear(); bulk.budget.bytes -= this.bulkBytes; this.bulkBytes = 0;
+    rows.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    if (!this.manifest.pages.length && !this.manifest.history.length)
+      this.seed(rows, { sorted: true });
+    else for (const pointer of rows) this.retain(pointer);
+  }
+  finishBulk() {
+    if (!this.bulk) return;
+    const budget = this.bulk.budget;
+    this.flushBulk(); budget.stores.delete(this); this.bulk = undefined;
+    if (this.keepHistory) this.seedSnapshotHistory(Math.max(CHUNK, budget.limit / 4));
+  }
+  /** Cold snapshots expose final versions only, even when an earlier buffer spilled. */
+  private seedSnapshotHistory(maxBytes: number) {
+    const temporary = join(this.pageDirectory, "history-import"); mkdirSync(temporary);
+    let batch: ImportRow[] = [], batchBytes = 0, chunks: string[] = [], nextChunk = 0, ordinal = 0;
+    let history: RecordPointer[] = [], historyBytes = 0;
+    const flushBatch = () => {
+      if (!batch.length) return;
+      const path = join(temporary, String(nextChunk++)); writeChunk(path, batch.sort(importOrder));
+      chunks.push(path); batch = []; batchBytes = 0;
+    };
+    const flushHistory = () => {
+      if (!history.length) return;
+      const page = this.newPage(history); page.first = order(history[0]); page.last = order(history.at(-1)!);
+      this.manifest.history.push(page); history = []; historyBytes = 0;
+    };
+    const append = ({ pointer }: ImportRow) => {
+      history.push(pointer); historyBytes += Buffer.byteLength(JSON.stringify(pointer)) + 1;
+      if (history.length >= PAGE_ROWS || historyBytes >= 256 * 1024) flushHistory();
+    };
+    try {
+      for (const pointer of this.entries()) {
+        batch.push({ ordinal: ordinal++, pointer, sortKey: String(order(pointer)).padStart(16, "0") });
+        batchBytes += Buffer.byteLength(JSON.stringify(pointer)) + 1;
+        if (batchBytes >= maxBytes) flushBatch();
+      }
+      this.manifest.history = [];
+      if (!chunks.length) { batch.sort(importOrder).forEach(append); batch = []; }
+      else {
+        flushBatch();
+        while (chunks.length > 64) {
+          const merged: string[] = [];
+          for (let i = 0; i < chunks.length; i += 64) {
+            const group = chunks.slice(i, i + 64), path = join(temporary, String(nextChunk++));
+            writeChunk(path, mergeChunks(group)); merged.push(path); group.forEach(input => rmSync(input));
+          }
+          chunks = merged;
+        }
+        for (const row of mergeChunks(chunks)) append(row);
+      }
+      flushHistory(); this.changed = true;
+    } finally { rmSync(temporary, { recursive: true, force: true }); }
+  }
+  private stage(pointer: RecordPointer) {
+    if (!this.bulk) { this.retain(pointer); return; }
+    const weight = Math.max(128, Buffer.byteLength(JSON.stringify(pointer)) * 4);
+    const delta = weight - (this.bulk.rows.get(pointer.id)?.weight ?? 0);
+    this.bulk.rows.set(pointer.id, { pointer, weight }); this.bulkBytes += delta; this.bulk.budget.bytes += delta;
+    this.bulk.budget.trim();
+  }
+  private importRecords(records: Iterable<RecordPointer>, options: { sorted?: boolean; maxBytes?: number } = {}) {
     const temporary = join(this.pageDirectory, "import"); mkdirSync(temporary);
     let chunks: string[] = [], batch: ImportRow[] = [], batchBytes = 0, ordinal = 0, nextChunk = 0;
     let history: RecordPointer[] = [], historyBytes = 0, latest: RecordPointer[] = [], latestBytes = 0;
@@ -151,16 +242,25 @@ export class FileRecords {
       }
     };
     try {
+      let last: RecordPointer | undefined;
+      const accept = (pointer: RecordPointer) => {
+        if (last && last.id !== pointer.id) appendLatest(last);
+        last = pointer;
+      };
       for (const pointer of records) {
         const length = Buffer.byteLength(JSON.stringify(pointer)) + 1;
-        batch.push({ pointer, ordinal: ordinal++ }); batchBytes += length;
-        if (this.keepHistory && !pointer.deleted) {
+        if (options.sorted) accept(pointer);
+        else { batch.push({ pointer, ordinal: ordinal++ }); batchBytes += length; }
+        if (this.keepHistory && !this.bulk && !pointer.deleted) {
           history.push(pointer); historyBytes += length;
           if (history.length >= PAGE_ROWS || historyBytes >= 256 * 1024) flushHistory();
         }
-        if (batch.length >= 16_384 || batchBytes >= 8 * CHUNK) flushBatch();
+        if (batchBytes >= (options.maxBytes ?? 8 * CHUNK)) flushBatch();
       }
-      flushBatch(); flushHistory();
+      flushHistory();
+      // A batch fitting the working set can go straight to final pages.
+      if (!chunks.length) { for (const { pointer } of batch.sort(importOrder)) accept(pointer); batch = []; }
+      else flushBatch();
       // Bound open descriptors even for multi-million-row source indexes.
       while (chunks.length > 64) {
         const merged: string[] = [];
@@ -171,11 +271,7 @@ export class FileRecords {
         }
         chunks = merged;
       }
-      let last: RecordPointer | undefined;
-      for (const { pointer } of mergeChunks(chunks)) {
-        if (last && last.id !== pointer.id) appendLatest(last);
-        last = pointer;
-      }
+      for (const { pointer } of mergeChunks(chunks)) accept(pointer);
       if (last) appendLatest(last);
       if (latest.length) this.manifest.pages.push(this.newPage(latest));
     } finally { rmSync(temporary, { recursive: true, force: true }); }
@@ -189,11 +285,12 @@ export class FileRecords {
     const id = join(this.pageDirectory, page.file);
     let entry = cache.get(id);
     if (!entry) {
+      storageMetrics.pageLoads++;
       const rows = [...lines(id)].map(({ line }) => JSON.parse(line) as RecordPointer);
       entry = { owner: this, page, rows, dirty: false, weight: Math.max(128, page.bytes * 4) };
       if (entry.weight > cacheLimit()) return entry;
       cacheState.bytes += entry.weight;
-    } else cache.delete(id);
+    } else { storageMetrics.pageHits++; cache.delete(id); }
     cache.set(id, entry); trim(); return entry;
   }
   private update(entry: Cached, removed?: RecordPointer, added?: RecordPointer) {
@@ -257,7 +354,7 @@ export class FileRecords {
       const right = entry.rows.splice(entry.rows.length >>> 1);
       this.update(entry); pages.splice(at + 1, 0, this.newPage(right));
     }
-    if (this.keepHistory && !pointer.deleted) {
+    if (this.keepHistory && !this.bulk && !pointer.deleted) {
       let page = this.manifest.history.at(-1);
       if (!page || page.count >= PAGE_ROWS || page.bytes >= 256 * 1024) {
         page = this.newPage([]); this.manifest.history.push(page);
@@ -267,8 +364,10 @@ export class FileRecords {
     }
   }
   *entries(options: { where?: Where; prefix?: string; afterId?: string; beforeId?: string; reverse?: boolean; time?: { from?: number; to?: number } } = {}): IterableIterator<RecordPointer> {
+    this.flushBulk();
     const pages = this.manifest.pages.slice();
-    const first = options.prefix || options.afterId ? this.locate(options.prefix ?? options.afterId!) : 0;
+    const firstId = options.prefix && options.afterId ? (options.prefix > options.afterId ? options.prefix : options.afterId) : options.prefix ?? options.afterId;
+    const first = firstId ? this.locate(firstId) : 0;
     const last = options.beforeId ? this.locate(options.beforeId) : pages.length - 1;
     for (let n = options.reverse ? last : first; options.reverse ? n >= first : n <= last; n += options.reverse ? -1 : 1) {
       const page = pages[n];
@@ -286,6 +385,7 @@ export class FileRecords {
     }
   }
   *versions(options: { after?: number; before?: number; reverse?: boolean; where?: Where } = {}): IterableIterator<RecordPointer> {
+    this.flushBulk();
     if (!this.keepHistory) return;
     const pages = this.manifest.history.slice(); if (options.reverse) pages.reverse();
     for (const page of pages) {
@@ -298,6 +398,7 @@ export class FileRecords {
     }
   }
   count(where: Where = {}) {
+    this.flushBulk();
     if (!Object.keys(where).length) return this.manifest.count;
     const columns = ["epoch", "kind", "status"];
     if (Object.keys(where).every(k => columns.includes(k))) {
@@ -320,6 +421,8 @@ export class FileRecords {
     return { ...(Number.isFinite(min) ? { min } : {}), ...(Number.isFinite(max) ? { max } : {}) };
   }
   meta(id: string) {
+    const staged = this.bulk?.rows.get(id)?.pointer;
+    if (staged) return staged.deleted ? undefined : staged;
     if (!this.manifest.pages.length) return undefined;
     const rows = this.load(this.manifest.pages[this.locate(id)]).rows, i = lower(rows, id);
     return rows[i]?.id === id ? rows[i] : undefined;
@@ -336,15 +439,16 @@ export class FileRecords {
     const buffer = Buffer.alloc(pointer.length!); let offset = 0;
     while (offset < buffer.length) {
       const n = readSync(fd, buffer, offset, buffer.length - offset, pointer.offset! + offset);
+      storageMetrics.bodyReadCalls++; storageMetrics.bodyReadBytes += n;
       if (!n) throw new SourceChanged(file); offset += n;
     }
-    return JSON.parse(buffer.toString("utf8"));
+    storageMetrics.bodyParses++; return JSON.parse(buffer.toString("utf8"));
   }
   async get<T = any>(id: string): Promise<T | undefined> { const pointer = this.meta(id); return pointer ? this.read<T>(pointer) : undefined; }
   /** A rebuildable directory row; unlike put(), this does not copy a body. */
-  index(id: string, metadata: Record<string, unknown>) { this.onWrite(); this.retain({ ...metadata, id }); }
+  index(id: string, metadata: Record<string, unknown>) { this.onWrite(); this.stage({ ...metadata, id }); }
   reference(id: string, file: string, offset: number, length: number, metadata: Record<string, unknown>) {
-    this.onWrite(); this.retain({ ...metadata, id, file, offset, length });
+    this.onWrite(); this.stage({ ...metadata, id, file, offset, length });
   }
   async put(id: string, value: unknown, metadata: Record<string, unknown> = {}) {
     this.onWrite(); const bytes = Buffer.from(JSON.stringify(value) + "\n");
@@ -358,7 +462,7 @@ export class FileRecords {
   }
   async delete(id: string) {
     if (!this.meta(id)) return;
-    this.onWrite(); this.retain({ id, file: "", offset: 0, length: 0, deleted: true });
+    this.onWrite(); this.stage({ id, file: "", offset: 0, length: 0, deleted: true });
   }
   flush() {
     if (!this.changed) return;
@@ -367,6 +471,7 @@ export class FileRecords {
     writeFileSync(path + ".tmp", JSON.stringify(this.manifest)); renameSync(path + ".tmp", path); this.changed = false;
   }
   close() {
+    this.finishBulk();
     this.flush();
     for (const [id, entry] of cache) if (entry.owner === this) { cacheState.bytes -= entry.weight; cache.delete(id); }
     for (const fd of this.readers.values()) closeSync(fd); this.readers.clear();
