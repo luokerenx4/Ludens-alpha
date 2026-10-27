@@ -9,12 +9,14 @@
 .replay-stage { overflow: hidden; }
 .replay-capability { display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--muted); }
 .replay-capability select { max-width: 260px; font-size: 12px; }
-.replay-frames { background: #101310; min-height: 310px; padding: 14px 20px 22px; display: grid; gap: 16px; }
+.replay-frames { position: relative; background: #101310; min-height: 310px; padding: 14px 20px 22px; display: grid; gap: 16px; }
 .replay-frame-meta { font-size: 11px; color: var(--muted); padding: 0 0 10px; flex-wrap: wrap; }
 .replay-frame-meta .text-button { font-size: 12px; padding: 3px 0; }
 .replay-media-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); gap: 12px; }
 .replay-media { min-width: 0; min-height: 80px; display: grid; place-items: center; background: #090c09; border-radius: 7px; overflow: hidden; }
-.replay-media img { max-width: 100%; max-height: min(52vh, 540px); width: auto; height: auto; display: block; object-fit: contain; image-rendering: auto; }
+.replay-image { height: clamp(220px, 42vh, 460px); display: flex; align-items: center; justify-content: center; }
+.replay-buffering { position: absolute; right: 28px; bottom: 26px; padding: 5px 10px; border-radius: 5px; background: #151b17e8; color: var(--gold); font-size: 12px; pointer-events: none; }
+.replay-media img { min-width: 0; min-height: 0; max-width: 100%; max-height: 100%; width: 100%; height: 100%; display: block; object-fit: contain; image-rendering: auto; }
 .replay-media audio { width: min(100%, 400px); }
 .replay-media video { max-width: 100%; max-height: 50vh; }
 .replay-media pre, .replay-frame-text pre { font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow: auto; margin: 12px; }

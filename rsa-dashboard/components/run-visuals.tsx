@@ -1,5 +1,6 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useBufferedMedia } from "./use-buffered-media";
 import type { Call, Observation, PerceptionSnapshot, RunData, TraceSpan } from "@/lib/types";
 import type { TimelineRecordDetail } from "@/lib/timeline-record";
 import { requestWait, sseFallbackReason } from "@/lib/transport";
@@ -233,14 +234,26 @@ function MediaFailure({ url }: { url: string }) {
   return <span role="status">{message}</span>;
 }
 
+function BufferedObservationImage({ url, alt }: { url: string; alt: string }) {
+  const target = useMemo(() => ({ key: url, value: alt, urls: [url] }), [url, alt]);
+  const { displayed, pending } = useBufferedMedia("observation", target);
+  const image = displayed?.images.get(displayed.key);
+  return <div className="buffered-observation" aria-busy={pending}>
+    {image?.error ? <span role="status">{image.error}</span> : image ?
+      <img src={image.src} width={image.width} height={image.height} alt={displayed!.value} /> : <span>正在载入画面…</span>}
+    {pending && displayed && <small role="status">正在载入所选观测 · 暂留 {displayed.value}</small>}
+  </div>;
+}
+
 function ObservationMedia({ observation, url, alt = "", thumbnail = false }: {
   observation: Observation; url: string; alt?: string; thumbnail?: boolean;
 }) {
   const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [url]);
   if (observation.mediaStorage === "unrecorded") return <span>未录制 · 仅保留交付记录</span>;
   if (failed) return <MediaFailure url={url} />;
   if (observation.mediaType.startsWith("image/"))
-    return <img src={url} alt={alt} onError={() => setFailed(true)} />;
+    return thumbnail ? <img src={url} alt={alt} onError={() => setFailed(true)} /> : <BufferedObservationImage url={url} alt={alt} />;
   if (thumbnail) return <span>{observation.mediaType.startsWith("audio/") ? "音频" : "文字"}</span>;
   if (observation.mediaType.startsWith("audio/"))
     return <audio controls preload="none" src={url} onError={() => setFailed(true)} />;
@@ -374,7 +387,7 @@ export function ObservationPanel({
           ...(showingInput && call ? { call: call.id } : observation ? { id: observation.id } : {}) })} />)}
       <div className="screen">
         {observation ? (
-          <ObservationMedia key={media(observation)} observation={observation} url={media(observation)}
+          <ObservationMedia key={data.project + ":" + data.run} observation={observation} url={media(observation)}
             alt={(showingInput ? "模型输入" : "保存观测") + " · " + observation.controller + " · " + observationTime(timestamp(observation))} />
         ) : text ? (
           <pre className="observation-text">{text}</pre>

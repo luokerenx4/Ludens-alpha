@@ -5,6 +5,8 @@ import type { ReplayDetail, ReplayFrame, ReplayItem, ReplayOverview, ReplayWindo
 import { adjacentReplayFrame, clampReplayTime, mergeReplayPages, nearbyReplayItems, REPLAY_WINDOW_MS,
   replayDuration, replayFramesAt, replayItemActive, replayTrackLabels, replayTracks, replayWindowBounds,
   retainReplayWindows } from "./replay-model";
+import { useBufferedMedia } from "./use-buffered-media";
+import type { BufferedImage } from "./image-buffer";
 import "./timeline-player.css";
 
 async function read<T>(url: string, signal: AbortSignal): Promise<T> {
@@ -37,11 +39,14 @@ const wallTime = (at: number) => new Date(at).toLocaleTimeString("zh-CN", {
 const statusLabel: Record<string, string> = { completed: "完成", success: "完成", error: "失败", failed: "失败",
   cancelled: "取消", pending: "进行中", running: "进行中" };
 
-function ReplayMedia({ media, label }: { media: ReplayFrame["media"][number]; label: string }) {
-  const [error, setError] = useState("");
+function ReplayMedia({ media, label, image }: { media: ReplayFrame["media"][number]; label: string; image?: BufferedImage }) {
+  const [failure, setFailure] = useState<{ url: string; message: string } | null>(null);
+  const error = failure?.url === media.url ? failure.message : "";
+  const setError = (message: string) => setFailure({ url: media.url, message });
   const [text, setText] = useState("");
   const isText = media.mediaType.startsWith("text/") || media.mediaType === "application/json";
   useEffect(() => {
+    setError(""); setText("");
     if (!isText) return;
     const controller = new AbortController();
     fetch(media.url, { signal: controller.signal }).then(async response => {
@@ -51,8 +56,8 @@ function ReplayMedia({ media, label }: { media: ReplayFrame["media"][number]; la
     }).catch(error => { if (!controller.signal.aborted) setError(error.message); });
     return () => controller.abort();
   }, [media.url, isText]);
-  if (error) return <div className="replay-media-missing" role="status">{error}<small>此处保留时间位置，播放可以继续。</small></div>;
-  if (media.mediaType.startsWith("image/")) return <img src={media.url} alt={label} draggable={false}
+  if (image?.error || error) return <div className="replay-media-missing" role="status">{image?.error || error}<small>此处保留时间位置，播放可以继续。</small></div>;
+  if (media.mediaType.startsWith("image/")) return <img src={image?.src} width={image?.width} height={image?.height} alt={label} draggable={false}
     onError={() => setError("画面不可用 · 可能已过期或被移除")} />;
   if (media.mediaType.startsWith("audio/")) return <audio controls preload="none" src={media.url}
     aria-label={label} onError={() => setError("音频不可用")} />;
@@ -62,14 +67,15 @@ function ReplayMedia({ media, label }: { media: ReplayFrame["media"][number]; la
   return <a href={media.url} target="_blank" rel="noreferrer">查看 {media.mediaType} 记录 ↗</a>;
 }
 
-const FrameMedia = memo(function FrameMedia({ frame }: { frame: ReplayFrame }) {
-  return <div className="replay-media-grid">
-    {frame.media.map(media => <div className="replay-media" key={media.url}>
-      <ReplayMedia media={media} label={frame.capability + " · " + wallTime(frame.at) + " · " + (media.index + 1)} />
+const FrameMedia = memo(function FrameMedia({ frame, images }: { frame: ReplayFrame; images: Map<string, BufferedImage> }) {
+  return <><div className="replay-media-grid">
+    {frame.media.map(media => <div className={"replay-media" + (media.mediaType.startsWith("image/") ? " replay-image" : "")} key={media.index}>
+      <ReplayMedia media={media} image={images.get(media.url)} label={frame.capability + " · " + wallTime(frame.at) + " · " + (media.index + 1)} />
     </div>)}
     {!frame.media.length && <p className="replay-no-media">此条感知没有媒体，可展开详情查看数据。</p>}
+  </div>
     {frame.text && <details className="replay-frame-text"><summary>观测文字</summary><pre>{frame.text}</pre></details>}
-  </div>;
+  </>;
 });
 
 type Selection = { kind: "frame"; value: ReplayFrame } | { kind: "item"; value: ReplayItem };
@@ -179,7 +185,18 @@ export function TimelinePlayer({ project, run, epoch, position, onPosition }: {
     return () => controller.abort();
   }, [scope, bounds.startAt, bounds.endAt, windowMs, overview, retry, storeWindow]);
 
-  const ready = !!activeWindow;
+  const frames = useMemo(() => mergeReplayPages(windows).frames, [windows]);
+  const visibleFrames = useMemo(() => replayFramesAt(activeWindow?.frames ?? [], at, capability), [activeWindow, at, capability]);
+  // Records are immutable. Keep frame identity stable while the playhead moves within one sample.
+  const frameKey = JSON.stringify(visibleFrames.map(frame => [frame.id, frame.media]));
+  const target = useMemo(() => activeWindow ? { key: frameKey, value: visibleFrames,
+    urls: visibleFrames.flatMap(frame => frame.media.filter(media => media.mediaType.startsWith("image/")).map(media => media.url)) } : null,
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  [frameKey, !!activeWindow]);
+  const future = frames.filter(frame => frame.at > at && (!capability || frame.capability === capability)).slice(0, 2)
+    .flatMap(frame => frame.media.filter(media => media.mediaType.startsWith("image/")).map(media => media.url));
+  const { displayed, pending } = useBufferedMedia(scope + ":" + capability + ":" + refresh + ":" + retry, target, future, !activeWindow || stepping);
+  const ready = !!activeWindow && !pending && !stepping;
   useEffect(() => {
     if (!playing || !ready || !overview) return;
     let animation = 0, previous = performance.now(), lastPaint = previous;
@@ -195,8 +212,6 @@ export function TimelinePlayer({ project, run, epoch, position, onPosition }: {
     return () => cancelAnimationFrame(animation);
   }, [playing, speed, ready, overview]);
 
-  const frames = useMemo(() => mergeReplayPages(windows).frames, [windows]);
-  const visibleFrames = useMemo(() => replayFramesAt(activeWindow?.frames ?? [], at, capability), [activeWindow, at, capability]);
   const items = activeWindow?.items ?? [];
   const activeItems = items.filter(item => item.track !== "log" && replayItemActive(item, at));
   const logs = nearbyReplayItems(items.filter(item => item.track === "log"), at, 8);
@@ -262,13 +277,13 @@ export function TimelinePlayer({ project, run, epoch, position, onPosition }: {
         }}>
           <option value="">全部感知</option>{capabilities.map(value => <option key={value} value={value}>{value}</option>)}
         </select></label></div>
-      <div className="replay-frames" aria-busy={!ready || stepping}>
-        {!ready || stepping ? <div className="replay-loading" role="status">{windowError ? "无法读取此段记录" : "正在缓冲这一段…"}</div>
-          : visibleFrames.length ? visibleFrames.map(frame => <article className="replay-frame" key={frame.capability}>
-            <div className="replay-frame-meta"><button type="button" className="text-button" onClick={() => setSelection({ kind: "frame", value: frame })}>
-              {frame.capability} · #{frame.sequence} ↗</button><span>采样 {wallTime(frame.at)} · {(Math.max(0, at - frame.at) / 1000).toFixed(1)} 秒前</span></div>
-            <FrameMedia frame={frame} />
-          </article>) : <div className="replay-loading">此时还没有{capability ? "此来源的" : ""}感知记录<small>播放会按记录时间继续。</small></div>}
+      <div className="replay-frames" aria-busy={!ready}>
+        {displayed?.value.length ? displayed.value.map(frame => <article className="replay-frame" key={frame.capability} data-frame-id={frame.id}>
+          <div className="replay-frame-meta"><button type="button" className="text-button" onClick={() => setSelection({ kind: "frame", value: frame })}>
+            {frame.capability} · #{frame.sequence} ↗</button><span>采样 {wallTime(frame.at)}{ready ? " · " + (Math.max(0, at - frame.at) / 1000).toFixed(1) + " 秒前" : " · 上一画面"}</span></div>
+          <FrameMedia frame={frame} images={displayed.images} />
+        </article>) : <div className="replay-loading">{!ready ? "正在载入画面…" : "此时还没有" + (capability ? "此来源的" : "") + "感知记录"}<small>播放会按记录时间继续。</small></div>}
+        {!ready && <span className="replay-buffering" role="status">{windowError ? "此段读取失败" : "正在缓冲…"}</span>}
       </div>
       {windowError && <div className="replay-window-error" role="alert">{windowError}<button className="text-button" onClick={() => setRetry(value => value + 1)}>重试此段</button></div>}
       <div className="replay-controls">
