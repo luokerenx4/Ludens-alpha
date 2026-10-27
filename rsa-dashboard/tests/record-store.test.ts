@@ -236,3 +236,16 @@ test("empty stores can bulk-seed streamed references without overwriting an exis
     assert.equal(await readFile(file, "utf8"), body);
   } finally { store.close(); }
 }));
+
+test("range reads skip other pages and reverse only the selected interval", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "records-range-"));
+  const store = new FileRecords(directory);
+  try {
+    for (let i = 0; i < 2300; i++) await store.put(String(i).padStart(5, "0"), i);
+    const options = { afterId: "00995", beforeId: "01005" };
+    const forward = [...store.entries(options)].map(entry => entry.id);
+    assert.deepEqual(forward, Array.from({ length: 9 }, (_, i) => String(i + 996).padStart(5, "0")));
+    assert.deepEqual([...store.entries({ ...options, reverse: true })].map(entry => entry.id), forward.toReversed());
+    assert.deepEqual([...store.entries({ afterId: "99999", beforeId: "zzzzz" })], []);
+  } finally { store.close(); await rm(directory, { recursive: true, force: true }); }
+});

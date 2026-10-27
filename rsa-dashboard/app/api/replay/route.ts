@@ -1,0 +1,23 @@
+import { localRequest } from "@/lib/data";
+import { getReplay, type ReplayQuery } from "@/lib/replay";
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+export async function GET(request: Request) {
+  try {
+    localRequest(request);
+    const q = new URL(request.url).searchParams;
+    const result = await getReplay(q.get("project") ?? "", q.get("run") ?? "", {
+      mode: (q.get("mode") ?? "overview") as ReplayQuery["mode"], epoch: q.get("epoch") ?? undefined,
+      start: q.has("start") ? Number(q.get("start")) : undefined, end: q.has("end") ? Number(q.get("end")) : undefined,
+      cursor: q.get("cursor") ?? undefined, id: q.get("id") ?? undefined, record: q.get("record") ?? undefined,
+      sequence: q.has("sequence") ? Number(q.get("sequence")) : undefined, media: q.has("media") ? Number(q.get("media")) : undefined,
+    });
+    if ("bytes" in result) return new Response(new Uint8Array(result.bytes), {
+      headers: { "Content-Type": result.mediaType, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
+    });
+    return Response.json(result, { headers: { "Cache-Control": "no-store" } });
+  } catch (error) {
+    const failure = error as Error & { status?: number };
+    return Response.json({ error: failure.message }, { status: failure.status ?? 400, headers: { "Cache-Control": "no-store" } });
+  }
+}

@@ -8,6 +8,7 @@ import { AliceSettings } from "@/components/alice-settings";
 import { AliceFollowCard, useAliceFollow } from "@/components/alice-follow";
 import { DesktopBridge } from "@/components/desktop-bridge";
 import { BenchmarkCases } from "@/components/benchmark-cases";
+import { TimelinePlayer } from "@/components/timeline-player";
 import {
   Metric,
   ObservationPanel,
@@ -35,6 +36,7 @@ const getLocation = () => window.location.search;
 const serverLocation = () => "";
 const views = {
   live: ["运行", "运行现场", "看看它正在看什么、做什么。"],
+  replay: ["回放", "经历回放", "沿着同一条时间轴，回看感知、动作、模型调用和日志。"],
   benchmark: ["Benchmark", "运行性能", "沿着一次请求，找到循环里的等待。"],
   alice: ["Alice", "与 Alice 一起工作", "按自己的习惯，调整她的陪伴方式。"],
 } as const;
@@ -82,6 +84,8 @@ function NavIcon({ kind }: { kind: View | "logo" }) {
         </>
       ) : kind === "live" ? (
         <path d="m8 5 11 7-11 7Z" fill="currentColor" stroke="none" />
+      ) : kind === "replay" ? (
+        <><path d="M3 10a9 9 0 1 1 1 7M3 4v6h6" /><path d="m10 8 6 4-6 4Z" /></>
       ) : kind === "benchmark" ? (
         <>
           <path d="M4 19V11M10 19V5M16 19V8M22 19V2" strokeWidth="3" />
@@ -104,7 +108,7 @@ export default function Dashboard() {
   );
   const query = new URLSearchParams(search);
   const view: View =
-    query.get("view") === "benchmark"
+    query.get("view") === "replay" ? "replay" : query.get("view") === "benchmark"
       ? "benchmark"
       : query.get("view") === "alice"
         ? "alice"
@@ -204,7 +208,7 @@ export default function Dashboard() {
       } catch (e) {
         if (!controller.signal.aborted) setError(String(e));
       } finally {
-        if (!controller.signal.aborted && refresh)
+        if (!controller.signal.aborted && refresh && view !== "replay")
           timer = setTimeout(load, 2500);
       }
     };
@@ -324,6 +328,7 @@ export default function Dashboard() {
                   call: null,
                   block: null,
                   image: null,
+                  at: null,
                 })
               }
             >
@@ -382,6 +387,7 @@ export default function Dashboard() {
                       call: null,
                       block: null,
                       image: null,
+                      at: null,
                     })
                   }
                 >
@@ -410,6 +416,7 @@ export default function Dashboard() {
                       call: null,
                       block: null,
                       image: null,
+                      at: null,
                     })
                   }
                 >
@@ -427,7 +434,7 @@ export default function Dashboard() {
                 </select>
               </>
             )}
-            <button
+            {view !== "replay" && <button
               className={"refresh-toggle" + (refresh ? " active" : "")}
               aria-pressed={refresh}
               title="只控制界面刷新，不影响 Agent"
@@ -435,7 +442,7 @@ export default function Dashboard() {
             >
               <i className="status-dot" />
               {refresh ? "实时" : "已暂停刷新"}
-            </button>
+            </button>}
           </div>
         </header>
         <main className="page-content">
@@ -446,7 +453,7 @@ export default function Dashboard() {
                 {benchmarkCases ? "重复评测能力，查看指标、条件与原始证据。" : views[view][2]}
               </p>
             </div>
-            {view !== "alice" && !benchmarkCases && (
+            {view !== "alice" && view !== "replay" && !benchmarkCases && (
               <button
                 className="control-button handback"
                 disabled={!data?.controlAllowed || !auto || stopping}
@@ -478,7 +485,7 @@ export default function Dashboard() {
               ))}
             </nav>
           )}
-          {!benchmarkCases && (catalogError || error) && (
+          {!benchmarkCases && (catalogError || (view !== "replay" && error)) && (
             <div className="error-banner" role="alert">
               {catalogError || error}
               {data && (
@@ -488,6 +495,9 @@ export default function Dashboard() {
           )}
           {view === "alice" ? (
             <AliceSettings follow={alice} projects={projects} />
+          ) : view === "replay" ? (
+            <TimelinePlayer key={scopeKey} project={selection.project} run={run} epoch={selection.epoch || undefined}
+              position={query.get("at")} onPosition={at => navigate({ project: selection.project, run, at: String(at) })} />
           ) : benchmarkCases ? (
             <BenchmarkCases
               search={search}

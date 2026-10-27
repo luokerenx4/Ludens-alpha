@@ -118,7 +118,7 @@ Ludens separates the device, the agent runtime, and the code the agent develops.
 | --- | --- |
 | [Baseware](baseware/README.md) | Device drivers, observations, control leases, and CLI / API / MCP access. |
 | [RSA](rsa/README.md) | Agent lifecycle, persistent sessions, workspace capabilities, perception, benchmarks, and logging. |
-| [Dashboard](rsa-dashboard/README.md) | A local web console for live runs, run analysis, benchmarks, and Alice settings. |
+| [Dashboard](rsa-dashboard/README.md) | A local web console for live runs, timeline replay, run analysis, benchmarks, and Alice settings. |
 | [Alice companion](rsa-companion/README.md) | An Electron shell loading the same console, plus the native desktop pet, tray, and audio. |
 
 RSA's agent loop is called **Shiori**; its current implementation uses **OMP 18.9.1**. The agent uses OMP's native coding and process-management tools. Device and workspace capabilities are discovered through the CLI rather than automatically added to the model's tool list.

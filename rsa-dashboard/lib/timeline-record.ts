@@ -53,3 +53,90 @@ export async function readTimelineRecord(root: string, recordId: string, sequenc
     } finally { await payload.close(); }
   }
 }
+
+export interface TimelinePointer {
+  recordId?: string;
+  sequence: number;
+  at: number;
+  file: string;
+  offset: number;
+  length: number;
+  capabilityHash: string;
+  recordHash: string;
+}
+
+export interface StoredTimelineRecord {
+  id: string;
+  sequence: number;
+  recordedAt: string;
+  capability: string;
+  runId?: string;
+  text?: string;
+  media?: { mediaType: string; timeline?: { asset: string; recordId?: string; sequence?: number } }[];
+  [key: string]: unknown;
+}
+
+/** The committed binary index is authoritative; tail writes become visible with its metadata. */
+export async function* timelinePointers(root: string, afterSequence = 0): AsyncGenerator<TimelinePointer> {
+  let names: string[];
+  try { names = await readdir(await timelinePath(root, "segments")); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+  const segments: { stem: string; firstSequence: number; lastSequence: number; count: number }[] = [];
+  for (const name of names) {
+    if (!name.endsWith(".meta.json")) continue;
+    const meta = JSON.parse(await readFile(await timelinePath(root, `segments/${name}`), "utf8"));
+    if (![meta.firstSequence, meta.lastSequence, meta.count].every(Number.isSafeInteger)
+      || meta.firstSequence < 1 || meta.count < 0 || meta.lastSequence - meta.firstSequence + 1 !== meta.count)
+      throw new Error("时空轴分段索引无效");
+    if (meta.lastSequence > afterSequence) segments.push({ stem: name.slice(0, -10), ...meta });
+  }
+  segments.sort((a, b) => a.firstSequence - b.firstSequence);
+  for (const segment of segments) {
+    const file = await timelinePath(root, `segments/${segment.stem}.jsonl`);
+    const handle = await open(await timelinePath(root, `segments/${segment.stem}.idx`), "r");
+    try {
+      const chunk = Buffer.alloc(64 * 512);
+      for (let entry = Math.max(0, afterSequence + 1 - segment.firstSequence); entry < segment.count;) {
+        const length = Math.min(chunk.length, (segment.count - entry) * 64);
+        let offset = 0;
+        while (offset < length) {
+          const { bytesRead } = await handle.read(chunk, offset, length - offset, entry * 64 + offset);
+          if (!bytesRead) throw new Error("时空轴分段索引不完整");
+          offset += bytesRead;
+        }
+        for (let i = 0; i < length; i += 64, entry++) {
+          const sequence = Number(chunk.readBigUInt64BE(i + 8));
+          const at = Math.round(chunk.readDoubleBE(i) * 1000);
+          const payloadOffset = Number(chunk.readBigUInt64BE(i + 16)), payloadLength = Number(chunk.readBigUInt64BE(i + 24));
+          if (sequence !== segment.firstSequence + entry || !Number.isFinite(at)
+            || !Number.isSafeInteger(payloadOffset) || !Number.isSafeInteger(payloadLength) || payloadOffset < 0 || payloadLength < 1)
+            throw new Error("时空轴记录索引无效");
+          yield { sequence, at, file, offset: payloadOffset, length: payloadLength,
+            capabilityHash: chunk.subarray(i + 32, i + 48).toString("hex"), recordHash: chunk.subarray(i + 48, i + 64).toString("hex") };
+        }
+      }
+    } finally { await handle.close(); }
+  }
+}
+
+export async function readTimelinePayload(pointer: TimelinePointer): Promise<StoredTimelineRecord> {
+  const handle = await open(pointer.file, "r");
+  try {
+    if (!Number.isSafeInteger(pointer.offset + pointer.length) || pointer.offset + pointer.length > (await handle.stat()).size)
+      throw new Error("时空轴记录索引不完整");
+    const bytes = Buffer.alloc(pointer.length);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, pointer.offset + offset);
+      if (!bytesRead) throw new Error("时空轴记录读取不完整");
+      offset += bytesRead;
+    }
+    const record = JSON.parse(bytes.toString("utf8")) as StoredTimelineRecord;
+    const shortHash = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 32);
+    if (record.sequence !== pointer.sequence || typeof record.id !== "string" || typeof record.capability !== "string"
+      || shortHash(record.id) !== pointer.recordHash || shortHash(record.capability) !== pointer.capabilityHash
+      || Math.abs(Date.parse(record.recordedAt) - pointer.at) > 0.01)
+      throw new Error("时空轴记录引用不匹配");
+    return record;
+  } finally { await handle.close(); }
+}

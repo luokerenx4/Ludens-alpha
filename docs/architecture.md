@@ -9,7 +9,7 @@ RSA（Recursive Self-Adaptation）让 Coding Agent 在 workspace 中探索设备
 | `baseware/` | 独立设备服务：装配 driver，提供能力目录、控制权、取消、媒体和设备日志；外放 CLI、TS/Python API 与 MCP。 |
 | `rsa/` | Harness：工作区、接管预算、统一能力入口、感知进程、Benchmark，以及 Shiori 的装配与日志。 |
 | Shiori | Agent Loop 内核的职责名，当前由 RSA Host 内的 OMP 实现：模型请求、工具执行、会话、上下文压缩与原生后台管理。 |
-| `rsa-dashboard/` | 日志 API 与统一的运行、Benchmark、Alice 界面，读取运行事实并提供人工交还入口。 |
+| `rsa-dashboard/` | 日志 API 与统一的运行、回放、Benchmark、Alice 界面，读取运行事实并提供人工交还入口。 |
 | `rsa-companion/` | Electron 壳与原生 Alice Pet，复用同一 Dashboard 界面和日志来源。 |
 
 ```mermaid
@@ -81,4 +81,10 @@ Baseware 记录设备事实，RSA 保存模型、工具、能力和感知记录�
 
 ## 感知持久化边界
 
-workspace 的 `.rsa/timeline/` 是显式记录感知的唯一原件归属。`@perception` 声明感知，`@record` 将结果写入时空轴；已有感知进程负责单写入者与连续采样，用户函数仍在调用方 Python 进程执行。Baseware 返回原生数据，只使用调用临时文件；RSA run 记录引用，Dashboard 解析引用和可重建索引。run 不再要求复制一套媒体。OMP 原生会话、payload 和传输 stream 保持独立，尚未纳入此轮存储重构。契约与生命周期见 [Workspace](workspace.md#感知能力与-workspace-时空轴)，施工依据见 [时空轴方案](workspace-timeline-plan.md)。
+workspace 的 `.rsa/timeline/` 是显式记录感知的唯一原件归属。`@perception` 声明感知，`@record` 将结果写入时空轴；已有感知进程负责单写入者与连续采样，用户函数仍在调用方 Python 进程执行。Baseware 返回原生数据，只使用调用临时文件；RSA run 记录引用，Dashboard 解析引用和可重建索引。RSA 额外保存的模型、工具与传输正文通过 `.rsa/archive/` 共享，媒体引用时空轴；OMP 自身的原生 session/blob 继续由上游管理。契约与生命周期见 [Workspace](workspace.md#感知能力与-workspace-时空轴)，施工依据见 [时空轴方案](workspace-timeline-plan.md) 与 [模型日志引用化方案](indexed-model-log-plan.md)。
+
+## 统一时空轴与回放
+
+感知记录、动作、模型调用和日志共享 workspace 的绝对时间坐标。原始内容仍留在各自存储，通过 recordId、事件序号、模型/工具/动作 ID 和 trace 关联。Dashboard 按需投影为时间点或区间；对齐采用现有时间戳，不额外做硬件同步。
+
+回放读取感知层实际留档的连续采样，包括未被模型读取的帧。模型输入详情按明确引用追到当时交付的观测。播放器在同一游标下展示画面、动作、模型调用与日志，复用已有文件索引和媒体原件；播放历史不执行操作、不启动采样，也不修改 Alice 关注目标。实施与验收见 [经历回放方案](experience-replay-plan.md)。

@@ -258,13 +258,20 @@ export class FileRecords {
       page.first = order(history.rows[0]); page.last = order(pointer);
     }
   }
-  *entries(options: { where?: Where; prefix?: string } = {}): IterableIterator<RecordPointer> {
-    const pages = this.manifest.pages.slice(), start = options.prefix ? this.locate(options.prefix) : 0;
-    for (let n = start; n < pages.length; n++) {
+  *entries(options: { where?: Where; prefix?: string; afterId?: string; beforeId?: string; reverse?: boolean } = {}): IterableIterator<RecordPointer> {
+    const pages = this.manifest.pages.slice();
+    const first = options.prefix || options.afterId ? this.locate(options.prefix ?? options.afterId!) : 0;
+    const last = options.beforeId ? this.locate(options.beforeId) : pages.length - 1;
+    for (let n = options.reverse ? last : first; options.reverse ? n >= first : n <= last; n += options.reverse ? -1 : 1) {
       const page = pages[n];
-      if (options.prefix && page.min > options.prefix && !page.min.startsWith(options.prefix)) break;
+      if (!page) continue;
+      if (options.prefix && page.min > options.prefix && !page.min.startsWith(options.prefix)) { if (options.reverse) continue; break; }
+      if (options.beforeId && page.min >= options.beforeId) continue;
       if (!possible(page, options.where)) continue;
-      for (const row of this.load(page).rows.slice()) if ((!options.prefix || row.id.startsWith(options.prefix)) && matches(row, options.where)) yield row;
+      const rows = this.load(page).rows.slice();
+      if (options.reverse) rows.reverse();
+      for (const row of rows) if ((!options.prefix || row.id.startsWith(options.prefix)) && (!options.afterId || row.id > options.afterId)
+        && (!options.beforeId || row.id < options.beforeId) && matches(row, options.where)) yield row;
     }
   }
   *versions(options: { after?: number; before?: number; reverse?: boolean; where?: Where } = {}): IterableIterator<RecordPointer> {
