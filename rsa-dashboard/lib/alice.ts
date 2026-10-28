@@ -28,7 +28,7 @@ export function workspaceLabel(project?: Pick<Project, "id" | "workspace">) {
 }
 export function aliceStatus(state: AliceState | null) {
   if (!state) return "正在连接…";
-  if (!state.connected) return "Alice 未连接";
+  if (!state.connected) return "Ludens Pet 未连接";
   if (!state.target)
     return state.consumer?.phase === "idle" ? "已停止跟随" : "正在停止…";
   if (state.consumer?.workspace !== state.target.workspace)

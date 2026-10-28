@@ -19,9 +19,9 @@ Repeated up reuses running services; down then up applies configuration changes.
 down stops this workspace's managed host, Baseware and emulator (save your game first).
 Use down --keep-emulator before changing host settings to preserve the current game.
 The shared Dashboard stays up unless --dashboard is given by its owning workspace.
-Alice Pet is shared across workspaces; --pet stops its managed background job.
-An Alice app opened separately is reused and stays open after down.
-Choose which workspace Alice follows in the Dashboard; up preserves that selection.
+Ludens Pet is shared across workspaces; --pet stops its managed background job.
+A Ludens Pet app opened separately is reused and stays open after down.
+Choose which workspace Ludens Pet follows in the Dashboard; up preserves that selection.
 The driver manifest decides the bridge port, backend startup and preparation hints; see baseware driver list.`;
 
 export interface DriverManifest {
@@ -314,10 +314,10 @@ export class WorkspaceLauncher {
     }
     if (this.plan.config.pet) {
       if (!dashboard) throw new Error("Pet needs the Dashboard. Enable dashboard in rsa.json or start it separately.");
-      if (await this.io.aliceReady(this.plan.dashboardUrl)) this.io.note("Reusing Alice's connected desktop instance.");
+      if (await this.io.aliceReady(this.plan.dashboardUrl)) this.io.note("Reusing Ludens Pet's connected desktop instance.");
       else {
         await this.ensure("pet");
-        await this.waitFor(`Alice activity connection (${this.log("pet")})`, async () => {
+        await this.waitFor(`Ludens Pet activity connection (${this.log("pet")})`, async () => {
           if (await this.io.aliceReady(this.plan.dashboardUrl)) return true;
           const job = await this.job("pet");
           // Electron's single-instance lock can exit successfully while an existing app connects.

@@ -1,6 +1,6 @@
 # 日志与调用链
 
-分析器、Dashboard、Alice Pet 和 Benchmark 读取同一组事实来源。**连续感知存数据，主动行为存事件，内部过程按需追踪。** 函数返回、模型成功、文件写入不等于任务成功，评测见 [Benchmark](benchmark.md)，施工依据见 [记录方案](event-recording-plan.md)。
+分析器、Dashboard、Ludens Pet 和 Benchmark 读取同一组事实来源。**连续感知存数据，主动行为存事件，内部过程按需追踪。** 函数返回、模型成功、文件写入不等于任务成功，评测见 [Benchmark](benchmark.md)，施工依据见 [记录方案](event-recording-plan.md)。
 
 ## 记录模式
 
@@ -126,9 +126,9 @@ generation 后台 trace 不继承重载请求或控制 epoch，保留 recordingI
 
 Dashboard activity 保留 source/trace、投影耗时和读取高水位。Pet 在 `workspace/logs/consumers/` 分进程记录读取、队列、`display_dispatched`，不重复记空轮询；提交展示不证明已绘制，跳过历史展示不代表日志丢失。
 
-网页和 Electron 共用 Dashboard。点击“让 Alice 跟随此工作区”持久化关注目标，无需重启；浏览其他工作区/历史不会切换目标。Alice 跟随所选工作区最新非 Benchmark run/epoch；切换时清空旧队列，迟到读取不污染新目标。停止跟随不停止 Agent，服务暂时离线后会重连。
+网页和 Electron 共用 Dashboard。点击“让 Ludens Pet 跟随此工作区”持久化关注目标，无需重启；浏览其他工作区/历史不会切换目标。Ludens Pet 跟随所选工作区最新非 Benchmark run/epoch；切换时清空旧队列，迟到读取不污染新目标。停止跟随不停止 Agent，服务暂时离线后会重连。
 
-Dashboard 的归档读取 worker 负责日志解析和投影，Next 路由通过有界 RPC 调用它；网页与 Alice Pet 共用增量读取客户端。Pet 是展示端，只维护正在展示和待展示的气泡，不再读取完整 run 或自行遍历原始日志；视觉与音频逻辑独立于日志存储。默认产品入口使用生产构建；开发模式的热更新不会把归档解析重新放回 Next 请求的执行上下文。
+Dashboard 的归档读取 worker 负责日志解析和投影，Next 路由通过有界 RPC 调用它；网页与 Ludens Pet 共用增量读取客户端。Pet 是展示端，只维护正在展示和待展示的气泡，不再读取完整 run 或自行遍历原始日志；视觉与音频逻辑独立于日志存储。默认产品入口使用生产构建；开发模式的热更新不会把归档解析重新放回 Next 请求的执行上下文。
 
 活动投影读取 events 和模型流，默认展示 thinking/text/tool/system，diagnostic 可选；不读加密推理、不额外请求模型解说。流式内容更新同一块，详情定位原 run/epoch/block；展示筛选不改变日志消费。
 
@@ -156,11 +156,11 @@ Dashboard 的一次性与增量读取共用模型档案 reader，兼容旧 gzip 
 
 运行概览的统计覆盖整个所选周期，请求详情和观测按页读取。页面标明请求范围，可翻到更早的请求；活动日志保留全量检索入口。`current` 随增量活动提供轻量运行状态，Pet 无需串行请求目录、全量运行详情和全量日志。
 
-full 诊断通过独立 `/api/diagnostics` 按需分页，支持 epoch、时间、trace/span/action/observation 条件，每页最多 500 条；它不进入普通 Activity、回放轨道或 Alice 气泡。正常经历中的诊断类别与 full 原始追踪文件不是同一路。周期采样统计也不产生气泡洪泛。
+full 诊断通过独立 `/api/diagnostics` 按需分页，支持 epoch、时间、trace/span/action/observation 条件，每页最多 500 条；它不进入普通 Activity、回放轨道或 Ludens Pet 气泡。正常经历中的诊断类别与 full 原始追踪文件不是同一路。周期采样统计也不产生气泡洪泛。
 
 ## 经历回放
 
-Dashboard 的“回放”将感知记录、动作、模型调用、工具和日志放在同一 workspace 墙钟时间轴上。播放器按时间推进，支持暂停、跳转、倍速和来源详情；播放历史不操作设备，也不改变 Alice 关注目标。选中 epoch 时使用该次控制周期的起止，预算结束后的持续采样不会延长这一轮。
+Dashboard 的“回放”将感知记录、动作、模型调用、工具和日志放在同一 workspace 墙钟时间轴上。播放器按时间推进，支持暂停、跳转、倍速和来源详情；播放历史不操作设备，也不改变 Ludens Pet 关注目标。选中 epoch 时使用该次控制周期的起止，预算结束后的持续采样不会延长这一轮。
 
 回放默认选择最新接管周期，也可选指定周期或全部周期。周期目录直接读取 control 事件，不等待运行统计投影；overview 返回已读范围内的周期和解析后的 epoch，后续画面、事件与媒体链接固定使用该身份。冷目录未读完时同时显示覆盖进度，不能将已发现的周期数当作完整总数。
 

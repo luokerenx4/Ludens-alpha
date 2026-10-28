@@ -105,10 +105,10 @@ export function AliceSettings({ follow, projects }: { follow: AliceFollow; proje
     <div className="alice-settings">
       <div className="alice-settings-intro">
         <div className="alice-monogram" aria-hidden="true">
-          A
+          L
         </div>
         <div>
-          <h2>Alice 陪伴</h2>
+          <h2>Ludens Pet 陪伴</h2>
           <p>让正在发生的事，轻轻出现在桌面上。</p>
         </div>
         <span className="desktop-status">
@@ -120,19 +120,19 @@ export function AliceSettings({ follow, projects }: { follow: AliceFollow; proje
         <div className="desktop-only-note">
           <strong>关注工作区可在这里切换</strong>
           <p>
-            浏览器与桌面端共享 Alice 的关注目标。下方的外观、通知和声音偏好，需要从
-            Alice 托盘打开桌面窗口设置。
+            浏览器与桌面端共享 Ludens Pet 的关注目标。下方的外观、通知和声音偏好，需要从
+            Ludens Pet 托盘打开桌面窗口设置。
           </p>
         </div>
       )}
       <section className="setting-group">
         <header>
           <h3>桌面陪伴</h3>
-          <p>浮窗继续使用 Alice 原有的外观、动作与音频。</p>
+          <p>浮窗继续使用 Ludens Pet 的外观、动作与音频。</p>
         </header>
         <Switch
-          label="显示 Alice"
-          hint="关闭主窗口后，Alice 和托盘仍会保留。"
+          label="显示 Ludens Pet"
+          hint="关闭主窗口后，Ludens Pet 和托盘仍会保留。"
           checked={visible ?? false}
           disabled={!bridge || visible === null || visibilityPending}
           onChange={() => void toggle()}
@@ -155,14 +155,14 @@ export function AliceSettings({ follow, projects }: { follow: AliceFollow; proje
             label={
               {
                 enabled: "活动通知",
-                pet: "Alice 气泡",
+                pet: "Ludens Pet 气泡",
                 main: "窗口内通知",
                 brief: "简洁模式",
               }[key]
             }
             hint={
               key === "main"
-                ? "Alice 隐藏时，在控制台内展示通知。"
+                ? "Ludens Pet 隐藏时，在控制台内展示通知。"
                 : key === "brief"
                   ? "隐藏日志正文，只显示活动状态。"
                   : undefined
@@ -323,7 +323,7 @@ export function AliceSettings({ follow, projects }: { follow: AliceFollow; proje
         )}
       </section>
       <p className="setting-help">
-        外观、通知与声音偏好保存在这台电脑的 Alice profile 中，不会修改工作区或 Agent 的行为。
+        外观、通知与声音偏好保存在这台电脑的 Ludens Pet profile 中，不会修改工作区或 Agent 的行为。
       </p>
     </div>
   );
