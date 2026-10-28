@@ -25,7 +25,7 @@ const RUN_HELP = `rsa [--workspace <path>] run [--baseware-socket <path>] [--wor
 Each workspace keeps its sessions in .rsa/shiori/; --new-session starts fresh without deleting workspace files.
 The current directory is the default workspace. Run logs go to <workspace>/logs/<run-id>/.
 --resume selects an existing session from the same workspace, then remembers it for future starts.
---compaction-threshold configures OMP's native compaction trigger; default is 256000 tokens.
+--compaction-threshold configures OMP's native compaction trigger; default follows the selected model's native OMP setting.
 --diagnostics normal|full selects recording detail at startup (default normal).
 Perception starts empty. Implement workspace/perception.py and use rsa perception reload.
 rsa perception inject off disables automatic context attachment while sampling and recording continue.
@@ -59,7 +59,7 @@ async function main() {
     "new-session": { type: "boolean", default: false },
     seconds: { type: "string", default: "300" },
     requests: { type: "string", default: "50" },
-    "compaction-threshold": { type: "string", default: "256000" },
+    "compaction-threshold": { type: "string" },
     diagnostics: { type: "string", default: "normal" },
   } });
   if (values.diagnostics !== "normal" && values.diagnostics !== "full") throw new Error("--diagnostics must be normal|full");
@@ -68,8 +68,10 @@ async function main() {
   if (!Number.isFinite(seconds) || seconds <= 0) throw new Error("--seconds must be positive");
   const maxRequests = Number(values.requests);
   if (!Number.isInteger(maxRequests) || maxRequests <= 0) throw new Error("--requests must be a positive integer");
-  const compactionThreshold = Number(values["compaction-threshold"]);
-  if (!Number.isInteger(compactionThreshold) || compactionThreshold <= 0) throw new Error("--compaction-threshold must be a positive integer");
+  const compactionThreshold = values["compaction-threshold"] === undefined ? undefined : Number(values["compaction-threshold"]);
+  if (compactionThreshold !== undefined && (!Number.isInteger(compactionThreshold) || compactionThreshold <= 0)) {
+    throw new Error("--compaction-threshold must be a positive integer");
+  }
   if (values.resume && values["new-session"]) throw new Error("Use either --resume or --new-session");
   if (values["device-only"] && (values.resume || values["new-session"])) throw new Error("Session options require an agent");
   const state = await resolveWorkspaceState(values.workspace!, artifactRoot);

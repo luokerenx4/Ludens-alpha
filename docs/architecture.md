@@ -82,7 +82,7 @@ rsa controller controller/pad.play --args '{"inputs":[{"atMs":0,"durationMs":500
 
 环境在模型思考时继续运行。工作区可改感知和控制程序，不能改外层调度；见 [OMP 装配](../rsa/src/harness/omp/session.ts) 与 [扩展](../rsa/src/harness/omp/extension.ts)。
 
-压缩复用 OMP，默认阈值 256000，图片数量预算 Infinity，入历史时按 OMP 压图；后台压缩的行为改动与验收见 [OMP 后台压缩改造](omp-compaction.md)。Codex 使用 WebSocket auto；见 [WS 测试依据](development.md#ws-恢复测试依据)。
+压缩复用 OMP，触发阈值默认跟随所选模型的原生 OMP 设置（context window − reserve），可经 `rsa.json`/`--compaction-threshold` 显式覆盖，图片数量预算 Infinity，入历史时按 OMP 压图；后台压缩的行为改动与验收见 [OMP 后台压缩改造](omp-compaction.md)。Codex 使用 WebSocket auto；见 [WS 测试依据](development.md#ws-恢复测试依据)。
 
 交付使用 OMP 的 `before_agent_start` 和 `tool_result` 持久化入口，共用查询、内容格式和批次收据；`context` 只检查请求与原生后台结果，不在此改写历史或补图。普通续轮保留交付游标，恢复会话的新 Host 和成功压缩等上下文替换后重新交付必要信息。去重按时空轴记录身份，不按像素相同判断时间证据；显式重读不被自动去重吞掉。已有消息保持原样随会话前缀复用，直到 OMP 原生压缩。
 

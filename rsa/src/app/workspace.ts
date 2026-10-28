@@ -46,7 +46,8 @@ export interface LaunchConfig {
   model: string;
   seconds: number;
   requests: number;
-  compactionThreshold: number;
+  /** OMP native compaction trigger override; undefined follows the selected model's native OMP default. */
+  compactionThreshold?: number;
   dashboard: boolean;
   pet: boolean;
   logging: { diagnostics: "normal" | "full" };
@@ -71,12 +72,15 @@ export function parseConfig(value: unknown, manifest?: DriverManifest): LaunchCo
   }
   const result = { ...(bridge && manifest?.defaultPort !== undefined ? { port: manifest.defaultPort } : {}),
     model: "openai-codex/gpt-6.1-sol",
-    seconds: 1800, requests: 1000, compactionThreshold: 256000, dashboard: true, pet: true, logging: { diagnostics: "normal" }, ...config } as LaunchConfig;
+    seconds: 1800, requests: 1000, dashboard: true, pet: true, logging: { diagnostics: "normal" }, ...config } as LaunchConfig;
   if (!result.logging || typeof result.logging !== "object" || Array.isArray(result.logging)
     || Object.keys(result.logging).some(key => key !== "diagnostics")
     || !["normal", "full"].includes(result.logging.diagnostics)) throw new Error("logging must contain diagnostics: normal|full");
-  for (const key of ["seconds", "requests", "compactionThreshold"] as const) {
+  for (const key of ["seconds", "requests"] as const) {
     if (!Number.isInteger(result[key]) || result[key] <= 0) throw new Error(`${key} must be a positive integer`);
+  }
+  if (result.compactionThreshold !== undefined && (!Number.isInteger(result.compactionThreshold) || result.compactionThreshold <= 0)) {
+    throw new Error("compactionThreshold must be a positive integer");
   }
   if (bridge && result.port === undefined) throw new Error(`${config.driver} requires a bridge port; set port in rsa.json or defaultPort in its driver manifest`);
   if (result.port !== undefined && (!Number.isInteger(result.port) || result.port <= 0 || result.port > 65535)) throw new Error("port must be an integer from 1 to 65535");
@@ -124,7 +128,9 @@ export async function launchPlan(config: LaunchConfig, workspace: string, repo =
         ...(config.cuaCommand ? ["--cua-command", config.cuaCommand] : []), "--socket", basewareSocket,
         "--data-dir", join(workspace, "logs/baseware"), "--diagnostics", config.logging.diagnostics],
       host: [rsa, "run", "--baseware-socket", basewareSocket, "--model", config.model,
-        "--seconds", String(config.seconds), "--requests", String(config.requests), "--compaction-threshold", String(config.compactionThreshold),
+        "--seconds", String(config.seconds), "--requests", String(config.requests),
+        ...(config.compactionThreshold !== undefined
+          ? ["--compaction-threshold", String(config.compactionThreshold)] : []),
         "--diagnostics", config.logging.diagnostics,
       ],
       ...(config.dashboard ? { dashboard: ["npm", "--prefix", join(repo, "rsa-dashboard"), "run", "start"] } : {}),

@@ -121,7 +121,13 @@ test("managed Dashboard uses a current production build and fails before startin
 
 test("launch config keeps limits explicit and paths as literal argv entries", async () => {
   const value = await plan();
-  expect(value.config).toMatchObject({ port: 47663, seconds: 1800, requests: 1000, compactionThreshold: 256000 });
+  expect(value.config).toMatchObject({ port: 47663, seconds: 1800, requests: 1000 });
+  // Default follows the selected model's native OMP compaction trigger; no flag is passed.
+  expect(parseConfig({ driver: "mgba" }, manifestFor("mgba")).compactionThreshold).toBeUndefined();
+  expect(value.commands.host).not.toContain("--compaction-threshold");
+  const explicit = await launchPlan(parseConfig({ driver: "ryubing", game: "games/x.nsp", compactionThreshold: 200000 }, manifestFor("ryubing")),
+    "/tmp/Workspace with spaces", "/tmp/Source with spaces", "/tmp/baseware-test.sock", manifestFor("ryubing"));
+  expect(explicit.commands.host).toEqual(expect.arrayContaining(["--compaction-threshold", "200000"]));
   expect(parseConfig({ driver: "mgba" }, manifestFor("mgba")).port).toBe(47653);
   expect(() => parseConfig({ driver: "ryubing", second: 10 }, manifestFor("ryubing"))).toThrow("Unknown");
   expect(() => parseConfig({ driver: "mgba", game: "game.gba" }, manifestFor("mgba"))).toThrow("does not support launching a game");

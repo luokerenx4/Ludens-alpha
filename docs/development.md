@@ -118,7 +118,7 @@ rsa auto on
 | `cuaCommand` | stdio driver 的可执行命令；内置 Cua 默认从 PATH 查找 `cua-driver` |
 | `model` | `openai-codex/gpt-6.1-sol` |
 | `seconds` / `requests` | 1800 / 1000；每次接管重置，任一预算用完即交还控制 |
-| `compactionThreshold` | 256000，使用 OMP 原生压缩 |
+| `compactionThreshold` | 不设，跟随 OMP 对所选模型的原生触发点 |
 | `dashboard` / `pet` | 均为 true；Pet 需要 Dashboard |
 
 从其他目录管理用 `rsa --workspace /absolute/path/to/workspace status` 或 `RSA_WORKSPACE`。workspace 隔离会话和默认 socket；真实设备仍需独立实例/端口，同一 workspace 不能有两个 Host。
