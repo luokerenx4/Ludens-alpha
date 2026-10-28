@@ -6,13 +6,13 @@ OMP 专项测试从公开 provider API 和 Agent 入口调用固定依赖，测�
 
 **这是架构施工期的 TDD 特例，不是全项目规则。** 长运行暴露相邻故障分支遗漏，因此先构造外部工况、确认旧实现失败，再修恢复策略。架构改变时重新判断用例价值，不为测试保留旧架构。
 
-入口：[omp-websocket.test.ts](../../../rsa/tests/omp-websocket.test.ts)。从仓库根运行：
+入口：[omp-websocket.test.ts](../../rsa/tests/omp-websocket.test.ts)。从仓库根运行：
 
 ```sh
 (cd rsa && bun run test:transport)
 (cd rsa && bun run check)
 # 带标准事件和检查证据的两个真实故障族，可由现有看板读取：
-rsa/bin/rsa --workspace /absolute/path/to/workspace bench run ws-recovery
+rsa/bin/rsa --workspace /absolute/path/to/workspace bench run ludens/ws-recovery
 ```
 
 ## 构建依据
@@ -56,4 +56,4 @@ Bun 1.4、打补丁的 `@oh-my-pi/pi-ai@18.9.1` 调用真实 `streamOpenAICodexR
 
 测试只证明受控行为，不证明线上永不掉线或实际重连耗时；长跑、调度、吞吐仍看日志。该次 WS 修复未调整当时的 256k 阈值、模型或游戏策略。
 
-看板基准 [ws-recovery.ts](../../../rsa/src/benchmark/cases/ws-recovery.ts) 复现两类实际事件，在 `benchmark_fault` 标明来源与模拟条件；完整矩阵留在外部测试。升级 OMP 时先跑专项再跑基准，不复制测试进依赖。
+看板基准 [ws-recovery.ts](../../rsa/src/benchmark/cases/ws-recovery.ts) 复现两类实际事件，在 `benchmark_fault` 标明来源与模拟条件；完整矩阵留在外部测试。升级 OMP 时先跑专项再跑基准，不复制测试进依赖。
