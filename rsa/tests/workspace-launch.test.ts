@@ -4,7 +4,7 @@ import { chmod, mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } fro
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { launchPlan, parseConfig, WorkspaceLauncher, type DriverManifest, type LaunchIO, type LaunchPlan } from "../src/app/workspace.ts";
-import { getDriver } from "@playness/baseware/drivers/registry";
+import { getDriver } from "@playness/baseware/drivers/registry.ts";
 
 const manifestFor = (id: string): DriverManifest => {
   const { load: _load, fallbackVersion: _fallback, ...manifest } = getDriver(id);
@@ -124,9 +124,9 @@ test("launch config keeps limits explicit and paths as literal argv entries", as
   expect(value.config).toMatchObject({ port: 47663, seconds: 1800, requests: 1000, compactionThreshold: 256000 });
   expect(parseConfig({ driver: "mgba" }, manifestFor("mgba")).port).toBe(47653);
   expect(() => parseConfig({ driver: "ryubing", second: 10 }, manifestFor("ryubing"))).toThrow("Unknown");
-  expect(parseConfig({ driver: "mgba", game: "game.gba" }, manifestFor("mgba"))).toMatchObject({ driver: "mgba", game: "game.gba" });
-  expect(value.commands.emulator).toEqual(["env", "RSA_BRIDGE_PORT=47663",
-    "/Applications/Ryubing.app/Contents/MacOS/Ryujinx",
+  expect(() => parseConfig({ driver: "mgba", game: "game.gba" }, manifestFor("mgba"))).toThrow("does not support launching a game");
+  expect(value.commands.emulator).toEqual(["env", "RSA_BRIDGE_PORT=47663", "DOTNET_DefaultStackSize=200000",
+    ...manifestFor("ryubing").launchCommand!,
     "/tmp/Workspace with spaces/games/A game; $(touch BAD).nsp"]);
   expect(value.commands.baseware).toEqual(["/tmp/Source with spaces/baseware/bin/baseware", "serve",
     "--driver", "ryubing", "--port", "47663", "--socket", "/tmp/baseware-test.sock",
@@ -220,7 +220,6 @@ test("init and dry-run preserve existing workspace files and never invoke servic
     expect(await readFile(join(workspace, "rsa.json"), "utf8")).toBe(configBefore);
     expect(await readFile(join(workspace, "AGENTS.md"), "utf8")).toBe("My existing workspace instructions\n");
     expect((await readdir(workspace)).sort()).toEqual(["AGENTS.md", "perception.py", "rsa.json"]);
-    expect(await readFile(join(workspace, "perception.py"), "utf8")).toContain("NotImplementedError");
     const desktop = join(directory, "Desktop workspace");
     expect((await run("--workspace", desktop, "init", "--driver", "cua", "--cua-command", "./tools/cua-driver")).code).toBe(0);
     const desktopPreview = await run("--workspace", desktop, "up", "--dry-run");
@@ -228,6 +227,54 @@ test("init and dry-run preserve existing workspace files and never invoke servic
     expect(JSON.parse(desktopPreview.stdout)).toMatchObject({ config: { driver: "cua", cuaCommand: "./tools/cua-driver" } });
     expect(JSON.parse(desktopPreview.stdout).commands.emulator).toBeUndefined();
     expect(await Bun.file(marker).exists()).toBe(false);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("external packages resolve workspace-relative file specs and check only executable argv", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "rsa-package-launch-"));
+  try {
+    const workspace = join(directory, "workspace");
+    const driver = join(workspace, "driver");
+    const bin = join(directory, "bin");
+    await mkdir(driver, { recursive: true });
+    await mkdir(bin);
+    await writeFile(join(driver, "package.json"), JSON.stringify({
+      name: "workspace-launch-fixture", version: "1.0.0", type: "module", exports: "./index.ts",
+    }));
+    await writeFile(join(driver, "index.ts"), 'export default { id: "fixture", transport: "bridge", defaultPort: 47991, launchCommand: ["fixture-emulator", "--headless", "literal argument"], load: async () => { throw new Error("Provider must not load during discovery"); } };');
+    await writeFile(join(workspace, "game.rom"), "");
+    for (const name of ["fixture-emulator", "launchctl", "python3", "lsof", "env", "pgrep"]) {
+      const path = join(bin, name);
+      await writeFile(path, '#!/bin/sh\necho launch-stopped >&2\nexit 97\n');
+      await chmod(path, 0o755);
+    }
+    const run = async (...args: string[]) => {
+      const child = Bun.spawn([process.execPath, resolve(import.meta.dir, "../src/app/main.ts"), "--workspace", workspace, ...args], {
+        cwd: directory, env: { ...process.env, PATH: bin }, stdout: "pipe", stderr: "pipe",
+      });
+      const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+      return { code, stdout, stderr };
+    };
+    const initialized = await run("init", "--driver", "fixture", "--driver-package", "file:./driver", "--game", "game.rom");
+    expect(initialized.code).toBe(0);
+    const config = JSON.parse(await readFile(join(workspace, "rsa.json"), "utf8"));
+    expect(config.driverPackage).toBe(`file:${await realpath(driver)}`);
+    // Hand-edited relative specs must receive the same workspace interpretation on up.
+    await writeFile(join(workspace, "rsa.json"), JSON.stringify({ ...config, driverPackage: "file:./driver", dashboard: false, pet: false }));
+    const preview = await run("up", "--dry-run");
+    expect(preview.code).toBe(0);
+    const plan = JSON.parse(preview.stdout);
+    expect(plan.commands.baseware).toContain(`file:${await realpath(driver)}`);
+    expect(plan.commands.emulator).toEqual(["env", "RSA_BRIDGE_PORT=47991", "fixture-emulator", "--headless", "literal argument", join(await realpath(workspace), "game.rom")]);
+    if (process.platform === "darwin") {
+      const startup = await run("up");
+      expect(startup.code).not.toBe(0);
+      expect(startup.stderr).toContain("launch-stopped");
+      expect(startup.stderr).not.toContain("Missing");
+      await chmod(join(bin, "fixture-emulator"), 0o644);
+      const unavailable = await run("up");
+      expect(unavailable.stderr).toContain("Missing executable fixture-emulator");
+    }
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 

@@ -6,7 +6,7 @@ import type { DriverManifest } from "./drivers/registry.ts";
 import type { EventSourceDescriptor } from "../../shared/event-sources.ts";
 import { SamplingStats } from "./sampling-stats.ts";
 
-export type DriverInfo = Pick<DriverManifest, "id" | "transport" | "defaultPort" | "needsGame" | "launchHint" | "launchCommand"> & { version: string };
+export type DriverInfo = Pick<DriverManifest, "id" | "transport" | "defaultPort" | "needsGame" | "launchHint" | "launchCommand" | "launchEnv"> & { version: string };
 export interface ClientContext { id: string; onEvent?(event: DeviceEvent): void }
 
 function operationTrace(parent: Trace, operationId: string): Trace {

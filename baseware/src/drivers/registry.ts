@@ -34,6 +34,8 @@ export interface DriverManifest {
   launchHint?: string;
   /** Backend executable argv (without the game path); game path is appended by the launcher. */
   launchCommand?: string[];
+  /** Environment overrides required by the backend executable. */
+  launchEnv?: Record<string, string>;
 }
 export interface DriverRegistration extends DriverManifest {
   /** Reported when the provider itself returns no version. */
@@ -65,6 +67,7 @@ registerDriver({ id: "mgba", transport: "bridge", defaultPort: 47653, fallbackVe
 registerDriver({ id: "ryubing", transport: "bridge", defaultPort: 47663, needsGame: true, fallbackVersion: "1.3.351-rsa.3",
   launchHint: "Start the patched ryubing with the desired game, or set game in rsa.json.",
   launchCommand: ["/Applications/Ryubing.app/Contents/MacOS/Ryujinx"],
+  launchEnv: { DOTNET_DefaultStackSize: "200000" },
   load: options => createSwitchProvider({ port: options.port!, clock: options.clock }) });
 registerDriver({ id: "azahar", transport: "bridge", defaultPort: 47673, needsGame: true,
   launchHint: "Start the patched azahar with the desired game, or set game in rsa.json.",

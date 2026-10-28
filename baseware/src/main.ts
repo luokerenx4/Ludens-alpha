@@ -24,7 +24,8 @@ export async function main(args = process.argv.slice(2)) {
   const registration = await resolveDriver(values.driver!, values["driver-package"], defaultDriverCacheRoot());
   if (values["cua-command"] && registration.defaultPort !== undefined) throw new Error("--cua-command is only for drivers without a bridge port");
   if (values.diagnostics !== "normal" && values.diagnostics !== "full") throw new Error("--diagnostics must be normal or full");
-  const port = registration.defaultPort === undefined ? undefined : Number(values.port ?? registration.defaultPort);
+  const portValue = values.port ?? registration.defaultPort;
+  const port = portValue === undefined ? undefined : Number(portValue);
   if (port !== undefined && (!Number.isInteger(port) || port < 1 || port > 65535)) throw new Error("--port must be between 1 and 65535");
   const dataDir = resolve(values["data-dir"] ?? join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local/state"), "playness/baseware", basename(values.socket!, ".sock")));
   let core: BasewareCore | undefined;
@@ -41,12 +42,13 @@ export async function main(args = process.argv.slice(2)) {
     provider = await registration.load({ port, command: values["cua-command"], clock });
     core = new BasewareCore({ capabilities: provider.capabilities, record: log.record, serviceId, source: log.source,
       diagnostics: values.diagnostics,
-      drivers: [{ id: registration.id, version: provider.version ?? registration.fallbackVersion ?? "unknown",
+      drivers: [{ id: registration.id, version: provider.version ?? registration.version ?? registration.fallbackVersion ?? "unknown",
         ...(registration.transport ? { transport: registration.transport } : {}),
         ...(registration.defaultPort !== undefined ? { defaultPort: registration.defaultPort } : {}),
         ...(registration.needsGame ? { needsGame: true } : {}),
         ...(registration.launchHint ? { launchHint: registration.launchHint } : {}),
-        ...(registration.launchCommand ? { launchCommand: registration.launchCommand } : {}) }] });
+        ...(registration.launchCommand ? { launchCommand: registration.launchCommand } : {}),
+        ...(registration.launchEnv ? { launchEnv: registration.launchEnv } : {}) }] });
     provider.onDisconnect(error => { void core!.disconnected(error); });
     core.record("service_start", { driver: values.driver, ...(port !== undefined ? { port } : {}), socket: values.socket, dataDir });
     console.log(JSON.stringify({ ready: true, socket: values.socket, dataDir, ...core.status() }));

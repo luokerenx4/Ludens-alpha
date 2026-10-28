@@ -13,7 +13,7 @@ function githubRepo(rest: string): { org: string; repo: string; rev: string } {
   if (!match) throw new Error(`Invalid github driver spec: expected org/repo#<commit/tag>, got ${JSON.stringify(rest)}`);
   const [, org, repo, rev] = match;
   if (!rev) throw new Error(`Github driver spec must pin a revision: ${JSON.stringify(rest)} — append #<commit/tag>`);
-  return { org, repo, rev };
+  return { org, repo: repo.replace(/\.git$/, ""), rev };
 }
 
 /** Parse a --driver-package value. Accepts npm specs, github repo links and file: paths. */
@@ -69,7 +69,7 @@ export function asRegistration(value: unknown, expectedId?: string): DriverRegis
   const exported = root !== null && typeof root === "object" && !Array.isArray(root)
     ? (root.default ?? root.registration ?? root.driver ?? root)
     : undefined;
-  const candidate = exported as { id?: unknown; load?: unknown; transport?: unknown; defaultPort?: unknown; needsGame?: unknown; launchHint?: unknown; launchCommand?: unknown } | undefined;
+  const candidate = exported as { id?: unknown; load?: unknown; transport?: unknown; defaultPort?: unknown; needsGame?: unknown; launchHint?: unknown; launchCommand?: unknown; launchEnv?: unknown } | undefined;
   if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)
     || typeof candidate.id !== "string" || !candidate.id) {
     throw new Error("Driver package must export a registration object with a string id (default, registration or driver export)");
@@ -94,6 +94,11 @@ export function asRegistration(value: unknown, expectedId?: string): DriverRegis
   if (candidate.launchCommand !== undefined
     && (!Array.isArray(candidate.launchCommand) || !candidate.launchCommand.every(item => typeof item === "string"))) {
     throw new Error(`Driver package ${JSON.stringify(candidate.id)} has an invalid launchCommand`);
+  }
+  if (candidate.launchEnv !== undefined
+    && (candidate.launchEnv === null || typeof candidate.launchEnv !== "object" || Array.isArray(candidate.launchEnv)
+      || !Object.values(candidate.launchEnv).every(value => typeof value === "string"))) {
+    throw new Error(`Driver package ${JSON.stringify(candidate.id)} has an invalid launchEnv`);
   }
   return candidate as unknown as DriverRegistration;
 }

@@ -3,6 +3,7 @@ import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { defaultSocket } from "@playness/baseware/address";
+import { resolveDriver, defaultDriverCacheRoot } from "@playness/baseware/drivers/loader.ts";
 import workspaceGuide from "../../templates/AGENTS.md" with { type: "text" };
 import perceptionTemplate from "../../templates/perception.py" with { type: "text" };
 
@@ -32,6 +33,7 @@ export interface DriverManifest {
   launchHint?: string;
   /** Backend executable argv (without the game path); game path is appended by the launcher. */
   launchCommand?: string[];
+  launchEnv?: Record<string, string>;
 }
 
 export interface LaunchConfig {
@@ -62,6 +64,7 @@ export function parseConfig(value: unknown, manifest?: DriverManifest): LaunchCo
   const bridge = manifest ? manifest.transport !== "stdio" : true;
   if (manifest && manifest.id !== config.driver) throw new Error(`Driver manifest id ${JSON.stringify(manifest.id)} does not match rsa.json driver ${JSON.stringify(config.driver)}`);
   if (!bridge && (config.game !== undefined || config.port !== undefined)) throw new Error(`${config.driver} does not use game or a bridge port`);
+  if (manifest && config.game !== undefined && !manifest.launchCommand?.length) throw new Error(`${config.driver} does not support launching a game; omit game and prepare the device separately`);
   if (config.cuaCommand !== undefined && (bridge || typeof config.cuaCommand !== "string" || !config.cuaCommand.trim())) {
     throw new Error("cuaCommand must be a non-empty executable path for a stdio driver");
   }
@@ -109,9 +112,11 @@ export async function launchPlan(config: LaunchConfig, workspace: string, repo =
     launcher: join(repo, "rsa/scripts/launch-background.py"), rsa, baseware, basewareSocket,
     commands: {
       ...(config.game && bridge && manifest?.launchCommand ? { emulator: ["env", `RSA_BRIDGE_PORT=${config.port}`,
+        ...Object.entries(manifest.launchEnv ?? {}).map(([key, value]) => `${key}=${value}`),
         ...manifest.launchCommand, resolve(workspace, config.game)] } : {}),
       baseware: [baseware, "serve", "--driver", config.driver,
-        ...(config.driverPackage ? ["--driver-package", config.driverPackage] : []),
+        ...(config.driverPackage ? ["--driver-package", config.driverPackage.startsWith("file:")
+          ? `file:${resolve(workspace, config.driverPackage.slice(5))}` : config.driverPackage] : []),
         ...(bridge && config.port !== undefined ? ["--port", String(config.port)] : []),
         ...(config.cuaCommand ? ["--cua-command", config.cuaCommand] : []), "--socket", basewareSocket,
         "--data-dir", join(workspace, "logs/baseware"), "--diagnostics", config.logging.diagnostics],
@@ -360,7 +365,6 @@ export class WorkspaceLauncher {
 }
 
 export async function workspaceCommand(command: string, args: string[], selectedWorkspace: string) {
-  const { resolveDriver, defaultDriverCacheRoot } = await import("@playness/baseware/drivers/loader");
   if (args.includes("--help")) { console.log(WORKSPACE_HELP); return; }
   const { values } = parseArgs({ args, options: command === "init" ? {
     driver: { type: "string" }, "driver-package": { type: "string" }, game: { type: "string" },
@@ -368,14 +372,15 @@ export async function workspaceCommand(command: string, args: string[], selected
   } : command === "up" ? { "dry-run": { type: "boolean" } }
     : command === "down" ? { dashboard: { type: "boolean" }, pet: { type: "boolean" }, "keep-emulator": { type: "boolean" } } : {} });
   if (command === "init") {
+    await mkdir(selectedWorkspace, { recursive: true });
+    const workspace = await realpath(selectedWorkspace);
+    const packageSpec = typeof values["driver-package"] === "string" ? values["driver-package"] : undefined;
     const raw = { driver: values.driver,
-      ...(values["driver-package"] ? { driverPackage: values["driver-package"] } : {}),
+      ...(packageSpec ? { driverPackage: packageSpec.startsWith("file:") ? `file:${resolve(workspace, packageSpec.slice(5))}` : packageSpec } : {}),
       ...(values.game ? { game: values.game } : {}), ...(values["cua-command"] ? { cuaCommand: values["cua-command"] } : {}),
       ...(values.seconds ? { seconds: Number(values.seconds) } : {}) };
     const manifest = await resolveDriver(raw.driver as string, raw.driverPackage, defaultDriverCacheRoot());
     const config = parseConfig(raw, manifest);
-    await mkdir(selectedWorkspace, { recursive: true });
-    const workspace = await realpath(selectedWorkspace);
     await writeFile(join(workspace, "rsa.json"), `${JSON.stringify(config, null, 2)}\n`, { flag: "wx" });
     await writeFile(join(workspace, "AGENTS.md"), workspaceGuide, { flag: "wx" }).catch(error => { if (error.code !== "EEXIST") throw error; });
     await writeFile(join(workspace, "perception.py"), perceptionTemplate, { flag: "wx" }).catch(error => { if (error.code !== "EEXIST") throw error; });
@@ -385,6 +390,7 @@ export async function workspaceCommand(command: string, args: string[], selected
   const workspace = await realpath(selectedWorkspace);
   // Status and shutdown remain available even if the launch config was removed or edited badly.
   const raw = command === "up" ? await Bun.file(join(workspace, "rsa.json")).json() : { driver: "cua" };
+  if (typeof raw.driverPackage === "string" && raw.driverPackage.startsWith("file:")) raw.driverPackage = `file:${resolve(workspace, raw.driverPackage.slice(5))}`;
   const manifest = await resolveDriver(raw.driver, raw.driverPackage, defaultDriverCacheRoot());
   const config = parseConfig(raw, manifest);
   const plan = await launchPlan(config, workspace, resolve(import.meta.dir, "../../.."), undefined, manifest);
@@ -393,11 +399,13 @@ export async function workspaceCommand(command: string, args: string[], selected
   if (command === "up") {
     const repo = resolve(import.meta.dir, "../../..");
     const required = [
-      ...(config.game && manifest.launchCommand ? [resolve(workspace, config.game), ...manifest.launchCommand] : []),
+      ...(config.game && manifest.launchCommand ? [resolve(workspace, config.game)] : []),
       ...(config.dashboard ? [join(repo, "rsa-dashboard/node_modules/next/package.json")] : []),
       ...(config.pet ? [join(repo, "rsa-companion/dist/electron/main.js"), join(repo, "rsa-companion/node_modules/electron/package.json")] : []),
     ];
     for (const path of required) if (!await Bun.file(path).exists()) throw new Error(`Missing ${path}. Install/build the components as described in README.md.`);
+    const executable = config.game ? manifest.launchCommand?.[0] : undefined;
+    if (executable && !Bun.which(executable, { cwd: workspace })) throw new Error(`Missing executable ${executable}. Install/build the components as described in README.md.`);
   }
   const launcher = new WorkspaceLauncher(plan);
   const result = command === "up" ? await launcher.up() : command === "down"

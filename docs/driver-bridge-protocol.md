@@ -1,6 +1,6 @@
 # Driver Bridge 协议（初稿）
 
-状态：从现有 `mgba / azahar / ryubing` 三个 bridge 实现反推，未做代码改动。新 driver 按此实现 socket bridge 即可被 `DriverProvider.load` 接入；`cua` 走 stdio，不用此协议。
+状态：从现有 `mgba / azahar / ryubing` 三个 bridge 实现反推。新 driver 实现对应 socket bridge 后，还需提供适配该协议的 provider，并通过 `DriverRegistration.load` 接入；包和启动描述见 [Baseware](baseware.md#driver-包与启动描述)。`cua` 走 stdio，不用此协议。
 
 ## 传输
 
