@@ -134,7 +134,7 @@ rsa auto on
 
 重复 `up` 不加载新配置。重启默认续接原 workspace 的 OMP 会话，日志另写新 run。会话默认存放于 `.rsa/shiori/sessions/`，当前路径见 `.rsa/shiori/current-session.json` 或 run 的 `session` 事件。`rsa run --new-session` 按原生语义开新上下文并保留工作区文件；`--resume /absolute/path/to/session.jsonl` 选择同一 workspace 的已有会话，经 realpath 规范化并校验归属。
 
-新 Host 取得 workspace socket 独占权后，会一次性迁移旧 managed sessions 整目录和当前指针，保留旧目录符号链接以维持历史绝对资源引用，不清空会话。技能版本与 workspace 注册信息仍在 `../artifacts/rsa/ws-<name>-<hash>/`；OMP 全局 blob 不迁移，workspace 尚非独立导出包。存储边界见 [workspace](workspace.md#文件与会话)。
+新 Host 取得 workspace socket 独占权后，会一次性迁移旧 managed sessions 整目录和当前指针，保留旧目录符号链接以维持历史绝对资源引用，不清空会话。历史技能版本与 workspace 注册信息仍保留在 `../artifacts/rsa/ws-<name>-<hash>/`；OMP 全局 blob 不迁移，workspace 尚非独立导出包。存储边界见 [workspace](workspace.md#文件与会话)。
 
 [launch-background.py](../../rsa/scripts/launch-background.py) 将工作区日志/job 写到 `logs/background/`；共享 Ludens Pet 在 `../artifacts/rsa/alice/background/`，label 为 `dev.playness.alice.pet`（历史 label 与目录名保留）。服务脱离终端，不自动重启/开机启动。故障先看 `rsa services` 和对应日志，避免重复启动。
 

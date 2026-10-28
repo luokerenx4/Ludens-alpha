@@ -194,6 +194,7 @@ export function createRsaExtension(options: {
   function resetContext() {
     resetBatch();
     lastMain = undefined;
+    lastPerceptionState = "";
     deliveredBackground.clear();
     latestContext = { observations: [], deliveryIds: [] };
   }
@@ -230,8 +231,9 @@ export function createRsaExtension(options: {
           content.push(...(await perceptionContent(read, parent)).content);
         }
       }
+      // Suppressed or cancelled delivery must leave the state notice pending.
+      lastPerceptionState = stateVersion;
     }
-    if (!consolidating) lastPerceptionState = stateVersion;
     latestContext = { observations: [], deliveryIds: [] };
     if (content.length || batchImages.length || batchQueries.size) {
       receipt(parent, origin, [...new Set(batchImages.map(image => image.id))], [...batchQueries]);

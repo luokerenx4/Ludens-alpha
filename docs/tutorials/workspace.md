@@ -26,11 +26,11 @@ workspace/
 
 `rsa init` 写入缺失的 [AGENTS 模板](../../rsa/templates/AGENTS.md)、[感知模板](../../rsa/templates/perception.py) 和 [动作模板](../../rsa/templates/action.py)。`AGENTS.md` 可修改或删除，普通启动不补回；Host 启动时按原生项目上下文加载它，保留 OMP 默认系统提示词。修改后需重启 Host。
 
-Workspace 的 canonical path 决定独立身份与默认 socket，改名或移动会改变身份。OMP 会话与默认续接指针在 `.rsa/shiori/`，日志在 `logs/<run-id>/`；技能版本和供 Dashboard 发现 workspace 的注册信息仍在仓库同级的 `../artifacts/rsa/ws-<name>-<hash>/`，由 [workspace-state](../../rsa/src/harness/workspace-state.ts) 管理。默认重启续接当前会话；`rsa run --new-session` 按原生语义新建上下文并保留工作区文件，`--resume <session.jsonl>` 选择同工作区的已有会话文件，路径经 realpath 规范化并校验归属。
+Workspace 的 canonical path 决定独立身份与默认 socket，改名或移动会改变身份。OMP 会话与默认续接指针在 `.rsa/shiori/`，日志在 `logs/<run-id>/`；历史技能版本和供 Dashboard 发现 workspace 的注册信息仍保留在仓库同级的 `../artifacts/rsa/ws-<name>-<hash>/`，由 [workspace-state](../../rsa/src/harness/workspace-state.ts) 管理。默认重启续接当前会话；`rsa run --new-session` 按原生语义新建上下文并保留工作区文件，`--resume <session.jsonl>` 选择同工作区的已有会话文件，路径经 realpath 规范化并校验归属。
 
 旧 managed 布局在新 Host 取得 workspace socket 独占权后一次性迁移：整个 `sessions/`（含资源）和当前会话指针进入 `.rsa/shiori/`，旧 `sessions/` 留符号链接，保护历史绝对资源路径。迁移不清空上下文。OMP 全局 blob 存储本次不迁，因此不能仅复制 workspace 就视为完整、独立的会话导出。
 
-`SKILL.md` 使用 `name`、`description` frontmatter。循环只注入技能和记忆索引，Agent 按需读写正文，版本关联到日志。
+`SKILL.md` 使用 `name`、`description` frontmatter。Agent 通过原生工具按需查找、读写技能与记忆；RSA 不逐轮推送索引或生成版本快照。原生 `read` 的文件路径与内容 hash 仍记录到日志，已存在的版本文件与旧日志不清理。
 
 工作区不提交到代码仓库；快照排除根 `logs/` 和 `.rsa/` 运行状态，避免递归复制及重复打包会话、感知媒体。
 
@@ -115,7 +115,7 @@ rsa perception stop
 
 `observe` 只读轴，不重新采样。默认读取主 `python/perception.py:Perception.sample` 通道；`capability` 选其他能力，`*` 读全轴，`id` 定位记录。`at` 读取不晚于指定时刻的记录；`start/end` 为含端点的范围。查询时间按 `recordedAt`（记录墙钟）；`sampledAt` 和单调时钟采样区间另存，不混用。范围按全局 sequence 升序分页，默认 8 条、最多 64 条；用 `nextAfter` 配合原范围续页。未使用字段可省略或传 `null`。
 
-**持续采集与模型自动注入独立控制。** `rsa perception inject off` 关闭 prompt 开始和工具批次结束时自动附加的感知；sampler、时空轴 writer、录像和历史查询继续运行，模型可随时显式 `observe`。`inject on` 恢复自动附加，`inject` 查询当前策略，`rsa status` 的 `context.perceptionInjection` 也可查看。默认开启，修改立即作用于后续自动读取；同 Host 内跨感知 reload 和控制周期保留，新 Host 恢复默认。已经进入 OMP 的历史消息不会被改写，原生工具主动返回的图片也不受此开关影响。关闭注入后仍附加控制状态和技能/记忆索引。
+**持续采集与模型自动注入独立控制。** `rsa perception inject off` 关闭 prompt 开始和工具批次结束时自动附加的感知记录与采样器状态变化；sampler、时空轴 writer、录像和历史查询继续运行，模型可随时显式 `observe`。`inject on` 恢复自动附加，`inject` 查询当前策略，`rsa status` 的 `context.perceptionInjection` 也可查看。默认开启，修改立即作用于后续自动读取；同 Host 内跨感知 reload 和控制周期保留，新 Host 恢复默认。已经进入 OMP 的历史消息不会被改写，原生工具主动返回的图片也不受此开关影响。控制状态、技能与记忆始终由模型按需通过工具读取。
 
 CLI、Python `Client().observe()` 与原生 observe 工具共用一个查询结果：`{queryId, ok, query, records, hasMore, nextAfter?, availability?, error?}`。`queryId` 就是本次查询的 trace span ID；记录平铺 `id/sequence/generation/capability/recordedAt/sampledAt/sampling/text/data/space/sources/media`，归档身份和来源只在这一份记录中出现。没有顶层 `snapshot`、假执行 `result`、全局 `reused` 或采样健康 `status`；采样健康单独用 `rsa perception status` 读取。`media` 按记录顺序交付，保留媒体 ID、类型与实际媒体/时空轴引用。分页继续使用原范围和 `nextAfter`，不会重新采样。
 

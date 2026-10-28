@@ -147,7 +147,8 @@ class Perception:
     expect(continuation.hasMore).toBe(false);
     expect([...page.records, ...continuation.records].map(record => record.id)).toEqual(history.map(record => record.id));
     expect(snapshots[7]!.images).toHaveLength(1);
-    expect(snapshots[7]!.json.find(value => value.control)?.control.context.perceptionInjection).toBe(true);
+    expect(snapshots[7]!.json.some(value => value.control || value.skills)).toBe(false);
+    expect(runtime.perceptionInjectionEnabled()).toBe(true);
     expect(runtime.perception.status()).toMatchObject({ state: "ready", generation });
 
     const explicit = session.sessionManager.getEntries().flatMap(entry => entry.type === "message" && entry.message.role === "toolResult"
