@@ -1,6 +1,6 @@
 # 日志与调用链
 
-分析器、Dashboard、Ludens Pet 和 Benchmark 读取同一组事实来源。**连续能力按需存数据，主动行为存事件，内部过程按需追踪。** 函数返回、模型成功、文件写入不等于任务成功，评测见 [Benchmark](benchmark.md)，施工依据见 [记录方案](event-recording-plan.md)。
+分析器、Dashboard、Ludens Pet 和 Benchmark 读取同一组事实来源。**连续能力按需存数据，主动行为存事件，内部过程按需追踪。** 函数返回、模型成功、文件写入不等于任务成功，评测见 [Benchmark](benchmark.md)。
 
 ## 记录模式
 
@@ -46,7 +46,7 @@ Baseware 只对明确声明只读的查询采用减量；未知能力、有副�
 
 真正被日志消费的图像另在 `.rsa/archive/media/<sha256>.json` 保存小型 hash→视频引用索引，不保存媒体字节，也不为每个后台采样建立索引文件。内存映射上限为 4096 项，淘汰或 Host 重启后按 hash 读取。相同字节优先复用稳定的有效来源；它是内容重建来源，具体采样时刻仍以观测事件的 record 引用为准。窗口过期或编码失败后，有新来源时可以更新索引。
 
-OMP 原生 session、blob 和恢复机制不改，真实模型输入不替换为日志引用。共享 archive 与 timeline 不是单个 run 的附属文件：只复制或删除 `logs/<run-id>` 不会复制或回收它们。本次不迁移旧日志、不实现自动垃圾回收，避免让历史引用失效；具体施工与验收见 [模型日志引用化方案](indexed-model-log-plan.md)。
+OMP 原生 session、blob 和恢复机制不改，真实模型输入不替换为日志引用。共享 archive 与 timeline 不是单个 run 的附属文件：只复制或删除 `logs/<run-id>` 不会复制或回收它们。本次不迁移旧日志、不实现自动垃圾回收，避免让历史引用失效。
 
 manifest 记录 Git commit/dirty、continue/consolidate 提示和可选 workspace AGENTS 的 hash；dirty 不代表代码快照。认证头不入日志。结构见 [events.ts](../rsa/src/harness/events.ts)、[Baseware protocol](../baseware/src/protocol.ts)、[provenance.ts](../rsa/src/harness/provenance.ts)。
 
@@ -179,7 +179,7 @@ Dashboard 的“回放”将感知记录、动作、模型调用、工具和日�
 
 画面直接读取 `.rsa/timeline/` 的实际采样，包括未送进模型的记录；没有新采样时保持最近画面并显示采样时间。模型调用详情另按输入引用定位，当前播放画面不代表该请求实际看过的图。动作跨度取已记录的 `action_start/end`，未结束保持未知，不用工具提交成功代替动作完成。
 
-`/api/replay` 提供概览、时间窗、来源详情和媒体读取。时间窗最多 60 秒，每页最多 500 条，通过游标继续读取；客户端只保留邻近窗口。画面共用解码缓冲 hook：目标帧所有图片就绪后一起切换，加载期间保留上一帧并标注缓冲，图片容器保持尺寸；同时预读后续两帧（最多 8 张图片、两路请求），超过 32 MiB 的预读缓存会被淘汰。当前与待显示帧保留必要资源，跳转、切工作区或离开页面时释放旧图片；刷新记录可重试失败图片。索引复用可重建 `.dashboard-index/`，只存位置、摘要和引用，媒体和正文仍来自原有 timeline、events 与 archive。持久记录可离线回放；已过期或未记录的内容会明确显示缺失。实现与验收见 [回放施工方案](experience-replay-plan.md)。
+`/api/replay` 提供概览、时间窗、来源详情和媒体读取。时间窗最多 60 秒，每页最多 500 条，通过游标继续读取；客户端只保留邻近窗口。画面共用解码缓冲 hook：目标帧所有图片就绪后一起切换，加载期间保留上一帧并标注缓冲，图片容器保持尺寸；同时预读后续两帧（最多 8 张图片、两路请求），超过 32 MiB 的预读缓存会被淘汰。当前与待显示帧保留必要资源，跳转、切工作区或离开页面时释放旧图片；刷新记录可重试失败图片。索引复用可重建 `.dashboard-index/`，只存位置、摘要和引用，媒体和正文仍来自原有 timeline、events 与 archive。持久记录可离线回放；已过期或未记录的内容会明确显示缺失。
 
 从仓库根目录离线分析：
 

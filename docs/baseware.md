@@ -94,4 +94,3 @@ Baseware 是设备事实的唯一持久来源。每个服务实例独立保存 `
 
 当前支持 mGBA、Azahar、Ryubing 和 CUA 桌面 backend；NDS 目前通过桌面 backend 操作。机器狗、摄像头阵列等尚未接入；本契约为它们留下描述能力的位置，不代表已经验证其控制或实时要求。
 
-施工决策与验证记录见 [施工方案](baseware-contract-plan.md)，研究依据见 [CUA 对比研究](cua-reference-study.md)。
