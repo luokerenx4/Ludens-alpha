@@ -2,7 +2,7 @@ import { BasewareCore } from "@playness/baseware/core";
 import type { Capabilities, ExecutionResult, Observation, ToolArguments, ToolExecutionResult } from "@playness/baseware/contracts";
 import { childTrace, type EventTrace, type RecordEvent } from "../src/harness/events.ts";
 import { Runtime, type DeviceSession } from "../src/harness/runtime.ts";
-import { PerceptionRuntime } from "../src/harness/perception.ts";
+import { PerceptionRuntime, perceptionMetadata, type PerceptionRead } from "../src/harness/perception.ts";
 import { WorkspaceController } from "../src/harness/controller.ts";
 
 /** Exercise the production device core without a socket or a real device. */
@@ -47,16 +47,20 @@ export function installTestPerception(
   const status = { state: "ready" as const, generation: "test-perception", codeSHA: "test-source" };
   let sequence = 0;
   perception.status = () => status;
-  perception.observe = async (signal, parent = {}) => {
+  perception.observe = async (signal, parent = {}, query = {}) => {
     const trace = childTrace(parent), started = performance.now();
-    runtime.record("perception_observe_start", { status }, trace);
+    const queryId = trace.spanId!;
+    runtime.record("perception_observe_start", { queryId, query }, trace);
     signal.throwIfAborted();
     const result = await read(signal, trace);
-    const value = { status, result, snapshot: { id: `snapshot-${++sequence}`, sequence,
-      generation: status.generation, recordedAt: new Date().toISOString(),
+    const value: PerceptionRead = { queryId, ok: result.exitCode === 0, query, hasMore: false,
+      records: result.exitCode === 0 ? [{ id: `snapshot-${++sequence}`, sequence,
+      generation: status.generation, capability: "python/perception.py:Perception.sample", recordedAt: new Date().toISOString(),
       sampling: { clock: "test", startedAtMs: started, finishedAtMs: performance.now() },
-      sampledAt: new Date().toISOString() }, reused: false };
-    runtime.record("perception_observe_end", { ...value, outcome: "success", durationMs: performance.now() - started }, trace);
+      sampledAt: new Date().toISOString(), text: result.stdout, media: result.observations ?? [] }] : [],
+      ...(result.exitCode === 0 ? {} : { error: { code: "QUERY_FAILED", message: result.stderr || result.stdout } }) };
+    runtime.record("perception_observe_end", { ...perceptionMetadata(value), outcome: value.ok ? "success" : "error",
+      durationMs: performance.now() - started }, trace);
     return value;
   };
   runtime.perception = perception;

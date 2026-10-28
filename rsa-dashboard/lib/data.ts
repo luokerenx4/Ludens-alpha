@@ -372,10 +372,10 @@ export async function timelineRecord(project: string, run: string, recordId: str
       if (typeof manifest.workspace === "string" && await realpath(manifest.workspace) === workspace) {
         const live = await hostRequest(manifest.socket, { kind: "status", argv: [] }).catch(() => null);
         if (live?.runId === latest.id) {
-          const response = await hostRequest<{ records?: Array<{ snapshot: { id: string; sequence: number }; data?: unknown; space?: unknown }> }>(
+          const response = await hostRequest<{ records?: Array<{ id: string; sequence: number; data?: unknown; space?: unknown }> }>(
             manifest.socket, { kind: "perception", argv: ["observe"], query: { id: recordId } },
           ).catch(() => null);
-          const record = response?.records?.find(item => item.snapshot.id === recordId && item.snapshot.sequence === sequence);
+          const record = response?.records?.find(item => item.id === recordId && item.sequence === sequence);
           if (record) return { recordId, sequence, ...(record.data === undefined ? {} : { data: record.data }),
             ...(record.space === undefined ? {} : { space: record.space }) };
         }

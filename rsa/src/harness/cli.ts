@@ -27,7 +27,9 @@ Read the workspace timeline without sampling. Default: latest Perception.sample 
 Range pages follow recording sequence, default to 8 records (maximum 64), and return hasMore/nextAfter.
 --after continues after a record sequence. Query times use recordedAt (sampling completion);
 sampledAt, when supplied by the producer, describes the source time separately.
-Default output is JSON with media paths. --images also displays the requested pixels through
+Default output is one query result: queryId, ok, records with media, and pagination.
+An empty range succeeds; missing point/latest data, expiration and query errors have explicit error codes.
+--images displays the same compact observation text and requested pixels through
 OMP's native terminal image support; use it when reading pictures through bash.
 availability reports the retained range; non-persistent history expires outside its hot window.
 The same command is available as rsa perception observe.`;
@@ -75,7 +77,7 @@ async function observe(argv: string[], socket: string) {
   const value = await send(socket, { kind: "perception", argv: ["observe"], query,
     epoch: process.env.BASEWARE_EPOCH,
     trace: process.env.BASEWARE_TRACE ? JSON.parse(process.env.BASEWARE_TRACE) : undefined }) as PerceptionRead;
-  process.exitCode = value.result.exitCode;
+  process.exitCode = value.ok ? 0 : 1;
   const output = values.images
     ? await (await import("./omp/terminal-observation.ts")).terminalObservation(value,
       (media, id) => send(socket, { kind: "timeline", action: "derive", argv: [], media, id,

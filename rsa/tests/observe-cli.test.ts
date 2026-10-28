@@ -17,17 +17,15 @@ async function fixture() {
   for (const [index, color] of [[255, 0, 0], [0, 0, 255]].entries()) {
     const path = join(root, `${index}.png`);
     await writeFile(path, encodeRawPng(Uint8Array.from([...color, ...color, ...color, ...color]), 2, 2, 3));
-    records.push({ snapshot: { id: `record-${index}`, sequence: index + 1, generation: "fixture",
-      recordedAt: `2026-10-22T06:44:0${index}.000Z`, sampling: { clock: "fixture", startedAtMs: index, finishedAtMs: index } },
+    records.push({ id: `record-${index}`, sequence: index + 1, generation: "fixture",
+      recordedAt: `2026-10-22T06:44:0${index}.000Z`, sampling: { clock: "fixture", startedAtMs: index, finishedAtMs: index },
       text: index ? "latest blue frame" : "historical red frame",
-      observations: [{ id: `image-${index}`, controllerId: "perception", path, mediaType: "image/png",
+      media: [{ id: `image-${index}`, controllerId: "perception", path, mediaType: "image/png",
         timing: { clock: "fixture", requestedAtMs: index, receivedAtMs: index } }],
     });
   }
   const reply = (selected: PerceptionRecord[]): PerceptionRead => ({
-    status: { state: "ready", generation: "fixture" }, records: selected, snapshot: selected.at(-1)?.snapshot,
-    hasMore: false, result: { id: "read", status: "completed", exitCode: 0, stdout: "", stderr: "",
-      observations: selected.flatMap(record => record.observations), timing: { clock: "fixture", requestedAtMs: 0, receivedAtMs: 1 } },
+    queryId: "read", ok: true, query: {}, records: selected, hasMore: false,
   });
   let response: PerceptionRead | undefined;
   const server = createServer(connection => {
@@ -67,10 +65,10 @@ async function decode(output: string) {
 test("observe CLI retains raw JSON and explicitly delivers requested historical pixels", async () => {
   const f = await fixture();
   try {
-    const at = f.records[0]!.snapshot.recordedAt;
+    const at = f.records[0]!.recordedAt;
     const json = await f.run(["--at", at]);
     expect({ code: json.code, stderr: json.stderr }).toEqual({ code: 0, stderr: "" });
-    expect(JSON.parse(json.stdout).records[0].snapshot.recordedAt).toBe(at);
+    expect(JSON.parse(json.stdout).records[0].recordedAt).toBe(at);
     expect(json.stdout).not.toContain("\x1b");
     const historical = await f.run(["--at", at, "--images"]);
     const latest = await f.run(["--images"]);
@@ -81,8 +79,13 @@ test("observe CLI retains raw JSON and explicitly delivers requested historical 
     expect(latestView.images).toHaveLength(1);
     expect(oldView.images[0]!.data).not.toEqual(latestView.images[0]!.data);
     expect(rangeView.images).toEqual([...oldView.images, ...latestView.images]);
+    const context = JSON.parse(rangeView.text.slice(0, rangeView.text.indexOf("Image 1:")));
+    expect(context.records.map((record: any) => record.text)).toEqual(["historical red frame", "latest blue frame"]);
+    expect(context.records[0].media).toEqual([{ id: "image-0", mediaType: "image/png" }]);
+    expect(context).not.toHaveProperty("result");
+    expect(context).not.toHaveProperty("snapshot");
     expect(rangeView.text).toContain(`Image 1: image-0 | observation #1 recordedAt=${at}`);
-    expect(rangeView.text).toContain(`Image 2: image-1 | observation #2 recordedAt=${f.records[1]!.snapshot.recordedAt}`);
+    expect(rangeView.text).toContain(`Image 2: image-1 | observation #2 recordedAt=${f.records[1]!.recordedAt}`);
   } finally { await f.close(); }
 });
 
@@ -90,15 +93,16 @@ test("observe CLI propagates failed reads and emits no partial image page on ren
   const f = await fixture();
   try {
     const failed = f.reply([]);
-    failed.result = { ...failed.result, status: "failed", exitCode: 1, stderr: "No observation at requested time" };
+    failed.ok = false;
+    failed.error = { code: "NOT_FOUND", message: "No observation at requested time" };
     f.setResponse(failed);
     const result = await f.run(["--images"]);
     expect(result.code).toBe(1);
-    expect(JSON.parse(result.stdout).result.stderr).toContain("No observation");
+    expect(JSON.parse(result.stdout).error.message).toContain("No observation");
     expect((await decode(result.stdout)).images).toEqual([]);
 
     const invalid = structuredClone(f.records[1]!);
-    invalid.observations[0]!.path += ".missing";
+    invalid.media[0]!.path += ".missing";
     f.setResponse(f.reply([f.records[0]!, invalid]));
     const rendering = await f.run(["--images"]);
     expect(rendering.code).not.toBe(0);

@@ -3,7 +3,7 @@ import { mkdtemp, readFile, realpath, rm, utimes, writeFile } from "node:fs/prom
 import { readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { PerceptionRuntime, observationBytes, type ObservationQuery } from "../src/harness/perception.ts";
+import { PerceptionRuntime, observationBytes, perceptionInput, perceptionMetadata, type PerceptionRead, type ObservationQuery } from "../src/harness/perception.ts";
 
 async function fixture(options: { startTimeoutMs?: number; observeTimeoutMs?: number; env?: NodeJS.ProcessEnv } = {}) {
   const workspace = await realpath(await mkdtemp(join(tmpdir(), "rsa-perception-")));
@@ -60,16 +60,17 @@ test("empty implementation stays blind; sampler failure can be repaired without 
   const f = await fixture();
   try {
     expect((await f.runtime.reload()).state).toBe("unimplemented");
-    expect((await f.observe()).result.observations).toEqual([]);
+    expect((await f.observe()).records).toEqual([]);
     await f.load(source('        raise NotImplementedError("Implement sample")'));
-    expect((await f.observe()).error).toContain("Implement sample");
+    expect((await f.observe()).error?.message).toContain("Implement sample");
     await f.load(source('        return {"media": [{"path": "missing.png", "mediaType": "image/png"}]}'));
     expect(f.runtime.status().state).toBe("error");
     await f.load(source('        return {"text": "fixed"}'));
-    expect((await f.observe()).result.stdout).toBe("fixed");
+    expect((await f.observe()).records[0]!.text).toBe("fixed");
     await f.runtime.stop();
-    expect((await f.observe()).status.state).toBe("stopped");
-    expect(f.events.filter(e => e.type === "perception_observe_end").every(e => e.data.result.id)).toBe(true);
+    expect((await f.observe()).error?.code).toBe("UNAVAILABLE");
+    expect(f.runtime.status().state).toBe("stopped");
+    expect(f.events.filter(e => e.type === "perception_observe_end").every(e => e.data.queryId === e.trace.spanId)).toBe(true);
   } finally { await f.cleanup(); }
 });
 
@@ -82,19 +83,22 @@ test("retention policy reaches the worker and expired history cannot invalidate 
     expect(f.runtime.status().history?.persistent).toBe(false);
     expect(f.runtime.status().history?.hotSeconds).toBe(0.15);
     const delivered = await f.observe();
-    const file = delivered.result.observations![0]!;
-    expect((await observationBytes(file)).toString("utf8")).toBe(delivered.result.stdout);
-    const first = delivered.snapshot!;
+    const file = delivered.records[0]!.media[0]!;
+    expect((await observationBytes(file)).toString("utf8")).toBe(delivered.records[0]!.text);
+    const first = delivered.records[0]!;
     await f.wait(() => Number(readFileSync(join(f.workspace, "frame.txt"), "utf8")) >= 8);
     const expired = await f.observe({ at: first.recordedAt });
-    expect(expired.error).toContain("expired");
+    expect(expired.error?.code).toBe("EXPIRED");
+    expect(expired.error?.message).toContain("expired");
     expect(expired.availability?.expired).toBe(true);
     expect(expired.availability?.earliest?.sequence).toBeGreaterThan(first.sequence);
-    expect((await observationBytes(file)).toString("utf8")).toBe(delivered.result.stdout);
+    expect((await f.observe({ id: "never-existed" })).error?.code).toBe("NOT_FOUND");
+    expect((await f.observe({ capability: "python/missing.py:sample" })).error?.code).toBe("NOT_READY");
+    expect((await observationBytes(file)).toString("utf8")).toBe(delivered.records[0]!.text);
     const reads = await Promise.all([f.observe(), f.observe(), f.observe()]);
     for (const read of reads) {
       expect(read.error).toBeUndefined();
-      expect((await observationBytes(read.result.observations![0]!)).toString("utf8")).toBe(read.result.stdout);
+      expect((await observationBytes(read.records[0]!.media[0]!)).toString("utf8")).toBe(read.records[0]!.text);
     }
   } finally { await f.cleanup(); }
 });
@@ -104,12 +108,12 @@ test("cold history remains queryable across segments and worker reload", async (
   try {
     const code = source('        self.count += 1\n        return {"text": str(self.count)}');
     await f.load(code);
-    const first = (await f.observe()).snapshot!;
+    const first = (await f.observe()).records[0]!;
     await f.wait(() => f.samples().length >= 8);
-    expect((await f.observe({ at: first.recordedAt })).snapshot?.id).toBe(first.id);
+    expect((await f.observe({ at: first.recordedAt })).records[0]?.id).toBe(first.id);
     await f.load(code);
     const cold = await f.observe({ at: first.recordedAt });
-    expect(cold.snapshot?.id).toBe(first.id);
+    expect(cold.records[0]?.id).toBe(first.id);
     expect(cold.availability?.persistent).toBe(true);
     expect(cold.availability?.expired).toBe(false);
   } finally { await f.cleanup(); }
@@ -132,25 +136,41 @@ test("sampling continues without reads, archives overwritten files, and queries 
     const second = await f.observe({ start: first.recordedAt, end: fifth.recordedAt, after: page.nextAfter, limit: 8 });
     expect(second.records).toHaveLength(3);
     expect(second.hasMore).toBe(false);
-    expect(page.records![0]!.snapshot.id).toBe(first.id);
+    expect(page.records[0]!.id).toBe(first.id);
     const exact = await f.observe({ at: first.recordedAt });
-    expect(exact.snapshot?.id).toBe(first.id);
-    expect(exact.result.stdout).toBe("1");
-    expect((await observationBytes(exact.result.observations![0]!)).toString("utf8")).toBe("1");
-    expect(exact.result.observations![0]!.timing.clock).toBe(first.sampling.clock);
+    expect(exact.records[0]?.id).toBe(first.id);
+    expect(exact.records[0]!.text).toBe("1");
+    expect((await observationBytes(exact.records[0]!.media[0]!)).toString("utf8")).toBe("1");
+    expect(exact.records[0]!.media[0]!.timing.clock).toBe(first.sampling.clock);
     const gap = new Date((Date.parse(first.recordedAt) + Date.parse(f.samples()[1]!.data.snapshot.recordedAt)) / 2).toISOString();
-    expect((await f.observe({ at: gap })).snapshot?.id).toBe(first.id);
-    expect((await f.observe({ at: "2000-01-01T00:00:00Z" })).records).toEqual([]);
+    expect((await f.observe({ at: gap })).records[0]?.id).toBe(first.id);
+    const absent = await f.observe({ at: "2000-01-01T00:00:00Z" });
+    expect(absent.records).toEqual([]);
+    expect(absent.error?.code).toBe("NOT_FOUND");
+    expect((await f.observe({ id: "missing-record" })).error?.code).toBe("NOT_FOUND");
+    expect((await f.observe({ capability: "python/missing.py:sample" })).error?.code).toBe("NOT_READY");
+    const empty = await f.observe({ start: "2000-01-01T00:00:00Z", end: "2000-01-02T00:00:00Z" });
+    expect(empty).toMatchObject({ ok: true, records: [], hasMore: false });
+    expect(empty.error).toBeUndefined();
+    const exhausted = await f.observe({ after: 1_000_000 });
+    expect(exhausted).toMatchObject({ ok: true, records: [], hasMore: false });
     const latest = await f.observe();
-    expect(Number(latest.snapshot!.sequence)).toBeGreaterThanOrEqual(5);
-    expect((await f.observe({ at: latest.snapshot!.recordedAt })).reused).toBe(true);
-    const expanded = await f.observe({ start: first.recordedAt, end: latest.snapshot!.recordedAt });
-    expect(expanded.reused).toBe(false);
+    expect(Number(latest.records[0]!.sequence)).toBeGreaterThanOrEqual(5);
+    const same = await f.observe({ at: latest.records[0]!.recordedAt });
+    expect(same.records[0]!.id).toBe(latest.records[0]!.id);
+    expect(same.queryId).not.toBe(latest.queryId);
+    const expanded = await f.observe({ start: first.recordedAt, end: latest.records[0]!.recordedAt });
+    expect(expanded.records.length).toBeGreaterThan(1);
     const sampleEvent = f.samples()[0]!;
     expect(sampleEvent.trace.epoch).toBeUndefined();
     expect(sampleEvent.trace.modelCallId).toBeUndefined();
     const read = f.events.find(e => e.type === "perception_observe_end")!;
     expect(read.trace.parentSpanId).toBe("model-span");
+    expect(read.data.queryId).toBe(read.trace.spanId);
+    for (const legacy of ["result", "snapshot", "status", "reused"]) {
+      expect(latest).not.toHaveProperty(legacy);
+      expect(read.data).not.toHaveProperty(legacy);
+    }
   } finally { await f.cleanup(); }
 });
 
@@ -166,7 +186,7 @@ test("slow sampling never blocks reads or overlaps; cancelling a read leaves rec
     await f.wait(() => Bun.file(join(f.workspace, "sampling")).size > 0);
     const began = performance.now();
     const one = await f.observe();
-    expect(one.result.stdout).toBe("1");
+    expect(one.records[0]!.text).toBe("1");
     expect(performance.now() - began).toBeLessThan(250);
     const abort = new AbortController(); abort.abort(new Error("human takeover"));
     await expect(f.runtime.observe(abort.signal)).rejects.toThrow("human takeover");
@@ -192,28 +212,31 @@ test("reload replaces code and loaded assets, closes the old process, and preser
     const first = await f.observe();
     await writeFile(helper, 'VALUE = "new"\n'); await utimes(helper, stamp, stamp);
     await writeFile(join(f.workspace, "weights.txt"), "new weights");
-    expect((await f.observe()).result.stdout).toBe("old:old weights");
+    expect((await f.observe()).records[0]!.text).toBe("old:old weights");
     const fresh = await f.load(code);
     expect(fresh.pid).not.toBe(old.pid);
     expect(await readFile(join(f.workspace, "closed"), "utf8")).toBe(String(old.pid));
-    expect((await f.observe()).result.stdout).toBe("new:new weights");
-    const history = await f.observe({ at: first.snapshot!.recordedAt });
-    expect(history.snapshot?.generation).toBe(old.generation!);
-    expect(history.result.stdout).toBe("old:old weights");
-    const pointWithEmptyFields = await f.observe({ at: first.snapshot!.recordedAt, start: "", end: null, after: 0 });
-    expect(pointWithEmptyFields.snapshot?.id).toBe(first.snapshot!.id);
-    expect(pointWithEmptyFields.query).toEqual({ at: first.snapshot!.recordedAt });
+    expect((await f.observe()).records[0]!.text).toBe("new:new weights");
+    const history = await f.observe({ at: first.records[0]!.recordedAt });
+    expect(history.records[0]?.generation).toBe(old.generation!);
+    expect(history.records[0]!.text).toBe("old:old weights");
+    const pointWithEmptyFields = await f.observe({ at: first.records[0]!.recordedAt, start: "", end: null, after: 0 });
+    expect(pointWithEmptyFields.records[0]?.id).toBe(first.records[0]!.id);
+    expect(pointWithEmptyFields.query).toEqual({ at: first.records[0]!.recordedAt });
     const sources = JSON.parse(await readFile(join(f.workspace, "logs", "run", "perception", fresh.generation!, "sources.json"), "utf8"));
     expect(Object.keys(sources).sort()).toEqual(["helper.py", "perception.py"]);
     await f.load(source('        raise RuntimeError("broken sampler")'));
     const failed = await f.observe();
-    expect(failed.error).toContain("broken sampler");
-    expect(failed.result.observations).toEqual([]);
+    expect(failed.error?.message).toContain("broken sampler");
+    expect(failed.records).toEqual([]);
     const emptyLatest = await f.observe({ at: "", start: null, end: " ", limit: null, after: null });
-    expect(emptyLatest.error).toContain("broken sampler");
+    expect(emptyLatest.error?.message).toContain("broken sampler");
     expect(emptyLatest.records).toEqual([]);
     expect(emptyLatest.query).toEqual({});
-    expect((await f.observe({ at: first.snapshot!.recordedAt })).snapshot?.id).toBe(first.snapshot!.id);
+    const retained = await f.observe({ at: first.records[0]!.recordedAt });
+    expect(retained.ok).toBe(true);
+    expect(retained.records[0]?.id).toBe(first.records[0]!.id);
+    expect(f.runtime.status().state).toBe("error");
   } finally { await f.cleanup(); }
 });
 
@@ -223,10 +246,10 @@ test("invalid query does not damage sampler health and stuck startup is recovera
     await writeFile(join(f.workspace, "perception.py"), source('        return {}', '        time.sleep(10)'));
     expect((await f.runtime.reload()).error).toContain("start timed out");
     await f.load(source('        return {"text":"ok"}'));
-    expect((await f.observe({ at: "bad" })).error).toBeDefined();
+    expect((await f.observe({ at: "bad" })).error?.code).toBe("QUERY_FAILED");
     expect((await f.observe({ at: "2026-01-01T00:00:00Z", start: "2026-01-01T00:00:00Z" })).error).toBeDefined();
     expect(f.runtime.status().state).toBe("ready");
-    expect((await f.observe()).result.stdout).toBe("ok");
+    expect((await f.observe()).records[0]!.text).toBe("ok");
   } finally { await f.cleanup(); }
 });
 
@@ -248,4 +271,35 @@ console.log(JSON.stringify(await runtime.reload())); process.exit(0);`);
     }
     expect(closed).toBe(String(status.pid));
   } finally { await f.cleanup(); }
+});
+
+
+test("one record carries payload once; model views preserve semantic sources without internal storage metadata", () => {
+  const read: PerceptionRead = {
+    queryId: "query-span", ok: true, query: {}, hasMore: false,
+    records: [{ id: "record", sequence: 7, generation: "generation", capability: "python/perception.py:Perception.sample",
+      identity: { id: "capability", codeSHA: "source-version", origin: { path: "perception.py" } },
+      trace: { spanId: "sample-span" }, runId: "run", timeline: { recordId: "record", sequence: 7 },
+      recordedAt: "2026-10-28T00:00:00.000Z", sampledAt: "2026-10-27T23:59:59.999Z",
+      sampling: { clock: "sampler", startedAtMs: 100, finishedAtMs: 120 },
+      text: "single semantic payload", data: { velocity: 2 }, space: { unit: "pixels" },
+      sources: [{ sensor: "camera", frame: 1 }],
+      media: [{ id: "record-0", controllerId: "perception", mediaType: "image/png", data: "bytes",
+        timeline: { asset: "video/frame", recordId: "record", sequence: 7 },
+        timing: { clock: "sampler", requestedAtMs: 100, receivedAtMs: 120 } }],
+    }],
+  };
+  const input = perceptionInput(read);
+  expect(input.records[0]).toMatchObject({ id: "record", codeSHA: "source-version",
+    sources: [{ sensor: "camera", frame: 1 }], data: { velocity: 2 }, space: { unit: "pixels" },
+    sampledAt: "2026-10-27T23:59:59.999Z", sampling: read.records[0]!.sampling,
+    media: [{ id: "record-0", mediaType: "image/png" }] });
+  for (const field of ["identity", "trace", "runId", "timeline"]) expect(input.records[0]).not.toHaveProperty(field);
+  expect(JSON.stringify(input).split("single semantic payload")).toHaveLength(2);
+  const logged = perceptionMetadata(read);
+  expect(logged.records[0]).toHaveProperty("trace");
+  expect(logged.records[0]).not.toHaveProperty("data");
+  expect(logged.records[0]).not.toHaveProperty("space");
+  expect(logged.records[0]!.media[0]).not.toHaveProperty("data");
+  expect(read.records[0]!.media[0]!.data).toBe("bytes");
 });

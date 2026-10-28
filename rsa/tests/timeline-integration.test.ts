@@ -96,8 +96,8 @@ def action():
     expect(JSON.stringify(events)).not.toContain(blob);
     const history = await cli("observe", "--id", first.timeline.recordId);
     expect(history.records[0]).toMatchObject({data: {value: 22.5}, space: {frame: "room-a"},
-      snapshot: {capability: "python/senses.py:temperature", runId: "first-run", sampledAt: "2026-01-01T00:00:00Z"}});
-    expect(history.result.observations[0].timeline).toEqual(first.media[0].timeline);
+      capability: "python/senses.py:temperature", runId: "first-run", sampledAt: "2026-01-01T00:00:00Z"});
+    expect(history.records[0].media[0].timeline).toEqual(first.media[0].timeline);
     expect((await cli("observe", "--capability", "python/senses.py:outer")).records[0].data.nested).toBe(true);
     // Marking perception never grants its nested action a control lease.
     await expect(send(socket, {kind: "controller", argv: [], action: "call", id: "python/senses.py:forbidden_input"}))
@@ -108,12 +108,12 @@ def action():
     await mkdir(join(workspace, "perception.py")); // source read failure must not hide history or disable recording.
     expect((await runtime.perception!.reload()).state).toBe("error");
     const previous = await cli("observe", "--id", first.timeline.recordId);
-    expect(previous.snapshot.id).toBe(first.timeline.recordId);
-    expect(previous.snapshot.runId).toBe("first-run");
+    expect(previous.records[0].id).toBe(first.timeline.recordId);
+    expect(previous.records[0].runId).toBe("first-run");
     const next = await cli("controller", "python/senses.py:temperature");
     expect(next.timeline.sequence).toBe(5);
     const nextRead = await cli("observe", "--id", next.timeline.recordId);
-    expect(nextRead.snapshot.runId).toBe("second-run");
+    expect(nextRead.records[0].runId).toBe("second-run");
     expect(await readdir(join(workspace, ".rsa/timeline/objects"))).toHaveLength(1);
     expect(await Bun.file(join(workspace, "logs/second-run/observations")).exists()).toBe(false);
   } finally {

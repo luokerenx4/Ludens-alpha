@@ -51,10 +51,10 @@ class Perception:
     expect(runtime.status()).toMatchObject({ mode: "auto", epoch, context: { perceptionInjection: false },
       perception: { state: "ready", generation } });
     const next = await read();
-    expect(next.snapshot!.sequence).toBeGreaterThan(first.snapshot!.sequence);
-    const historical = await read({ id: first.snapshot!.id });
-    expect(historical.snapshot!.id).toBe(first.snapshot!.id);
-    expect(historical.result.stdout).toBe(first.result.stdout);
+    expect(next.records[0]!.sequence).toBeGreaterThan(first.records[0]!.sequence);
+    const historical = await read({ id: first.records[0]!.id });
+    expect(historical.records[0]!.id).toBe(first.records[0]!.id);
+    expect(historical.records[0]!.text).toBe(first.records[0]!.text);
 
     const stale = await run(["perception", "inject", "on"], "old-epoch");
     expect(stale.code).toBe(1);

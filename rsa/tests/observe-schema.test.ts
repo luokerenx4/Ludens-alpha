@@ -7,7 +7,7 @@ import { customToolToDefinition, type ExtensionAPI, type ExtensionContext } from
 import type { Model } from "@oh-my-pi/pi-ai";
 import { convertOpenAICodexResponsesTools } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import { createRsaExtension } from "../src/harness/omp/extension.ts";
-import { PerceptionRuntime, type PerceptionRead } from "../src/harness/perception.ts";
+import { PerceptionRuntime } from "../src/harness/perception.ts";
 import { Workspace } from "../src/harness/workspace.ts";
 import { createTestRuntime } from "./runtime-fixture.ts";
 
@@ -54,10 +54,10 @@ print(json.dumps(records))`, workspace], {env: {...process.env, PYTHONPATH: join
       expect(valid(query)).toBe(true);
       const result = await tool.execute("offline-query", query, signal, () => {}, {} as ExtensionContext);
       expect(result.isError).toBe(false);
-      const read = result.details as PerceptionRead;
-      expect(read.records?.map(record => record.snapshot.id)).toEqual(records.slice(0, expected).map(record => record.id));
-      expect(result.content.filter(part => part.type === "image")).toHaveLength(expected);
       const metadata = JSON.parse(result.content.find(part => part.type === "text")!.text);
+      expect(metadata.records.map((record: { id: string }) => record.id)).toEqual(records.slice(0, expected).map(record => record.id));
+      expect(result.content.filter(part => part.type === "image")).toHaveLength(expected);
+      expect(result.details).toEqual({ queryId: metadata.queryId, ok: true });
       expect(metadata.records[0].recordedAt).toBe("2026-10-22T06:45:50.000Z");
     }
     const handlers: Record<string, (event: any) => any> = {};
@@ -65,7 +65,8 @@ print(json.dumps(records))`, workspace], {env: {...process.env, PYTHONPATH: join
     const invalid = { at: "2026-10-22T06:45:50Z", start: "2026-10-22T06:45:45Z" };
     const failed = await tool.execute("invalid-query", invalid, signal, () => {}, {} as ExtensionContext);
     expect(failed.isError).toBe(true);
-    expect((failed.details as PerceptionRead).error).toContain("cannot be combined");
+    expect(JSON.parse(failed.content.find(part => part.type === "text")!.text).error.message).toContain("cannot be combined");
+    expect(runtime.perception.status().state).toBe("ready");
     const enriched = await handlers.tool_result!({ toolName: "observe", toolCallId: "invalid-query", input: invalid, ...failed });
     expect(enriched.isError).toBe(true);
   } finally {

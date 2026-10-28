@@ -117,7 +117,11 @@ rsa perception stop
 
 **持续采集与模型自动注入独立控制。** `rsa perception inject off` 关闭 prompt 开始和工具批次结束时自动附加的感知；sampler、时空轴 writer、录像和历史查询继续运行，模型可随时显式 `observe`。`inject on` 恢复自动附加，`inject` 查询当前策略，`rsa status` 的 `context.perceptionInjection` 也可查看。默认开启，修改立即作用于后续自动读取；同 Host 内跨感知 reload 和控制周期保留，新 Host 恢复默认。已经进入 OMP 的历史消息不会被改写，原生工具主动返回的图片也不受此开关影响。关闭注入后仍附加控制状态和技能/记忆索引。
 
-模型的观测文本使用单份精简视图：每条记录保留 ID、时间、能力/版本、`text/data/space/sources` 及对应媒体 ID/类型，再附查询、分页与可用范围。`ok` 表示本次读取是否成功，与 `perception` 的采样健康分开：采样出错时历史仍可能读取成功。媒体按记录顺序交付；不重复输出顶层 snapshot、执行信封和逐图片存储元数据。工具批次中的显式 `observe` 不再被自动附加一遍，包括同批还有 bash 的情况。完整来源仍保留在日志和工具 details 中；CLI 的 JSON 与 timeline 存储契约不变。
+CLI、Python `Client().observe()` 与原生 observe 工具共用一个查询结果：`{queryId, ok, query, records, hasMore, nextAfter?, availability?, error?}`。`queryId` 就是本次查询的 trace span ID；记录平铺 `id/sequence/generation/capability/recordedAt/sampledAt/sampling/text/data/space/sources/media`，归档身份和来源只在这一份记录中出现。没有顶层 `snapshot`、假执行 `result`、全局 `reused` 或采样健康 `status`；采样健康单独用 `rsa perception status` 读取。`media` 按记录顺序交付，保留媒体 ID、类型与实际媒体/时空轴引用。分页继续使用原范围和 `nextAfter`，不会重新采样。
+
+`ok` 只表示本次查询成功。普通范围无记录或游标已读完时返回成功空页；无最新样本返回 `NOT_READY`，`id/at` 未匹配返回 `NOT_FOUND`，时间/范围涉及已淘汰窗口且无可读记录时返回 `EXPIRED`，writer 不在或主感知不可用时返回 `UNAVAILABLE`，查询/解码失败返回 `QUERY_FAILED`。错误格式为 `{code, message}`；部分范围已过期但仍读到记录时保留成功页及 `availability.expired=true`，不掩盖缺失。未知 ID 仍为 `NOT_FOUND`，不凭窗口淘汰推断这个 ID 曾存在。主通道最新读取保护当前 generation；显式历史查询不受 sampler 加载或采样故障影响。CLI 的进程退出码由 `ok` 决定，取消不伪装成失败页。
+
+原生 observe 与 CLI `--images` 共用一份精简模型视图：每条记录保留 ID、时间、能力/代码版本、`text/data/space/sources` 及对应媒体 ID/类型，再附查询、分页与可用范围。内部 trace、run、timeline 路径与重复 identity 不进入模型文本。日志保留一份记录及完整来源，去掉媒体字节和 `data/space`；工具 details 只给出 `queryId/ok` 供关联，不再复制内容。工具批次中的显式 `observe` 不再被自动附加一遍，包括同批还有 bash 的情况。时空轴磁盘记录无需重写；旧查询信封不在在线 API 中兼容，工作区程序需按新契约读取 `records[].text/media`。
 
 轴跨 run 和 generation 保存。最新主通道读取检查当前采样健康和 generation；历史查询仍可读取旧版本。worker 先初始化轴再加载用户入口，入口缺失、加载失败或采样失败不破坏历史，也不阻止独立感知能力显式记录。没有默认截图回退。`reload` 更换进程并重载代码/helper/权重；`stop` 结束 sampler 和 writer，后续记录需显式 reload。
 

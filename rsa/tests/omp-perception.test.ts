@@ -73,7 +73,7 @@ class Perception:
         try { return [JSON.parse(part.text)]; } catch { return []; }
       });
       snapshots.push({ tools: context.tools?.map(tool => tool.name) ?? [], messages,
-        observation: records.findLast(value => value?.control) });
+        observation: Object.assign({}, ...records.slice(records.findLastIndex(value => value?.perception))) });
       const index = snapshots.length;
       const sources = [source("adapted-v1"), source("adapted-v2"), broken, source("adapted-v3")];
       const content: AssistantMessage["content"] = index <= sources.length
@@ -110,12 +110,12 @@ class Perception:
       expect(record.media).toEqual([{ id: `${record.id}-0`, mediaType: "image/png" }]);
       expect(snapshot.observation.snapshot).toBeUndefined();
       expect(snapshot.observation.result).toBeUndefined();
-      expect(snapshot.observation.control.perception).toBeUndefined();
+      expect(snapshot.observation.control?.perception).toBeUndefined();
     }
-    // Rich provenance stays in diagnostics; only the model projection is compact.
-    const ready = events.find(event => event.type === "perception_observe_end" && event.data.status.state === "ready")!;
-    expect(ready.data.records[0].observations[0].timeline.asset.startsWith("video/")).toBe(true);
-    expect(ready.data.records[0].observations[0].timeline.video.width).toBe(32);
+    // The query keeps provenance once; model messages carry only the selected view.
+    const ready = events.find(event => event.type === "perception_observe_end" && event.data.ok)!;
+    expect(ready.data.records[0].media[0].timeline.asset.startsWith("video/")).toBe(true);
+    expect(ready.data.records[0].media[0].timeline.video.width).toBe(32);
     const file = session.sessionFile!;
     await session.dispose(); session = undefined;
     const persisted = await SessionManager.open(file, undefined, undefined, { throwIfMissing: true });
@@ -124,8 +124,8 @@ class Perception:
     expect(saved).not.toContain("raw-view-1");
     expect(saved).toContain("adapted-v1");
     expect(saved).toContain("observer needs repair");
-    expect(events.filter(event => event.type === "perception_observe_end").map(event => event.data.status.state))
-      .toEqual(["unimplemented", "ready", "ready", "error", "ready"]);
+    expect(events.filter(event => event.type === "perception_observe_end").map(event => event.data.ok))
+      .toEqual([true, true, true]); // known unavailable samplers generate state changes, not failed queries
   } finally {
     await session?.dispose(); authStorage.close(); await runtime.close(); await closeServer();
     await rm(directory, { recursive: true, force: true });

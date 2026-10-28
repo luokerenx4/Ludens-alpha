@@ -475,8 +475,13 @@ test("real OMP preserves image prefixes and native tool traces while shell IPC r
       previousObservationId: "observation-1"});
     const perceptionReads = events.filter(e => e.type === "perception_observe_end");
     expect(perceptionReads).toHaveLength(7);
+    const deliveries = events.filter(e => e.type === "observation_context");
+    const deliveryStarts = events.filter(e => e.type === "model_start");
+    expect(deliveryStarts.flatMap(start => start.data.deliveryIds)).toEqual(deliveries.map(delivery => delivery.data.id));
+    expect(deliveries.flatMap(delivery => delivery.data.queries)).toEqual(perceptionReads.map(read => read.data.queryId));
+
     expect(perceptionReads[1].trace).toMatchObject({epoch, modelCallId: firstCall, toolCallId: firstBatchEnd.trace.toolCallId});
-    expect(perceptionReads[1].data.result.observations.map((value: {id: string}) => value.id)).toEqual(["observation-2"]);
+    expect(perceptionReads[1].data.records.flatMap((record: {media: {id: string}[]}) => record.media.map(value => value.id))).toEqual(["observation-2"]);
     expect(perceptionReads[1].data.durationMs).toBeGreaterThanOrEqual(0);
     const explicitObserve = nativeTools.find(e => e.trace.toolCallId === "round-5");
     expect(perceptionReads[5].trace).toMatchObject({ epoch, modelCallId: requests[4].trace.modelCallId,
@@ -514,7 +519,9 @@ test("real OMP preserves image prefixes and native tool traces while shell IPC r
     expect(starts[1].data.observations).toEqual(["observation-2"]);
     const contexts = events.filter(e => e.type === "context");
     expect(contexts[1].data.observations).toEqual(starts[1].data.observations);
-    expect(contexts[1].data.executions).toEqual([perceptionReads[1].data.result.id]);
+    expect(contexts[1].data.deliveryIds).toEqual(starts[1].data.deliveryIds);
+    expect(deliveries.find(delivery => delivery.data.id === starts[1].data.deliveryIds[0])?.data.queries)
+      .toEqual([perceptionReads[1].data.queryId]);
     const raw = await readFile(join(directory, starts[0].data.streamPath), "utf8");
     expect(raw).toContain("kept-raw");
     const eventText = JSON.stringify(events);

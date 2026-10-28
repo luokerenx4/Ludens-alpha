@@ -96,7 +96,7 @@ ${body ?? `        self.n += 1
         if self.n == 1:
             result = self.device.call("controller/play", {"wait": False, "inputs": [{"key": "left", "durationMs": 600}, {"key": "jump", "durationMs": 300}]})
             self.action_id = result["actionId"]
-        return {"data": {"tick": self.n, "pid": os.getpid(), "actionId": self.action_id}, "sources": [{"recordId": reading["snapshot"]["id"]}]}`}
+        return {"data": {"tick": self.n, "pid": os.getpid(), "actionId": self.action_id}, "sources": [{"recordId": reading["records"][0]["id"]}]}`}
     def close(self): pass
 `;
   await writeFile(join(workspace, "action.py"), source());

@@ -91,8 +91,8 @@ class Perception:
       expect(runtime.perception.status().state).toBe("ready");
       const observed = await runtime.perception.observe(new AbortController().signal);
       expect(observed.error).toBeUndefined();
-      expect(observed.result.observations).toHaveLength(2);
-      const image = observed.result.observations![0]!;
+      expect(observed.records.flatMap(record => record.media)).toHaveLength(2);
+      const image = observed.records[0]!.media[0]!;
       const modelInput = log.artifact({ type: "image", mimeType: image.mediaType, data: image.data });
       expect((await readArtifact(runDir, modelInput)).data.$media).toMatchObject({ asset: image.timeline!.asset, status: "referenced", video: image.timeline!.video });
       await runtime.perception.stop();

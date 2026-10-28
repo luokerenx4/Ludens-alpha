@@ -305,8 +305,10 @@ export function ObservationPanel({
   const perception = observation?.perception ?? (showingInput ? call?.perception : undefined);
   const snapshot = perception?.snapshot;
   const recordRead = showingInput ? call?.perception : perception;
-  const records = (recordRead?.records?.map(record => record.snapshot) ?? (recordRead?.snapshot ? [recordRead.snapshot] : []))
-    .filter(record => record.timeline);
+  const reads = showingInput ? call?.perceptionReads ?? (recordRead ? [recordRead] : []) : recordRead ? [recordRead] : [];
+  const records = [...new Map(reads.filter(read => !read.deliveryError).flatMap(read => read.records?.map(record => record.snapshot)
+    ?? (read.snapshot ? [read.snapshot] : [])).filter(record => record.timeline)
+    .map(record => [record.timeline!.recordId, record])).values()];
   const age = perceptionAgeMs(perception);
   const samplingMs = samplingDurationMs(snapshot);
   const timestamp = (o: Observation) => o.perception ? o.perception.snapshot?.recordedAt : o.at;
@@ -351,10 +353,11 @@ export function ObservationPanel({
         </div>
       )}
       {perception && (
-        <details className="observation-metadata" open={perception.status.state !== "ready"}>
+        <details className="observation-metadata" open={perception.ok === false || !!perception.deliveryError}>
           <summary>
-            本次读取 · 感知进程{perceptionStateLabel[perception.status.state]}
-            {perception.reused === true ? " · 复用已有结果" : ""}
+            本次查询 · {perception.ok === true ? "成功" : perception.ok === false ? "失败" : "结果未知"}
+            {perception.deliveryError ? " · 输入交付失败" : ""}
+            {perception.legacyRepeated === true ? " · 旧日志标记查询结果重复" : ""}
           </summary>
           <dl className="fact-grid">
             <div><dt>读取耗时</dt><dd>{duration(perception.durationMs)}</dd></div>
@@ -368,10 +371,10 @@ export function ObservationPanel({
           {perception.query && <details>
             <summary>读取范围{perception.hasMore ? " · 尚有后续记录" : ""}</summary>
             <pre className="observation-text">{JSON.stringify({ query: perception.query,
-              hasMore: perception.hasMore, nextAfter: perception.nextAfter }, null, 2)}</pre>
+              hasMore: perception.hasMore, nextAfter: perception.nextAfter, availability: perception.availability }, null, 2)}</pre>
           </details>}
-          {(perception.error || perception.status.error) && (
-            <pre className="observation-text">{perception.error || perception.status.error}</pre>
+          {(perception.deliveryError || perception.error || perception.status?.error) && (
+            <pre className="observation-text">{perception.deliveryError || perception.error || perception.status?.error}</pre>
           )}
           {snapshot?.sources && (
             <details>
@@ -397,7 +400,7 @@ export function ObservationPanel({
           <div className="empty-state">
             <span className="empty-symbol">◫</span>
             <h3>{call ? "本次请求没有可展示的输入画面" : "等待模型观测"}</h3>
-            <p>{perception?.status.state === "unimplemented"
+            <p>{perception?.status?.state === "unimplemented"
               ? "工作区尚未实现感知，当前循环没有环境观测。"
               : "这里按模型请求展示实际输入的观测。"}</p>
           </div>

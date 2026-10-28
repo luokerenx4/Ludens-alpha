@@ -176,7 +176,7 @@ export class ModelTrace {
   private nativeRun: EventTrace = {};
   private maintenance: { trace: EventTrace; startedAt: number } | undefined;
   private readonly record: ReturnType<EventLog["recorder"]>;
-  constructor(private log: EventLog, private context: () => { epoch?: string; observations?: string[]; skillVersion?: string; memoryVersion?: string }) {
+  constructor(private log: EventLog, private context: () => { epoch?: string; observations?: string[]; deliveryIds?: string[]; skillVersion?: string; memoryVersion?: string }) {
     this.record = log.recorder(SHIORI_SOURCE);
     this.shiori = new ShioriTelemetry(log, context, (event, trace) => {
       if (event.kind === "invoke_agent") {
@@ -295,7 +295,7 @@ export class ModelTrace {
       const transportDetails = () => model.api === "openai-codex-responses"
         ? getOpenAICodexTransportDetails(model as Model<"openai-codex-responses">, options) : undefined;
       this.record("model_start", { provider: model.provider, api: model.api, model: model.id,
-        observations: source.observations, skillVersion: source.skillVersion, memoryVersion: source.memoryVersion, streamPath,
+        observations: source.observations, deliveryIds: source.deliveryIds, skillVersion: source.skillVersion, memoryVersion: source.memoryVersion, streamPath,
         transportDetails: transportDetails() }, trace);
       const finish = (message: AssistantMessage) => {
         for (const block of message.content) if (block.type === "toolCall" && !this.tools.has(block.id)) {

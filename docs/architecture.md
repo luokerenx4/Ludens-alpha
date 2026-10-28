@@ -75,7 +75,7 @@ rsa controller controller/pad.play --args '{"inputs":[{"atMs":0,"durationMs":500
 外层续轮仍由 RSA 控制：
 
 1. 在控制周期内用 [continue.md](../rsa/prompts/continue.md) 发起 OMP prompt；`auto on --message` 的补充消息只用于首次。
-2. 工作区感知进程持续调用 `sample()`，将带时间戳的结果写入 `ObservationHistory`。插件默认在 prompt 开始及整批工具结束后读取最新结果，附加技能和记忆索引。`rsa perception inject off/on` 单独控制自动读取与附加，不改变采样、留档和录像。显式 `observe` 始终可查询历史时刻或范围，已返回的结果不会再重复附加。模型只收单份精简观测视图，完整来源保留在日志和工具 details。
+2. 工作区感知进程持续调用 `sample()`，把能力结果写入 workspace 时空轴。查询只选择已有记录；模型交付独立决定哪些内容需要追加到会话。插件在 prompt 开始及整批工具结束时使用同一交付策略：自动观察只追加新记录，技能、记忆和控制信息只追加变化。显式 `observe` 始终完整响应指定记录、时刻或范围，同批已交付的观察不再自动追加。`rsa perception inject off/on` 单独控制自动读取与附加，不改变采样、留档、录像及显式查询。
 3. OMP 执行自己的推理与工具循环；一次 prompt 结束后，RSA 在预算内继续下一次。
 
 独立的 `action.py:Action` 进程在 auto 期间按 `step_hz`（默认 30 Hz）调用 `step()`，可读取感知历史、执行设备输入并保留跨轮状态。两个进程共用 `@capability` 和可选 `@record`，调度入口分别是 `Perception.sample()` 与 `Action.step()`；不把每个能力都变成调度任务。感知入口要求记录，动作入口可只执行。工作区实现策略，Harness 提供生命周期与输入收尾，见 [动作层方案](action-runtime-plan.md)。
@@ -83,6 +83,8 @@ rsa controller controller/pad.play --args '{"inputs":[{"atMs":0,"durationMs":500
 环境在模型思考时继续运行。工作区可改感知和控制程序，不能改外层调度；见 [OMP 装配](../rsa/src/harness/omp/session.ts) 与 [扩展](../rsa/src/harness/omp/extension.ts)。
 
 压缩复用 OMP，默认阈值 256000，图片数量预算 Infinity，入历史时按 OMP 压图。Codex 使用 WebSocket auto；见 [WS 测试依据](development.md#ws-恢复测试依据)。
+
+交付使用 OMP 的 `before_agent_start` 和 `tool_result` 持久化入口，共用查询、内容格式和批次收据；`context` 只检查请求与原生后台结果，不在此改写历史或补图。普通续轮保留交付游标，恢复会话的新 Host 和成功压缩等上下文替换后重新交付必要信息。去重按时空轴记录身份，不按像素相同判断时间证据；显式重读不被自动去重吞掉。已有消息保持原样随会话前缀复用，直到 OMP 原生压缩。
 
 ## 可核查的运行事实
 

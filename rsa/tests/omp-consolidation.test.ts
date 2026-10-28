@@ -94,10 +94,13 @@ test("consolidation uses the same session with file tools, records memory reads,
     expect(events.find(event => event.epoch === "consolidate" && event.type === "read")?.data)
       .toMatchObject({ path: note, hash: expect.any(String), isError: false });
     const contexts = events.filter(event => event.epoch === "consolidate" && event.type === "observation_context");
-    expect(contexts).toHaveLength(3);
-    expect(contexts.every(event => event.data.observations.length === 0 && event.data.purpose === "consolidate")).toBe(true);
-    expect(contexts[0].data.memoryVersion).not.toBe(contexts[2].data.memoryVersion);
-    expect(extension.context().memoryVersion).toBe(contexts[2].data.memoryVersion);
+    // Reading unchanged memory does not append another full context block.
+    // Writing it produces a new version receipt without starting perception.
+    expect(contexts).toHaveLength(1);
+    expect(contexts[0]!.data).toMatchObject({ observations: [], queries: [], purpose: "consolidate" });
+    const initial = events.find(event => event.epoch === "play-before" && event.type === "observation_context")!;
+    expect(initial.data.memoryVersion).not.toBe(contexts[0]!.data.memoryVersion);
+    expect(extension.context().memoryVersion).toBe(contexts[0]!.data.memoryVersion);
     cycle = { epoch: "play-after", signal: control.signal };
     await session.prompt("Continue playing.");
     expect(captures).toBe(2);

@@ -1,24 +1,24 @@
-import type { LogIndex, RecordPointer } from "./log-index";
+import { positionKey, type LogIndex, type RecordPointer } from "./log-index";
 import { readArtifact } from "../../shared/log-archive";
 import { aggregate, isCompletedControllerAction } from "./aggregate";
 import { projectTelemetry } from "./telemetry";
 import { advanceTelemetry, telemetryFromState, telemetryFactKeys, type TelemetryState, type TelemetryRecipe } from "./telemetry-reducer";
-import { eventObservations, observationExecution, type ArchivedObservation } from "./observation-events";
+import { eventObservations, modelInputEvents, type ArchivedObservation } from "./observation-events";
 import { advanceLivePhase, emptyLivePhase, livePhaseValue, type LivePhaseState } from "./live-phase";
 import type { Call, Event, Manifest, NativeLoop, Observation, RunData, SpanStats, TraceSpan } from "./types";
 
-const VERSION = "reducers-4";
+const VERSION = "reducers-5";
 const PAGE_SIZE = 100;
 type Meta = RecordPointer;
 type CycleState = { phase: LivePhaseState; lastControl: Record<string, any> | null; autoStarted?: number;
-  elapsedMs: number; callCount: number; contextPosition?: number; counts: Record<string, number>; compaction: { startedAt: string; reason: string } | null };
+  elapsedMs: number; callCount: number; counts: Record<string, number>; compaction: { startedAt: string; reason: string } | null };
 const blankState = (): CycleState => ({ phase: emptyLivePhase(), lastControl: null, elapsedMs: 0, callCount: 0, counts: {}, compaction: null });
 const epochOf = (event: Event) => event.trace?.epoch ?? "";
 const identity = (...parts: unknown[]) => JSON.stringify(parts);
 const spanKey = (event: Event) => identity(epochOf(event), event.trace.traceId, event.trace.spanId);
 const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 const stores = ["run-calls", "run-starts", "run-observations", "run-spans", "run-loops", "run-notices", "run-skills",
-  "run-states", "run-contexts", "run-inputs", "run-requests", "run-encodings", "run-cycles", "run-model-state", "run-span-state", "run-error-spans"];
+  "run-states", "run-perception-status", "run-requests", "run-encodings", "run-cycles", "run-model-state", "run-span-state", "run-error-spans"];
 const rows = (index: LogIndex, name: string) => index.store(name).entries();
 async function readPage<T, R>(values: T[], read: (value: T) => Promise<R>, signal?: AbortSignal): Promise<R[]> {
   const result = new Array<R>(values.length);
@@ -90,15 +90,9 @@ async function hydrateCall(index: LogIndex, id: string, signal?: AbortSignal) {
         args: await readArtifact(index.path, event.data.argsRef, { media: "reference", workspace: index.archiveWorkspace }) } };
     signal?.throwIfAborted();
   }
-  const context = start.contextPosition ? await index.readEvent(start.contextPosition) : undefined;
-  const inputs: Event[] = [];
-  for (const resultId of context?.data.executions ?? []) {
-    signal?.throwIfAborted();
-    const inputMeta = index.store("run-inputs").meta(identity(start.epoch, resultId));
-    const input = inputMeta ? await index.readEvent(inputMeta.position) : undefined;
-    if (input) inputs.push(input);
-  }
-  const projected = aggregate([...inputs, ...(context ? [context] : []), ...events]);
+  const modelStart = events.find(event => event.type === "model_start");
+  const { inputs, contexts } = modelStart ? await modelInputEvents(index, modelStart, start.position, signal) : { inputs: [], contexts: [] };
+  const projected = aggregate([...inputs, ...contexts, ...events]);
   signal?.throwIfAborted();
   const call = projected.calls.find(item => item.id === id);
   if (!call) return;
@@ -261,15 +255,10 @@ export async function createRunReducer(index: LogIndex, options: { cold?: boolea
       if (isCompletedControllerAction(event)) increment("actions");
       if (event.type === "auto_compaction_end") increment("compactions");
       if (event.type === "model_start") {
-        index.store("run-starts").index(event.trace.modelCallId, { epoch, position, number: ++state.callCount,
-          contextPosition: state.contextPosition });
+        index.store("run-starts").index(event.trace.modelCallId, { epoch, position, number: ++state.callCount });
       }
-      if (event.type === "context") {
-        state.contextPosition = position;
-        index.store("run-contexts").index(String(position), { epoch, position });
-      }
-      const execution = observationExecution(event);
-      if (execution?.result) index.store("run-inputs").index(identity(epoch, execution.result.id), { position });
+      if (event.type === "perception_status" || event.type === "perception_observe_end" && d.status)
+        index.store("run-perception-status").index(positionKey(position), { position });
       if ((event.type === "observation_start" || event.type === "command" || event.type === "capability_start" && event.data.action === "call") && (event.trace.operationId || event.trace.spanId))
         index.store("run-requests").index(identity(epoch, event.trace.operationId ?? event.trace.spanId), { position });
       if (event.type === "control") {
@@ -481,8 +470,9 @@ export async function readRunProjection(index: LogIndex, epoch: string | null, p
   const cycleEntries = [...rows(index, "run-cycles")].sort((a, b) => a.position - b.position);
   const cycleIndex = cycleEntries.findIndex(item => item.id === epoch);
   const nextCycle = cycleIndex < 0 ? undefined : cycleEntries[cycleIndex + 1];
-  const perceptionEvent = (await index.queryEvents({ types: ["perception_status", "perception_observe_end"],
-    beforePosition: nextCycle?.position, reverse: true, limit: 1, signal }))[0]?.event;
+  const perceptionMeta = index.store("run-perception-status").entries({ reverse: true,
+    ...(nextCycle ? { beforeId: positionKey(nextCycle.position) } : {}) }).next().value;
+  const perceptionEvent = perceptionMeta ? await index.readEvent(perceptionMeta.position) : undefined;
   const firstVisible = visible[0], hasMore = !!firstVisible && firstCallPosition < firstVisible.position;
   let errors = 0;
   for (const entry of rows(index, "run-notices")) if (scoped(entry) && entry.failed) errors++;
@@ -537,23 +527,18 @@ export async function indexedObservation(index: LogIndex, id: string, signal?: A
 export async function hasTimelineReference(index: LogIndex, recordId: string, sequence: number,
   source: { call?: string; observation?: string }, signal?: AbortSignal) {
   signal?.throwIfAborted();
-  let perception;
-  if (source.observation) perception = (await indexedObservation(index, source.observation, signal))?.perception;
-  else if (source.call) {
-    const start = (await index.queryEventRefs({ model: source.call, types: ["model_start"], limit: 1, signal }))[0];
+  let reads: NonNullable<Call["perceptionReads"]> = [];
+  if (source.observation) {
+    const perception = (await indexedObservation(index, source.observation, signal))?.perception;
+    if (perception) reads = [perception];
+  } else if (source.call) {
+    const start = (await index.queryEvents({ model: source.call, types: ["model_start"], limit: 1, signal }))[0];
     if (start) {
-      const contextRef = (await index.queryEventRefs({ epoch: start.epoch, types: ["context"], beforePosition: start.position,
-        reverse: true, limit: 1, signal }))[0];
-      const context = contextRef ? await index.readEvent(contextRef) : undefined;
-      const inputs: Event[] = [];
-      for (const resultId of context?.data.executions ?? []) {
-        const ref = (await index.queryEventRefs({ resultId, epoch: start.epoch, beforePosition: start.position,
-          reverse: true, limit: 1, signal }))[0];
-        if (ref) inputs.push((await index.readEvent(ref))!);
-      }
-      perception = aggregate([...inputs, ...(context ? [context] : []), (await index.readEvent(start))!]).calls[0]?.perception;
+      const { inputs, contexts } = await modelInputEvents(index, start.event, start.position, signal);
+      const call = aggregate([...inputs, ...contexts, start.event]).calls[0];
+      reads = call?.perceptionReads ?? (call?.perception ? [call.perception] : []);
     }
   }
-  return [perception?.snapshot, ...(perception?.records?.map(record => record.snapshot) ?? [])]
+  return reads.filter(read => !read.deliveryError).flatMap(read => [read.snapshot, ...(read.records?.map(record => record.snapshot) ?? [])])
     .some(snapshot => snapshot?.timeline?.recordId === recordId && snapshot.timeline.sequence === sequence);
 }

@@ -6,7 +6,7 @@ import type { Event } from "./types";
 import { eventFiles, type EventFile } from "./event-files";
 import { matchesSourceEvent, type EventChannel } from "../../shared/event-sources";
 
-const FORMAT = "files-3";
+const FORMAT = "files-4";
 const CHUNK = 1024 * 1024;
 export type FileState = { path: string; identity: string; size: number; mtime: number; offset: number; head: string; tail: string; partialTailBytes?: number; waitingOffset?: number; windows?: string };
 export { FileRecords, SourceChanged } from "./record-store";
@@ -25,7 +25,7 @@ export type EventRef = RecordPointer & { position: number; seq: number; at: stri
 export type EventQuery = { afterPosition?: number; beforePosition?: number; reverse?: boolean; limit?: number;
   epoch?: string | null; model?: string; traceId?: string; spanId?: string; types?: string[];
   fromAt?: string | number; toAt?: string | number; toolCallId?: string; actionId?: string; resultId?: string;
-  observationId?: string; signal?: AbortSignal };
+  observationId?: string; queryId?: string; deliveryId?: string; signal?: AbortSignal };
 export const positionKey = (position: number) => String(position).padStart(16, "0");
 const relationKey = (relation: unknown[], position?: number) => JSON.stringify(relation) + ":" + (position === undefined ? "" : positionKey(position));
 function timeValue(value?: string | number) {
@@ -38,7 +38,7 @@ function queryRelations(options: EventQuery): unknown[][] {
   if (options.model) result.push(["model", options.model]);
   if (options.traceId && options.spanId) result.push(["span", options.traceId, options.spanId]);
   else if (options.traceId) result.push(["trace", options.traceId]);
-  for (const name of ["toolCallId", "actionId", "resultId", "observationId"] as const)
+  for (const name of ["toolCallId", "actionId", "resultId", "observationId", "queryId", "deliveryId"] as const)
     if (options[name]) result.push([name, options[name]]);
   return result;
 }
@@ -49,11 +49,13 @@ function eventRelations(event: Event): unknown[][] {
   if (typeof data.actionId === "string") relations.push(["actionId", data.actionId]);
   if (event.type === "execution" && typeof data.id === "string") relations.push(["resultId", data.id]);
   if (data.result?.id) relations.push(["resultId", data.result.id]);
+  if (["perception_observe_end", "perception_input_error"].includes(event.type) && typeof data.queryId === "string") relations.push(["queryId", data.queryId]);
+  if (event.type === "observation_context" && typeof data.id === "string") relations.push(["deliveryId", data.id]);
   const ids = new Set<string>();
   if (typeof data.observationId === "string") ids.add(data.observationId);
   if (event.type === "observation" && typeof data.id === "string") ids.add(data.id);
   const observations = [...(data.observations ?? []), ...(data.result?.observations ?? []),
-    ...(data.records ?? []).flatMap((record: any) => record.observations ?? [])];
+    ...(data.records ?? []).flatMap((record: any) => record.media ?? record.observations ?? [])];
   for (const value of observations) if (typeof value === "string") ids.add(value); else if (value?.id) ids.add(value.id);
   for (const id of ids) relations.push(["observationId", id]);
   return relations;

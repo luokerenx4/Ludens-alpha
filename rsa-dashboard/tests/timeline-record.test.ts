@@ -85,7 +85,7 @@ test("window-only records query the matched current host once, never restart or 
       const request = JSON.parse(input);
       requests.push(request);
       const value = request.kind === "status" ? { runId: currentRun }
-        : { records: [{ snapshot: { id: details.recordId, sequence: 2 }, data: details.data, space: details.space }] };
+        : { records: [{ id: details.recordId, sequence: 2, data: details.data, space: details.space }] };
       client.end(JSON.stringify({ ok: true, value }) + "\n");
     });
   });

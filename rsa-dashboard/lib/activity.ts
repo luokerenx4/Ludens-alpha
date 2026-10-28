@@ -450,9 +450,9 @@ export function activityProgress(index: LogIndex) {
 export async function createActivityReducer(index: LogIndex, options: {
   cold?: boolean; signal?: AbortSignal; streamLimits?: ReadonlyMap<string, number>;
 } = {}) {
-  if (index.meta("activitySemantics") !== "6") {
-    index.resetActivity(); index.resetStores(["activity-model-ends"]);
-    index.setMeta("activitySemantics", "6"); activeParsers.delete(index);
+  if (index.meta("activitySemantics") !== "7") {
+    index.resetActivity(); index.resetStores(["activity-model-ends", "activity-deliveries"]);
+    index.setMeta("activitySemantics", "7"); activeParsers.delete(index);
   }
   let position = Number(index.meta("activityPosition") ?? 0);
   const current = new Map<string, CurrentState>();
@@ -521,8 +521,13 @@ export async function createActivityReducer(index: LogIndex, options: {
         if (observation.mediaType?.startsWith("image/") && !index.store("images").meta(observation.id))
           index.store("images").index(observation.id, {});
       }
+      if (event.type === "observation_context" && typeof event.data.id === "string")
+        index.store("activity-deliveries").index(JSON.stringify([event.trace?.epoch, event.data.id]), { observations: event.data.observations ?? [] });
       if (event.type === "model_start") {
-        const images = (event.data.observations ?? []).filter((id: string) => index.store("images").meta(id));
+        const delivered = Array.isArray(event.data.deliveryIds)
+          ? event.data.deliveryIds.flatMap((id: string) => index.store("activity-deliveries").meta(JSON.stringify([event.trace?.epoch, id]))?.observations ?? [])
+          : event.data.observations ?? [];
+        const images = delivered.filter((id: string) => index.store("images").meta(id));
         state!.observationId = images.at(-1) ?? null;
       }
       if (event.type.endsWith("_error")) state!.error = event.data.error ? String(event.data.error) : null;

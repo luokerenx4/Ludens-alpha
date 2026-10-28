@@ -101,13 +101,19 @@ manifest 记录 Git commit/dirty、continue/consolidate 提示和可选 workspac
 
 持久化开启时，媒体按内容哈希保存一次，记录携带 `timeline: {recordId, sequence, asset}` 引用，`asset` 是时空轴根内的相对路径；之后的历史读取不复制或覆盖原件。默认热窗口 600 秒、分段 3600 秒，并受字节预算约束；完整配置见 [Workspace](workspace.md#常驻感知与历史读取)。关闭持久化时记录和媒体只存在于有限窗口，选中媒体交付期间受保护，必要时随响应携带字节，不另建永久审计副本。窗口淘汰或进程关闭后，对应媒体可以过期。
 
-查询开始记录原参数；查询结果返回 `records`、规范化后的 `query` 和分页字段 `hasMore/nextAfter`；`snapshot` 是本页最后一条。默认读取主 `Perception.sample` 能力，可通过 `capability` 筛选其他能力、`capability: "*"` 查询全轴或 `id` 定位记录。`reused` 表示与上一次读取返回相同的一组记录，不代表采样器停止。持久历史跨 reload 和 run 保留，默认最新主观测仍校验当前 generation 与采样健康，不将旧记录冒充当前采样。
+查询开始记录原参数，以该次调用的 `spanId` 作为 `queryId`。查询结果只描述本次选择的记录、媒体、规范化查询和分页，不再包装成一次设备执行，也不附加采样器状态或末条记录副本。默认读取主 `Perception.sample` 能力，可通过 `capability` 筛选其他能力、`capability: "*"` 查询全轴或 `id` 定位记录。持久历史跨 reload 和 run 保留，默认最新主观测仍校验当前 generation 与采样健康，不将旧记录冒充当前采样。查询成功、采样器健康和模型输入编码成功是不同事实；感知生命周期及健康通过状态接口、统计与故障事件读取。
 
-**模型看到什么以 `observation_context` 和 `model_start.observations` 为准**，包括工作区自己融合或处理的媒体；不能用最新 driver 截图代替。输入编码失败另记 `perception_input_error`，读取成功不保证输入成功。空实现或失败只给文字诊断，不回退默认截图。取消读取不杀感知进程，迟到结果不塞回已取消的模型调用。
+每批交付写一条 `observation_context` 收据，包含 `id/origin/queries/observations/skillVersion/memoryVersion` 及适用时的 `purpose`，不复制记录正文、采样状态或查询结果。`queries` 关联本批主动读取，`observations` 关联实际交付的媒体；显式观察已在工具结果中，只登记到同批收据。`model_start.deliveryIds` 引用请求对应的交付收据，**表示这次追加的来源，不是模型完整上下文的图片清单**。先前消息仍可能在 OMP 历史中，完整请求以请求档案及传输追踪为准，不能用最新 driver 截图代替。旧日志的 `model_start.observations` 仍可读取，但同样不能当作完整历史清单。
 
-`context_policy` 记录自动感知注入开关的变化；`rsa status.context.perceptionInjection` 报告当前策略。关闭只阻止自动读取/附加，持续采样、录像及显式 `observe` 不受影响。模型文本采用独立的精简投影，记录内容、时间和查询信息各出现一次；`perception_observe_end`、`observation_context` 及原生工具 details 的完整来源结构不变，Dashboard、回放和分析仍据此关联时空轴。
+输入编码失败另记 `perception_input_error`，不改写原查询记录，读取成功不保证输入成功。空实现或失败只给文字诊断，不回退默认截图。取消读取不杀感知进程，迟到结果不塞回已取消的模型调用。
 
-原生 bash/read 返回的图片记录为 `observation(origin=tool_result)` 并关联对应工具，不再自动创建图片副本。插件仅按实际输入字节的 SHA-256 匹配已经存在的时空轴 `objects/<sha256>.bin`，匹配成功时附 `timeline: {asset}`；无法据此确定采样记录，因此不填 `recordId/sequence`。没有原件时只记交付元数据，不声称已保存。后台完成图片在 OMP 将其送入模型时记录为本次交付，不能冒认最近一次前台工具。事件时间是交付时间，不推断原始采样时刻；CLI 历史时间和序号保留在输出标签与查询日志中。仅返回 JSON 路径不计作图片交付。
+`context_policy` 记录自动感知注入开关的变化；`rsa status.context.perceptionInjection` 报告当前策略。关闭只阻止自动读取/附加，持续采样、录像及显式 `observe` 不受影响。原生 `observe`、自动附加和 CLI 图像输出共用记录与媒体的表达，记录内容和查询信息只出现一次；查询事件与交付收据通过身份关联，消费者按需读取原始时空轴。
+
+自动交付按记录 ID 去重：同一记录不随每批工具反复追加，像素相同但时间不同的记录仍是不同证据。显式历史读取和重复读取完整返回，不把历史查询当作最新观察，也不因其他客户端查询过就认为模型已收到。技能、记忆和控制信息首次完整交付，随后仅追加变化；普通 continuation 不清空游标，新 Host 恢复会话或成功压缩等上下文替换后重新交付必要信息。去重不删除或重写已存会话前缀。
+
+原生 bash/read 返回的图片记录为 `observation(origin=tool_result)` 并关联对应工具，不再自动创建图片副本。CLI 图像输出只有同时匹配显式记录标签和已登记交付字节，才能关联具体 record；仅匹配已有 `objects/<sha256>.bin` 时只能复用资产，不能推断 `recordId/sequence` 或采样时间。无关工具图片不能代替当前设备观察；仅返回 JSON 路径也不计作图片交付。没有原件时只记交付元数据，不声称已保存。
+
+后台完成图片仍由 OMP 原生队列保存和交付，插件在 `context` 边界登记它们，不补写或重排会话。后台收据只追踪当前尾部，避免随运行时长累积；事件时间是交付时间，不能冒认前台工具或原始采样时刻。后台结果可能晚于整批工具的自动观察进入会话，因此不承诺所有来源严格只出现一次；这不应通过改写历史或另建后台队列解决。
 
 模型输入重编码产生的版本由同一感知 writer 保存为派生资产，`observation_media.modelMedia` 记录实际 hash、源 asset/record/sequence 和转换名称。只有明确来源才能派生，不按最近截图猜测；临时窗口的派生版本随源记录淘汰。派生存档失败只记诊断，不替换有效模型输入。
 

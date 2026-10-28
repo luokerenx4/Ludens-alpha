@@ -97,7 +97,7 @@ test("run reducer restores only explicit endpoints when a completed span gains a
     const spans = [...index.store("run-spans").entries()];
     assert.equal(spans.length, 1); assert.equal(spans[0]!.outcome, "success");
     assert.equal(spans[0]!.duration, 42); assert.equal(spans[0]!.model, "m");
-    assert.equal(index.store("run-starts").meta("m")?.contextPosition, 4);
+    assert.equal(index.store("run-starts").meta("m")?.position, 5);
     assert.equal(index.store("run-calls").meta("m")?.completed, true);
     assert.deepEqual(restored, [2, 3], "only the completed span's two endpoints are read for the late join");
     const recipe = [...index.store("run-span-state").entries()][0]!.recipe;

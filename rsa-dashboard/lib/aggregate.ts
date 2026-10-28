@@ -1,6 +1,6 @@
 import type { Event, Call, Observation, Notice, SkillEvidence, PerceptionRead } from "./types";
 import { p95 } from "./telemetry";
-import { eventObservations, observationExecution, perceptionStatus } from "./observation-events";
+import { perceptionQueryFailed, eventObservations, observationInput, perceptionStatus } from "./observation-events";
 export function parseEvents(text: string): Event[] {
   const lines = text.split("\n");
   if (!text.endsWith("\n")) lines.pop(); // An append in progress is not a malformed event.
@@ -47,6 +47,8 @@ export function aggregate(events: Event[], now = Date.now()) {
   const observationMap = new Map<string, Observation>();
   const observationRequests = new Map<string, Observation["request"]>();
   const observationResults = new Map<string, { text: string; perception?: PerceptionRead }>();
+  const deliveryErrors = new Map<string, string>();
+  const deliveries = new Map<string, { observations: string[]; queries: string[] }>();
   const contexts = new Map<string, { observations: string[]; executions: string[] }>();
   const notices: Notice[] = [];
   const skills: SkillEvidence[] = [];
@@ -70,10 +72,14 @@ export function aggregate(events: Event[], now = Date.now()) {
     const t = event.trace;
     const toolKey = JSON.stringify([t.epoch, t.modelCallId, t.toolCallId]);
     const observationKey = JSON.stringify([t.epoch, t.operationId ?? t.spanId]);
-    const observed = observationExecution(event);
-    if (observed?.result) observationResults.set(JSON.stringify([t.epoch, observed.result.id]), {
-      text: observed.result.stdout, perception: observed.perception,
+    const observed = observationInput(event);
+    if (observed) observationResults.set(JSON.stringify([t.epoch, observed.id]), {
+      text: observed.text, perception: observed.perception,
     });
+    if (event.type === "perception_input_error" && typeof d.queryId === "string")
+      deliveryErrors.set(JSON.stringify([t.epoch, d.queryId]), String(d.error));
+    if (event.type === "observation_context" && typeof d.id === "string")
+      deliveries.set(JSON.stringify([t.epoch, d.id]), { observations: d.observations ?? [], queries: d.queries ?? [] });
     if (event.type === "context")
       contexts.set(t.epoch, { observations: d.observations ?? [], executions: d.executions ?? [] });
     if ((event.type === "observation_start" || event.type === "command" || event.type === "capability_start" && event.data.action === "call") && (t.operationId || t.spanId))
@@ -90,11 +96,17 @@ export function aggregate(events: Event[], now = Date.now()) {
     let call = byId.get(t.modelCallId);
     if (event.type === "model_start") {
       const context = contexts.get(t.epoch);
-      const inputResults = context && JSON.stringify(context.observations) === JSON.stringify(d.observations ?? [])
-        ? context.executions.flatMap(id => {
-          const result = observationResults.get(JSON.stringify([t.epoch, id]));
-          return result ? [result] : [];
-        }) : [];
+      const selectedDeliveries = Array.isArray(d.deliveryIds)
+        ? d.deliveryIds.flatMap((id: string) => { const delivery = deliveries.get(JSON.stringify([t.epoch, id])); return delivery ? [delivery] : []; }) : undefined;
+      const queryIds = selectedDeliveries
+        ? [...new Set<string>(selectedDeliveries.flatMap((delivery: { queries: string[] }) => delivery.queries))]
+        : context && JSON.stringify(context.observations) === JSON.stringify(d.observations ?? []) ? context.executions : [];
+      const inputResults = queryIds.flatMap(id => {
+        const key = JSON.stringify([t.epoch, id]), result = observationResults.get(key), deliveryError = deliveryErrors.get(key);
+        if (!result) return [];
+        return [deliveryError === undefined ? result : { text: deliveryError,
+          perception: result.perception ? { ...result.perception, deliveryError } : undefined }];
+      });
       const inputText = inputResults.map(result => result.text).filter(Boolean).join("\n\n");
       const perception = inputResults.findLast(result => result.perception)?.perception;
       call = {
@@ -118,7 +130,10 @@ export function aggregate(events: Event[], now = Date.now()) {
         status: "pending",
         tools: [],
         observations: [],
-        inputObservations: d.observations ?? [],
+        inputObservations: selectedDeliveries
+          ? [...new Set<string>(selectedDeliveries.flatMap((delivery: { observations: string[] }) => delivery.observations))]
+          : d.observations ?? [],
+        perceptionReads: inputResults.flatMap(result => result.perception ? [result.perception] : []),
         ...(inputText ? { inputText } : {}),
         ...(perception ? { perception } : {}),
         actions: 0,
@@ -306,7 +321,7 @@ export function aggregate(events: Event[], now = Date.now()) {
       ))) ||
       event.type.startsWith("auto_compaction") ||
       event.type.startsWith("compaction_http_") ||
-      (event.type === "perception_observe_end" && d.status?.state === "error") ||
+      perceptionQueryFailed(event) ||
       (event.type === "action_end" && d.status === "failed") ||
       event.type === "disconnected"
     ) {
@@ -315,7 +330,7 @@ export function aggregate(events: Event[], now = Date.now()) {
           ? `${d.result?.shortSummary ?? "压缩结束"} · ${d.result?.tokensBefore ?? "—"} tokens → 新历史`
           : (d.aborted ? "正常中止 · " : "") +
             String(
-              d.error ?? d.reason ?? (typeof d === "string" ? d : event.type),
+              d.error?.message ?? d.error ?? d.reason ?? (typeof d === "string" ? d : event.type),
             );
       const details: { label: string; value: string }[] = [];
       if (event.type === "compaction_http_start") {
@@ -377,7 +392,7 @@ export function aggregate(events: Event[], now = Date.now()) {
         details,
         failed:
           (event.type.includes("error") && !d.aborted) ||
-          (event.type === "perception_observe_end" && d.status?.state === "error" && d.outcome !== "cancelled") ||
+          (perceptionQueryFailed(event) && d.outcome !== "cancelled") ||
           (event.type === "action_end" && d.status === "failed") ||
           (event.type === "compaction_http_end" && d.status >= 400),
       });

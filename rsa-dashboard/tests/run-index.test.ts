@@ -233,3 +233,71 @@ test("image lookup uses epoch keys and still selects the latest archive across c
     finally { store.entries = entries; }
   });
 });
+
+test("canonical model inputs follow delivery and query identities across indexes, history and Pet projection", async () => {
+  const e = events();
+  const record = (id: string, sequence: number, text: string, media: any[] = []) => ({ id, sequence, text, media,
+    recordedAt: new Date(sequence * 1000).toISOString(), timeline: { recordId: id, sequence },
+    generation: null, sampling: { clock: "sensor", startedAtMs: 0, finishedAtMs: 1 } });
+  const image = { id: "image", mediaType: "image/png", timeline: { recordId: "first", sequence: 1, asset: "objects/frame.bin" } };
+  const values = [
+    e("control", { mode: "auto" }),
+    e("perception_status", { state: "error", generation: "worker", error: "sampler offline" }),
+    e("perception_observe_end", { queryId: "query", ok: true, query: {}, hasMore: false,
+      records: [record("first", 1, "image text", [image])], outcome: "success" }),
+    e("perception_observe_end", { queryId: "data", ok: true, query: {}, hasMore: false,
+      records: [record("second", 2, "sensor text")], outcome: "success" }),
+    e("observation_context", { id: "delivery", observations: ["image"], queries: ["query", "data"], origin: "explicit" }),
+    e("context", { observations: [], executions: ["unrelated"] }),
+    e("model_start", { deliveryIds: ["delivery"], observations: ["unrelated"] }, { modelCallId: "model" }),
+    e("model_end", { stopReason: "stop", durationMs: 1 }, { modelCallId: "model" }),
+  ];
+  await fixture(values, async (index, path) => {
+    const run = await readRunProjection(index, "cycle");
+    assert.equal(run.calls[0].inputText, "image text\n\nsensor text");
+    assert.deepEqual(run.calls[0].inputObservations, ["image"]);
+    assert.equal(run.perception?.state, "error");
+    assert.equal(run.summary.errors, 0, "a successful history query does not inherit sampler failure");
+    assert.equal((await indexedObservation(index, "image"))?.timeline?.recordId, "first");
+    const { hasTimelineReference } = await import("../lib/run-index");
+    assert.equal(await hasTimelineReference(index, "first", 1, { call: "model" }), true);
+    assert.equal(await hasTimelineReference(index, "second", 2, { call: "model" }), true);
+    const { refreshActivity } = await import("../lib/activity");
+    await refreshActivity(index);
+    assert.equal(JSON.parse(index.meta("current:cycle")!).observationId, "image");
+    const next = [e("model_start", { deliveryIds: [], observations: ["image"] }, { modelCallId: "empty" }),
+      e("control", { mode: "auto" }, { epoch: "other" }),
+      e("model_start", { deliveryIds: ["delivery"], observations: ["image"] }, { epoch: "other", modelCallId: "other" })];
+    await appendFile(join(path, "events.jsonl"), next.map(value => JSON.stringify(value)).join("\n") + "\n");
+    await refreshRunProjection(index); await refreshActivity(index);
+    assert.equal(await hasTimelineReference(index, "first", 1, { call: "empty" }), false);
+    assert.equal(await hasTimelineReference(index, "first", 1, { call: "other" }), false);
+    assert.equal(JSON.parse(index.meta("current:cycle")!).observationId, null);
+    assert.equal(JSON.parse(index.meta("current:other")!).observationId, null);
+    assert.equal((await readRunProjection(index, "other")).calls[0].inputText, undefined);
+  });
+});
+
+test("input encoding failure retains query success but delivers only the error, without history authorization", async () => {
+  const e = events();
+  const record = { id: "source", sequence: 1, text: "not delivered", media: [{ id: "frame", mediaType: "image/png" }],
+    timeline: { recordId: "source", sequence: 1 }, recordedAt: new Date(1000).toISOString(),
+    generation: null, sampling: { clock: "sensor", startedAtMs: 0, finishedAtMs: 1 } };
+  const values = [e("control", { mode: "auto" }),
+    e("perception_observe_end", { queryId: "read", ok: true, query: {}, records: [record], hasMore: false, outcome: "success" }),
+    e("perception_input_error", { queryId: "read", error: "cannot encode image" }),
+    e("observation_context", { id: "failed-delivery", observations: [], queries: ["read"], origin: "explicit" }),
+    e("model_start", { deliveryIds: ["failed-delivery"], observations: [] }, { modelCallId: "model" })];
+  await fixture(values, async index => {
+    const run = await readRunProjection(index, "cycle"), call = run.calls[0];
+    assert.equal(call.inputText, "cannot encode image");
+    assert.equal(call.perception?.ok, true);
+    assert.equal(call.perception?.deliveryError, "cannot encode image");
+    assert.deepEqual(call.inputObservations, []);
+    assert.equal(call.perception?.records?.[0].snapshot.id, "source", "query source remains inspectable and is not rewritten as failed");
+    const { hasTimelineReference } = await import("../lib/run-index");
+    assert.equal(await hasTimelineReference(index, "source", 1, { call: "model" }), false);
+    assert.equal(run.notices.filter(notice => notice.failed).length, 1);
+    assert.equal(run.notices.find(notice => notice.failed)?.type, "perception_input_error");
+  });
+});

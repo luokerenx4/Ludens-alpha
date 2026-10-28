@@ -9,34 +9,13 @@ import * as z from "@oh-my-pi/omptype/zod";
 import type { Clock, Observation } from "@playness/baseware/contracts";
 import type { Runtime } from "../runtime.ts";
 import { Workspace } from "../workspace.ts";
-import type { EventTrace, RecordEvent } from "../events.ts";
+import { childTrace, type EventTrace, type RecordEvent } from "../events.ts";
 import { pythonEnvironment } from "../../../../shared/python.ts";
-import { observationBytes, perceptionMetadata, type DeriveMedia, type TimelineMedia, type ObservationQuery, type PerceptionRead, type PerceptionStatus } from "../perception.ts";
+import { observationBytes, perceptionInput, type DeriveMedia, type TimelineMedia, type ObservationQuery, type PerceptionRead, type PerceptionRecord, type PerceptionStatus } from "../perception.ts";
 
 function perceptionState(status: PerceptionStatus) {
   const { state, generation, codeSHA, sampleHz, error } = status;
   return { state, generation, codeSHA, sampleHz, ...(error ? { error } : {}) };
-}
-
-/** Model-facing view only. Events, tool details and CLI JSON keep the full provenance. */
-export function perceptionInput(read: PerceptionRead) {
-  const records = read.records?.map(({ snapshot, text, data, space, observations }) => ({
-    id: snapshot.id, sequence: snapshot.sequence, capability: snapshot.capability,
-    codeSHA: snapshot.identity?.codeSHA, generation: snapshot.generation,
-    recordedAt: snapshot.recordedAt, sampledAt: snapshot.sampledAt, sampling: snapshot.sampling,
-    sources: snapshot.sources, text, data, space,
-    media: observations.map(({ id, mediaType }) => ({ id, mediaType })),
-  }));
-  return {
-    ok: read.result.exitCode === 0,
-    perception: perceptionState(read.status),
-    error: read.error !== read.status.error ? read.error : undefined,
-    query: read.query,
-    records: records?.length ? records : undefined,
-    text: !records?.length && !read.error ? read.result.stdout : undefined,
-    media: !records?.length && !read.error ? read.result.observations?.map(({ id, mediaType }) => ({ id, mediaType })) : undefined,
-    hasMore: read.hasMore, nextAfter: read.nextAfter, availability: read.availability,
-  };
 }
 
 export async function media(observations: Observation[], record?: RecordEvent, trace?: EventTrace, derive?: DeriveMedia) {
@@ -91,10 +70,14 @@ export function createRsaExtension(options: {
   let requests = 0;
   let requestEpoch: string | undefined;
   const pendingTools = new Set<string>();
-  let observed: PerceptionRead | undefined;
-  let toolImages: Observation[] = [];
+  let batchImages: Observation[] = [];
+  const batchQueries = new Set<string>();
+  let explicitPerception = false;
+  let lastMain: Pick<PerceptionRecord, "id" | "sequence" | "generation"> | undefined;
+  let lastControl = "", lastPerception = "", lastSkills = "";
   const deliveredBackground = new Set<string>();
-  let latestContext: { observations: string[]; executions: string[]; skills: Awaited<ReturnType<Workspace["snapshot"]>> };
+  let latestContext: { observations: string[]; deliveryIds: string[]; skillVersion?: string; memoryVersion?: string }
+    = { observations: [], deliveryIds: [] };
   const trace = (toolCallId?: string): EventTrace => ({ epoch: options.cycle().epoch, ...options.trace?.(toolCallId), ...(toolCallId ? { toolCallId } : {}) });
   const observeParameters = z.object({
     capability: z.string().nullable().optional().describe("Perception capability ID, or '*' for all. Default: Perception.sample."),
@@ -128,10 +111,9 @@ export function createRsaExtension(options: {
     async execute(id, params, _onUpdate, _ctx, signal) {
       const cycle = options.cycle();
       const read = await readPerception(signal ? AbortSignal.any([signal, cycle.signal]) : cycle.signal, trace(id), params);
-      const content = await perceptionContent(read, trace(id));
-      observed = read;
-      toolImages.push(...(read.result.observations ?? []));
-      return { content, details: perceptionMetadata(read, true), isError: read.result.exitCode !== 0 };
+      explicitPerception = true;
+      const rendered = await perceptionContent(read, trace(id));
+      return { ...rendered, details: { queryId: read.queryId, ok: read.ok } };
     },
   };
 
@@ -139,38 +121,38 @@ export function createRsaExtension(options: {
     signal.throwIfAborted();
     if (runtime.perception) return runtime.perception.observe(signal, parent, query);
     const text = "Perception is not configured. Implement perception.py and run rsa perception reload.";
-    return { status: { state: "unimplemented", generation: null }, error: text,
-      result: { id: crypto.randomUUID(), status: "failed", exitCode: 1, stdout: text, stderr: text, observations: [],
-        timing: { clock: "rsa", requestedAtMs: performance.now(), receivedAtMs: performance.now() } } };
-
+    const identity = childTrace(parent);
+    const read: PerceptionRead = { queryId: identity.spanId!, ok: false, query, records: [], hasMore: false,
+      error: { code: "UNAVAILABLE", message: text } };
+    runtime.record("perception_observe_end", { ...read, outcome: "error", durationMs: 0 }, identity);
+    return read;
   }
 
   async function perceptionContent(read: PerceptionRead, parent: EventTrace) {
-    const images = await perceptionMedia(read, parent);
-    return [{ type: "text" as const, text: JSON.stringify(perceptionInput(read)) }, ...images];
-  }
-
-  async function perceptionMedia(read: PerceptionRead, parent: EventTrace) {
-    let images: Awaited<ReturnType<typeof media>> = [];
+    batchQueries.add(read.queryId);
     const derive: DeriveMedia | undefined = runtime.perception
       ? input => runtime.perception!.deriveMedia(input, options.cycle().signal) : undefined;
     try {
-      if (read.records?.length) {
-        images = (await Promise.all(read.records.map(record =>
-          media(record.observations, runtime.record, parent, derive)))).flat();
-      } else images = await media(read.result?.observations ?? [], runtime.record, parent, derive);
-    }
-    catch (error) {
+      const observations = read.records.flatMap(record => record.media);
+      const images = await media(observations, runtime.record, parent, derive);
+      options.cycle().signal.throwIfAborted();
+      batchImages.push(...observations);
+      for (const record of read.records) {
+        if (record.capability !== "python/perception.py:Perception.sample") continue;
+        // Explicit old-history reads must not move the live cursor backwards.
+        if (!lastMain || record.sequence >= lastMain.sequence) {
+          lastMain = { id: record.id, sequence: record.sequence, generation: record.generation };
+        }
+      }
+      return { content: [{ type: "text" as const, text: JSON.stringify(perceptionInput(read)) }, ...images], isError: !read.ok };
+    } catch (error) {
       options.cycle().signal.throwIfAborted();
       const message = error instanceof Error ? error.message : String(error);
-      read.status = { ...read.status, state: "error", error: message };
-      read.error = message;
-      read.snapshot = undefined;
-      read.records = [];
-      if (read.result) read.result = { ...read.result, observations: [], stdout: message, exitCode: 1, status: "failed" };
-      runtime.record("perception_input_error", perceptionMetadata(read), parent);
+      // Encoding is a delivery failure, not a failed query or sampler mutation.
+      runtime.record("perception_input_error", { queryId: read.queryId, error: message }, parent);
+      return { content: [{ type: "text" as const, text: JSON.stringify({ ok: false, query: read.query,
+        error: { code: "media_delivery_failed", message } }) }], isError: true };
     }
-    return images;
   }
 
   // Native tool images remain in OMP's own history. Delivery metadata is not
@@ -208,41 +190,71 @@ export function createRsaExtension(options: {
     return observations;
   }
 
+  function resetBatch() {
+    pendingTools.clear();
+    batchImages = [];
+    batchQueries.clear();
+    explicitPerception = false;
+  }
+
+  function resetContext() {
+    resetBatch();
+    lastMain = undefined;
+    lastControl = lastPerception = lastSkills = "";
+    deliveredBackground.clear();
+    latestContext = { observations: [], deliveryIds: [] };
+  }
+
+  function receipt(parent: EventTrace, origin: string, observations: string[], queries: string[]) {
+    const delivery = childTrace(parent);
+    runtime.record("observation_context", { id: delivery.spanId!, origin, purpose: options.cycle().purpose,
+      observations, queries, skillVersion: latestContext.skillVersion, memoryVersion: latestContext.memoryVersion }, delivery);
+    latestContext.observations.push(...observations);
+    latestContext.deliveryIds.push(delivery.spanId!);
+  }
+
   async function captureContext(parent: EventTrace, origin: "prompt_start" | "tool_batch") {
     const cycle = options.cycle();
     cycle.signal.throwIfAborted();
+    const status = runtime.status();
+    const state = perceptionState(status.perception ?? { state: "unimplemented", generation: null });
     const consolidating = cycle.purpose === "consolidate";
-    const reused = !consolidating && observed !== undefined;
-    const inject = runtime.perceptionInjectionEnabled();
-    const perception = consolidating ? undefined : observed ?? (toolImages.length || !inject ? undefined : await readPerception(cycle.signal, parent));
-    // An explicit observe result already appears in the immutable tool history.
-    const content = perception && !reused ? await perceptionMedia(perception, parent) : [];
-    const observations = [...new Map([...(perception?.result?.observations ?? []), ...toolImages].map(o => [o.id, o])).values()];
-    const reusedIds = new Set(reused || perception?.reused ? perception?.result?.observations?.map(o => o.id) : []);
+    let content: Awaited<ReturnType<typeof perceptionContent>>["content"] = [];
+    // A known stopped/failed sampler needs a state notice, not another failed RPC.
+    // Native tool images only replace perception when their timeline source is known.
+    if (!consolidating && !explicitPerception && !batchImages.some(image => image.timeline?.recordId)
+      && runtime.perceptionInjectionEnabled() && state.state === "ready") {
+      const read = await readPerception(cycle.signal, parent);
+      if (!read.ok || read.records.some(record => record.id !== lastMain?.id)) {
+        content = (await perceptionContent(read, parent)).content;
+      }
+    }
     const skills = await workspace.snapshot();
     cycle.signal.throwIfAborted();
-    latestContext = { observations: observations.map(o => o.id),
-      executions: perception?.result ? [perception.result.id] : [], skills };
-    runtime.record("observation_context", { origin,
-      observations: latestContext.observations, executions: latestContext.executions,
-      purpose: cycle.purpose, perception: perception?.status, snapshot: perception?.snapshot,
-      query: perception?.query, records: perception?.records?.map(record => record.snapshot),
-      reusedObservations: latestContext.observations.filter(id => reusedIds.has(id)),
-      freshObservations: latestContext.observations.filter(id => !reusedIds.has(id)),
-      freshExecutions: reused ? [] : latestContext.executions,
-      reusedExecutions: reused ? latestContext.executions : [],
-      skillVersion: skills.version, memoryVersion: skills.memory.version }, parent);
-    // The full status includes perception; omit it here to avoid repeating the
-    // status and snapshot already carried by the single model-facing view.
-    const { perception: _status, ...control } = runtime.status();
-    return [{ type: "text" as const, text: JSON.stringify({
-      ...(consolidating ? { purpose: cycle.purpose } : {}),
-      control, skills,
-      ...(perception && !reused ? perceptionInput(perception) : {}),
-    }) }, ...content];
+    // Countdown changes every second; it remains available through rsa status.
+    const { perception: _perception, remainingSeconds: _remaining, ...control } = status;
+    const controlVersion = JSON.stringify(control), perceptionVersion = JSON.stringify(state);
+    const skillsVersion = `${skills.version}:${skills.memory.version}`;
+    const changes = {
+      ...(controlVersion !== lastControl ? { control } : {}),
+      ...(perceptionVersion !== lastPerception ? { perception: state } : {}),
+      ...(skillsVersion !== lastSkills ? { skills } : {}),
+    };
+    lastControl = controlVersion; lastPerception = perceptionVersion; lastSkills = skillsVersion;
+    if (Object.keys(changes).length) content.unshift({ type: "text", text: JSON.stringify(changes) });
+    latestContext = { observations: [], deliveryIds: [], skillVersion: skills.version, memoryVersion: skills.memory.version };
+    if (content.length || batchImages.length || batchQueries.size) {
+      receipt(parent, origin, [...new Set(batchImages.map(image => image.id))], [...batchQueries]);
+    }
+    return content;
   }
 
   const factory: ExtensionFactory = (pi) => {
+    resetContext();
+    pi.on("session_switch", resetContext);
+    pi.on("session_branch", resetContext);
+    pi.on("session_tree", resetContext);
+    pi.on("session_compact", resetContext);
     // OMP persists both the initial custom message and enriched tool results.
     // Keep history immutable between compactions so provider prefixes can be reused.
     pi.on("before_agent_start", async () => {
@@ -254,9 +266,9 @@ export function createRsaExtension(options: {
         BASEWARE_EPOCH: cycle.epoch, BASEWARE_TRACE: JSON.stringify({ epoch: cycle.epoch, recordingId: runtime.status().runId }),
       });
       refreshShellConfigCache();
-      observed = undefined;
-      toolImages = [];
-      return { message: { customType: "rsa-observation", content: await captureContext({ epoch: options.cycle().epoch }, "prompt_start"), display: false } };
+      resetBatch();
+      const content = await captureContext({ epoch: options.cycle().epoch }, "prompt_start");
+      if (content.length) return { message: { customType: "rsa-observation", content, display: false } };
     });
     pi.on("session_shutdown", () => {
       for (const [key, value] of Object.entries(originalEnvironment)) {
@@ -265,14 +277,13 @@ export function createRsaExtension(options: {
       refreshShellConfigCache();
     });
     pi.on("assistant_message", () => {
-      pendingTools.clear();
-      observed = undefined;
-      toolImages = [];
+      resetBatch();
+      latestContext = { ...latestContext, observations: [], deliveryIds: [] };
     });
     pi.on("tool_result", async (event) => {
       if (event.toolName !== "observe") {
         const images = event.content.filter((part): part is ImageContent => part.type === "image");
-        toolImages.push(...await recordToolImages(images, trace(event.toolCallId), event.toolName, event.content));
+        batchImages.push(...await recordToolImages(images, trace(event.toolCallId), event.toolName, event.content));
       }
       if (event.toolName === "read") {
         // OMP resolves selectors such as SKILL.md:19-22. Use its result metadata
@@ -299,18 +310,19 @@ export function createRsaExtension(options: {
       // OMP delivers async images as custom messages, outside tool_result.
       // Inspect only the new tail, not old images carried across compactions.
       const tail = (event.messages ?? []).slice((event.messages ?? []).findLastIndex(message => message.role === "assistant") + 1);
+      const currentBackground = new Set<string>();
       for (const message of tail) {
         if (message.role !== "custom" || message.customType !== ASYNC_RESULT_MESSAGE_TYPE || !Array.isArray(message.content)) continue;
         const key = JSON.stringify([message.timestamp, message.details]);
+        currentBackground.add(key);
         if (deliveredBackground.has(key)) continue;
         deliveredBackground.add(key);
         const images = message.content.filter((part): part is ImageContent => part.type === "image");
         const inputs = await recordToolImages(images, { epoch: cycle.epoch }, "background_result", message.content);
-        if (!inputs.length) continue;
-        latestContext = { ...latestContext, observations: [...latestContext.observations, ...inputs.map(o => o.id)] };
-        runtime.record("observation_context", { origin: "background_result", observations: latestContext.observations,
-          executions: latestContext.executions, freshObservations: inputs.map(o => o.id) }, { epoch: cycle.epoch });
+        if (inputs.length) receipt({ epoch: cycle.epoch }, "background_result", inputs.map(o => o.id), []);
       }
+      // Only the currently pending tail needs receipts, never an all-session set.
+      for (const key of deliveredBackground) if (!currentBackground.has(key)) deliveredBackground.delete(key);
       // A new takeover gets a fresh budget without replacing the OMP session.
       if (requestEpoch !== cycle.epoch) {
         requestEpoch = cycle.epoch;
@@ -320,8 +332,7 @@ export function createRsaExtension(options: {
         await runtime.stop("model request budget");
         cycle.signal.throwIfAborted();
       }
-      runtime.record("context", { request: ++requests, purpose: cycle.purpose, ...latestContext,
-        memoryVersion: latestContext?.skills.memory.version }, { epoch: cycle.epoch });
+      runtime.record("context", { request: ++requests, purpose: cycle.purpose, ...latestContext }, { epoch: cycle.epoch });
     });
     pi.on("tool_call", async (event) => {
       if (options.cycle().signal.aborted) return { block: true, reason: "Human reclaimed control" };
@@ -330,6 +341,5 @@ export function createRsaExtension(options: {
       pendingTools.add(event.toolCallId);
     });
   };
-  return { factory, tools: [observe], context: () => ({ observations: latestContext?.observations, executions: latestContext?.executions,
-    skillVersion: latestContext?.skills.version, memoryVersion: latestContext?.skills.memory.version }) };
+  return { factory, tools: [observe], context: () => ({ ...latestContext }) };
 }

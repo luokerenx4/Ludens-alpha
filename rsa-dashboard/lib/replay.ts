@@ -4,7 +4,8 @@ import { openRun, artifactRoot } from "./data";
 import { type EventRef, type LogIndex } from "./log-index";
 import { getOperation, queryOperationRefs, refreshOperationIndex, type OperationRef } from "./operation-index";
 import { timelineRecord, timelinePath, timelineWindow, type StoredTimelineRecord, type TimelineCursor } from "./timeline-record";
-import { eventObservations, observationExecution } from "./observation-events";
+import { eventObservations, modelInputEvents } from "./observation-events";
+import { aggregate } from "./aggregate";
 import { readArtifact } from "../../shared/log-archive";
 import type { Event } from "./types";
 import type { ReplayCoverage, ReplayDetail, ReplayFrame, ReplayItem, ReplayOverview, ReplayOverviewResult, ReplayPreparing, ReplayWindow } from "./replay-types";
@@ -228,14 +229,14 @@ async function itemDetail(scope: Scope, id: string | undefined): Promise<ReplayD
   if (projected.track === "model" && start.trace?.modelCallId) {
     const requests = await index.queryEvents({ epoch, model: start.trace.modelCallId, types: ["model_request"], limit: 100, signal: scope.signal });
     events.push(...requests.map(row => row.event)); observations = [];
-    const [context] = await index.queryEvents({ epoch, types: ["context"], beforePosition: position, reverse: true, limit: 1, signal: scope.signal });
-    const inputs: Event[] = [];
-    for (const resultId of context?.event.data.executions ?? []) {
-      const [input] = await index.queryEvents({ epoch, resultId, beforePosition: position, reverse: true, limit: 1, signal: scope.signal });
-      if (input) inputs.push(input.event);
-    }
-    const inputObservations = new Map(inputs.flatMap(input => eventObservations(input).map(observation => [observation.id, observation] as const)));
-    for (const observationId of new Set<string>([...(start.data.observations ?? []), ...inputObservations.keys()])) {
+    const { inputs, contexts } = await modelInputEvents(index, start, position, scope.signal);
+    const call = aggregate([...inputs, ...contexts, start]).calls[0];
+    const delivered = Array.isArray(start.data.deliveryIds) ? call?.inputObservations ?? [] : undefined;
+    const failedQueries = new Set(call?.perceptionReads?.filter(read => read.deliveryError).map(read => read.queryId));
+    events.push(...inputs.filter(input => input.type === "perception_input_error"));
+    const inputObservations = new Map(inputs.filter(input => !failedQueries.has(input.data.queryId))
+      .flatMap(input => eventObservations(input).map(observation => [observation.id, observation] as const)));
+    for (const observationId of new Set<string>(delivered ?? [...(start.data.observations ?? []), ...inputObservations.keys()])) {
       let observation = inputObservations.get(observationId);
       if (!observation) {
         const originals = await index.queryEvents({ epoch, observationId, beforePosition: position, reverse: true,
@@ -249,8 +250,8 @@ async function itemDetail(scope: Scope, id: string | undefined): Promise<ReplayD
         ...(encoded?.event.data.modelMedia?.video || record?.video ? { approximate: true } : {}),
         ...(record?.recordId ? { recordId: record.recordId, sequence: record.sequence } : {}) });
     }
-    for (const input of inputs) {
-      const perception = observationExecution(input)?.perception;
+    for (const perception of call?.perceptionReads ?? []) {
+      if (perception.deliveryError) continue;
       for (const snapshot of [perception?.snapshot, ...(perception?.records?.map(record => record.snapshot) ?? [])])
         if (snapshot?.timeline && !observations.some(value => value.recordId === snapshot.timeline!.recordId))
           observations.push({ id: snapshot.id, recordId: snapshot.timeline.recordId, sequence: snapshot.timeline.sequence });

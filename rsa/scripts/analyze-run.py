@@ -303,46 +303,75 @@ def sample_age_ms(sampled_at, received_at):
         return None
 
 
+def perception_query(data):
+    """Normalize archived query envelopes; never infer a model delivery from a read."""
+    if isinstance(data.get("queryId"), str):
+        records = data.get("records", [])
+        error = data.get("error")
+        return {"queryId": data["queryId"], "ok": data.get("ok"), "records": records,
+                "error": error.get("message") if isinstance(error, dict) else error}
+    result = data.get("result", {})
+    records = [{**record.get("snapshot", {}), "media": record.get("observations", [])}
+               for record in data.get("records", [])]
+    if not records and data.get("snapshot"):
+        records = [{**data["snapshot"], "media": result.get("observations", [])}]
+    ok = (result.get("status") == "completed" and result["exitCode"] == 0) if "exitCode" in result else (
+        True if data.get("outcome") == "success" else False if data.get("outcome") in ("error", "cancelled") else None)
+    return {"queryId": None, "ok": ok, "records": records, "error": data.get("error"),
+            "legacyExecutionId": result.get("id"), "legacyRepeated": data.get("reused"),
+            "legacySamplerStatus": data.get("status")}
+
+
 def perception_report(inside, events):
     reads = operation_spans(inside, events, "perception_observe_start", "perception_observe_end")
     finishes = {event_identity(event): event for event in events if event["type"] == "perception_observe_end"}
     for read in reads:
         end = finishes.get(read["endEventId"])
         data = end["data"] if end else {}
-        snapshot = data.get("snapshot")
-        read.update({"status": data.get("status"), "snapshot": snapshot, "reused": data.get("reused"),
-                     "executionId": data.get("result", {}).get("id"),
-                     "observationIds": [item["id"] for item in data.get("result", {}).get("observations", [])],
-                     "sampleAgeMs": sample_age_ms(snapshot.get("sampledAt"), end["at"])
-                     if snapshot and end else None})
+        query = perception_query(data)
+        records = query.pop("records")
+        read.update(query)
+        read["records"] = [{"id": record.get("id"), "sequence": record.get("sequence"),
+                            "timeline": record.get("timeline"), "sampledAt": record.get("sampledAt"),
+                            "sampleAgeMs": sample_age_ms(record.get("sampledAt"), end["at"]) if end else None,
+                            "observationIds": [item["id"] for item in record.get("media", [])]}
+                           for record in records]
+        read["observationIds"] = list(dict.fromkeys(item for record in read["records"] for item in record["observationIds"]))
     statuses = [{"seq": event["seq"], "at": event["at"], "trace": event.get("trace", {}), "status": event["data"]}
                 for event in inside if event["type"] == "perception_status"]
-    by_result = {(read["trace"].get("epoch"), read["executionId"]): read
-                 for read in reads if read["executionId"]}
+    by_query = {(read["trace"].get("epoch"), read["queryId"]): read for read in reads if read["queryId"]}
+    by_result = {(read["trace"].get("epoch"), read.get("legacyExecutionId")): read
+                 for read in reads if read.get("legacyExecutionId")}
     input_errors = []
     for event in inside:
         if event["type"] != "perception_input_error":
             continue
-        data = event["data"]
-        result_id = data.get("result", {}).get("id")
-        read = by_result.get((event.get("trace", {}).get("epoch"), result_id))
+        data, epoch = event["data"], event.get("trace", {}).get("epoch")
+        query_id, result_id = data.get("queryId"), data.get("result", {}).get("id")
+        read = by_query.get((epoch, query_id)) if query_id else by_result.get((epoch, result_id))
         input_errors.append({"seq": event["seq"], "at": event["at"], "trace": event.get("trace", {}),
-                             "executionId": result_id, "error": data.get("error"), "status": data.get("status"),
+                             "queryId": query_id, "error": data.get("error"),
+                             **({"legacyExecutionId": result_id, "legacySamplerStatus": data.get("status")} if not query_id else {}),
                              "readStartSeq": read["startSeq"] if read else None,
                              "readEndSeq": read["endSeq"] if read else None})
-    snapshots = [read for read in reads if read["snapshot"]]
+    records = [record for read in reads for record in read["records"]]
+    legacy = [read for read in reads if read["records"] and not read["queryId"]]
     summary = {
         **span_summary(reads),
         "ended": sum(read["endSeq"] is not None for read in reads),
-        "readStates": dict(Counter((read["status"] or {}).get("state", "unknown")
-                                  for read in reads if read["endSeq"] is not None)),
+        "queryResults": dict(Counter("cancelled" if read["outcome"] == "cancelled" else "success" if read["ok"] is True
+                                     else "failed" if read["ok"] is False else "unknown"
+                                     for read in reads if read["endSeq"] is not None)),
+        "legacyReadStates": dict(Counter((read.get("legacySamplerStatus") or {}).get("state", "unknown")
+                                        for read in reads if read["endSeq"] is not None and not read["queryId"])),
         "statusEvents": dict(Counter(item["status"].get("state", "unknown") for item in statuses)),
-        "newResults": sum(read["reused"] is False for read in snapshots),
-        "reusedResults": sum(read["reused"] is True for read in snapshots),
-        "unknownReuseResults": sum(type(read["reused"]) is not bool for read in snapshots),
-        "uniqueSnapshots": len({read["snapshot"]["id"] for read in snapshots if read["snapshot"].get("id")}),
-        "sampleAgeMs": stats(read["sampleAgeMs"] for read in snapshots),
-        "unknownSampleAge": sum(read["sampleAgeMs"] is None for read in snapshots),
+        "legacyQueryReuse": {"new": sum(read.get("legacyRepeated") is False for read in legacy),
+                             "repeated": sum(read.get("legacyRepeated") is True for read in legacy),
+                             "unknown": sum(type(read.get("legacyRepeated")) is not bool for read in legacy)},
+        "recordsReturned": len(records),
+        "uniqueRecords": len({(record.get("timeline") or {}).get("recordId") or record["id"] for record in records if record.get("id")}),
+        "sampleAgeMs": stats(record["sampleAgeMs"] for record in records),
+        "unknownSampleAge": sum(record["sampleAgeMs"] is None for record in records),
         "errorReasons": dict(Counter(read["error"] for read in reads if read["error"])),
         "inputErrors": len(input_errors),
     }

@@ -84,11 +84,11 @@ test("resident perception reuses snapshots but keeps each read's time, state and
   assert.equal(result.observations[0].origin, "perception");
   const [first, second, failure] = result.calls;
   assert.equal(first.inputText, "read first");
-  assert.equal(first.perception?.reused, false);
+  assert.equal(first.perception?.legacyRepeated, false);
   assert.equal(perceptionAgeMs(first.perception), 4000);
-  assert.equal(second.perception?.reused, true);
+  assert.equal(second.perception?.legacyRepeated, true);
   assert.equal(perceptionAgeMs(second.perception), 7000);
-  assert.equal(failure.perception?.status.state, "error");
+  assert.equal(failure.perception?.status?.state, "error");
   assert.equal(failure.inputText, "Perception failed");
   assert.equal(selectObservations(result.observations, failure, "image").observation, undefined);
   assert.equal(perceptionStatus(events)?.state, "loading");
@@ -181,7 +181,7 @@ test("media conversion failures replace the input result and epoch history retai
   ];
   const data = aggregate(events), call = data.calls[0];
   assert.equal(call.inputText, "cannot encode");
-  assert.equal(call.perception?.status.state, "error");
+  assert.equal(call.perception?.status?.state, "error");
   assert.equal(selectObservations(data.observations, call).observation, undefined);
   assert.equal(perceptionStatus(events, "current")?.generation, "first");
   assert.equal(perceptionStatus(events, "next")?.generation, "second");
@@ -331,4 +331,62 @@ test("data-only and mixed model inputs expose lazy record details without duplic
     if (!withImage) assert.match(html, /本次输入包含 2 条时空记录/);
     assert.deepEqual(result.calls[0].perception?.records?.map(item => item.snapshot.timeline), snapshots.map(item => item.timeline));
   }
+});
+
+test("canonical queries attach to explicit deliveries, independently of sampler health and nearby queries", () => {
+  const e = makeEvents();
+  const record = (id: string, sequence: number, media: unknown[] = []) => ({ id, sequence,
+    timeline: { recordId: id, sequence }, generation: "worker", recordedAt: new Date(sequence * 1000).toISOString(),
+    sampling: { clock: "sensor", startedAtMs: 0, finishedAtMs: 1 }, text: `read ${id}`, media });
+  const frame = { id: "image", mediaType: "image/png", timeline: { recordId: "old", sequence: 1, asset: "objects/image.bin" } };
+  const values = [
+    e("perception_status", { state: "error", generation: "worker", error: "camera offline" }),
+    e("perception_observe_end", { queryId: "history", ok: true, query: { id: "old" }, hasMore: false,
+      records: [record("old", 1, [frame])], outcome: "success", durationMs: 7 }),
+    e("perception_observe_end", { queryId: "sensor", ok: true, query: {}, hasMore: false,
+      records: [record("sensor", 2)], outcome: "success" }),
+    e("observation_context", { id: "delivery", origin: "explicit", observations: ["image"], queries: ["history", "sensor"] }),
+    e("perception_observe_end", { queryId: "other", ok: true, query: {}, hasMore: false, records: [record("unselected", 3)] }),
+    e("context", { observations: ["image"], executions: ["other"] }),
+    e("model_start", { deliveryIds: ["delivery"], observations: ["wrong-image"] }, { modelCallId: "model" }),
+    e("model_start", { deliveryIds: [], observations: ["wrong-image"] }, { modelCallId: "no-input" }),
+    e("model_start", { deliveryIds: ["missing"], observations: ["wrong-image"] }, { modelCallId: "missing" }),
+    e("perception_observe_end", { queryId: "failure", ok: false, query: {}, records: [], hasMore: false,
+      error: { code: "EXPIRED", message: "history expired" }, outcome: "error" }),
+  ];
+  const result = aggregate(values);
+  assert.deepEqual(result.calls.map(call => call.inputObservations), [["image"], [], []]);
+  assert.deepEqual(result.calls.map(call => call.inputText), ["read old\n\nread sensor", undefined, undefined]);
+  assert.deepEqual(result.calls[0].perceptionReads?.map(read => read.queryId), ["history", "sensor"]);
+  assert.equal(result.calls[0].perceptionReads?.[0].status, undefined, "live health is not copied into query metadata");
+  assert.equal(result.perception?.state, "error");
+  assert.equal(result.notices.filter(notice => notice.failed).length, 1);
+  assert.equal(result.notices.find(notice => notice.failed)?.text, "history expired");
+  const selected = selectObservations(result.observations, result.calls[0], "image");
+  assert.equal(selected.observation?.perception?.snapshot?.id, "old");
+  const html = renderToStaticMarkup(createElement(ObservationPanel, {
+    data: { ...result, project: "test", run: "test" } as RunData, call: result.calls[0], onImage() {},
+  }));
+  assert.match(html, /本次查询 · 成功/);
+  assert.match(html, /记录 #1/);
+  assert.match(html, /记录 #2/);
+});
+
+test("a failed delivery shows its error while keeping query source records out of the model-input panel", () => {
+  const e = makeEvents(), result = aggregate([
+    e("perception_observe_end", { queryId: "query", ok: true, query: {}, hasMore: false, records: [{
+      id: "source", sequence: 1, text: "source not delivered", media: [{ id: "frame", mediaType: "image/png" }],
+      timeline: { recordId: "source", sequence: 1 },
+    }] }),
+    e("perception_input_error", { queryId: "query", error: "image encoding failed" }),
+    e("observation_context", { id: "delivery", queries: ["query"], observations: [] }),
+    e("model_start", { deliveryIds: ["delivery"], observations: [] }, { modelCallId: "model" }),
+  ]);
+  const html = renderToStaticMarkup(createElement(ObservationPanel, {
+    data: { ...result, project: "test", run: "test" } as RunData, call: result.calls[0], onImage() {},
+  }));
+  assert.match(html, /本次查询 · 成功/);
+  assert.match(html, /输入交付失败/);
+  assert.match(html, /image encoding failed/);
+  assert.doesNotMatch(html, /source not delivered|记录 #1|<img|\/api\/media/);
 });

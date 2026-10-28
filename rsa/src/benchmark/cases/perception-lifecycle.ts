@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { PerceptionRuntime, type PerceptionRead } from "../../harness/perception.ts";
+import { PerceptionRuntime, type PerceptionRead, type PerceptionStatus } from "../../harness/perception.ts";
 import type { BenchmarkContext, AuthorReport } from "../types.ts";
 import { readEvents, seqs } from "../fixtures/evidence.ts";
 
@@ -49,14 +49,16 @@ export async function run(ctx: BenchmarkContext): Promise<AuthorReport> {
     const deadline = Date.now() + 5000;
     while (perception.status().state === "loading" && Date.now() < deadline) await Bun.sleep(10);
   };
+  const statuses: Record<string, PerceptionStatus> = {};
   const read = async (stage: string) => {
     signal.throwIfAborted();
     const result = await perception.observe(signal);
-    record("benchmark_perception_step", { stage, ...result });
+    statuses[stage] = perception.status();
+    record("benchmark_perception_step", { stage, queryId: result.queryId, status: statuses[stage] });
     return result;
   };
   const value = (result: PerceptionRead): { pid: number; version: number; sequence: number } =>
-    JSON.parse(result.result.stdout);
+    JSON.parse(result.records[0]!.text);
   let missing!: PerceptionRead, first!: PerceptionRead, second!: PerceptionRead;
   let beforeReload!: PerceptionRead, reloaded!: PerceptionRead, failed!: PerceptionRead, repaired!: PerceptionRead;
   let historical!: PerceptionRead;
@@ -71,7 +73,7 @@ export async function run(ctx: BenchmarkContext): Promise<AuthorReport> {
     await reload();
     first = await read("first");
     coldMs = performance.now() - started;
-    archived = first.result.observations![0]!.path!;
+    archived = first.records[0]!.media[0]!.path!;
     const original = await readFile(archived, "utf8");
     await Bun.sleep(100); // Recorder advances while the agent does no reads.
     const warmStarted = performance.now();
@@ -85,8 +87,8 @@ export async function run(ctx: BenchmarkContext): Promise<AuthorReport> {
     beforeReload = await read("edits-pending");
     await reload();
     reloaded = await read("reloaded");
-    historical = await perception.observe(signal, {}, { at: first.snapshot!.recordedAt });
-    record("benchmark_perception_step", { stage: "historical", ...historical });
+    historical = await perception.observe(signal, {}, { at: first.records[0]!.recordedAt });
+    record("benchmark_perception_step", { stage: "historical", queryId: historical.queryId });
     await writeFile(join(ctx.workspace, "perception.py"), implementation.replace(
       "self.sequence += 1", 'raise RuntimeError("fixture perception failure")'));
     await reload();
@@ -104,35 +106,35 @@ export async function run(ctx: BenchmarkContext): Promise<AuthorReport> {
   const v1 = value(first), v2 = value(second), held = value(beforeReload), fresh = value(reloaded), fixed = value(repaired);
   const closed = (await readFile(join(ctx.workspace, "closed.txt"), "utf8")).trim().split("\n").map(Number);
   // Evidence references the workspace timeline; it is not copied into this run.
-  record("benchmark_timeline_reference", { timeline: first.result.observations![0]!.timeline });
+  record("benchmark_timeline_reference", { timeline: first.records[0]!.media[0]!.timeline });
   ctx.metadata.limitations = ["真实 Python 进程与生产感知管理器；JSON 数值代替模型权重，不代表 PyTorch 初始化或推理性能。未调用在线模型或设备；空状态可读不等于 Agent 已自主修复。"];
   return {
     checks: {
-      "empty-bootstrap": { label: "空实现可自举", passed: missing.status.state === "unimplemented"
-        && !!missing.result.stdout && !missing.result.observations?.length,
-        expected: "返回 unimplemented 与诊断文字，无默认媒体、不抛异常", actual: JSON.stringify(missing.status),
+      "empty-bootstrap": { label: "空实现可自举", passed: statuses.unimplemented!.state === "unimplemented"
+        && !missing.ok && !!missing.error?.message && !missing.records.length,
+        expected: "返回 unimplemented 与诊断文字，无默认媒体、不抛异常", actual: JSON.stringify({ status: statuses.unimplemented, error: missing.error }),
         evidenceSeq: evidence("unimplemented") },
       "persistent-model": { label: "跨轮复用模型", passed: startsBeforeReload === 1 && v1.pid === v2.pid
         && v1.version === 11 && v2.version === 11 && v2.sequence > v1.sequence,
         expected: "同一 PID 初始化一次，无人读取期间持续采样，后续读取新序号", actual: JSON.stringify({ startsBeforeReload, v1, v2 }),
         evidenceSeq: evidence("first", "second") },
       "explicit-reload": { label: "helper 和权重显式更新", passed: held.version === 11 && fresh.version === 25
-        && beforeReload.status.generation !== reloaded.status.generation && closed.includes(held.pid),
+        && beforeReload.records[0]!.generation !== reloaded.records[0]!.generation && closed.includes(held.pid),
         expected: "reload 前保留已加载值 11；reload 后值 25、新 generation、旧实例 close",
         actual: JSON.stringify({ held, fresh, closed }), evidenceSeq: evidence("edits-pending", "reloaded") },
-      "repair": { label: "故障后可修复", passed: failed.status.state === "error" && !!failed.error
-        && repaired.status.state === "ready" && fixed.version === 25
-        && failed.status.generation !== repaired.status.generation,
+      "repair": { label: "故障后可修复", passed: statuses.failed!.state === "error" && !failed.ok && !!failed.error
+        && statuses.repaired!.state === "ready" && repaired.ok && fixed.version === 25
+        && statuses.failed!.generation !== statuses.repaired!.generation,
         expected: "错误记录可读，修复并 reload 后新 generation 正常返回",
-        actual: JSON.stringify({ failed: failed.status, repaired: repaired.status }), evidenceSeq: evidence("failed", "repaired") },
-      "temporal-history": { label: "跨版本回看采样历史", passed: historical.snapshot?.id === first.snapshot?.id
-        && historical.result.stdout === first.result.stdout && historical.snapshot?.generation !== reloaded.snapshot?.generation,
-        expected: "reload 后按时间仍能读取旧版本的不可变记录", actual: JSON.stringify(historical.snapshot),
+        actual: JSON.stringify({ failed: statuses.failed, repaired: statuses.repaired }), evidenceSeq: evidence("failed", "repaired") },
+      "temporal-history": { label: "跨版本回看采样历史", passed: historical.records[0]?.id === first.records[0]?.id
+        && historical.records[0]!.text === first.records[0]!.text && historical.records[0]?.generation !== reloaded.records[0]?.generation,
+        expected: "reload 后按时间仍能读取旧版本的不可变记录", actual: JSON.stringify(historical.records[0]),
         evidenceSeq: evidence("first", "historical", "reloaded") },
       "immutable-evidence": { label: "输入结果独立归档", passed: archiveUnchanged
-        && first.snapshot?.id !== second.snapshot?.id && first.result.observations![0]!.id !== second.result.observations![0]!.id,
+        && first.records[0]?.id !== second.records[0]?.id && first.records[0]!.media[0]!.id !== second.records[0]!.media[0]!.id,
         expected: "覆盖 workspace 输出后首轮归档不变，结果身份独立",
-        actual: JSON.stringify({ archiveUnchanged, first: first.snapshot, second: second.snapshot }),
+        actual: JSON.stringify({ archiveUnchanged, first: first.records[0], second: second.records[0] }),
         evidenceSeq: evidence("first", "second") },
     },
     metrics: {

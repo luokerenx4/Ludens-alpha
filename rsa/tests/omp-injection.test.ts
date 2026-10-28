@@ -128,7 +128,8 @@ class Perception:
       expect(snapshots[index]!.images).toEqual([]);
       expect(snapshots[index]!.text).not.toContain("Perception is stopped");
       expect(snapshots[index]!.json.some(value => value.perception || value.records || value.snapshot || value.observations)).toBe(false);
-      expect(snapshots[index]!.json.find(value => value.control)?.control.context.perceptionInjection).toBe(false);
+      if (index === 1) expect(snapshots[index]!.json.find(value => value.control)?.control.context.perceptionInjection).toBe(false);
+      else expect(snapshots[index]!.json.some(value => value.control || value.skills)).toBe(false);
     }
     const idRead = snapshots[4]!, firstPage = snapshots[5]!, secondPage = snapshots[6]!;
     const idMetadata = idRead.json.find(value => value.records);
@@ -153,14 +154,12 @@ class Perception:
       && entry.message.toolName === "observe" ? [entry.message] : []);
     expect(explicit).toHaveLength(3);
     const details = explicit[0]!.details as any;
-    expect(details).toMatchObject({ snapshot: { id: history[0].id }, result: { status: "completed", exitCode: 0 },
-      records: [{ snapshot: { id: history[0].id }, observations: [{ timeline: { asset: history[0].media[0].timeline.asset } }] }] });
-    expect(details.records[0].observations[0].timeline.video).toEqual(history[0].media[0].timeline.video);
+    expect(details).toEqual({ queryId: expect.any(String), ok: true });
     // Only the two enabled automatic reads and the three explicit queries ran.
     expect(events.filter(event => event.type === "perception_observe_end")).toHaveLength(5);
     const recordedRead = events.find(event => event.type === "perception_observe_end" && event.data.query?.id === history[0].id);
-    expect(recordedRead?.data).toMatchObject({ snapshot: { id: history[0].id }, result: { status: "completed" },
-      records: [{ snapshot: { id: history[0].id } }] });
+    expect(recordedRead?.data).toMatchObject({ queryId: details.queryId, ok: true,
+      records: [{ id: history[0].id, media: [{ timeline: { video: history[0].media[0].timeline.video } }] }] });
     expect(events.filter(event => event.type === "context_policy").map(event => event.data.perceptionInjection)).toEqual([false, true]);
   } finally {
     await session?.dispose(); authStorage.close(); await runtime.close(); await closeServer();

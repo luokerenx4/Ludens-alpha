@@ -42,15 +42,17 @@ export function samplingDurationMs(snapshot?: PerceptionSnapshot): number | null
 
 export function selectObservations(
   observations: Observation[],
-  call?: Pick<Call, "inputObservations" | "observations" | "perception">,
+  call?: Pick<Call, "inputObservations" | "observations" | "perception" | "perceptionReads">,
   selectedId?: string,
 ) {
   const byId = new Map(observations.map((observation) => [observation.id, observation]));
   const resolve = (ids: string[]) =>
     [...new Set(ids)].flatMap((id) => byId.has(id) ? [byId.get(id)!] : []);
   const inputs = resolve(call?.inputObservations ?? []).map(observation => {
-    if (!call?.perception) return observation;
-    const { records, ...read } = call.perception;
+    const selectedRead = (call?.perceptionReads ?? []).findLast(read =>
+      !read.deliveryError && read.records?.some(record => record.observations.some(media => media.id === observation.id))) ?? call?.perception;
+    if (!selectedRead) return observation;
+    const { records, ...read } = selectedRead;
     const record = records?.find(record => record.observations.some(media => media.id === observation.id));
     // The current request owns the read time; the matching record owns frame metadata.
     return { ...observation, text: record?.text,

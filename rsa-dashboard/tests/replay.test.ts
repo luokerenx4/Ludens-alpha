@@ -336,3 +336,44 @@ test("model details use the recorded encoded input rather than the source frame,
     assert.equal(getLogIndex(f.run).meta("run_projection"), undefined);
   } finally { await f.close(); }
 });
+
+test("canonical replay follows the selected delivery and retains data-only history without nearest-context guesses", async () => {
+  const f = await fixture();
+  try {
+    const rows = [
+      event(11, 30100, "perception_observe_end", { queryId: "read", ok: true, query: { id: "record-1" }, records: [{
+        id: "record-1", sequence: 1, recordedAt: iso(1000), timeline: { recordId: "record-1", sequence: 1 },
+        text: "history", media: [{ id: "frame", mediaType: "image/png", timeline: { recordId: "record-1", sequence: 1,
+          asset: `objects/${hash("image:1:0").toString("hex")}.bin` } }],
+      }, { id: "record-2", sequence: 2, recordedAt: iso(2000), timeline: { recordId: "record-2", sequence: 2 }, text: "sensor", media: [] }], hasMore: false }, {}, "two"),
+      event(12, 30200, "observation_context", { id: "delivery", origin: "explicit", queries: ["read"], observations: ["frame"] }, {}, "two"),
+      event(13, 30300, "context", { executions: ["unrelated"], observations: [] }, {}, "two"),
+      event(14, 30400, "model_start", { model: "sol", deliveryIds: ["delivery"], observations: ["wrong"] }, { modelCallId: "canonical" }, "two"),
+      event(15, 30500, "model_start", { model: "sol", deliveryIds: [], observations: ["frame"] }, { modelCallId: "empty" }, "two"),
+    ];
+    await appendFile(join(f.run, "events.jsonl"), rows.map(row => JSON.stringify(row)).join("\n") + "\n");
+    const detail = await f.query({ mode: "detail", epoch: "two", id: "event:14" }) as ReplayDetail;
+    assert.deepEqual(detail.observations?.map(item => [item.id, item.recordId]), [["frame", "record-1"], ["record-2", "record-2"]]);
+    const empty = await f.query({ mode: "detail", epoch: "two", id: "event:15" }) as ReplayDetail;
+    assert.deepEqual(empty.observations, []);
+  } finally { await f.close(); }
+});
+
+test("replay retains delivery failure evidence without turning successful query sources into model input", async () => {
+  const f = await fixture();
+  try {
+    const rows = [
+      event(11, 30100, "perception_observe_end", { queryId: "read", ok: true, query: {}, hasMore: false, records: [{
+        id: "record-1", sequence: 1, text: "source only", timeline: { recordId: "record-1", sequence: 1 },
+        media: [{ id: "frame", mediaType: "image/png" }],
+      }, { id: "record-2", sequence: 2, text: "sensor source", timeline: { recordId: "record-2", sequence: 2 }, media: [] }] }, {}, "two"),
+      event(12, 30200, "perception_input_error", { queryId: "read", error: "cannot encode" }, {}, "two"),
+      event(13, 30300, "observation_context", { id: "failed", origin: "explicit", queries: ["read"], observations: [] }, {}, "two"),
+      event(14, 30400, "model_start", { model: "sol", deliveryIds: ["failed"], observations: [] }, { modelCallId: "failure" }, "two"),
+    ];
+    await appendFile(join(f.run, "events.jsonl"), rows.map(row => JSON.stringify(row)).join("\n") + "\n");
+    const detail = await f.query({ mode: "detail", epoch: "two", id: "event:14" }) as ReplayDetail;
+    assert.deepEqual(detail.observations, []);
+    assert.equal((detail.data as any).events.find((event: any) => event.type === "perception_input_error")?.data.error, "cannot encode");
+  } finally { await f.close(); }
+});

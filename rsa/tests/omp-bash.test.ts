@@ -105,12 +105,14 @@ async function fixture() {
     cycle && !cycle.signal.aborted ? undefined : { stop: true, reason: "No active RSA control cycle" });
   let scripted: AssistantMessage["content"][] = [];
   const toolsSeen: string[][] = [];
+  const deliveriesSeen: string[][] = [];
   const results = new Map<string, any>();
   session.subscribe(event => {
     if (event.type === "tool_execution_end") results.set(event.toolCallId, event.result);
   });
   session.agent.streamFn = async (_model, context) => {
     toolsSeen.push(context.tools?.map(value => value.name).toSorted() ?? []);
+    deliveriesSeen.push([...extension.context().deliveryIds]);
     const content = scripted.shift() ?? [{ type: "text", text: "Turn complete." }];
     const message: AssistantMessage = { role: "assistant", api: model.api, provider: model.provider, model: model.id,
       timestamp: Date.now(), content, stopReason: content.some(part => part.type === "toolCall") ? "toolUse" : "stop",
@@ -121,7 +123,7 @@ async function fixture() {
     return stream;
   };
   const detachTrace = trace.attach(session);
-  return { workspace, runDir, rsaSocket, basewareSocket, runtime, core, session, extension, results, actions, toolsSeen, baseTools,
+  return { workspace, runDir, rsaSocket, basewareSocket, runtime, core, session, extension, results, actions, toolsSeen, deliveriesSeen, baseTools,
     epoch: () => cycle!.epoch, held: () => held, cancelled: () => cancelled, released: () => released,
     clearCycle() { cycle = undefined; },
     async prompt(...calls: AssistantMessage["content"][]) {
@@ -383,12 +385,12 @@ class Perception:
     await until(() => f.runtime.perception!.status().state === "ready");
     const old = await f.runtime.perception.observe(new AbortController().signal);
     await writeFile(join(f.workspace, "frame"), "latest");
-    await until(async () => (await f.runtime.perception!.observe(new AbortController().signal)).result.stdout === "latest");
+    await until(async () => (await f.runtime.perception!.observe(new AbortController().signal)).records[0]?.text === "latest");
     const decoder = new TerminalGraphicsDecoder();
     decoder.push(await encodeTerminalImage({ type: "image", data: Buffer.from(oldPng).toString("base64"), mimeType: "image/png" }));
     decoder.finish();
     const expectedImage = (await decoder.images())[0]!;
-    const command = `rsa observe --at '${old.snapshot!.recordedAt}' --images`;
+    const command = `rsa observe --at '${old.records[0]!.recordedAt}' --images`;
     // Test both sibling orders: the final plain-text result must not add a live screenshot.
     for (const reverse of [false, true]) {
       const id = `history-${reverse}`;
@@ -396,34 +398,39 @@ class Perception:
       await f.prompt(reverse ? calls.reverse() : calls);
       expect(f.results.get(id).content.filter((part: any) => part.type === "image")).toEqual([expectedImage]);
       expect(f.results.get(`sibling-${reverse}`).content.filter((part: any) => part.type === "image")).toHaveLength(0);
-      const inputIds = f.extension.context().observations!;
-      expect(inputIds).toHaveLength(1);
       const events = await f.events();
+      const deliveryIds = f.deliveriesSeen.at(-1)!;
+      const receipts = events.filter(event => event.type === "observation_context" && deliveryIds.includes(event.data.id));
+      expect(receipts).toHaveLength(1);
+      const inputIds = receipts.flatMap(event => event.data.observations);
+      expect(inputIds).toHaveLength(1);
       const delivered = events.find(event => event.type === "observation" && event.data.id === inputIds[0]);
       expect(delivered.trace.toolCallId).toBe(id);
       expect(delivered.data.origin).toBe("tool_result");
       // The CLI records the actual decoder version through the timeline writer.
       // Its source record is the requested historical frame, never latest.
       expect(delivered.data.path).toBeUndefined();
-      expect(delivered.data.timeline).toEqual(old.result.observations![0]!.timeline);
+      expect(delivered.data.timeline).toEqual(old.records[0]!.media[0]!.timeline);
       expect(delivered.data.recorded).toBe(true);
       const derivative = events.find(event => event.type === "observation_media"
-        && event.data.observationId === old.result.observations![0]!.id
+        && event.data.observationId === old.records[0]!.media[0]!.id
         && event.data.modelMedia?.transform === "omp.terminalGraphics");
-      expect(derivative?.data.modelMedia).toMatchObject({ recordId: old.snapshot!.id,
-        sequence: old.snapshot!.sequence, sourceAsset: old.result.observations![0]!.timeline!.asset });
+      expect(derivative?.data.modelMedia).toMatchObject({ recordId: old.records[0]!.id,
+        sequence: old.records[0]!.sequence, sourceAsset: old.records[0]!.media[0]!.timeline!.asset });
       expect(delivered.data.sha256).toBe(new Bun.CryptoHasher("sha256").update(Buffer.from(expectedImage.data, "base64")).digest("hex"));
-      expect(Buffer.from(old.result.observations![0]!.data!, "base64")).toEqual(Buffer.from(oldPng));
+      expect(Buffer.from(old.records[0]!.media[0]!.data!, "base64")).toEqual(Buffer.from(oldPng));
       const saved = f.session.agent.state.messages.find(message => message.role === "toolResult" && message.toolCallId === id);
       expect(saved?.role === "toolResult" && saved.content).toContainEqual(expectedImage);
-      expect(JSON.stringify(saved)).toContain(old.snapshot!.recordedAt);
+      expect(JSON.stringify(saved)).toContain(old.records[0]!.recordedAt);
     }
     // Without --images the JSON remains machine-readable and the normal live
     // context continues. A CLI lookup alone is never logged as pixel delivery.
-    await f.prompt(tool("json-only", "bash", { command: `rsa observe --at '${old.snapshot!.recordedAt}'` }));
+    await f.prompt(tool("json-only", "bash", { command: `rsa observe --at '${old.records[0]!.recordedAt}'` }));
     const events = await f.events();
     expect(events.some(event => event.type === "observation" && event.trace.toolCallId === "json-only")).toBe(false);
-    expect(f.extension.context().observations![0]).not.toBe(old.result.observations![0]!.id);
+    const jsonOnlyReceipts = events.filter(event => event.type === "observation_context"
+      && f.deliveriesSeen.at(-1)!.includes(event.data.id));
+    expect(jsonOnlyReceipts.flatMap(event => event.data.observations)).not.toContain(old.records[0]!.media[0]!.id);
 
     await f.prompt(tool("background-history", "bash", { command: `sleep 0.1; ${command}`, async: true, timeout: 0 }));
     const job = f.session.asyncJobManager!.getAllJobs().at(-1)!;
@@ -432,7 +439,7 @@ class Perception:
     const backgroundInputs = (await f.events()).filter(event => event.type === "observation" && event.data.controllerId === "background_result");
     expect(backgroundInputs).toHaveLength(1);
     expect(backgroundInputs[0].data.path).toBeUndefined();
-    expect(backgroundInputs[0].data.timeline).toEqual(old.result.observations![0]!.timeline);
+    expect(backgroundInputs[0].data.timeline).toEqual(old.records[0]!.media[0]!.timeline);
     expect(backgroundInputs[0].data.recorded).toBe(true);
     expect(backgroundInputs[0].data.sha256).toBe(new Bun.CryptoHasher("sha256").update(Buffer.from(expectedImage.data, "base64")).digest("hex"));
     expect(backgroundInputs[0].trace.toolCallId).toBeUndefined();

@@ -77,13 +77,19 @@ export interface PerceptionStatus {
 }
 export interface PerceptionRead {
   at: string;
-  status: PerceptionStatus;
+  queryId?: string;
+  ok?: boolean;
+  /** A successful query can still fail while preparing its model input. */
+  deliveryError?: string;
+  /** Only historical events attach sampler health to a query. */
+  status?: PerceptionStatus;
   snapshot?: PerceptionSnapshot;
   records?: { snapshot: PerceptionSnapshot; text: string; observations: { id: string }[] }[];
   query?: { at?: string; start?: string; end?: string; limit?: number; after?: number; capability?: string; id?: string };
   hasMore?: boolean;
   nextAfter?: number;
-  reused?: boolean;
+  legacyRepeated?: boolean;
+  availability?: Record<string, unknown>;
   durationMs?: number;
   error?: string;
 }
@@ -137,6 +143,7 @@ export interface Call {
   observations: string[];
   inputObservations: string[];
   inputText?: string;
+  perceptionReads?: PerceptionRead[];
   perception?: PerceptionRead;
   actions: number;
   phases: Record<string, number | null>;

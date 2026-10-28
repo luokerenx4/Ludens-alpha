@@ -244,18 +244,18 @@ test("perception analysis separates cached reads, unknown ages and late cancella
   expect(report.summary.perception).toEqual({
     started: 7, ended: 6, outcomes: { success: 4, error: 1, cancelled: 1, pending: 1 },
     durationMs: { count: 6, min: 3, median: 8, p95: 20, max: 20, sum: 53 },
-    readStates: { ready: 4, error: 1, stopped: 1 }, statusEvents: { loading: 1, error: 1 },
-    newResults: 3, reusedResults: 1, unknownReuseResults: 0, uniqueSnapshots: 3,
+    queryResults: { success: 4, failed: 1, cancelled: 1 }, legacyReadStates: { ready: 4, error: 1, stopped: 1 }, statusEvents: { loading: 1, error: 1 },
+    legacyQueryReuse: { new: 3, repeated: 1, unknown: 0 }, recordsReturned: 4, uniqueRecords: 3,
     sampleAgeMs: { count: 2, min: 2500, median: 3500, p95: 4500, max: 4500, sum: 7000 },
     unknownSampleAge: 2, errorReasons: { "camera unavailable": 1 }, inputErrors: 1,
   });
   expect(report.perception.reads[0]).toMatchObject({ startSeq: 4, endSeq: 5,
-    executionId: "first-result", observationIds: ["image"], sampleAgeMs: 2500 });
+    legacyExecutionId: "first-result", observationIds: ["image"], records: [{ id: "sample-1", sampleAgeMs: 2500 }] });
   expect(report.perception.reads[5]).toMatchObject({ outcome: "cancelled", durationMs: 4, endSeq: 20 });
   expect(report.perception.reads[6]).toMatchObject({ outcome: "pending", endSeq: null, durationMs: null });
   expect(report.perception.inputErrors).toEqual([{ seq: 24, at: new Date(24000).toISOString(),
-    trace: { epoch: "one" }, executionId: "cached-result", error: "unsupported image",
-    status: { ...ready, state: "error" }, readStartSeq: 6, readEndSeq: 7 }]);
+    trace: { epoch: "one" }, queryId: null, legacyExecutionId: "cached-result", error: "unsupported image",
+    legacySamplerStatus: { ...ready, state: "error" }, readStartSeq: 6, readEndSeq: 7 }]);
   expect(report.summary).toMatchObject({ controllerActions: 0, startedRequests: 0, observeToolCalls: 0 });
   expect(report.window.observedElapsedMs).toBe(16000);
 });
@@ -792,4 +792,31 @@ test("analysis attributes late compaction lifecycle to its epoch without extendi
   expect(next.summary.compactionSpeculation).toEqual({ ...emptySpeculation, started: 1, failed: 1 });
   expect(next.compactionHttpAttempts).toEqual([]);
   expect(next.compactionMaintenance).toEqual([]);
+});
+
+test("canonical perception reports query outcomes and every selected record without inferring model reuse", async () => {
+  const e = fixture(), trace = (spanId: string) => ({ traceId: "reads", spanId });
+  const record = (id: string, sequence: number) => ({ id, sequence, timeline: { recordId: id, sequence },
+    sampledAt: "1970-01-01T00:00:01.000Z", text: "not copied into analysis", media: [{ id: `image-${id}` }] });
+  const report = await analyze([
+    e("control", "one", { mode: "auto", epoch: "one" }),
+    e("perception_status", "one", { state: "error", generation: "worker", error: "sampler offline" }),
+    e("perception_observe_start", "one", { query: {} }, trace("query")),
+    e("perception_observe_end", "one", { queryId: "query", ok: true, query: {}, records: [record("old", 1), record("recent", 2)],
+      hasMore: false, outcome: "success", durationMs: 10 }, trace("query")),
+    e("perception_observe_start", "one", { query: { id: "old" } }, trace("again")),
+    e("perception_observe_end", "one", { queryId: "again", ok: true, query: { id: "old" }, records: [record("old", 1)],
+      hasMore: false, outcome: "success", durationMs: 5 }, trace("again")),
+    e("perception_input_error", "one", { queryId: "again", error: "encoding failed" }),
+    e("perception_observe_start", "one", { query: { id: "expired" } }, trace("failed")),
+    e("perception_observe_end", "one", { queryId: "failed", ok: false, query: { id: "expired" }, records: [], hasMore: false,
+      error: { code: "EXPIRED", message: "history expired" }, outcome: "error", durationMs: 2 }, trace("failed")),
+  ], "one");
+  expect(report.summary.perception).toMatchObject({ queryResults: { success: 2, failed: 1 }, recordsReturned: 3, uniqueRecords: 2,
+    legacyQueryReuse: { new: 0, repeated: 0, unknown: 0 }, legacyReadStates: {}, statusEvents: { error: 1 },
+    errorReasons: { "history expired": 1 }, inputErrors: 1 });
+  expect(report.perception.reads[0].records.map((item: any) => item.id)).toEqual(["old", "recent"]);
+  expect(report.perception.inputErrors[0]).toMatchObject({ queryId: "again", readStartSeq: 5, readEndSeq: 6 });
+  expect(JSON.stringify(report)).not.toContain("not copied into analysis");
+  expect(report.summary.perception).not.toHaveProperty("reusedResults");
 });

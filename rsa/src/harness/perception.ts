@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, delimiter, join, resolve } from "node:path";
-import type { Clock, ExecutionResult, Observation } from "@playness/baseware/contracts";
+import type { Clock, Observation } from "@playness/baseware/contracts";
 import { childTrace, type EventTrace, type RecordEvent, type RegisterMedia, type DiagnosticsMode, type EventMetadata } from "./events.ts";
 import { pythonModulePaths } from "./python-capabilities.ts";
 import { pythonExecutable } from "../../../shared/python.ts";
@@ -36,8 +36,8 @@ export interface ObservationQuery {
   limit?: number | null; after?: number | null;
   capability?: string | null; id?: string | null;
 }
-export interface PerceptionRecord {
-  snapshot: PerceptionSnapshot; text: string; observations: Observation[];
+export interface PerceptionRecord extends PerceptionSnapshot {
+  text: string; media: Observation[];
   data?: unknown; space?: unknown;
 }
 export interface TimelineAppend {
@@ -57,15 +57,13 @@ export interface TimelineMedia {
 }
 export type DeriveMedia = (input: TimelineDerive, observationId?: string) => Promise<TimelineMedia>;
 export interface PerceptionRead {
-  status: PerceptionStatus;
-  result: ExecutionResult;
-  snapshot?: PerceptionSnapshot;
-  records?: PerceptionRecord[];
-  query?: ObservationQuery;
-  hasMore?: boolean;
+  queryId: string;
+  ok: boolean;
+  query: ObservationQuery;
+  records: PerceptionRecord[];
+  hasMore: boolean;
   nextAfter?: number;
-  reused?: boolean;
-  error?: string;
+  error?: { code: string; message: string };
   availability?: { persistent: boolean; hotSeconds: number;
     earliest: { sequence: number; recordedAt: string } | null;
     latest: { sequence: number; recordedAt: string } | null; expired: boolean };
@@ -74,7 +72,6 @@ export interface PerceptionRead {
 export class PerceptionRuntime {
   private current: PerceptionStatus = { state: "unimplemented", generation: null };
   private worker?: PythonWorker;
-  private lastReadIds: string[] = [];
   private transition: Promise<unknown> = Promise.resolve();
   private reading: Promise<unknown> = Promise.resolve();
   private readonly workspace: string;
@@ -143,81 +140,81 @@ export class PerceptionRuntime {
   }
 
   private async read(signal: AbortSignal, parent: EventTrace, query: ObservationQuery): Promise<PerceptionRead> {
-    const trace = childTrace(parent), started = this.clock.now();
-    const observedStatus = this.status(), worker = this.worker;
-    this.record("perception_observe_start", { status: observedStatus, query }, trace);
+    const trace = childTrace(parent), started = this.clock.now(), queryId = trace.spanId!;
+    const worker = this.worker;
+    const failure = (code: string, message: string, availability?: PerceptionRead["availability"]): PerceptionRead => ({
+      queryId, ok: false, query, records: [], hasMore: false, error: { code, message },
+      ...(availability ? { availability } : {}),
+    });
+    this.record("perception_observe_start", { queryId, query }, trace);
     try {
       signal.throwIfAborted();
-      if (!worker || worker.expectedExit) return this.finish(this.unavailable(), started, trace);
+      if (!worker || worker.expectedExit) return this.finish(failure("UNAVAILABLE",
+        this.current.error ?? `Perception is ${this.current.state}.`), started, trace);
       const reply = await this.request(worker, { action: "observe", query },
         this.options.observeTimeoutMs ?? 5000, signal);
       signal.throwIfAborted();
-      if (!this.isCurrent(worker)) {
-        return this.finish(this.unavailable("Perception generation stopped or was replaced during observation.",
-          { ...observedStatus, state: "stopped" }), started, trace);
-      }
-      // A bad history query must not poison the running sampler's health.
-      if (!reply.ok) return this.finish(this.unavailable(`${reply.error?.type}: ${reply.error?.message}`), started, trace);
+      if (!this.isCurrent(worker)) return this.finish(failure("UNAVAILABLE",
+        "Perception generation stopped or was replaced during observation."), started, trace);
+      // Query/decoding errors do not change the sampler's lifecycle status.
+      if (!reply.ok) return this.finish(failure("QUERY_FAILED",
+        `${reply.error?.type}: ${reply.error?.message}`), started, trace);
       const value = reply.result as { records: Array<PerceptionSnapshot & {
         text: string; data?: unknown; space?: unknown;
         media: { path?: string; mediaType: string; data?: string; timeline?: Observation["timeline"] }[];
       }>; query: ObservationQuery; hasMore: boolean; nextAfter?: number; availability?: PerceptionRead["availability"] };
-      if (!this.isCurrent(worker)) {
-        return this.finish(this.unavailable("Perception generation stopped or was replaced during observation.",
-          { ...observedStatus, state: "stopped" }), started, trace);
-      }
-      const records: PerceptionRecord[] = value.records.map(({ text, media, data, space, ...snapshot }) => ({
-        snapshot, text, ...(data === undefined ? {} : { data }), ...(space === undefined ? {} : { space }),
-        observations: media.map((item, index) => ({
-          ...item, id: `${snapshot.id}-${index}`, controllerId: "perception",
-          timing: { clock: snapshot.sampling.clock, requestedAtMs: snapshot.sampling.startedAtMs,
-            receivedAtMs: snapshot.sampling.finishedAtMs },
+      const records: PerceptionRecord[] = value.records.map(({ media, ...record }) => ({
+        ...record,
+        media: media.map((item, index) => ({
+          ...item, id: `${record.id}-${index}`, controllerId: "perception",
+          timing: { clock: record.sampling.clock, requestedAtMs: record.sampling.startedAtMs,
+            receivedAtMs: record.sampling.finishedAtMs },
         })),
       }));
-      // The history store normalizes unused tool fields before choosing a mode.
-      // Use the same canonical query when enforcing freshness across reloads.
+      // Use the store's normalized query for mode selection and freshness.
       query = value.query;
       const latest = query.at === undefined && query.start === undefined && query.end === undefined
         && query.after === undefined && query.id === undefined;
       const mainLatest = latest && (!query.capability || query.capability === "python/perception.py:Perception.sample");
-      // During reload/failure, latest must not silently serve an old generation as fresh.
-      const currentRecords = mainLatest ? records.filter(record => record.snapshot.generation === worker.generation) : records;
-      if (!currentRecords.length || (mainLatest && this.current.state !== "ready")) {
-        const error = (mainLatest ? this.current.error : undefined) ?? (value.availability?.expired
-          ? "Requested observation has expired from the non-persistent history window. See availability for the retained range."
-          : latest ? "No sample available from the current generation yet." : "No observation at the requested time.");
-        return this.finish({ ...this.unavailable(error), query, records: [], hasMore: false, availability: value.availability }, started, trace);
+      // Explicit history survives sampler failure/reload; current perception must
+      // never present a previous generation's record as a fresh observation.
+      const currentRecords = mainLatest ? records.filter(record => record.generation === worker.generation) : records;
+      if (mainLatest && this.current.state !== "ready") {
+        return this.finish(failure(this.current.state === "loading" ? "NOT_READY" : "UNAVAILABLE",
+          this.current.error ?? `Perception is ${this.current.state}.`,
+          value.availability), started, trace);
       }
-      const snapshot = currentRecords.at(-1)!.snapshot;
-      const ids = currentRecords.map(record => record.snapshot.id);
-      const reused = ids.length === this.lastReadIds.length && ids.every((id, index) => id === this.lastReadIds[index]);
-      this.lastReadIds = ids;
-      const text = currentRecords.length === 1 ? currentRecords[0]!.text : currentRecords.map(record =>
-        `[${record.snapshot.recordedAt} #${record.snapshot.sequence}]\n${record.text}`).join("\n\n");
-      return this.finish({ status: this.status(),
-        result: this.execution(text, currentRecords.flatMap(record => record.observations), started),
-        snapshot, records: currentRecords, query: value.query, hasMore: value.hasMore, availability: value.availability,
-        ...(value.nextAfter === undefined ? {} : { nextAfter: value.nextAfter }), reused }, started, trace);
+      if (!currentRecords.length) {
+        // Retention metadata cannot prove that an unknown ID/capability ever
+        // existed. Only a time/range query can identify an expired interval.
+        if (!latest && query.id === undefined && value.availability?.expired) return this.finish(failure("EXPIRED",
+          "Requested observation has expired from the non-persistent history window. See availability for the retained range.",
+          value.availability), started, trace);
+        if (latest) return this.finish(failure("NOT_READY", "No sample available from the selected capability yet.",
+          value.availability), started, trace);
+        if (query.id !== undefined || query.at !== undefined) return this.finish(failure("NOT_FOUND",
+          query.id !== undefined ? "No observation with the requested ID." : "No observation at or before the requested time.",
+          value.availability), started, trace);
+        // An ordinary empty range or exhausted cursor is a successful page.
+      }
+      return this.finish({ queryId, ok: true, query, records: currentRecords, hasMore: value.hasMore,
+        availability: value.availability,
+        ...(value.nextAfter === undefined ? {} : { nextAfter: value.nextAfter }) }, started, trace);
     } catch (error) {
       if (signal.aborted) {
-        const result = this.execution("", [], started, "Observation wait cancelled");
-        result.status = "interrupted";
-        this.record("perception_observe_end", { status: observedStatus, result, query, outcome: "cancelled",
+        this.record("perception_observe_end", { queryId, query, outcome: "cancelled",
           durationMs: this.clock.now() - started }, trace);
         throw signal.reason ?? error;
       }
-      if (worker && !this.isCurrent(worker)) {
-        return this.finish(this.unavailable("Perception generation stopped or was replaced during observation.",
-          { ...observedStatus, state: "stopped" }), started, trace);
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      return this.finish(this.unavailable(message), started, trace);
+      const unavailable = worker && !this.isCurrent(worker);
+      return this.finish(failure(unavailable ? "UNAVAILABLE" : "QUERY_FAILED", unavailable
+        ? "Perception generation stopped or was replaced during observation."
+        : error instanceof Error ? error.message : String(error)), started, trace);
     }
   }
 
   private async replace(trace: EventTrace): Promise<PerceptionStatus> {
     await this.closeWorker();
-    this.lastReadIds = [];
     let source: Buffer | undefined;
     let sourceError: string | undefined;
     try { source = await readFile(join(this.workspace, "perception.py")); }
@@ -285,27 +282,17 @@ export class PerceptionRuntime {
     return this.worker === worker && !worker.expectedExit && this.current.generation === worker.generation;
   }
 
-  private unavailable(error = this.current.error ?? `Perception is ${this.current.state}.`, status = this.status()): PerceptionRead {
-    return { status, result: this.execution(error, [], this.clock.now(), error), error };
-  }
-
-  private execution(text: string, observations: Observation[], started: number, error?: string): ExecutionResult {
-    return { id: crypto.randomUUID(), status: error ? "failed" : "completed", exitCode: error ? 1 : 0,
-      stdout: text, stderr: error ?? "", observations,
-      timing: { clock: this.clock.id, requestedAtMs: started, receivedAtMs: this.clock.now() } };
-  }
-
   private finish(read: PerceptionRead, started: number, trace: EventTrace) {
     // Cold video decoding produces new image bytes. Register their identity
     // against the same frame before a CLI/tool result can reach log archival.
-    const media = (read.result.observations ?? []).flatMap(observation => {
+    const media = read.records.flatMap(record => record.media).flatMap(observation => {
       if (observation.data === undefined || !observation.timeline?.video) return [];
       const bytes = Buffer.from(observation.data, "base64");
       return [{ ...observation.timeline, sha256: createHash("sha256").update(bytes).digest("hex"),
         bytes: bytes.length, mediaType: observation.mediaType, approximate: true }];
     });
     for (const reference of media) this.options.registerMedia?.(reference);
-    this.record("perception_observe_end", { ...perceptionMetadata(read), outcome: read.error ? "error" : "success",
+    this.record("perception_observe_end", { ...perceptionMetadata(read), outcome: read.ok ? "success" : "error",
       durationMs: this.clock.now() - started }, trace);
     return read;
   }
@@ -327,11 +314,29 @@ export class PerceptionRuntime {
 /** Events point at the axis; selected media bytes only live in delivery responses. */
 export function observationMetadata({ data: _data, ...observation }: Observation): Observation { return observation; }
 
-export function perceptionMetadata(read: PerceptionRead, includeData = false): PerceptionRead {
-  return { ...read, result: { ...read.result, observations: read.result.observations?.map(observationMetadata) },
-    records: read.records?.map(({ data: _data, space: _space, ...record }) => ({ ...record,
-      ...(includeData ? { data: _data, space: _space } : {}),
-      observations: record.observations.map(observationMetadata) })) };
+export function perceptionMetadata(read: PerceptionRead): PerceptionRead {
+  return { ...read, records: read.records.map(({ data: _data, space: _space, ...record }) => ({ ...record,
+    media: record.media.map(observationMetadata) })) };
+}
+
+/** One model/terminal view: workspace sources remain meaningful input; internal trace/storage links stay in query results and logs. */
+export function perceptionInput(read: PerceptionRead) {
+  return { queryId: read.queryId, ok: read.ok, query: read.query, records: read.records.map(record => ({
+    id: record.id, sequence: record.sequence, generation: record.generation,
+    ...(record.capability === undefined ? {} : { capability: record.capability }),
+    ...(record.identity?.codeSHA === undefined ? {} : { codeSHA: record.identity.codeSHA }),
+    ...(record.sources === undefined ? {} : { sources: record.sources }),
+    recordedAt: record.recordedAt,
+    ...(record.sampledAt === undefined ? {} : { sampledAt: record.sampledAt }),
+    sampling: record.sampling, text: record.text,
+    ...(record.data === undefined ? {} : { data: record.data }),
+    ...(record.space === undefined ? {} : { space: record.space }),
+    media: record.media.map(({ id, mediaType }) => ({ id, mediaType })),
+  })), hasMore: read.hasMore,
+    ...(read.nextAfter === undefined ? {} : { nextAfter: read.nextAfter }),
+    ...(read.availability === undefined ? {} : { availability: read.availability }),
+    ...(read.error === undefined ? {} : { error: read.error }),
+  };
 }
 
 export async function observationBytes(observation: Observation): Promise<Buffer> {

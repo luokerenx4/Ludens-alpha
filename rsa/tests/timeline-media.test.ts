@@ -24,7 +24,9 @@ test("model image versions reference one video source and archive errors do not 
     const first = await runtime.append(input, signal) as { timeline: { recordId: string } };
     await runtime.append(input, signal); // Identical pixels, distinct source record.
     const read = await runtime.observe(signal, {}, { id: first.timeline.recordId });
-    const observation = read.result.observations![0]!;
+    expect(read.ok).toBe(true);
+    expect(runtime.status().state).toBe("unimplemented");
+    const observation = read.records[0]!.media[0]!;
     const actual = await media([observation], record, {}, value => runtime.deriveMedia(value, signal));
     expect(actual[0]?.type).toBe("image");
     const encoded = actual[0] as { data: string; mimeType: string };
@@ -61,7 +63,7 @@ test("model image versions reference one video source and archive errors do not 
     await runtime.reload();
     const cold = await runtime.observe(signal, {}, { id: first.timeline.recordId });
     expect(cold.error).toBeUndefined();
-    const coldImage = cold.result.observations![0]!;
+    const coldImage = cold.records[0]!.media[0]!;
     expect(Buffer.from(coldImage.data!, "base64").equals(decoded)).toBe(true);
     expect(registered.at(-1)).toMatchObject({
       asset: saved.asset, video: saved.video, approximate: true,

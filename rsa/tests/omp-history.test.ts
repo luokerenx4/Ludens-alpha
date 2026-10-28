@@ -107,7 +107,7 @@ test.each([1, 26])("OMP persists batches of %i images and reuses the Codex prefi
     session.agent.streamFn = streamFn;
     await session.prompt("Resume.");
     expect(requests).toBe(9);
-    // Any explicit image in a batch supplies its observation, even if a later
+    // Any explicit observation in a batch supplies its result, even if a later
     // sibling is bash. The next model sees the requested frame without a second capture.
     // The larger batch also crosses Codex's SDK cap of 200 retained images.
     expect(imageCounts).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9].map(n => n * batchSize));
@@ -116,9 +116,14 @@ test.each([1, 26])("OMP persists batches of %i images and reuses the Codex prefi
     expect(events.filter(e => e.type === "perception_observe_end")).toHaveLength(9);
     const contexts = events.filter(e => e.type === "observation_context");
     expect(contexts).toHaveLength(9);
-    // All four explicit reads remain the batch source, including when bash finishes last.
-    expect(contexts.filter(e => e.data.reusedObservations.length)).toHaveLength(4);
-    expect(contexts.filter(e => e.data.reusedObservations.length).every(e => e.data.freshObservations.length === 0)).toBe(true);
+    // Every capture has one query and one delivery receipt. All four explicit
+    // reads stay in their own tool results, including when bash finishes last.
+    expect(contexts.map(e => e.data.queries)).toEqual(events.filter(e => e.type === "perception_observe_end")
+      .map(e => [e.data.queryId]));
+    expect(contexts.every(e => e.data.observations.length === batchSize)).toBe(true);
+    expect(new Set(contexts.map(e => e.data.id)).size).toBe(9);
+    expect(contexts.every(e => e.data.snapshot === undefined && e.data.records === undefined
+      && e.data.reusedObservations === undefined && e.data.executions === undefined)).toBe(true);
     expect(events.filter(e => e.type === "observation_media")).toHaveLength(9 * batchSize);
     expect(deltas).toHaveLength(8);
     expect(deltas.every((delta) => delta !== null)).toBe(true);
