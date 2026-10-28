@@ -1956,4 +1956,7 @@ pre {
 .docs-body .doc-repo { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
 /* Capabilities: overview cards + tables. */
 .caps-layout { display: flex; flex-direction: column; gap: 16px; }
+.caps-discover-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+.caps-discover-row input { flex: 1; min-width: 240px; }
+.caps-discover-result { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
 @media (max-width: 900px) { .docs-layout { grid-template-columns: minmax(0, 1fr); } }

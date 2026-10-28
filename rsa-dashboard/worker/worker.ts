@@ -5,6 +5,7 @@ import { getActivity } from "../lib/activity";
 import { getReplay } from "../lib/replay";
 import { benchmarkAttachment, benchmarkCatalog, benchmarkEvidence } from "../lib/benchmark-data";
 import { capabilities } from "../lib/capabilities";
+import { discoverDriver } from "../lib/drivers";
 import { docGroups, readDoc } from "../lib/docs";
 import { aliceState, setAliceTarget, recordAliceConsumer } from "../lib/alice-state";
 import { closeLogIndexes, indexCacheStats } from "../lib/log-index";
@@ -25,6 +26,7 @@ const handlers: { [K in DashboardMethod]: (args: DashboardMethods[K]["args"], si
   benchmarkEvidence: ([project, run, query], signal) => benchmarkEvidence(project, run, query, undefined, signal),
   benchmarkAttachment: ([project, run, index, verification], signal) => benchmarkAttachment(project, run, index, verification, undefined, signal),
   capabilities: ([project], signal) => capabilities(project, undefined, signal),
+  discoverDriver: ([spec], signal) => discoverDriver(spec, signal),
   docGroups: () => docGroups(),
   readDoc: ([id]) => readDoc(id),
   stop: ([project, run, epoch]) => stopRun(project, run, epoch),
