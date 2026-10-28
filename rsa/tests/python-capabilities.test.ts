@@ -88,6 +88,26 @@ def empty():
   } finally { await rm(directory, {recursive: true, force: true}); }
 });
 
+test("static discovery does not import workspace shadows from cwd or inherited PYTHONPATH", async () => {
+  const directory = await workspace(), priorPath = process.env.PYTHONPATH;
+  try {
+    const marker = join(directory, "imported");
+    const shadow = `open(${JSON.stringify(marker)}, "w").close()\nraise RuntimeError("workspace shadow imported")\n`;
+    await writeFile(join(directory, "json.py"), shadow);
+    await mkdir(join(directory, "rsa_tools"));
+    await writeFile(join(directory, "rsa_tools/__init__.py"), shadow);
+    await writeFile(join(directory, "actions.py"), 'from rsa_tools import capability\n@capability\ndef inspect():\n    """Read a value."""\n    return 1\n');
+    process.env.PYTHONPATH = directory;
+    const found = await new PythonCapabilities(directory).discover();
+    expect(found.capabilities.map(item => item.origin.function)).toEqual(["inspect"]);
+    expect(found.diagnostics).toEqual([]);
+    expect(await Bun.file(marker).exists()).toBe(false);
+  } finally {
+    if (priorPath === undefined) delete process.env.PYTHONPATH; else process.env.PYTHONPATH = priorPath;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("capability decorator arguments are rejected without executing them", async () => {
   const directory = await workspace();
   try {

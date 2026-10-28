@@ -2,7 +2,9 @@ import type { getActivity, ActivityQuery } from "./activity";
 import type { aliceState, recordAliceConsumer, setAliceTarget } from "./alice-state";
 import type { benchmarkAttachment, benchmarkCatalog, benchmarkEvidence } from "./benchmark-data";
 import type { BenchmarkQuery, BenchmarkDetailQuery } from "./benchmarks";
+import type { capabilities } from "./capabilities";
 import type { archiveBuild, catalog, getRun, mediaFile, stopRun, timelineRecord } from "./data";
+import type { docGroups, readDoc } from "./docs";
 import type { getReplay, ReplayQuery } from "./replay";
 import type { RunPage } from "./run-index";
 import type { diagnosticEvents, DiagnosticQuery } from "./diagnostic-events";
@@ -13,7 +15,7 @@ export interface DashboardMethods {
   archiveBuild: { args: [project: string, run: string, action?: "cancel" | "retry", buildId?: string]; result: Awaited<ReturnType<typeof archiveBuild>> };
   diagnosticEvents: { args: [project: string, run: string, query?: DiagnosticQuery]; result: Awaited<ReturnType<typeof diagnosticEvents>> };
   diagnostics: { args: []; result: { memory: NodeJS.MemoryUsage; index: ReturnType<typeof indexCacheStats>; activeRequests: number } };
-  catalog: { args: []; result: Awaited<ReturnType<typeof catalog>> };
+  catalog: { args: [includeEmpty?: boolean]; result: Awaited<ReturnType<typeof catalog>> };
   run: { args: [project: string, run: string, epoch?: string, page?: RunPage]; result: Awaited<ReturnType<typeof getRun>> };
   activity: { args: [project: string, run?: string, epoch?: string, query?: ActivityQuery]; result: Awaited<ReturnType<typeof getActivity>> };
   replay: { args: [project: string, run: string, query: ReplayQuery]; result: Awaited<ReturnType<typeof getReplay>> };
@@ -22,6 +24,9 @@ export interface DashboardMethods {
   benchmarkCatalog: { args: [query?: BenchmarkQuery]; result: Awaited<ReturnType<typeof benchmarkCatalog>> };
   benchmarkEvidence: { args: [project: string, run: string, query?: BenchmarkDetailQuery]; result: Awaited<ReturnType<typeof benchmarkEvidence>> };
   benchmarkAttachment: { args: [project: string, run: string, index: number, verification?: string]; result: Awaited<ReturnType<typeof benchmarkAttachment>> };
+  capabilities: { args: [project?: string]; result: Awaited<ReturnType<typeof capabilities>> };
+  docGroups: { args: []; result: Awaited<ReturnType<typeof docGroups>> };
+  readDoc: { args: [id: string]; result: Awaited<ReturnType<typeof readDoc>> };
   stop: { args: [project: string, run: string, epoch: string | null]; result: Awaited<ReturnType<typeof stopRun>> };
   aliceState: { args: []; result: ReturnType<typeof aliceState> };
   aliceTarget: { args: [project: unknown, ifUnset: boolean]; result: Awaited<ReturnType<typeof setAliceTarget>> };
