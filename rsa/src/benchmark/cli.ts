@@ -26,8 +26,11 @@ rsa bench validate task <task-directory>
 rsa bench validate reward <reward-json-file|verifier-directory>
 rsa bench validate dataset <dataset.toml>
 Tasks follow Harbor 1.4; native program bindings are separate JSON argv configurations.
+list/help show bindings discovered in the Task source's benchmarks/runs directory by their task field.
+A unique binding is the default; otherwise select --config <path> (relative to --workspace).
+Bindings use {workspace} for the author workspace and {workdir} for the execution directory.
 Shiori owns execution, cancellation and cleanup. Programs write artifacts; tests/test.sh writes reward.json.
-verify reads sealed evidence and runs only the verifier, never the original program or an agent.
+verify reads recorded evidence and runs only the verifier, never the original program or an agent.
 Exit codes: 0 completed with a valid reward (including 0); 1 execution failure; 2 missing/failed verification.
 Offline reads never start Shiori or import an evaluator. There is no universal pass/fail verdict.
 schema returns a contract guide, not the complete official JSON Schema. validate performs static native-profile checks.

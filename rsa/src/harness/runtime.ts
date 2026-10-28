@@ -24,6 +24,12 @@ export interface DeviceSession {
   execute(id: string, args: ToolArguments, epoch: string | undefined, signal: AbortSignal, trace: EventTrace, origin?: ObservationOrigin): Promise<ExecutionResult>;
 }
 
+/** An enclosing Shiori owns this deadline and signals its measurement boundary. */
+export interface SharedBudget {
+  deadlineMs: number;
+  signal: AbortSignal;
+}
+
 export class Runtime {
   private epoch = "";
   private mode: "manual" | "acquiring" | "auto" | "releasing" = "manual";
@@ -35,6 +41,7 @@ export class Runtime {
   private consolidating = false;
   private timer?: ReturnType<typeof setTimeout>;
   private takeoverDeadlineMs = 0;
+  private readonly budgetEnded = () => { void this.stop("time budget").catch(error => this.record("error", String(error))); };
   private reason = "startup";
   private connected = true;
   private perceptionInjection = true;
@@ -45,8 +52,9 @@ export class Runtime {
   perception?: PerceptionRuntime;
   action?: ActionRuntime;
 
-  constructor(private devices: DeviceSession | undefined, readonly record: RecordEvent, private maxSeconds = 300, private runId: string = crypto.randomUUID(), readonly diagnostics: DiagnosticsMode = "normal") {
+  constructor(private devices: DeviceSession | undefined, readonly record: RecordEvent, private maxSeconds = 300, private runId: string = crypto.randomUUID(), readonly diagnostics: DiagnosticsMode = "normal", private budget?: SharedBudget) {
     if (!Number.isFinite(maxSeconds) || maxSeconds <= 0 || maxSeconds * 1000 > 2_147_483_647) throw new Error("Invalid Shiori time budget");
+    if (budget && !Number.isFinite(budget.deadlineMs)) throw new Error("Invalid shared Shiori deadline");
   }
 
   status() {
@@ -92,21 +100,27 @@ export class Runtime {
   async start(message?: string, program?: (context: { epoch: string; signal: AbortSignal }) => Promise<void>) {
     if (this.mode !== "manual" || this.running || this.calls.size) throw new Error("Previous control cycle has not finished");
     if (!this.connected) throw new Error("Baseware disconnected; restart the application");
+    this.budget?.signal.throwIfAborted();
     const epoch = this.epoch = crypto.randomUUID();
     const control = this.control = new AbortController();
     this.ownsDevice = !program;
     if (this.ownsDevice && !this.devices) throw new Error("Agent control requires a device session");
     this.mode = "acquiring";
     this.opening = this.ownsDevice ? this.devices!.acquire(epoch) : Promise.resolve();
+    if (this.budget) {
+      this.budget.signal.addEventListener("abort", this.budgetEnded, { once: true });
+      if (this.budget.signal.aborted) this.budgetEnded();
+    }
     try { await this.opening; }
     catch (error) { await this.stop(String(error)); throw error; }
     if (control.signal.aborted) return this.status();
-    this.takeoverDeadlineMs = performance.now() + this.maxSeconds * 1000;
+    this.takeoverDeadlineMs = performance.now() + (this.budget ? this.budget.deadlineMs - Date.now() : this.maxSeconds * 1000);
     this.mode = "auto";
     this.reason = "enabled";
     this.record("control", this.status(), { epoch });
     if (message) this.record("user_message", { text: message }, { epoch });
-    this.timer = setTimeout(() => void this.stop("time budget").catch((e) => this.record("error", String(e))), this.maxSeconds * 1000);
+    if (!this.budget) this.timer = setTimeout(this.budgetEnded, this.maxSeconds * 1000);
+    if (control.signal.aborted) return this.status();
     try { if (this.ownsDevice) await this.action?.activate(epoch); }
     catch (error) { await this.stop(String(error)); throw error; }
     if (control.signal.aborted) return this.status();
@@ -131,7 +145,8 @@ export class Runtime {
     signal?.addEventListener("abort", cancel, { once: true });
     try {
       await this.start(undefined, async ({ signal: controlSignal }) => {
-        try { await executeProgram(program, controlSignal, this.record); }
+        const deadlineMs = Date.now() + this.takeoverDeadlineMs - performance.now();
+        try { await executeProgram(program, controlSignal, this.record, deadlineMs, signal); }
         catch (error) { failure = error; throw error; }
       });
       if (signal?.aborted) cancel();
@@ -178,7 +193,7 @@ export class Runtime {
     if (this.mode === "manual") {
       if (this.consolidating && !this.control?.signal.aborted) {
         this.reason = reason;
-        this.control?.abort();
+        this.control?.abort(new DOMException(reason, "AbortError"));
         clearTimeout(this.timer);
         this.abortAgent();
       }
@@ -186,8 +201,9 @@ export class Runtime {
     }
     this.mode = "releasing";
     this.reason = reason;
-    this.control?.abort();
+    this.control?.abort(reason === "time budget" ? new DOMException(reason, "AbortError") : undefined);
     clearTimeout(this.timer);
+    this.budget?.signal.removeEventListener("abort", this.budgetEnded);
     // Revoking the device never waits for model cancellation.
     this.abortAgent();
     const actionStopped = this.action?.deactivate();

@@ -1,53 +1,26 @@
 /** Shiori's benchmark entry: Task contracts supply inputs, the existing Runtime owns every execution. */
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { randomUUID, createHash } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, stat, writeFile, copyFile } from "node:fs/promises";
 import { basename, join, resolve, relative } from "node:path";
 import { pythonEnvironment, pythonExecutable } from "../../../shared/python.ts";
+import type { TimelineAssetReference } from "../../../shared/timeline-types.ts";
 import workspaceGuide from "../../templates/AGENTS.md" with { type: "text" };
 import { Runtime as Shiori } from "./runtime.ts";
 import { runProvenance } from "./provenance.ts";
 import { EventLog, EVENT_SCHEMA_VERSION } from "./events.ts";
 import { resolveTask } from "../benchmark/catalog.ts";
-import { hashFile, pinTask, readTask } from "../benchmark/task.ts";
+import { readRunConfiguration, type RunConfiguration } from "../benchmark/bindings.ts";
+import { readDataset, prepareMetricInput, meanRewards } from "../benchmark/dataset.ts";
+import { pinTask, readTask } from "../benchmark/task.ts";
 import { benchmarkEventSummary, isObject, validateRewards, type Trial, type EvidenceReference, type TaskDefinition, type Verification } from "../benchmark/contract.ts";
-import { atomicJson, createTrial, finishTrial, createVerification, finishVerification, get, readTrial, indexWorkspace, inspectEvidence } from "../benchmark/store.ts";
+import { atomicJson, createTrial, finishTrial, createVerification, finishVerification, get, readTrial, indexWorkspace } from "../benchmark/store.ts";
 
 const rsa = resolve(import.meta.dir, "../..");
-const exec = promisify(execFile);
-async function sourceTreeHash() {
-  const root = resolve(rsa, "..");
-  const { stdout } = await exec("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--",
-    "rsa/src", "rsa/python/rsa_tools", "rsa/scripts", "rsa/templates", "rsa/prompts", "baseware/src", "baseware/python", "shared",
-    "rsa-dashboard/lib", "rsa-dashboard/worker", "rsa-dashboard/scripts", "rsa/package.json", "rsa/bun.lock", "rsa/python/uv.lock"], { cwd: root });
-  const hash = createHash("sha256");
-  for (const file of [...new Set(stdout.split("\0").filter(Boolean))].sort()) {
-    const path = join(root, file);
-    if ((await stat(path).catch(() => undefined))?.isFile()) hash.update(`${file}\0${await hashFile(path)}\n`);
-  }
-  return hash.digest("hex");
-}
 const identity = (task: TaskDefinition) => ({ name: task.name, digest: task.digest, ...(task.version ? { version: task.version } : {}) });
 const errorInfo = (code: string, error: unknown) => ({ code, message: error instanceof Error ? error.message : String(error) });
-export interface RunConfiguration {
-  task: string; argv: string[]; cwd?: string; workspace?: "current" | "isolated";
-  seconds?: number; parameters?: Record<string, unknown>; onlineModel?: boolean;
-}
 export interface RunOptions {
   workspace: string; artifactRoot: string; config?: RunConfiguration; configPath?: string;
   seconds?: number; parameters?: Record<string, unknown>; digest?: string; signal?: AbortSignal; verify?: boolean;
-}
-export async function readRunConfiguration(name: string, file?: string): Promise<RunConfiguration> {
-  const path = file ? resolve(file) : join(rsa, "benchmarks", "runs", `${name.replace(/^ludens\//, "")}.json`);
-  if (!file && (!name.startsWith("ludens/") || name.slice(7).includes("/"))) throw new Error("Custom tasks require --config with a program binding");
-  const value = JSON.parse(await readFile(path, "utf8"));
-  if (!isObject(value) || value.task !== name || !Array.isArray(value.argv) || !value.argv.length || value.argv.some(v => typeof v !== "string" || !v)
-      || value.workspace !== undefined && !["current", "isolated"].includes(value.workspace as string)
-      || value.parameters !== undefined && !isObject(value.parameters)
-      || value.onlineModel !== undefined && typeof value.onlineModel !== "boolean"
-      || Object.keys(value).some(key => !["task", "argv", "cwd", "workspace", "seconds", "parameters", "onlineModel"].includes(key))) throw new Error("Invalid native Shiori run configuration");
-  return value as unknown as RunConfiguration;
 }
 function budget(value: unknown, fallback: number): number {
   const result = value === undefined ? fallback : Number(value);
@@ -83,36 +56,47 @@ async function smallJson(path: string) {
   if ((await stat(path)).size > 8 * 1024 * 1024) throw new Error(`Metadata too large: ${path}`);
   return JSON.parse(await readFile(path, "utf8"));
 }
-async function sealFacts(runDir: string, workspace: string, executionWorkspace: string, signal?: AbortSignal) {
+async function outputEvidence(runDir: string, directory = ""): Promise<EvidenceReference[]> {
   const evidence: EvidenceReference[] = [];
+  for (const name of ["details.json", "stdout.log", "stderr.log"]) {
+    const path = directory ? `${directory}/${name}` : name;
+    const info = await stat(join(runDir, path)).catch(error => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    });
+    if (info?.isFile()) evidence.push({ kind: "file", path });
+  }
+  return evidence;
+}
+interface ProgramFacts { evidence: EvidenceReference[]; context: Record<string, unknown> }
+async function collectFacts(runDir: string, workspace: string, executionWorkspace: string) {
+  const evidence: EvidenceReference[] = [];
+  const context = await smallJson(join(runDir, "artifacts/context.json")).catch(error => {
+    if (error.code === "ENOENT") return {};
+    throw error;
+  });
+  if (!isObject(context)) throw new Error("Program context must be an object of facts");
+  const labels = new Map<string, string>();
+  for (const artifact of Array.isArray(context.artifacts) ? context.artifacts : []) {
+    if (!isObject(artifact)) continue;
+    const label = typeof artifact.label === "string" ? artifact.label : undefined;
+    if (isObject(artifact.timeline) && typeof artifact.timeline.asset === "string") {
+      evidence.push({ kind: "timeline", timeline: artifact.timeline as unknown as TimelineAssetReference,
+        workspaceRelative: relative(workspace, executionWorkspace) || ".", label });
+    } else if (typeof artifact.path === "string" && label !== undefined) labels.set(artifact.path, label);
+  }
   async function walk(directory: string) {
     for (const entry of await readdir(join(runDir, directory), { withFileTypes: true })) {
-      signal?.throwIfAborted();
-      if (entry.isSymbolicLink()) throw new Error("Trial artifacts must not contain symlinks");
-      const relative = `${directory}/${entry.name}`, path = join(runDir, relative);
-      if (entry.isDirectory()) await walk(relative);
-      else if (entry.isFile()) evidence.push({ kind: "file", path: relative, sizeBytes: (await stat(path)).size, sha256: await hashFile(path) });
+      const path = `${directory}/${entry.name}`;
+      if (entry.isDirectory()) await walk(path);
+      else if (entry.isFile() || entry.isSymbolicLink()) evidence.push({ kind: "file", path, label: labels.get(path) });
     }
   }
   await walk("artifacts");
-  const context = await smallJson(join(runDir, "artifacts/context.json")).catch(error => { if (error.code === "ENOENT") return { trialId: basename(runDir) }; throw error; });
-  if (!isObject(context)) throw new Error("Program context must be an object of facts");
-  if (context.trialId !== basename(runDir) || context.workspace !== undefined && context.workspace !== executionWorkspace) throw new Error("Program fact identity does not match this Shiori trial/workspace");
-  for (const artifact of Array.isArray(context.artifacts) ? context.artifacts : []) {
-    if (isObject(artifact) && isObject(artifact.timeline)) evidence.push({ kind: "timeline", timeline: artifact.timeline as any, workspaceRelative: relative(workspace, executionWorkspace) || ".",
-      ...(typeof artifact.sha256 === "string" ? { sha256: artifact.sha256 } : {}), label: typeof artifact.label === "string" ? artifact.label : undefined });
-  }
-  // The existing archive is authoritative. Freeze a prefix, never duplicate the run log.
-  const events = join(runDir, "events.jsonl");
-  const bytes = (await stat(events)).size;
-  evidence.push({ kind: "event", runId: basename(runDir), path: "events.jsonl", byteLength: bytes, sha256: await hashFile(events, bytes) });
-  for (const reference of evidence) {
-    signal?.throwIfAborted();
-    const inspected = await inspectEvidence(workspace, basename(runDir), reference, { signal });
-    if (!inspected.available) throw new Error(inspected.error?.message ?? "Unavailable program evidence");
-    if (reference.kind === "timeline" && inspected.path) reference.sha256 = await hashFile(inspected.path);
-  }
-  signal?.throwIfAborted();
+  evidence.push(...await outputEvidence(runDir));
+  // Retain the recorded log prefix without reading or hashing the log again.
+  evidence.push({ kind: "event", runId: basename(runDir), path: "events.jsonl",
+    byteLength: (await stat(join(runDir, "events.jsonl"))).size });
   return { evidence, context };
 }
 function signals(signal?: AbortSignal) {
@@ -127,7 +111,7 @@ export async function runTask(name: string, options: RunOptions) {
   const task = await resolveTask(options.workspace, name, options.digest);
   checkNative(task);
   const environment = declaredEnv(task, "environment");
-  const configuration = options.config ?? await readRunConfiguration(name, options.configPath);
+  const configuration = options.config ?? await readRunConfiguration(task, options.workspace, options.configPath);
   if (configuration.task !== name) throw new Error("Run configuration names another Task");
   const parameters = { ...configuration.parameters, ...options.parameters };
   const seconds = budget(options.seconds ?? configuration.seconds ?? task.config.agent?.timeout_sec, 180);
@@ -141,20 +125,17 @@ export async function runTask(name: string, options: RunOptions) {
     await Promise.all([mkdir(join(executionWorkspace, "skills"), { recursive: true }), mkdir(join(executionWorkspace, "memory"), { recursive: true })]);
     await writeFile(join(executionWorkspace, "AGENTS.md"), workspaceGuide);
   }
-  const variables = { rsa, bun: process.execPath, python: pythonExecutable(), workspace: executionWorkspace,
+  const variables = { rsa, bun: process.execPath, python: pythonExecutable(), workspace: state.workspace, workdir: executionWorkspace,
     artifacts, task: pinned.path, ...Object.fromEntries(Object.entries(parameters).map(([key, value]) => [`param.${key}`, value])) };
   const argv = configuration.argv.map(value => render(value, variables));
-  const cwd = configuration.cwd ? resolve(render(configuration.cwd, variables)) : executionWorkspace;
-  const configurationHash = createHash("sha256").update(JSON.stringify({ configuration, parameters })).digest("hex");
+  const cwd = configuration.cwd ? resolve(state.workspace, render(configuration.cwd, variables)) : executionWorkspace;
   const trial: Trial = { schemaVersion: 1, id: runId, runId, task: identity(task), workspace: state.workspace, project: state.id,
     status: "running", startedAt: new Date().toISOString(), parameters,
-    conditions: { profile: "native", os: process.platform, arch: process.arch, configurationHash, seconds,
+    conditions: { profile: "native", os: process.platform, arch: process.arch, seconds,
       onlineModel: configuration.onlineModel === true }, subjects: [], evidence: [] };
-  const executorFiles = [...new Set(argv.filter(value => !value.startsWith("-")).map(value => resolve(cwd, value)))];
-  for (const path of executorFiles) if ((await stat(path).catch(() => undefined))?.isFile()) trial.subjects.push({ id: "executor", path, sha256: await hashFile(path) });
   if (configuration.onlineModel && typeof parameters.model === "string") trial.subjects.push({ id: "agent/model", revision: parameters.model });
-  const provenance = { ...await runProvenance(executionWorkspace), sourceTreeSHA256: await sourceTreeHash() };
-  trial.subjects.push({ id: "ludens/source", sha256: provenance.sourceTreeSHA256 });
+  const provenance = await runProvenance(executionWorkspace);
+  if (provenance.code) trial.subjects.push({ id: "ludens/source", revision: provenance.code.commit + (provenance.code.dirty ? "+dirty" : "") });
   const log = new EventLog(runDir, { id: runId, now: () => performance.now() }, state.workspace);
   await atomicJson(join(runDir, "manifest.json"), { kind: "benchmark", runId, workspace: state.workspace, workspaceId: state.id,
     stateDir: state.dir, benchmark: identity(task), drivers: [], seconds, model: configuration.onlineModel ? parameters.model ?? null : null,
@@ -169,7 +150,7 @@ export async function runTask(name: string, options: RunOptions) {
   const runtime = new Shiori(undefined, log.record, seconds, runId), cancellation = signals(options.signal);
   const started = performance.now();
   try {
-    let failure: Trial["error"], status: Trial["status"] = "completed", facts: Awaited<ReturnType<typeof sealFacts>> | undefined;
+    let failure: Trial["error"], status: Trial["status"] = "completed", facts: ProgramFacts | undefined;
     try {
       await runtime.runProgram({ argv, cwd, env, stdout: join(runDir, "stdout.log"), stderr: join(runDir, "stderr.log"),
         events: argv[1] === join(rsa, "src/harness/module-program.ts") }, cancellation.signal);
@@ -177,7 +158,7 @@ export async function runTask(name: string, options: RunOptions) {
     finally {
       await runtime.close();
     }
-    try { facts = await sealFacts(runDir, state.workspace, executionWorkspace, cancellation.signal); }
+    try { facts = await collectFacts(runDir, state.workspace, executionWorkspace); }
     catch (error) { status = cancellation.signal.aborted ? "cancelled" : "error"; failure ??= errorInfo("EVIDENCE_ERROR", error); }
     if (cancellation.signal.aborted) { status = "cancelled"; failure ??= errorInfo("CANCELLED", cancellation.signal.reason); }
     const terminal = await finishTrial(state.workspace, runId, { status, endedAt: new Date().toISOString(), durationMs: performance.now() - started,
@@ -202,18 +183,13 @@ export async function verifyTask(workspace: string, runId: string, options: { ta
   const verifierEnv = declaredEnv(task, "verifier");
   const id = `${new Date().toISOString().replaceAll(":", "-")}-${randomUUID().slice(0, 8)}`;
   const verification: Verification = { schemaVersion: 1, id, trialId: runId, task: identity(task), status: "running",
-    startedAt: new Date().toISOString(), reason: options.reason ?? "verify", evidence: trial.evidence };
+    startedAt: new Date().toISOString(), reason: options.reason ?? "verify", evidence: [] };
   const { directory } = await createVerification(trial.workspace, runId, verification);
   // Regrading owns a new event clock and file; it never appends with a reset sequence to the execution log.
   const log = options.log ?? new EventLog(directory, { id, now: () => performance.now() }, trial.workspace);
   const runtime = new Shiori(undefined, log.record, seconds, id);
   const cancellation = signals(options.signal);
-  let failure: Verification["error"];
   try {
-    for (const reference of trial.evidence) {
-      const inspected = await inspectEvidence(trial.workspace, runId, reference, { signal: cancellation.signal });
-      if (!inspected.available) throw new Error(inspected.error?.message ?? "Recorded evidence is unavailable");
-    }
     const input = join(directory, "input.json");
     await atomicJson(input, { trial, verificationId: id, artifacts: join(runDir, "artifacts") });
     await runtime.runProgram({ argv: ["/bin/sh", join(pinned.path, "tests/test.sh")], cwd: pinned.path,
@@ -221,23 +197,18 @@ export async function verifyTask(workspace: string, runId: string, options: { ta
         RSA_BENCH_WORKSPACE: trial.workspace, RSA_BENCH_TRIAL_ID: runId, RSA_BENCH_RUN_DIR: runDir,
         RSA_BENCH_ARTIFACTS: join(runDir, "artifacts"), RSA_BENCH_TASK_DIR: pinned.path, RSA_BENCH_INPUT: input,
         RSA_BENCH_VERIFIER_DIR: directory }, stdout: join(directory, "stdout.log"), stderr: join(directory, "stderr.log") }, cancellation.signal);
-    // Detect a verifier changing the sealed facts, as well as missing/invalid reward output.
-    for (const reference of trial.evidence) {
-      const inspected = await inspectEvidence(trial.workspace, runId, reference, { signal: cancellation.signal });
-      if (!inspected.available) throw new Error("Verifier changed or lost sealed evidence");
-    }
-    const done = await finishVerification(trial.workspace, runId, id, { status: "completed", endedAt: new Date().toISOString() });
+    const done = await finishVerification(trial.workspace, runId, id, { status: "completed", endedAt: new Date().toISOString(),
+      evidence: await outputEvidence(runDir, `verifier/${id}`) });
     if (done.changed) log.record("benchmark_verification", benchmarkEventSummary(trial, done.verification));
   } catch (error) {
-    failure = errorInfo("VERIFICATION_ERROR", error);
-    const done = await finishVerification(trial.workspace, runId, id, { status: "error", endedAt: new Date().toISOString(), error: failure });
+    const done = await finishVerification(trial.workspace, runId, id, { status: "error", endedAt: new Date().toISOString(),
+      error: errorInfo("VERIFICATION_ERROR", error), evidence: await outputEvidence(runDir, `verifier/${id}`) });
     if (done.changed) log.record("benchmark_verification", benchmarkEventSummary(trial, done.verification));
   } finally { try { await runtime.close(); } finally { cancellation.dispose(); } }
   return get(trial.workspace, runId, id);
 }
 
 export async function aggregateTasks(workspace: string, datasetPath: string, references: string[], options: { policy?: "all" | "graded"; signal?: AbortSignal } = {}) {
-  const { readDataset, prepareMetricInput, meanRewards } = await import("../benchmark/dataset.ts");
   const dataset = await readDataset(datasetPath);
   const results = await Promise.all(references.map(reference => {
     const parts = reference.split("@");
@@ -245,14 +216,6 @@ export async function aggregateTasks(workspace: string, datasetPath: string, ref
     return get(workspace, parts[0]!, parts[1]);
   }));
   const prepared = prepareMetricInput(dataset, results, options.policy);
-  if (!dataset.metric) {
-    const rules = new Map<string, string>();
-    for (const result of results) if (result.verification?.status === "completed") {
-      const key = `${result.trial.task.name}@${result.trial.task.digest}`, verifier = result.verification.task.digest;
-      if (rules.has(key) && rules.get(key) !== verifier) throw new Error("Default mean cannot mix verifier Task digests; regrade consistently or supply an explicit metric");
-      rules.set(key, verifier);
-    }
-  }
   const id = `${new Date().toISOString().replaceAll(":", "-")}-${randomUUID().slice(0, 8)}`;
   const directory = join(workspace, ".rsa/benchmarks/aggregates", id);
   await mkdir(directory, { recursive: true });
@@ -263,14 +226,11 @@ export async function aggregateTasks(workspace: string, datasetPath: string, ref
   await atomicJson(join(directory, "selection.json"), metadata);
   if (dataset.metric) {
     const bytes = await readFile(dataset.metric.path);
-    if (`sha256:${createHash("sha256").update(bytes).digest("hex")}` !== dataset.metric.digest) throw new Error("Dataset metric changed before execution");
     const reserved = new Set(["rewards.jsonl", "metrics.json", "selection.json", "stdout.log", "stderr.log", "events.jsonl"]);
     for (const file of dataset.files) {
       if (reserved.has(file.path)) throw new Error(`Dataset file conflicts with aggregate output: ${file.path}`);
       const source = join(resolve(dataset.path, ".."), file.path);
-      if (`sha256:${await hashFile(source)}` !== file.digest) throw new Error(`Dataset file changed: ${file.path}`);
       await copyFile(source, join(directory, file.path));
-      if (`sha256:${await hashFile(join(directory, file.path))}` !== file.digest) throw new Error(`Dataset file changed during copy: ${file.path}`);
     }
     const metric = join(directory, "metric.py"); await writeFile(metric, bytes);
     const log = new EventLog(directory, { id, now: () => performance.now() }, workspace);

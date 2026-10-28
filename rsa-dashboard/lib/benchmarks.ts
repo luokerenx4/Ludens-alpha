@@ -1,5 +1,6 @@
 import type { Event } from "./types";
 import type { BenchmarkResult, EvidenceReference, TaskDefinition, TrialSummary, TrialPage, VerificationPage, VerificationStatus, TrialStatus } from "../../rsa/src/benchmark/contract";
+import type { TaskWithBindings } from "../../rsa/src/benchmark/bindings";
 export { compareResults, comparisonChanges } from "../../rsa/src/benchmark/contract";
 export type { BenchmarkResult, EvidenceReference, TaskDefinition, TrialSummary, Trial, Verification, VerificationSummary } from "../../rsa/src/benchmark/contract";
 
@@ -8,7 +9,7 @@ export interface BenchmarkDetailQuery { verification?: string; verificationCurso
 export interface BenchmarkCatalog {
   projects: { id: string; workspace: string }[];
   project: string | null;
-  tasks: TaskDefinition[];
+  tasks: TaskWithBindings[];
   history: TrialPage;
   issues: { project: string; error: string }[];
 }
@@ -48,8 +49,10 @@ export function benchmarkRunUrl(trial: Pick<TrialSummary, "project" | "runId">, 
   return "/?" + params;
 }
 const shellQuote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
-export function benchmarkCommand(task: TaskDefinition, workspace: string) {
-  return `rsa --workspace ${shellQuote(workspace)} bench run ${shellQuote(task.name)} --digest ${shellQuote(task.digest)}`;
+export function benchmarkCommand(task: TaskWithBindings, workspace: string, bindingPath?: string): string | null {
+  const binding = bindingPath ? task.bindings.find(item => item.path === bindingPath) : task.bindings.length === 1 ? task.bindings[0] : undefined;
+  if (!binding) return null;
+  return `rsa --workspace ${shellQuote(workspace)} bench run ${shellQuote(task.name)} --digest ${shellQuote(task.digest)} --config ${shellQuote(binding.path)}`;
 }
 export function benchmarkVerifyCommand(trial: Pick<TrialSummary, "workspace" | "runId">) {
   return `rsa --workspace ${shellQuote(trial.workspace)} bench verify ${shellQuote(trial.runId)}`;
