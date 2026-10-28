@@ -1,6 +1,6 @@
-# Alice Companion
+# Ludens Pet Companion
 
-从 OpenAlice 移植的原生桌宠与 Electron 壳，保留角色、气泡、音频和窗口交互；主窗口加载同一份 RSA Dashboard，气泡消费同一套活动日志。
+从 OpenAlice 移植的原生桌宠与 Electron 壳（角色：卢登斯），保留角色、气泡、音频和窗口交互；主窗口加载同一份 RSA Dashboard，气泡消费同一套活动日志。
 
 - [安装、启动与验证](../docs/development.md)
 - [日志消费与跟随工作区](../docs/logging.md)

@@ -30,7 +30,7 @@ const sourceNames: Record<string, string> = {
   shiori: "Shiori",
   rsa: "RSA",
   baseware: "Baseware",
-  pet: "Alice",
+  pet: "Ludens Pet",
   dashboard: "Dashboard",
 };
 const statusNames = { running: "进行中", complete: "已完成", error: "失败" };
