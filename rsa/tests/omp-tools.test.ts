@@ -43,7 +43,11 @@ test("request budgets reset on a new takeover while repeated prompts share the s
         await handlers.context({});
       }
       expect(runtime.status()).toMatchObject({mode: "auto", epoch});
-      await expect(handlers.context({})).rejects.toThrow();
+      // Post-stop attempts are gate-blocked and not recorded; no hook error.
+      await handlers.context({});
+      // Await the real settle chain (run promise includes the finally that
+      // clears `running`), so round 2's start() sees a finished cycle.
+      await runtime.runSettled;
       expect(runtime.status()).toMatchObject({mode: "manual", reason: "model request budget", thinking: false});
     }
     expect(epochs[0]).not.toBe(epochs[1]);
