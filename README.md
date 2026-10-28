@@ -24,10 +24,10 @@ These are mechanisms for experimenting with adaptation, not a claim that an agen
 
 | Driver | Environment | Setup |
 | --- | --- | --- |
-| mGBA | Game Boy Advance emulator | Open a ROM and load the bundled Lua bridge. See [mGBA setup](docs/development.md#mgba). |
-| Ryubing | Nintendo Switch emulator | Build and install the patched emulator. See the [Ryubing guide](docs/development.md#ryubing). |
-| Azahar | Nintendo 3DS emulator | Build and install the patched emulator. Native pad, touch, and separate top/bottom screen capture. See the [Azahar guide](docs/development.md#azahar). |
-| Cua | Local desktop applications | Install the upstream Cua Driver and grant its required OS permissions. See [Cua setup](docs/development.md#cua). |
+| mGBA | Game Boy Advance emulator | Open a ROM and load the bundled Lua bridge. See [mGBA setup](docs/tutorials/development.md#mgba). |
+| Ryubing | Nintendo Switch emulator | Build and install the patched emulator. See the [Ryubing guide](docs/tutorials/development.md#ryubing). |
+| Azahar | Nintendo 3DS emulator | Build and install the patched emulator. Native pad, touch, and separate top/bottom screen capture. See the [Azahar guide](docs/tutorials/development.md#azahar). |
+| Cua | Local desktop applications | Install the upstream Cua Driver and grant its required OS permissions. See [Cua setup](docs/tutorials/development.md#cua). |
 
 Drivers expose device capabilities, not game strategies. Screen processing, coordinate conversion, action sequences, and task-specific logic belong in the workspace.
 
@@ -40,7 +40,7 @@ Drivers expose device capabilities, not game strategies. Screen processing, coor
 - Local **OMP model credentials** configured before starting the agent. RSA reuses OMP authentication; the default model is `openai-codex/gpt-6.1-sol`.
 - One prepared environment from the table above. ROMs, firmware, keys, and saves are not included.
 
-For device preparation and model configuration, see the [development guide](docs/development.md).
+For device preparation and model configuration, see the [development guide](docs/tutorials/development.md).
 
 ### 2. Install the components
 
@@ -108,7 +108,7 @@ rsa down --keep-emulator  # Stop the host and Baseware; keep the game open
 rsa down                  # Also stop the workspace-managed emulator
 ```
 
-Save your game before closing its emulator. Shared Dashboard and Ludens Pet processes remain running by default; see the [lifecycle guide](docs/development.md#工作区启动与停止) for shutdown options and configuration changes.
+Save your game before closing its emulator. Shared Dashboard and Ludens Pet processes remain running by default; see the [lifecycle guide](docs/tutorials/development.md#工作区启动与停止) for shutdown options and configuration changes.
 
 ## How it works
 
@@ -139,7 +139,7 @@ my-task/
 └── logs/             # Run records, model inputs, and diagnostics
 ```
 
-The agent can compose Python functions, retain models in its separate perception and action processes, and manage background programs with OMP's native tools. Workspace files and sessions persist across runs; separate CLI invocations do not share memory. See the [workspace contract](docs/workspace.md) for unified `@capability` functions, optional `@record`, resident lifecycle, and storage locations.
+The agent can compose Python functions, retain models in its separate perception and action processes, and manage background programs with OMP's native tools. Workspace files and sessions persist across runs; separate CLI invocations do not share memory. See the [workspace contract](docs/tutorials/workspace.md) for unified `@capability` functions, optional `@record`, resident lifecycle, and storage locations.
 
 ### Benchmarks
 
@@ -153,11 +153,11 @@ rsa bench help ludens/capability-reuse
 
 The built-in cases cover perception lifecycle, control handoff, WebSocket recovery, background compaction, and capability reuse. Each run selects one case explicitly; read its help first. The capability-reuse case uses a real model in an isolated test environment.
 
-Harbor Task packages describe the evaluation; separate run configurations select the program. Programs write facts, and `tests/test.sh` writes numeric rewards. `rsa bench verify` regrades fixed evidence without rerunning the program. Inspect results in the console or use `rsa bench history` and `rsa bench compare`. Execution and verification status are separate; a completed call does not prove task success. See the [Benchmark guide](docs/benchmark.md).
+Harbor Task packages describe the evaluation; separate run configurations select the program. Programs write facts, and `tests/test.sh` writes numeric rewards. `rsa bench verify` regrades fixed evidence without rerunning the program. Inspect results in the console or use `rsa bench history` and `rsa bench compare`. Execution and verification status are separate; a completed call does not prove task success. See the [Benchmark guide](docs/reference/benchmark.md).
 
 ## Development
 
-Follow [AGENTS.md](AGENTS.md) for development conventions and the [development guide](docs/development.md) for component startup, checks, and the WS recovery test rationale. Each component retains its own lockfile. Default checks are offline; live model and device tests are explicit.
+Follow [AGENTS.md](AGENTS.md) for development conventions and the [development guide](docs/tutorials/development.md) for component startup and checks. Each component retains its own lockfile. Default checks are offline; live model and device tests are explicit.
 
 ## Boundaries and safety
 
@@ -169,16 +169,19 @@ Follow [AGENTS.md](AGENTS.md) for development conventions and the [development g
 
 ## Documentation
 
-Current documentation lives in the root `docs/` directory. Component READMEs only link here.
+Current documentation lives in the root `docs/` directory, split into `tutorials/` (how to run), `reference/` (components and contracts), and `insights/` (why things are the way they are). Component READMEs only link here.
 
 | Guide | Contents |
 | --- | --- |
-| [Baseware](docs/baseware.md) | CUA native capability contract, driver boundaries, control, media, and upstream snapshots. |
-| [Architecture](docs/architecture.md) | Component boundaries, Shiori, control flow, and extension points. |
-| [Development](docs/development.md) | Installation, device setup, service lifecycle, verification, and WS test provenance. |
-| [Workspace](docs/workspace.md) | Configuration, Python capabilities, perception, and agent-owned programs. |
-| [Logging](docs/logging.md) | Events, model inputs, trace attribution, performance metrics, and console consumers. |
-| [Benchmark](docs/benchmark.md) | Cases, execution records, reports, comparison, and workspace benchmarks. |
+| [Baseware](docs/reference/baseware.md) | CUA native capability contract, driver boundaries, control, media, and upstream snapshots. |
+| [Architecture](docs/reference/architecture.md) | Component boundaries, Shiori, control flow, and extension points. |
+| [Development](docs/tutorials/development.md) | Installation, device setup, service lifecycle, and verification. |
+| [Workspace](docs/tutorials/workspace.md) | Configuration, Python capabilities, perception, and agent-owned programs. |
+| [Logging](docs/reference/logging.md) | Events, model inputs, trace attribution, performance metrics, and console consumers. |
+| [Benchmark](docs/reference/benchmark.md) | Cases, execution records, reports, comparison, and workspace benchmarks. |
+| [Driver Bridge Protocol](docs/reference/driver-bridge-protocol.md) | Socket line protocol for simulator bridges. |
+| [OMP Compaction](docs/insights/omp-compaction.md) | Why and how OMP speculative compaction was patched. |
+| [WS Recovery](docs/insights/ws-recovery.md) | 2026-10-20 Codex WS recovery TDD rationale and behavior matrix. |
 
 The original [unified console](docs/history/unified-console/prd.html) and [benchmark](docs/history/benchmarks/prd.html) design records are archived under `docs/history/`; they describe past decisions, not the current API. Detailed guides are currently in Chinese. Runtime prompts, workspace templates, and license notices remain beside the files that consume them.
 
