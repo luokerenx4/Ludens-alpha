@@ -4,11 +4,13 @@
 
 ## 目标
 
-**整个 Ludens 只有一套 benchmark 作者约定和消费接口。**采用 Harbor 的任务包、verifier、reward、dataset 和 metric 文件约定；RSA 继续负责自己的执行。Python 能力评测、TS 工况、模型任务、设备评测和性能测量，都进入同一个目录、历史、评分、比较及看板。
+**整个 Ludens 只有一套 benchmark 作者约定和消费接口，Shiori 是唯一 runner。**采用 Harbor 的任务包、verifier、reward、dataset 和 metric 文件约定；日常任务与 benchmark 都进入 Shiori，复用 RSA 既有运行设施。Python 能力评测、TS 工况、模型任务、设备评测和性能测量，都进入同一个目录、历史、评分、比较及看板。
 
 统一的是“任务如何定义、证据如何交给评分、结果如何被消费”。执行可以是普通函数、命令或 OMP Agent，不要求每个 benchmark 都启动模型。也不把日常游玩日志、单元测试和 UI smoke 自动改称 benchmark。
 
-验收的北极星是：**新增一个任务包和必要的执行绑定，就能被现有所有消费者发现、运行、读取、重评和比较，不修改 Harness 的 case 注册表，不给 Dashboard、Python 或桌宠另写成绩解析分支。**
+不保留独立 benchmark runner，也不把 Python trial 模块做成另一个运行中心。任务、测量程序、verifier 和 metric 都是 Shiori 的输入或被调用程序；运行身份、预算、取消、终态和评分调度由 Shiori 统一管理，底层继续调用 Runtime、Baseware 和现有进程设施。
+
+验收的北极星是：**新增一个任务包和必要的执行绑定，就能通过 Shiori 运行，被现有所有消费者发现、读取、重评和比较，不修改 Harness 的 case 注册表，不给 Dashboard、Python 或桌宠另写成绩解析分支。日常 Agent 任务与 Agent benchmark 使用同一套装配和执行路径。**
 
 ## 现状和需要收掉的分叉
 
@@ -47,18 +49,26 @@ Harbor 的 reward 不局限于 0、1 或百分比。`{"accuracy": 0.92, "elapsed
 
 ```mermaid
 flowchart LR
-  T[Harbor task package] --> E[RSA 现有执行入口]
+  U[日常任务] --> S[Shiori 唯一 runner]
+  T[Harbor task package] --> S
+  S --> E[OMP Agent 或普通 Python TS 程序]
   E --> A[测量事实和 artifact 引用]
+  S -->|评测收尾或重评| V[tests verifier]
   A --> V[tests verifier]
   V --> R[reward.json]
   R --> Q[统一结果读取]
   A --> Q
   Q --> C[CLI Python Dashboard]
-  R --> M[dataset metric]
+  S -->|聚合| M[dataset metric]
+  R --> M
   C --> P[Electron 与桌宠活动]
 ```
 
 一次 trial 对应一次实际执行；一次 verification 对应一次依据既有产物的评分。两者有独立 ID 和终态。重评增加 verification，不增加 trial 数，不启动被测能力或 Agent。
+
+这是待实施的职责归并。当前架构把 Shiori 定义为由 OMP 实现的 Agent Loop，`omp/shiori.ts` 主要负责 telemetry，`omp/session.ts` 提供模型执行。重构把统一运行入口归到 Shiori，普通程序执行模式复用现有调用能力；不把整套运行逻辑塞进 telemetry 文件，也不声称这些接口已经完成。RSA Runtime 继续提供控制权、预算计时与释放等底层机制，不与 Shiori 平行调度任务。
+
+普通程序、verifier 和 metric 不因进入 Shiori 就加载模型或申请设备控制权。真实设备输入继续由 Baseware 的 epoch、generation 和人工接管规则裁决。统一入口必须复用现有运行装配，不能新造一个 benchmark coordinator 再把它命名成 Shiori。
 
 ### 任务包和运行配置
 
@@ -83,15 +93,15 @@ benchmarks/
 
 测试材料必须放在 Harbor 实际纳入 digest 的目录中；不能假定任意根目录文件都会被打包。包外 executor 及其依赖单独记录不可变 revision，与被测 subject 的版本分开。版本未知就标记比较条件不完整，不把包内 digest 当成整个本机环境的指纹。
 
-执行配置沿用 RSA 的模型、预算、workspace、trace 和控制信息，只补足任务引用与 executor 绑定：
+Shiori 的执行配置沿用 RSA 的模型、预算、workspace、trace 和控制信息，只补足任务引用与执行方式。这些方式共用 Shiori 生命周期，不是三个平行 runner：
 
 | 执行方式 | 适用场景 | 边界 |
 | --- | --- | --- |
-| Agent | 游戏、装配台等需要 AI 完成的任务 | 继续使用 OMP、既有预算和控制权；模型与提示配置记录为执行条件 |
-| Command | TS 工况、独立 Python 测量、driver 测试 | 使用明确 argv 和参数，调用现有进程执行与清理逻辑；不从文件名推断隐藏操作 |
-| Python 同进程 | 评测已加载模型、Tensor、实例方法 | 显式 trial 作用域内调用普通函数；不序列化内存对象，不另起进程冒充复用 |
+| Agent | 游戏、装配台等需要 AI 完成的任务 | Shiori 调用 OMP，使用与日常运行相同的 Harness 装配；模型与提示配置记录为执行条件 |
+| Command | TS 工况、独立 Python 测量、driver 测试 | Shiori 按明确 argv 和参数调用现有进程设施，不经过模型推理；不从文件名推断隐藏操作 |
+| Python 同进程 | 评测已加载模型、Tensor、实例方法 | 在 Shiori 管理的 Python 程序中加入已分配 trial，普通函数调用保留内存对象；Python 不自行创建运行或结算终态 |
 
-执行绑定可以通过 CLI/Python 参数传入，重复运行时保存为运行配置。它只引用任务和执行入口，不能再包含另一份任务名称、检查定义、评分 schema 或结果格式。内置的稳定命令绑定也作为普通运行配置，不恢复硬编码 case registry。参数留在执行记录，参数是否合法由任务的准备逻辑检查，不再为 benchmark 单独解析 Python 类型注解生成一套参数协议。
+执行绑定可以通过 CLI/Python 客户端提交给 Shiori，重复运行时保存为运行配置。它只引用任务和执行入口，不能再包含另一份任务名称、检查定义、评分 schema 或结果格式。内置的稳定命令绑定也作为普通运行配置，不恢复硬编码 case registry。参数留在执行记录，参数是否合法由任务的准备逻辑检查，不再为 benchmark 单独解析 Python 类型注解生成一套参数协议。
 
 `solution/solve.sh` 始终是参考解，不用它假扮 TS 固定工况的默认被测入口。
 
@@ -103,31 +113,32 @@ benchmarks/
 
 重评输入必须在执行结束时固定：文件使用不可变副本或 hash，持续日志固定读取截止，timeline 固定 record、片段和 PTS。只指向不断增长的目录或最新截图不足以支持同一次 trial 的重评。既有 canonical 原件可以继续被引用，无需复制整套日志。
 
-Python 的表达采用显式作用域，以下是拟议用法：
+Python 只加入 Shiori 已分配的 trial，以下是测量程序的拟议用法：
 
 ```python
-with bench.trial(task_path, parameters={"split": "validation"}) as trial:
-    samples = measure(already_loaded_model, dataset)
-    trial.artifact("samples.json", samples)
-# 作用域结束只完成执行记录；评分显式进行。
-bench.verify(trial.id)
+trial = bench.current_trial()  # Shiori 传入身份和输出位置
+samples = measure(already_loaded_model, dataset)
+trial.artifact("samples.json", samples)
+# 程序返回执行事实；Shiori 收尾后安排 verifier。
 ```
 
-模型加载、训练和能力调用仍是普通 Python。删除 `@benchmark` 后，普通 import 不再悄悄创建评测；需要纳入评测时使用显式作用域。`@capability`、同步/异步调用、类方法与实际加载 codeSHA 的记录继续保留。本进程 observer 只提供参与执行的版本证据，不负责判分，也不声称能证明另一个常驻进程的行为。
+模型加载、训练和能力调用仍是普通 Python。Shiori 可以复用已管理的 Python 进程完成测量，不为每次试验强制重载模型。删除 `@benchmark` 后，脱离 Shiori 的普通 import 仍可计算，但不自动产生正式 trial。AI 在当前会话发起能力评测时也交给同一个 Shiori，普通测量不嵌套启动另一个 OMP 会话。`@capability`、同步/异步调用、类方法与实际加载 codeSHA 的记录继续保留。本进程 observer 只提供参与执行的版本证据，不负责判分，也不声称能证明另一个常驻进程的行为。
 
-### 单一记录所有者
+同进程复用限于实际参与该 Shiori 运行的 Python 程序，例如加载一次模型后完成多次测量；不承诺任意外部 REPL 或后台进程无需接入就能被调度。`current_trial()` 缺少合法运行上下文时明确报错，不退回隐式建 run。程序退出只提供执行事实，最终状态仍由 Shiori 提交。
 
-在现有 `rsa_tools` 中收敛一个小型 trial 记录模块，负责创建记录、固定身份与条件、接收执行终态、登记附件、执行评分入口和验证 reward。Python 同进程作用域与 TS CLI 都调用这个实现，替换双方各写一套 trial/report 的代码。
+### Shiori 的唯一运行所有权
 
-TS CLI 通过已有 Python bridge 做低频的 begin、finish、verify；Command/Agent 的实际运行、取消、超时和输入释放仍由现有执行入口负责。子任务写测量文件，不再同时写 trial 终态。直接 Python 作用域则由当前调用方负责结束同一个记录事务。没有第二个常驻服务，没有任务队列，也不新增通用执行调度器。
+Shiori 统一创建运行和 trial、固定任务身份与条件、调用实际程序、处理取消与终态，并安排 verifier 和 metric。复用既有 Host/Runtime 装配、预算和清理逻辑，移除 benchmark 专用装配副本。评测环境的差异通过明确配置表达，例如模拟设备、是否启用常驻动作和初始会话，而不是另写一套 Host。
 
-记录所有权按文件划清：统一核心独占 `trial.json`、`verification.json` 及所选评分指针；verifier 独占本次输出目录。既有 run/设备接入仍负责 `manifest.json` 的来源信息，核心只引用它，不加入另一条读改写路径。子任务的条件、对象与附件通过小型完成结果交回核心；不能为解决争写再新建双向消息总线。
+`rsa bench` 是向 Shiori 提交任务、评分或聚合请求的薄 CLI；Python 入口是同一运行契约的客户端。`rsa_tools` 只保留产物登记、版本证据和格式辅助，不拥有 begin/finish、预算、自动评分或独立 run writer。Verifier 是 Shiori 调用的普通程序，不管理试验生命周期。没有第二个 benchmark 服务、队列或控制循环。
 
-每个事件来源继续只有一个 writer。Python bridge 不与 TS worker 并写同一来源的 `events.jsonl`，生命周期摘要交给已有记录者；独立来源沿用 source/origin 身份，不能重新从零生成相同 run 的 seq/eventId。`finish` 在短临界区内检查终态并原子提交，重复收尾不覆盖已确认终态，也不再发一次完成事件。
+记录所有权按文件划清：Shiori 调用一份公共 store 写入 `trial.json`、`verification.json` 及所选评分指针；verifier 独占本次 reward 输出目录。既有 run/设备接入仍负责 `manifest.json` 的来源信息，不加入另一条读改写路径。子任务的条件、对象与附件通过现有调用结果或小型产物清单交回 Shiori；不能为解决争写再新建双向消息总线。
 
-顺序固定为准备、执行、收尾事实、评分。进程崩溃时既有 supervisor 通过同一记录入口补执行错误；它不根据缺少 reward 自动重做动作。开始/结束只产生少量 benchmark 事件，普通能力 trace 和逐帧采样沿用原日志政策。
+每个事件来源继续只有一个 writer。Python 程序不与 Shiori 并写同一来源的 `events.jsonl`，生命周期摘要由 Shiori 的已有记录者提交；独立来源沿用 source/origin 身份，不能重新从零生成相同 run 的 seq/eventId。终态在短临界区内检查并原子提交，重复收尾不覆盖已确认终态，也不再发一次完成事件。
 
-直接 Python 调用被硬杀、没有 supervisor 确认终态时，历史展示为未完成；不推算成功、结束时间或评分。异常仍向原调用者传播。
+顺序固定为准备、执行、收尾事实、评分，四步都由 Shiori 统一驱动。进程崩溃时现有 supervisor 向 Shiori 提供退出事实；缺少 reward 不触发动作重做。开始/结束只产生少量 benchmark 事件，普通能力 trace 和逐帧采样沿用原日志政策。
+
+离线评测通过同一个 Shiori 入口运行普通程序，不需要模型推理、模拟器或已经启动的游戏 Host；不保留 Python 自主管理 trial 的离线旁路。Shiori 自身被硬杀、没有确认终态时，历史展示为未完成，不推算成功、结束时间或评分。异常仍向原调用者传播。读取已有历史仍可直接读文件，不要求 Shiori 在线。
 
 ## RSA 必须适配的部分
 
@@ -193,20 +204,20 @@ workspace/logs/<run-id>/
 
 verification 的输出与状态完整落盘后，才原子更新所选评分指针。失败评分保留自己的状态和诊断，不读取上一次遗留的 reward 冒充本次成绩。重复 finish 和取消/完成交错都纳入验收。
 
-读取时把 execution 与所选 `reward.json` 组合成一个轻量结果，字段沿用 `verifier_result.rewards` 与独立异常语义。这个视图是文件引用的投影，不是第三种作者报告，不再持久化一份“Harbor 导出版成绩”。TS 和 Python 共用文件 schema 与契约样例；TS 只做读取和展示，不再实现一份作者报告转换/评分规则。
+读取时把 execution 与所选 `reward.json` 组合成一个轻量结果，字段沿用 `verifier_result.rewards` 与独立异常语义。这个视图是文件引用的投影，不是第三种作者报告，不再持久化一份“Harbor 导出版成绩”。TS 和 Python 共用文件 schema 与契约样例；Shiori 统一校验评分输出，消费者只读取和展示，不再各自转换或推断评分。
 
 统一对外操作如下，CLI、Python 入口和 Dashboard 都遵守同一输入输出定义：
 
 | 操作 | 消费范围 |
 | --- | --- |
 | list / inspect | 任务包目录、digest、环境要求和运行绑定说明 |
-| run | 一个任务的一次执行；批量与 repeat 只是调用同一入口 |
+| run | 提交给 Shiori 的一次执行；批量与 repeat 也由 Shiori 调用同一入口 |
 | history / get | 分页 trial 摘要、单次执行、指定 verification 和附件引用 |
-| verify | 基于已固定证据评分或重评；不发起被测动作 |
+| verify | 请求 Shiori 基于已固定证据评分或重评；不发起被测动作 |
 | compare | 指定 trial 和 verification，展示条件差异及同名测量差值 |
-| aggregate | 固定 dataset 和试验集合，调用标准 metric IO |
+| aggregate | 固定 dataset 和试验集合，由 Shiori 调用标准 metric IO |
 
-操作定义共用，不要求每个界面开放全部操作。CLI/Python 发起执行和评分，Dashboard 继续只读，不增加网页控制入口。历史读取不要求 Host 或模拟器在线；证据仍通过既有可信 workspace 路径与来源解析，不能相信结果文件中的任意路径。
+操作定义共用，不要求每个界面开放全部操作。CLI/Python 向 Shiori 提交执行和评分，Dashboard 继续只读，不增加网页控制入口。历史读取不要求 Host 或模拟器在线；证据仍通过既有可信 workspace 路径与来源解析，不能相信结果文件中的任意路径。
 
 现有 `rsa bench` 保留为命令入口，移除 `python/path:function` 和旧作者 report 格式。`bench schema/validate` 改为检查 Task/Reward/Dataset；删除手写 `bench report --file` 的成绩注入入口，以可追溯的 verifier 重评替代。CLI 进程退出码表示执行/评分命令是否正常完成，不把某个 reward 等于零自动解释成进程崩溃；CI 要求成功率或性能阈值时调用任务明确的验收规则。
 
@@ -227,7 +238,7 @@ Dashboard 的“运行剖析”标签和“运行性能”页继续分析普通 
 | ws-recovery | 同一任务包约定，Command 执行 | 模拟 WS/HTTP、虚拟时间、全量/delta 和工具不重放证据 |
 | background-compaction | 同一任务包约定，Command 执行 | 真实 OMP maintenance、受控输入、取消与归属事实 |
 | capability-reuse | 同一任务包约定，Agent 执行 | 两批订单、跨轮真实复用、普通 import 的调用证据；沿用并独立调用 reuse-evaluator |
-| clamp.py 示例及 workspace 评测 | 标准任务包；显式 Python trial | 普通 capability 保留；样本作为评分输入 |
+| clamp.py 示例及 workspace 评测 | 标准任务包；Python 加入 Shiori trial | 普通 capability 保留；样本作为评分输入 |
 | verify-video-storage.py | video-storage 任务 | 双流合成输入、实际采样、冷解码误差、压缩比和 RSS 样本 |
 | check-index-memory.ts | archive-index 任务 | 大日志重建、首中尾历史一致性、重复查询、缓存释放和父子进程 RSS |
 
@@ -241,13 +252,13 @@ Dashboard 的“运行剖析”标签和“运行性能”页继续分析普通 
 | --- | --- |
 | `rsa/benchmarks/cases.json`、`rsa/src/benchmark/builtins.ts` | 用任务包与普通运行绑定替代，删硬编码作者 registry |
 | `rsa/src/benchmark/catalog.ts` | 删除 builtin 加 AST 发现的合并流程，改为任务包发现 |
-| `rsa/python/rsa_tools/benchmarks.py` | 删除 `@benchmark` 隐式建 run、`prepared_run`、旧报告写入；保留可复用的证据登记，收敛显式 trial 核心 |
-| `rsa/python/rsa_tools/_bridge.py` | 删除旧 `discover_benchmarks/invoke_benchmark` 协议；改接统一 benchmark 操作。普通 capability bridge 不动 |
+| `rsa/python/rsa_tools/benchmarks.py` | 删除 `@benchmark` 隐式建 run、`prepared_run`、旧报告写入和独立生命周期；只留加入 Shiori trial 的客户端与证据登记 |
+| `rsa/python/rsa_tools/_bridge.py` | 删除旧 `discover_benchmarks/invoke_benchmark` 协议，不新增另一套 Python begin/finish/verify 所有者。普通 capability bridge 不动 |
 | Python benchmark AST 分支与导出 | 删除 benchmark 专用发现和类型推导；保留 capability 发现、加载和 invocation observer |
 | `rsa/python/rsa_tools/report.schema.json`、`_benchmark_report.py`、`rsa/src/benchmark/report.ts` | 删除旧 metrics/checks 作者报告及双语言 writer，采用 reward 验证 |
 | `rsa/src/benchmark/contract.ts` | 删 AuthorReport、CaseOutcome、report DAG 与通用 verdict；保留精简的公共读取类型和条件比较 |
-| `rsa/src/benchmark/store.ts` | 删 raw/outcome 多份写入及默认读取全部报告；保留必要的 run 定位与按需读取，记录写入集中到同一核心 |
-| `rsa/src/benchmark/runner.ts`、`worker.ts` | 保留必要的执行、预算、取消和清理；删 caseId 分派、另一份终态/report writer 和内置专用参数规则 |
+| `rsa/src/benchmark/store.ts` | 删 raw/outcome 多份写入及默认读取全部报告；保留公共存取，运行记录只由 Shiori 调用写入 |
+| `rsa/src/benchmark/runner.ts`、`worker.ts` | 退掉独立 runner/worker 生命周期；必要的执行与清理复用或收进 Shiori 运行入口，CLI 只作提交。删 caseId 分派、单独预算循环和另一份终态 writer |
 | `rsa/src/benchmark/cases/` 与 `fixtures/` | 场景逻辑搬到任务执行入口；评分搬到 tests。故障注入、真实版本证据、清理和复用判据保留 |
 | 两个性能脚本 | 测量逻辑保留；移除独立成绩发布入口，统一进入任务包、verifier 和 history |
 | Dashboard benchmark-data、benchmarks、API、组件 | 改消费同一摘要/详情/评分引用；删除旧 report 结构分支，保留证据解析及页面能力 |
@@ -258,8 +269,8 @@ Dashboard 的“运行剖析”标签和“运行性能”页继续分析普通 
 ## 施工顺序
 
 1. **固定契约样例。**从所选 Harbor 版本建立 Task、Dataset、Reward、Metric IO 的正反样例，明确 native profile 与不支持字段；先不动真实运行。
-2. **收敛 trial 记录与评分。**提供显式 Python 作用域和 TS bridge，切开执行与 verifier；复用既有执行/控制代码，删除双写和隐式生命周期。
-3. **迁移代表性任务。**先迁 clamp、一个 TS 工况和 capability-reuse，证明 Python 同进程、Command、Agent 三条路径输出相同；随后迁完其余内置与两个性能入口。
+2. **统一 Shiori 运行入口。**收敛日常与 benchmark 的 Host/Runtime 装配，Agent 与普通程序由同一 Shiori 驱动；将 trial、评分和聚合接入该生命周期，撤掉独立 benchmark runner 与 Python 运行所有者。
+3. **迁移代表性任务。**先迁 clamp、一个 TS 工况和 capability-reuse，证明 Shiori 调用 Python 同进程、Command、Agent 时使用同一记录契约；随后迁完其余内置与两个性能入口。
 4. **统一数据集与消费者。**接 list/history/get/verify/compare/aggregate，Dashboard 改为摘要分页和详情按需，Electron/Pet 沿用同一链路。
 5. **一次性切换。**处理有价值的旧历史，删除旧作者接口、registry、报告 schema、专用 bridge 和旧文档示例；完成下面的验收后再更新现行契约文档。
 
@@ -270,8 +281,11 @@ Dashboard 的“运行剖析”标签和“运行性能”页继续分析普通 
 | 验收项 | 必须看到的结果 |
 | --- | --- |
 | 契约一致 | Harbor 固定版本的任务/评分/数据集样例与本地解析结果一致；不支持的执行要求在预检暴露，未静默忽略 |
+| 唯一 runner | CLI、Python 和所有 benchmark 的执行/重评/聚合均进入 Shiori；没有平行 benchmark 调度器、独立 trial 所有者或另一套预算/终态循环 |
+| 日常与评测同路 | 相同执行配置下，日常 Agent 与 Agent benchmark 复用同一 Harness 装配；模拟设备、会话初态、动作进程等差异必须由配置明确表达 |
 | 全部生产者统一 | 五个内置、clamp、视频存储、索引内存都能从同一目录发现，使用同一运行与读取入口；无第二份独立成绩格式 |
-| Python 对象复用 | 已加载模型在同进程多次测量不重载、不序列化；普通 capability 调用不隐式新增 trial；记录真实加载版本 |
+| Python 对象复用 | Shiori 管理的 Python 程序在同进程多次测量不重载已加载模型、不序列化内存对象；普通 capability 调用不隐式新增 trial；记录真实加载版本 |
+| 离线普通程序 | 同一 Shiori 入口可执行无模型的测量、verifier 和 metric；不要求游戏 Host 或设备在线；历史读取保持纯文件操作 |
 | 执行与评分分开 | 完成但零分、执行失败、评分失败、证据缺失可区分；错误不会触发动作重做 |
 | 可重评 | 同一证据换 verifier 后新增 verification，trial 数不变、设备/被测模型执行计数不增；改写原件或缺失引用时拒绝伪造结果 |
 | 写入所有权 | finish 与取消竞态不覆盖终态、不重复事件；事件 ID 唯一；评分未写完时不会被选中；新评分不消费旧 reward |
