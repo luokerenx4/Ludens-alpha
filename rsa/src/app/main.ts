@@ -30,6 +30,7 @@ The current directory is the default workspace. Run logs go to <workspace>/logs/
 --compaction-threshold configures OMP's native compaction trigger; default is 256000 tokens.
 --diagnostics normal|full selects recording detail at startup (default normal).
 Perception starts empty. Implement workspace/perception.py and use rsa perception reload.
+rsa perception inject off disables automatic context attachment while sampling and recording continue.
 Hardware is provided by an independent Baseware service. Its default socket is derived from the workspace.`;
 
 async function main() {

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { customToolToDefinition, type ExtensionAPI, type ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { resizeImage } from "@oh-my-pi/pi-coding-agent/utils/image-resize";
-import { createRsaExtension, type Cycle } from "../src/harness/omp/extension.ts";
+import { createRsaExtension, perceptionInput, type Cycle } from "../src/harness/omp/extension.ts";
 import { PerceptionRuntime, type PerceptionRead } from "../src/harness/perception.ts";
 import { captureResult, createTestRuntime } from "./runtime-fixture.ts";
 import { Workspace } from "../src/harness/workspace.ts";
@@ -119,6 +119,7 @@ test("text-only perception reaches automatic context and explicit reads are not 
   }] }, () => {});
   await Bun.write(join(workspace, "perception.py"), `from rsa_tools import capability, record
 class Perception:
+    sample_hz = 0.01
     def start(self, context): self.count = 0
     def close(self): pass
     @record
@@ -143,15 +144,62 @@ class Perception:
     expect(persisted).toContain("Window 1");
     await handlers.assistant_message({});
     await handlers.tool_call({ toolCallId: "explicit" });
+    await handlers.tool_call({ toolCallId: "sibling" });
     const observe = customToolToDefinition(extension.tools[0]);
     const result = await observe.execute("explicit", {}, control.signal, () => {}, {} as ExtensionContext);
-    const enriched = await handlers.tool_result({ toolCallId: "explicit", toolName: "observe", input: {}, ...result });
+    expect(await handlers.tool_result({ toolCallId: "explicit", toolName: "observe", input: {}, ...result })).toBeUndefined();
+    const enriched = await handlers.tool_result({ toolCallId: "sibling", toolName: "bash", input: {}, content: [{ type: "text", text: "done" }] });
     expect(calls).toBe(0);
     expect((result.details as PerceptionRead).snapshot?.sequence).toBe(1);
     expect((result.details as PerceptionRead).reused).toBe(true);
     expect(enriched.content.filter((part: any) => part.type === "image")).toHaveLength(0);
     expect(JSON.parse(enriched.content.at(-1).text).controllerOutputs).toBeUndefined();
+    expect(JSON.stringify(enriched.content)).not.toContain("Window 1");
     expect(extension.context().executions).toEqual([(result.details as PerceptionRead).result.id]);
     expect(JSON.stringify(first)).toBe(persisted);
   } finally { await runtime.close(); await rm(directory, { recursive: true }); }
+});
+
+test("model projection keeps each record once with time, data and paging but no duplicate execution envelope", () => {
+  const records: NonNullable<PerceptionRead["records"]> = [1, 2].map(sequence => ({
+    snapshot: { id: `record-${sequence}`, sequence, generation: "generation", capability: "python/sensors.py:sample",
+      identity: { id: "python/sensors.py:sample", codeSHA: "source-version" },
+      recordedAt: `2026-10-28T00:00:0${sequence}Z`, sampledAt: `2026-10-28T00:00:0${sequence}Z`,
+      sampling: { clock: "sensor", startedAtMs: sequence, finishedAtMs: sequence + 0.5 },
+      sources: [{ sensor: "left" }] },
+    text: `sensor-value-${sequence}`, data: { distance: sequence }, space: { frame: "room" },
+    observations: [{ id: `image-${sequence}`, controllerId: "perception", mediaType: "image/png", data: "large-media-bytes",
+      timing: { clock: "sensor", requestedAtMs: sequence, receivedAtMs: sequence + 0.5 },
+      timeline: { asset: "video/frame.mp4", recordId: `record-${sequence}`, sequence } }],
+  }));
+  const read: PerceptionRead = { status: { state: "ready", generation: "generation", sampleHz: 30 },
+    result: captureResult(records.flatMap(record => record.observations)), records, snapshot: records[1]!.snapshot,
+    query: { start: "2026-10-28T00:00:00Z", limit: 2 }, hasMore: true, nextAfter: 2,
+    availability: { persistent: true, hotSeconds: 600, earliest: { sequence: 1, recordedAt: records[0]!.snapshot.recordedAt },
+      latest: { sequence: 10, recordedAt: "2026-10-28T00:00:10Z" }, expired: false } };
+  const before = JSON.stringify(read);
+  const projected = perceptionInput(read);
+  expect(projected.records).toHaveLength(2);
+  const { identity: _identity, ...snapshot } = records[0]!.snapshot;
+  expect(projected.records![0]).toMatchObject({ ...snapshot,
+    codeSHA: "source-version", text: "sensor-value-1", data: { distance: 1 },
+    space: { frame: "room" }, media: [{ id: "image-1", mediaType: "image/png" }] });
+  expect(projected).toMatchObject({ query: read.query, hasMore: true, nextAfter: 2, availability: read.availability });
+  const serialized = JSON.stringify(projected);
+  expect(serialized.match(/sensor-value-1/g)).toHaveLength(1);
+  expect(serialized.match(/"record-1"/g)).toHaveLength(1);
+  expect(serialized).not.toContain("large-media-bytes");
+  expect(projected).not.toHaveProperty("result");
+  expect(projected).not.toHaveProperty("snapshot");
+  expect(JSON.stringify(read)).toBe(before);
+  const historical = perceptionInput({ ...read, status: { state: "error", generation: "generation", error: "sampler failed" } });
+  expect(historical).toMatchObject({ ok: true, perception: { state: "error", error: "sampler failed" } });
+  expect(historical.records).toHaveLength(2);
+  const error = perceptionInput({ status: { state: "error", generation: "generation", error: "unavailable" },
+    result: { ...captureResult([]), stdout: "unavailable", stderr: "unavailable", status: "failed", exitCode: 1 }, error: "unavailable" });
+  expect(JSON.stringify(error).match(/unavailable/g)).toHaveLength(1);
+  expect(error.ok).toBe(false);
+  const badQuery = perceptionInput({ ...read, error: "invalid query", records: [],
+    result: { ...captureResult([]), exitCode: 1, status: "failed" } });
+  expect(badQuery).toMatchObject({ ok: false, perception: { state: "ready" }, error: "invalid query" });
 });

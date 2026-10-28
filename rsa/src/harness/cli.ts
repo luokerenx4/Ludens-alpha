@@ -9,6 +9,7 @@ rsa auto on [--message <text>]
 rsa auto off
 rsa consolidate [--seconds <n>]
 rsa perception status | reload | stop
+rsa perception inject [on|off]
 rsa action status | reload | stop
 rsa observe [--capability <id|*>] [--id <record-id> | --at <ISO> | --start <ISO> --end <ISO>] [--limit <n>] [--after <sequence>] [--images]
 rsa controller list | <id> --help | <id> [--args '<JSON object>' | --file <arguments.json>]
@@ -32,12 +33,17 @@ availability reports the retained range; non-persistent history expires outside 
 The same command is available as rsa perception observe.`;
 
 const PERCEPTION_HELP = `rsa perception status | reload | stop
+rsa perception inject [on|off]
 ${OBSERVE_HELP}
 Loads workspace/perception.py:Perception in a resident process and calls sample() continuously.
 Set sample_hz to choose a target and video nominal rate (default 30 Hz). Reload after editing code or weights.
 Mark sample() with @capability and @record from rsa_tools. Only marked results enter the timeline.
 Persistent history survives reload and new runs. Defaults: 10-minute hot window, hourly segments.
 Set RSA_PERCEPTION_PERSIST=0 in the host environment for hot-window-only history.
+inject off disables automatic observation attachment to model context; sampling, recording and explicit observe continue.
+inject on restores automatic attachment; inject without arguments shows the policy (also in rsa status).
+The policy survives perception reload and control cycles in this host; a new host defaults to on.
+stop ends the sampling process and timeline writer, including video recording. Use inject off to reduce context instead.
 Empty or failed perception supplies no default images.`;
 
 export const ACTION_HELP = `rsa action status | reload | stop
@@ -116,7 +122,7 @@ export async function cli(argv: string[], socket: string) {
   if (kind === "controller") return controller(rest, socket);
   if (kind === "observe") return observe(rest, socket);
   if (kind === "perception" && rest[0] === "observe") return observe(rest.slice(1), socket);
-  if (kind === "perception" && (!rest.length || rest[0] === "--help")) {
+  if (kind === "perception" && (!rest.length || rest.includes("--help"))) {
     console.log(PERCEPTION_HELP);
     return;
   }

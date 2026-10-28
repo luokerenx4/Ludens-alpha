@@ -73,7 +73,7 @@ class Perception:
         try { return [JSON.parse(part.text)]; } catch { return []; }
       });
       snapshots.push({ tools: context.tools?.map(tool => tool.name) ?? [], messages,
-        observation: records.findLast(value => value?.control && Array.isArray(value.observations)) });
+        observation: records.findLast(value => value?.control) });
       const index = snapshots.length;
       const sources = [source("adapted-v1"), source("adapted-v2"), broken, source("adapted-v3")];
       const content: AssistantMessage["content"] = index <= sources.length
@@ -93,8 +93,8 @@ class Perception:
     expect(snapshots.map(snapshot => snapshot.observation.perception.state))
       .toEqual(["unimplemented", "ready", "ready", "error", "ready"]);
     expect(snapshots[3]!.observation.perception.error).toContain("observer needs repair");
-    expect(snapshots[0]!.observation.observations).toEqual([]);
-    expect(snapshots[3]!.observation.observations).toEqual([]);
+    expect(snapshots[0]!.observation.records).toBeUndefined();
+    expect(snapshots[3]!.observation.records).toBeUndefined();
     expect(captures).toBe(0);
     for (const snapshot of snapshots) expect(snapshot.tools.toSorted()).toEqual(baseTools.toSorted());
     for (let index = 1; index < snapshots.length; index++) {
@@ -104,11 +104,18 @@ class Perception:
     const adapted = snapshots.filter(snapshot => snapshot.observation.perception.state === "ready");
     expect(new Set(adapted.map(snapshot => snapshot.observation.perception.codeSHA)).size).toBe(3);
     for (const snapshot of adapted) {
-      const observation = snapshot.observation.observations[0];
-      expect(observation.path).toBeUndefined();
-      expect(observation.timeline.asset.startsWith("video/")).toBe(true);
-      expect(observation.timeline.video.width).toBe(32);
+      const record = snapshot.observation.records[0];
+      expect(record.id).toBeString();
+      expect(record.recordedAt).toBeString();
+      expect(record.media).toEqual([{ id: `${record.id}-0`, mediaType: "image/png" }]);
+      expect(snapshot.observation.snapshot).toBeUndefined();
+      expect(snapshot.observation.result).toBeUndefined();
+      expect(snapshot.observation.control.perception).toBeUndefined();
     }
+    // Rich provenance stays in diagnostics; only the model projection is compact.
+    const ready = events.find(event => event.type === "perception_observe_end" && event.data.status.state === "ready")!;
+    expect(ready.data.records[0].observations[0].timeline.asset.startsWith("video/")).toBe(true);
+    expect(ready.data.records[0].observations[0].timeline.video.width).toBe(32);
     const file = session.sessionFile!;
     await session.dispose(); session = undefined;
     const persisted = await SessionManager.open(file, undefined, undefined, { throwIfMissing: true });

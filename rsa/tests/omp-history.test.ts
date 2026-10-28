@@ -116,7 +116,8 @@ test.each([1, 26])("OMP persists batches of %i images and reuses the Codex prefi
     expect(events.filter(e => e.type === "perception_observe_end")).toHaveLength(9);
     const contexts = events.filter(e => e.type === "observation_context");
     expect(contexts).toHaveLength(9);
-    expect(contexts.filter(e => e.data.reusedObservations.length)).toHaveLength(3);
+    // All four explicit reads remain the batch source, including when bash finishes last.
+    expect(contexts.filter(e => e.data.reusedObservations.length)).toHaveLength(4);
     expect(contexts.filter(e => e.data.reusedObservations.length).every(e => e.data.freshObservations.length === 0)).toBe(true);
     expect(events.filter(e => e.type === "observation_media")).toHaveLength(9 * batchSize);
     expect(deltas).toHaveLength(8);

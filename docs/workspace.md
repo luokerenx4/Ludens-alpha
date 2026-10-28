@@ -102,6 +102,9 @@ def temperature() -> dict:
 ```sh
 rsa perception status
 rsa perception reload
+rsa perception inject off
+rsa perception inject on
+rsa perception inject
 rsa observe
 rsa observe --at 2026-10-27T01:00:00Z
 rsa observe --capability python/sensors.py:temperature
@@ -111,6 +114,10 @@ rsa perception stop
 ```
 
 `observe` 只读轴，不重新采样。默认读取主 `python/perception.py:Perception.sample` 通道；`capability` 选其他能力，`*` 读全轴，`id` 定位记录。`at` 读取不晚于指定时刻的记录；`start/end` 为含端点的范围。查询时间按 `recordedAt`（记录墙钟）；`sampledAt` 和单调时钟采样区间另存，不混用。范围按全局 sequence 升序分页，默认 8 条、最多 64 条；用 `nextAfter` 配合原范围续页。未使用字段可省略或传 `null`。
+
+**持续采集与模型自动注入独立控制。** `rsa perception inject off` 关闭 prompt 开始和工具批次结束时自动附加的感知；sampler、时空轴 writer、录像和历史查询继续运行，模型可随时显式 `observe`。`inject on` 恢复自动附加，`inject` 查询当前策略，`rsa status` 的 `context.perceptionInjection` 也可查看。默认开启，修改立即作用于后续自动读取；同 Host 内跨感知 reload 和控制周期保留，新 Host 恢复默认。已经进入 OMP 的历史消息不会被改写，原生工具主动返回的图片也不受此开关影响。关闭注入后仍附加控制状态和技能/记忆索引。
+
+模型的观测文本使用单份精简视图：每条记录保留 ID、时间、能力/版本、`text/data/space/sources` 及对应媒体 ID/类型，再附查询、分页与可用范围。`ok` 表示本次读取是否成功，与 `perception` 的采样健康分开：采样出错时历史仍可能读取成功。媒体按记录顺序交付；不重复输出顶层 snapshot、执行信封和逐图片存储元数据。工具批次中的显式 `observe` 不再被自动附加一遍，包括同批还有 bash 的情况。完整来源仍保留在日志和工具 details 中；CLI 的 JSON 与 timeline 存储契约不变。
 
 轴跨 run 和 generation 保存。最新主通道读取检查当前采样健康和 generation；历史查询仍可读取旧版本。worker 先初始化轴再加载用户入口，入口缺失、加载失败或采样失败不破坏历史，也不阻止独立感知能力显式记录。没有默认截图回退。`reload` 更换进程并重载代码/helper/权重；`stop` 结束 sampler 和 writer，后续记录需显式 reload。
 

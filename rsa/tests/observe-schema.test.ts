@@ -57,7 +57,8 @@ print(json.dumps(records))`, workspace], {env: {...process.env, PYTHONPATH: join
       const read = result.details as PerceptionRead;
       expect(read.records?.map(record => record.snapshot.id)).toEqual(records.slice(0, expected).map(record => record.id));
       expect(result.content.filter(part => part.type === "image")).toHaveLength(expected);
-      expect(result.content.some(part => part.type === "text" && part.text.includes("recordedAt=2026-10-22T06:45:50.000Z"))).toBe(true);
+      const metadata = JSON.parse(result.content.find(part => part.type === "text")!.text);
+      expect(metadata.records[0].recordedAt).toBe("2026-10-22T06:45:50.000Z");
     }
     const handlers: Record<string, (event: any) => any> = {};
     await extension.factory({ on(name: string, handler: (event: any) => any) { handlers[name] = handler; } } as ExtensionAPI);

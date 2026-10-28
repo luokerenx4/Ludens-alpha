@@ -89,16 +89,23 @@ export async function dispatch(runtime: Runtime, request: Request, signal = new 
       runId: request.runId ?? runtime.status().runId, trace: request.trace }, signal);
   }
   if (kind === "perception") {
-    if (!runtime.perception) throw new Error("Perception is not configured");
     if (epoch !== undefined && (runtime.status().mode !== "auto" || runtime.status().epoch !== epoch))
       throw new Error("STALE_EPOCH: use the current control epoch");
     const trace = childTrace({ ...request.trace, ...(epoch ? { epoch } : {}) });
-    if (argv.length !== 1) throw new Error("Usage: rsa perception status|reload|stop|observe");
+    if (argv[0] === "inject") {
+      if (argv.length === 1) return { perceptionInjection: runtime.perceptionInjectionEnabled() };
+      if (argv.length === 2 && (argv[1] === "on" || argv[1] === "off"))
+        return runtime.setPerceptionInjection(argv[1] === "on", trace);
+      throw new Error("Usage: rsa perception inject [on|off] (automatic context only; recording continues)");
+    }
+    if (!runtime.perception) throw new Error("Perception is not configured");
+    const usage = "Usage: rsa perception status|reload|stop|observe | inject [on|off]; stop ends recording, inject off only disables automatic context";
+    if (argv.length !== 1) throw new Error(usage);
     if (argv[0] === "status") return runtime.perception.status();
     if (argv[0] === "reload") return runtime.perception.reload(trace);
     if (argv[0] === "stop") { await runtime.perception.stop(); return runtime.perception.status(); }
     if (argv[0] === "observe") return runtime.perception.observe(signal, trace, request.query);
-    throw new Error("Usage: rsa perception status|reload|stop|observe");
+    throw new Error(usage);
   }
   if (kind === "workspace_event") {
     if (request.runId !== runtime.status().runId) throw new Error("STALE_RUN: Python log belongs to a different run");

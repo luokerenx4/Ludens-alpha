@@ -105,6 +105,8 @@ manifest 记录 Git commit/dirty、continue/consolidate 提示和可选 workspac
 
 **模型看到什么以 `observation_context` 和 `model_start.observations` 为准**，包括工作区自己融合或处理的媒体；不能用最新 driver 截图代替。输入编码失败另记 `perception_input_error`，读取成功不保证输入成功。空实现或失败只给文字诊断，不回退默认截图。取消读取不杀感知进程，迟到结果不塞回已取消的模型调用。
 
+`context_policy` 记录自动感知注入开关的变化；`rsa status.context.perceptionInjection` 报告当前策略。关闭只阻止自动读取/附加，持续采样、录像及显式 `observe` 不受影响。模型文本采用独立的精简投影，记录内容、时间和查询信息各出现一次；`perception_observe_end`、`observation_context` 及原生工具 details 的完整来源结构不变，Dashboard、回放和分析仍据此关联时空轴。
+
 原生 bash/read 返回的图片记录为 `observation(origin=tool_result)` 并关联对应工具，不再自动创建图片副本。插件仅按实际输入字节的 SHA-256 匹配已经存在的时空轴 `objects/<sha256>.bin`，匹配成功时附 `timeline: {asset}`；无法据此确定采样记录，因此不填 `recordId/sequence`。没有原件时只记交付元数据，不声称已保存。后台完成图片在 OMP 将其送入模型时记录为本次交付，不能冒认最近一次前台工具。事件时间是交付时间，不推断原始采样时刻；CLI 历史时间和序号保留在输出标签与查询日志中。仅返回 JSON 路径不计作图片交付。
 
 模型输入重编码产生的版本由同一感知 writer 保存为派生资产，`observation_media.modelMedia` 记录实际 hash、源 asset/record/sequence 和转换名称。只有明确来源才能派生，不按最近截图猜测；临时窗口的派生版本随源记录淘汰。派生存档失败只记诊断，不替换有效模型输入。

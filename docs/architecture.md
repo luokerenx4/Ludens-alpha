@@ -75,7 +75,7 @@ rsa controller controller/pad.play --args '{"inputs":[{"atMs":0,"durationMs":500
 外层续轮仍由 RSA 控制：
 
 1. 在控制周期内用 [continue.md](../rsa/prompts/continue.md) 发起 OMP prompt；`auto on --message` 的补充消息只用于首次。
-2. 工作区感知进程持续调用 `sample()`，将带时间戳的结果写入 `ObservationHistory`。插件在 prompt 开始及整批工具结束后读取最新结果，附加技能和记忆索引。显式 `observe` 可查询历史时刻或范围，已返回的结果不会再重复附加。
+2. 工作区感知进程持续调用 `sample()`，将带时间戳的结果写入 `ObservationHistory`。插件默认在 prompt 开始及整批工具结束后读取最新结果，附加技能和记忆索引。`rsa perception inject off/on` 单独控制自动读取与附加，不改变采样、留档和录像。显式 `observe` 始终可查询历史时刻或范围，已返回的结果不会再重复附加。模型只收单份精简观测视图，完整来源保留在日志和工具 details。
 3. OMP 执行自己的推理与工具循环；一次 prompt 结束后，RSA 在预算内继续下一次。
 
 独立的 `action.py:Action` 进程在 auto 期间按 `step_hz`（默认 30 Hz）调用 `step()`，可读取感知历史、执行设备输入并保留跨轮状态。两个进程共用 `@capability` 和可选 `@record`，调度入口分别是 `Perception.sample()` 与 `Action.step()`；不把每个能力都变成调度任务。感知入口要求记录，动作入口可只执行。工作区实现策略，Harness 提供生命周期与输入收尾，见 [动作层方案](action-runtime-plan.md)。

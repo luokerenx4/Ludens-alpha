@@ -36,6 +36,7 @@ export class Runtime {
   private takeoverDeadlineMs = 0;
   private reason = "startup";
   private connected = true;
+  private perceptionInjection = true;
   private calls = new Set<Promise<unknown>>();
   agent?: AgentRunner;
   controller?: WorkspaceController;
@@ -47,7 +48,17 @@ export class Runtime {
   status() {
     // The host can outlive many takeovers; its log clock is not this cycle's budget.
     const remainingSeconds = this.mode === "auto" ? Math.max(0, Math.ceil((this.takeoverDeadlineMs - performance.now()) / 1000)) : null;
-    return { runId: this.runId, maxSeconds: this.maxSeconds, remainingSeconds, mode: this.mode, epoch: this.mode === "auto" ? this.epoch : null, connected: this.connected, reason: this.reason, agent: !!this.agent, thinking: !!this.running, consolidating: this.consolidating, perception: this.perception?.status(), action: this.action?.status(), logging: { diagnostics: this.diagnostics, basewareDiagnostics: this.devices.diagnostics ?? "normal" } };
+    return { runId: this.runId, maxSeconds: this.maxSeconds, remainingSeconds, mode: this.mode, epoch: this.mode === "auto" ? this.epoch : null, connected: this.connected, reason: this.reason, agent: !!this.agent, thinking: !!this.running, consolidating: this.consolidating, perception: this.perception?.status(), action: this.action?.status(), context: { perceptionInjection: this.perceptionInjection }, logging: { diagnostics: this.diagnostics, basewareDiagnostics: this.devices.diagnostics ?? "normal" } };
+  }
+
+  perceptionInjectionEnabled(): boolean { return this.perceptionInjection; }
+
+  setPerceptionInjection(enabled: boolean, trace?: EventTrace) {
+    if (this.perceptionInjection !== enabled) {
+      this.perceptionInjection = enabled;
+      this.record("context_policy", { perceptionInjection: enabled }, trace);
+    }
+    return { perceptionInjection: this.perceptionInjection };
   }
 
   list() { return this.devices.catalog; }
