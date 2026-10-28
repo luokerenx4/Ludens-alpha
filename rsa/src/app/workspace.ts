@@ -7,7 +7,7 @@ import workspaceGuide from "../../templates/AGENTS.md" with { type: "text" };
 import perceptionTemplate from "../../templates/perception.py" with { type: "text" };
 
 export const WORKSPACE_HELP = `Workspace startup (macOS):
-rsa init --driver ryubing|mgba|azahar|cua [--game <path>] [--cua-command <path>] [--seconds <n>]
+rsa init --driver <id> [--driver-package <npm|github:org/repo#rev|file:path>] [--game <path>] [--cua-command <path>] [--seconds <n>]
 rsa up [--dry-run]
 rsa services
 rsa down [--keep-emulator] [--dashboard] [--pet]
@@ -21,12 +21,22 @@ The shared Dashboard stays up unless --dashboard is given by its owning workspac
 Alice Pet is shared across workspaces; --pet stops its managed background job.
 An Alice app opened separately is reused and stays open after down.
 Choose which workspace Alice follows in the Dashboard; up preserves that selection.
-Without game, prepare the emulator bridge yourself. mGBA always uses this mode.
-cua starts the installed Cua Driver (cua-driver by default); it needs no emulator or bridge port.
-azahar provides native gamepad, touch and screen capture through its emulator bridge.`;
+The driver manifest decides the bridge port, backend startup and preparation hints; see baseware driver list.`;
+
+export interface DriverManifest {
+  id: string;
+  version?: string;
+  transport?: "bridge" | "stdio";
+  defaultPort?: number;
+  needsGame?: boolean;
+  launchHint?: string;
+  /** Backend executable argv (without the game path); game path is appended by the launcher. */
+  launchCommand?: string[];
+}
 
 export interface LaunchConfig {
-  driver: "mgba" | "ryubing" | "azahar" | "cua";
+  driver: string;
+  driverPackage?: string;
   game?: string;
   port?: number;
   cuaCommand?: string;
@@ -39,19 +49,24 @@ export interface LaunchConfig {
   logging: { diagnostics: "normal" | "full" };
 }
 
-export function parseConfig(value: unknown): LaunchConfig {
+export function parseConfig(value: unknown, manifest?: DriverManifest): LaunchConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("rsa.json must be an object");
   const config = value as Record<string, unknown>;
-  const allowed = ["driver", "game", "port", "cuaCommand", "model", "seconds", "requests", "compactionThreshold", "dashboard", "pet", "logging"];
+  const allowed = ["driver", "driverPackage", "game", "port", "cuaCommand", "model", "seconds", "requests", "compactionThreshold", "dashboard", "pet", "logging"];
   for (const key of Object.keys(config)) if (!allowed.includes(key)) throw new Error(`Unknown rsa.json field: ${key}`);
-  if (config.driver !== "mgba" && config.driver !== "ryubing" && config.driver !== "azahar" && config.driver !== "cua") throw new Error("rsa.json driver must be mgba, ryubing, azahar or cua");
-  if (config.game !== undefined && (typeof config.game !== "string" || !config.game.trim())) throw new Error("game must be a non-empty path");
-  if (config.driver === "mgba" && config.game !== undefined) throw new Error("mGBA: open the ROM and load bridge.lua in Tools → Scripting, then omit game from rsa.json");
-  if (config.driver === "cua" && (config.game !== undefined || config.port !== undefined)) throw new Error("cua does not use game or a bridge port");
-  if (config.cuaCommand !== undefined && (config.driver !== "cua" || typeof config.cuaCommand !== "string" || !config.cuaCommand.trim())) {
-    throw new Error("cuaCommand must be a non-empty executable path for the cua driver");
+  if (typeof config.driver !== "string" || !config.driver.trim()) throw new Error("rsa.json driver must be a non-empty driver id");
+  if (config.driverPackage !== undefined && (typeof config.driverPackage !== "string" || !config.driverPackage.trim())) {
+    throw new Error("driverPackage must be a non-empty package spec");
   }
-  const result = { ...(config.driver !== "cua" ? { port: config.driver === "mgba" ? 47653 : config.driver === "azahar" ? 47673 : 47663 } : {}), model: "openai-codex/gpt-6.1-sol",
+  if (config.game !== undefined && (typeof config.game !== "string" || !config.game.trim())) throw new Error("game must be a non-empty path");
+  const bridge = manifest ? manifest.transport !== "stdio" : true;
+  if (manifest && manifest.id !== config.driver) throw new Error(`Driver manifest id ${JSON.stringify(manifest.id)} does not match rsa.json driver ${JSON.stringify(config.driver)}`);
+  if (!bridge && (config.game !== undefined || config.port !== undefined)) throw new Error(`${config.driver} does not use game or a bridge port`);
+  if (config.cuaCommand !== undefined && (bridge || typeof config.cuaCommand !== "string" || !config.cuaCommand.trim())) {
+    throw new Error("cuaCommand must be a non-empty executable path for a stdio driver");
+  }
+  const result = { ...(bridge && manifest?.defaultPort !== undefined ? { port: manifest.defaultPort } : {}),
+    model: "openai-codex/gpt-6.1-sol",
     seconds: 1800, requests: 1000, compactionThreshold: 256000, dashboard: true, pet: true, logging: { diagnostics: "normal" }, ...config } as LaunchConfig;
   if (!result.logging || typeof result.logging !== "object" || Array.isArray(result.logging)
     || Object.keys(result.logging).some(key => key !== "diagnostics")
@@ -69,6 +84,7 @@ type ServiceName = "emulator" | "baseware" | "host" | "dashboard" | "pet";
 export interface LaunchPlan {
   workspace: string;
   config: LaunchConfig;
+  manifest?: DriverManifest;
   dashboardUrl: string;
   dashboardCheck: string[];
   background: string;
@@ -80,21 +96,23 @@ export interface LaunchPlan {
   commands: Partial<Record<ServiceName, string[]>>;
 }
 
-export async function launchPlan(config: LaunchConfig, workspace: string, repo = resolve(import.meta.dir, "../../.."), socket?: string): Promise<LaunchPlan> {
+export async function launchPlan(config: LaunchConfig, workspace: string, repo = resolve(import.meta.dir, "../../.."), socket?: string, manifest?: DriverManifest): Promise<LaunchPlan> {
   const rsa = join(repo, "rsa/bin/rsa");
   const baseware = join(repo, "baseware/bin/baseware");
   const basewareSocket = socket ?? await defaultSocket(workspace);
   const background = join(workspace, "logs/background");
   const sharedPet = { cwd: repo, background: resolve(repo, "../artifacts/rsa/alice/background") };
+  const bridge = manifest ? manifest.transport !== "stdio" : true;
   return {
-    workspace, config, dashboardUrl: "http://127.0.0.1:3015", background, sharedPet,
+    workspace, config, manifest, dashboardUrl: "http://127.0.0.1:3015", background, sharedPet,
     dashboardCheck: ["npm", "--prefix", join(repo, "rsa-dashboard"), "run", "check-build"],
     launcher: join(repo, "rsa/scripts/launch-background.py"), rsa, baseware, basewareSocket,
     commands: {
-      ...(config.game ? { emulator: ["env", `RSA_BRIDGE_PORT=${config.port}`,
-        join(repo, `baseware/src/drivers/${config.driver}/launch.sh`), resolve(workspace, config.game)] } : {}),
+      ...(config.game && bridge && manifest?.launchCommand ? { emulator: ["env", `RSA_BRIDGE_PORT=${config.port}`,
+        ...manifest.launchCommand, resolve(workspace, config.game)] } : {}),
       baseware: [baseware, "serve", "--driver", config.driver,
-        ...(config.driver !== "cua" ? ["--port", String(config.port)] : []),
+        ...(config.driverPackage ? ["--driver-package", config.driverPackage] : []),
+        ...(bridge && config.port !== undefined ? ["--port", String(config.port)] : []),
         ...(config.cuaCommand ? ["--cua-command", config.cuaCommand] : []), "--socket", basewareSocket,
         "--data-dir", join(workspace, "logs/baseware"), "--diagnostics", config.logging.diagnostics],
       host: [rsa, "run", "--baseware-socket", basewareSocket, "--model", config.model,
@@ -231,14 +249,18 @@ export class WorkspaceLauncher {
     if (!baseware) {
       const existing = await this.job("baseware");
       if (!existing.pid) {
-        if (this.plan.config.driver !== "cua") {
+        const manifest = this.plan.manifest;
+        const bridge = manifest ? manifest.transport !== "stdio" : true;
+        if (bridge) {
           const port = this.plan.config.port!;
           if (this.plan.commands.emulator) {
             const emulator = await this.job("emulator");
             if (!emulator.pid) {
-              const executable = this.plan.config.driver === "azahar" ? "/Applications/Azahar.app/Contents/MacOS/azahar" : "/Applications/Ryubing.app/Contents/MacOS/Ryujinx";
-              const running = await this.run(["pgrep", "-f", `^${executable}`]);
-              if (running.code === 0) throw new Error(`${this.plan.config.driver} is already running outside this workspace's emulator job. Use its workspace, or omit game to explicitly connect to the prepared device.`);
+              const executable = manifest?.launchCommand?.[0];
+              if (executable) {
+                const running = await this.run(["pgrep", "-f", `^${executable}`]);
+                if (running.code === 0) throw new Error(`${this.plan.config.driver} is already running outside this workspace's emulator job. Use its workspace, or omit game to explicitly connect to the prepared device.`);
+              }
             }
             await this.ensure("emulator");
             await this.waitFor("this emulator's bridge listener", async () => {
@@ -246,9 +268,7 @@ export class WorkspaceLauncher {
               return !!pid && (await this.listeningPids(port)).includes(pid);
             });
           } else if (!(await this.listeningPids(port)).length) {
-            throw new Error(`No prepared bridge on port ${port}. ${this.plan.config.driver === "mgba"
-              ? "Open the ROM in mGBA and load baseware/src/drivers/mgba/bridge.lua in Tools → Scripting."
-              : `Start the patched ${this.plan.config.driver} with the desired game, or set game in rsa.json.`}`);
+            throw new Error(`No prepared bridge on port ${port}. ${manifest?.launchHint ?? `Prepare the ${this.plan.config.driver} backend, then retry.`}`);
           }
           // Only probe bridge ownership when there is no reusable Baseware service.
           const clients = await this.bridgeClients(port);
@@ -340,15 +360,20 @@ export class WorkspaceLauncher {
 }
 
 export async function workspaceCommand(command: string, args: string[], selectedWorkspace: string) {
+  const { resolveDriver, defaultDriverCacheRoot } = await import("@playness/baseware/drivers/loader");
   if (args.includes("--help")) { console.log(WORKSPACE_HELP); return; }
   const { values } = parseArgs({ args, options: command === "init" ? {
-    driver: { type: "string" }, game: { type: "string" }, "cua-command": { type: "string" }, seconds: { type: "string" },
+    driver: { type: "string" }, "driver-package": { type: "string" }, game: { type: "string" },
+    "cua-command": { type: "string" }, seconds: { type: "string" },
   } : command === "up" ? { "dry-run": { type: "boolean" } }
     : command === "down" ? { dashboard: { type: "boolean" }, pet: { type: "boolean" }, "keep-emulator": { type: "boolean" } } : {} });
   if (command === "init") {
-    const config = parseConfig({ driver: values.driver,
+    const raw = { driver: values.driver,
+      ...(values["driver-package"] ? { driverPackage: values["driver-package"] } : {}),
       ...(values.game ? { game: values.game } : {}), ...(values["cua-command"] ? { cuaCommand: values["cua-command"] } : {}),
-      ...(values.seconds ? { seconds: Number(values.seconds) } : {}) });
+      ...(values.seconds ? { seconds: Number(values.seconds) } : {}) };
+    const manifest = await resolveDriver(raw.driver as string, raw.driverPackage, defaultDriverCacheRoot());
+    const config = parseConfig(raw, manifest);
     await mkdir(selectedWorkspace, { recursive: true });
     const workspace = await realpath(selectedWorkspace);
     await writeFile(join(workspace, "rsa.json"), `${JSON.stringify(config, null, 2)}\n`, { flag: "wx" });
@@ -359,14 +384,16 @@ export async function workspaceCommand(command: string, args: string[], selected
   }
   const workspace = await realpath(selectedWorkspace);
   // Status and shutdown remain available even if the launch config was removed or edited badly.
-  const config = command === "up" ? parseConfig(await Bun.file(join(workspace, "rsa.json")).json()) : parseConfig({ driver: "mgba" });
-  const plan = await launchPlan(config, workspace);
+  const raw = command === "up" ? await Bun.file(join(workspace, "rsa.json")).json() : { driver: "cua" };
+  const manifest = await resolveDriver(raw.driver, raw.driverPackage, defaultDriverCacheRoot());
+  const config = parseConfig(raw, manifest);
+  const plan = await launchPlan(config, workspace, resolve(import.meta.dir, "../../.."), undefined, manifest);
   if (values["dry-run"]) { console.log(JSON.stringify(plan, null, 2)); return; }
   if (process.platform !== "darwin") throw new Error("Workspace service commands currently use macOS launchd");
   if (command === "up") {
     const repo = resolve(import.meta.dir, "../../..");
     const required = [
-      ...(config.game ? [resolve(workspace, config.game), config.driver === "azahar" ? "/Applications/Azahar.app/Contents/MacOS/azahar" : "/Applications/Ryubing.app/Contents/MacOS/Ryujinx"] : []),
+      ...(config.game && manifest.launchCommand ? [resolve(workspace, config.game), ...manifest.launchCommand] : []),
       ...(config.dashboard ? [join(repo, "rsa-dashboard/node_modules/next/package.json")] : []),
       ...(config.pet ? [join(repo, "rsa-companion/dist/electron/main.js"), join(repo, "rsa-companion/node_modules/electron/package.json")] : []),
     ];

@@ -8,10 +8,11 @@ export interface EventMetadata { source?: EventSource; origin?: EventOrigin; cha
 export interface DeviceEvent extends EventMetadata { type: string; data: unknown; trace: Trace; source: EventSource; origin: EventOrigin }
 export type RecordEvent = (type: string, data: unknown, trace?: Trace, metadata?: EventMetadata) => void;
 import type { ToolDefinition, ToolArguments } from "./contracts.ts";
+import type { DriverManifest } from "./drivers/registry.ts";
 
 /** Serializable service discovery; driver implementation objects never cross this boundary. */
 export interface Catalog {
-  drivers: { id: string; version: string }[];
+  drivers: (Pick<DriverManifest, "id" | "transport" | "defaultPort" | "needsGame" | "launchHint" | "launchCommand"> & { version: string })[];
   controllers: (ToolDefinition & { requiresControl: boolean; mediaTypes?: readonly string[] })[];
 }
 export interface Request {

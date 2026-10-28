@@ -3,7 +3,13 @@ import { createHash } from "node:crypto";
 import { chmod, mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { launchPlan, parseConfig, WorkspaceLauncher, type LaunchIO, type LaunchPlan } from "../src/app/workspace.ts";
+import { launchPlan, parseConfig, WorkspaceLauncher, type DriverManifest, type LaunchIO, type LaunchPlan } from "../src/app/workspace.ts";
+import { getDriver } from "@playness/baseware/drivers/registry";
+
+const manifestFor = (id: string): DriverManifest => {
+  const { load: _load, fallbackVersion: _fallback, ...manifest } = getDriver(id);
+  return { ...manifest, version: _fallback };
+};
 
 class FakeServices implements LaunchIO {
   calls: string[][] = [];
@@ -100,8 +106,8 @@ class FakeServices implements LaunchIO {
   }
 }
 
-const plan = () => launchPlan(parseConfig({ driver: "ryubing", game: "games/A game; $(touch BAD).nsp" }),
-  "/tmp/Workspace with spaces", "/tmp/Source with spaces", "/tmp/baseware-test.sock");
+const plan = () => launchPlan(parseConfig({ driver: "ryubing", game: "games/A game; $(touch BAD).nsp" }, manifestFor("ryubing")),
+  "/tmp/Workspace with spaces", "/tmp/Source with spaces", "/tmp/baseware-test.sock", manifestFor("ryubing"));
 
 test("managed Dashboard uses a current production build and fails before starting devices when stale", async () => {
   const value = await plan();
@@ -116,11 +122,11 @@ test("managed Dashboard uses a current production build and fails before startin
 test("launch config keeps limits explicit and paths as literal argv entries", async () => {
   const value = await plan();
   expect(value.config).toMatchObject({ port: 47663, seconds: 1800, requests: 1000, compactionThreshold: 256000 });
-  expect(parseConfig({ driver: "mgba" }).port).toBe(47653);
-  expect(() => parseConfig({ driver: "ryubing", second: 10 })).toThrow("Unknown");
-  expect(() => parseConfig({ driver: "mgba", game: "game.gba" })).toThrow("mGBA");
+  expect(parseConfig({ driver: "mgba" }, manifestFor("mgba")).port).toBe(47653);
+  expect(() => parseConfig({ driver: "ryubing", second: 10 }, manifestFor("ryubing"))).toThrow("Unknown");
+  expect(parseConfig({ driver: "mgba", game: "game.gba" }, manifestFor("mgba"))).toMatchObject({ driver: "mgba", game: "game.gba" });
   expect(value.commands.emulator).toEqual(["env", "RSA_BRIDGE_PORT=47663",
-    "/tmp/Source with spaces/baseware/src/drivers/ryubing/launch.sh",
+    "/Applications/Ryubing.app/Contents/MacOS/Ryujinx",
     "/tmp/Workspace with spaces/games/A game; $(touch BAD).nsp"]);
   expect(value.commands.baseware).toEqual(["/tmp/Source with spaces/baseware/bin/baseware", "serve",
     "--driver", "ryubing", "--port", "47663", "--socket", "/tmp/baseware-test.sock",
@@ -135,24 +141,24 @@ test("launch config keeps limits explicit and paths as literal argv entries", as
 });
 
 test("Cua launch config uses its native service without choosing a workspace observation", async () => {
-  const config = parseConfig({ driver: "cua", cuaCommand: "/Applications/Cua Driver/cua-driver", dashboard: false, pet: false });
-  const value = await launchPlan(config, "/tmp/Desktop workspace", "/tmp/Source", "/tmp/cua-baseware.sock");
+  const config = parseConfig({ driver: "cua", cuaCommand: "/Applications/Cua Driver/cua-driver", dashboard: false, pet: false }, manifestFor("cua"));
+  const value = await launchPlan(config, "/tmp/Desktop workspace", "/tmp/Source", "/tmp/cua-baseware.sock", manifestFor("cua"));
   expect(config.port).toBeUndefined();
   expect(value.commands.emulator).toBeUndefined();
   expect(value.commands.baseware).toEqual(["/tmp/Source/baseware/bin/baseware", "serve", "--driver", "cua",
     "--cua-command", "/Applications/Cua Driver/cua-driver", "--socket", "/tmp/cua-baseware.sock",
     "--data-dir", "/tmp/Desktop workspace/logs/baseware", "--diagnostics", "normal"]);
   expect(value.commands.host).not.toContain("--auto-observe");
-  const defaults = await launchPlan(parseConfig({ driver: "cua" }), "/tmp/Desktop workspace", "/tmp/Source", "/tmp/cua-baseware.sock");
+  const defaults = await launchPlan(parseConfig({ driver: "cua" }, manifestFor("cua")), "/tmp/Desktop workspace", "/tmp/Source", "/tmp/cua-baseware.sock", manifestFor("cua"));
   expect(defaults.commands.baseware).not.toContain("--cua-command");
   expect(defaults.commands.baseware).not.toContain("--port");
-  expect(() => parseConfig({ driver: "cua", port: 47663 })).toThrow("bridge port");
-  expect(() => parseConfig({ driver: "cua", game: "game.nsp" })).toThrow("game");
-  expect(() => parseConfig({ driver: "mgba", cuaCommand: "cua-driver" })).toThrow("cuaCommand");
+  expect(() => parseConfig({ driver: "cua", port: 47663 }, manifestFor("cua"))).toThrow("bridge port");
+  expect(() => parseConfig({ driver: "cua", game: "game.nsp" }, manifestFor("cua"))).toThrow("game");
+  expect(() => parseConfig({ driver: "mgba", cuaCommand: "cua-driver" }, manifestFor("mgba"))).toThrow("cuaCommand");
 });
 
 test("Cua startup and shutdown only manage its services, without emulator bridge probes", async () => {
-  const value = await launchPlan(parseConfig({ driver: "cua", dashboard: false, pet: false }), "/tmp/Desktop workspace", "/tmp/Source", "/tmp/cua-baseware.sock");
+  const value = await launchPlan(parseConfig({ driver: "cua", dashboard: false, pet: false }, manifestFor("cua")), "/tmp/Desktop workspace", "/tmp/Source", "/tmp/cua-baseware.sock", manifestFor("cua"));
   const io = new FakeServices(value);
   const launcher = new WorkspaceLauncher(value, io);
   const status = await launcher.up();
@@ -167,16 +173,16 @@ test("Cua startup and shutdown only manage its services, without emulator bridge
 });
 
 test("Azahar launches its own native device without desktop dependencies", async () => {
-  const config = parseConfig({ driver: "azahar", game: "games/3DS game.cci" });
-  const value = await launchPlan(config, "/tmp/3DS workspace", "/tmp/Source", "/tmp/3ds-baseware.sock");
+  const config = parseConfig({ driver: "azahar", game: "games/3DS game.cci" }, manifestFor("azahar"));
+  const value = await launchPlan(config, "/tmp/3DS workspace", "/tmp/Source", "/tmp/3ds-baseware.sock", manifestFor("azahar"));
   expect(config.port).toBe(47673);
   expect(value.commands.emulator).toEqual(["env", "RSA_BRIDGE_PORT=47673",
-    "/tmp/Source/baseware/src/drivers/azahar/launch.sh", "/tmp/3DS workspace/games/3DS game.cci"]);
+    "/Applications/Azahar.app/Contents/MacOS/azahar", "/tmp/3DS workspace/games/3DS game.cci"]);
   expect(value.commands.baseware).toContain("azahar");
   expect(value.commands.baseware).toContain("47673");
   expect(value.commands.baseware).not.toContain("--cua-command");
   expect(value.commands.host).not.toContain("--auto-observe");
-  expect(() => parseConfig({ driver: "azahar", cuaCommand: "/tools/cua-driver" })).toThrow("cua driver");
+  expect(() => parseConfig({ driver: "azahar", game: "games/3DS game.cci", cuaCommand: "/tools/cua-driver" }, manifestFor("azahar"))).toThrow("stdio driver");
   const io = new FakeServices(value);
   io.bridgePort = 47673;
   expect((await new WorkspaceLauncher(value, io).up()).host?.mode).toBe("manual");
@@ -271,8 +277,8 @@ test("down waits for takeover cleanup, stops only owned jobs, and keeps the shar
 });
 
 test("two workspaces reuse one Alice process and either workspace can explicitly stop it", async () => {
-  const first = await launchPlan(parseConfig({ driver: "cua" }), "/tmp/First workspace", "/tmp/Source", "/tmp/first-baseware.sock");
-  const second = await launchPlan(parseConfig({ driver: "cua" }), "/tmp/Second workspace", "/tmp/Source", "/tmp/second-baseware.sock");
+  const first = await launchPlan(parseConfig({ driver: "cua" }, manifestFor("cua")), "/tmp/First workspace", "/tmp/Source", "/tmp/first-baseware.sock", manifestFor("cua"));
+  const second = await launchPlan(parseConfig({ driver: "cua" }, manifestFor("cua")), "/tmp/Second workspace", "/tmp/Source", "/tmp/second-baseware.sock", manifestFor("cua"));
   const firstIO = new FakeServices(first);
   const firstStatus = await new WorkspaceLauncher(first, firstIO).up();
   const firstPet = firstStatus.jobs.find(job => job.name === "pet")!;
@@ -364,7 +370,7 @@ test("an external Ryubing process blocks startup before spawning or stopping any
 });
 
 test("a bridge used by another workspace neither receives a second host nor gets stopped", async () => {
-  const prepared = await launchPlan(parseConfig({ driver: "ryubing" }), "/tmp/Second workspace", undefined, "/tmp/second-baseware.sock");
+  const prepared = await launchPlan(parseConfig({ driver: "ryubing" }, manifestFor("ryubing")), "/tmp/Second workspace", undefined, "/tmp/second-baseware.sock", manifestFor("ryubing"));
   const attach = new FakeServices(prepared);
   attach.preparedBridgePid = 700;
   attach.bridgeClientPids = [701];
