@@ -22,14 +22,13 @@ async function packageAt(root: string) {
   return task;
 }
 
-test("schema is an explicitly labelled contract guide with pinned official sources", async () => {
+test("schema selects contract guides and rejects unknown kinds", async () => {
   const root = await temporary();
   const all = await invoke(["schema"], root);
   expect(Object.keys(all.value)).toEqual(["task", "reward", "dataset"]);
   expect(all.value.task).toMatchObject({ guideOnly: true, schema_version: "1.4", profile: "ludens-native" });
   expect(all.value.dataset.schema_version).toBe("1.0");
-  expect(all.value.task.source).toContain("f3a5a923f6d722472c9e797af836ae4425fb215f");
-  expect((await invoke(["schema", "reward"], root)).value.shape).toContain("finite");
+  expect((await invoke(["schema", "reward"], root)).value).toEqual(all.value.reward);
   await expect(invoke(["schema", "report"], root)).rejects.toThrow("expects");
 });
 

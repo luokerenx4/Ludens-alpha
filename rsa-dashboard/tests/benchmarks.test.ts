@@ -1,10 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, writeFile, readFile, realpath, rm, symlink, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { trialSummary, type Trial, type Verification, type TaskDefinition, type EvidenceReference, type BenchmarkResult } from "../../rsa/src/benchmark/contract";
+import { trialSummary, type Trial, type Verification, type EvidenceReference, type BenchmarkResult } from "../../rsa/src/benchmark/contract";
 import { readTask } from "../../rsa/src/benchmark/task";
 import { importLegacyTrial } from "../../rsa/src/benchmark/legacy-import";
 import { catalog, clearCatalogCache } from "../lib/data";
@@ -14,7 +13,6 @@ import { benchmarkCommand, benchmarkVerifyCommand, benchmarkSelection, benchmark
 import type { Event } from "../lib/types";
 
 const json = (path: string, value: unknown) => writeFile(path, JSON.stringify(value));
-const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const at = "2026-10-28T01:00:00.000Z";
 async function taskPackage(directory: string, name = "fixture/capability", extra = "") {
   await mkdir(join(directory, "environment"), { recursive: true });
@@ -46,7 +44,7 @@ async function fixture() {
     return directory;
   };
   const verify = async (trial: Trial, id = "verify-010", patch: Partial<Verification> = {}, rewards: Record<string, number> = { success: 0 }) => {
-    const verification: Verification = { schemaVersion: 1, id, trialId: trial.id, task: trial.task, status: "completed", startedAt: at, endedAt: "2026-10-28T01:00:02.000Z", reason: "initial", evidence: [], reward: { file: "reward.json", sha256: hash(JSON.stringify(rewards)) }, ...patch };
+    const verification: Verification = { schemaVersion: 1, id, trialId: trial.id, task: trial.task, status: "completed", startedAt: at, endedAt: "2026-10-28T01:00:02.000Z", reason: "initial", evidence: [], ...patch };
     const directory = join(workspace, "logs", trial.id, "verifier", id);
     await mkdir(directory, { recursive: true });
     await json(join(directory, "verification.json"), verification);
@@ -168,10 +166,10 @@ test("workspace and manifest identity checks reject foreign summaries and detail
   } finally { await f.cleanup(); }
 });
 
-test("evidence resolves only a bounded page of originals, preserving missing and changed-file diagnostics", async () => {
+test("evidence resolves a bounded page and reports missing files without sealing bytes", async () => {
   const f = await fixture();
   try {
-    const references: EvidenceReference[] = Array.from({ length: 27 }, (_, i) => ({ kind: "file", path: `evidence-${i}.txt`, sha256: hash(`payload-${i}`) }));
+    const references: EvidenceReference[] = Array.from({ length: 27 }, (_, i) => ({ kind: "file", path: `evidence-${i}.txt` }));
     const trial = f.make("run-010", { evidence: references });
     const directory = await f.save(trial);
     for (let i = 0; i < 27; i++) if (i !== 25) await writeFile(join(directory, `evidence-${i}.txt`), i === 26 ? "changed" : `payload-${i}`);
@@ -181,8 +179,7 @@ test("evidence resolves only a bounded page of originals, preserving missing and
     assert.equal(first.evidence.nextCursor, "25");
     const second = await benchmarkEvidence("ws-bench", trial.id, { evidenceCursor: "25" }, f.root);
     assert.equal(second.evidence.items.length, 2);
-    assert.ok(second.evidence.items.every(item => !item.available));
-    assert.match(second.evidence.items[1].error!, /hash mismatch/);
+    assert.deepEqual(second.evidence.items.map(item => item.available), [false, true]);
     assert.equal(second.evidence.nextCursor, undefined);
     await assert.rejects(benchmarkEvidence("ws-bench", trial.id, { evidenceCursor: "-1" }, f.root), /无效/);
     await assert.rejects(benchmarkEvidence("ws-bench", trial.id, {}, f.root, AbortSignal.abort()), /abort/i);
@@ -197,7 +194,7 @@ test("timeline gaps and escaping evidence remain unavailable without capturing r
       { kind: "timeline", timeline: { asset: "video/abc.mp4", video } },
       { kind: "timeline", timeline: { asset: "video/gap-abc.mp4", video: { ...video, status: "gap", reason: "encoder busy" } } },
       { kind: "timeline", timeline: { asset: "video/def.mp4", video } },
-      { kind: "file", path: "escape", sha256: hash("outside") },
+      { kind: "file", path: "escape" },
     ];
     const trial = f.make("run-010", { evidence: references });
     const directory = await f.save(trial), timeline = join(f.workspace, ".rsa/timeline");
@@ -221,9 +218,9 @@ test("diagnostic attachments load only by registered index with a bounded text p
   const f = await fixture();
   try {
     const large = "x".repeat(300 * 1024), references: EvidenceReference[] = [
-      { kind: "file", path: "details.json", sha256: hash('{"check":false}') },
-      { kind: "file", path: "large.txt", sha256: hash(large) },
-      { kind: "file", path: "binary", sha256: hash("a\0b") },
+      { kind: "file", path: "details.json" },
+      { kind: "file", path: "large.txt" },
+      { kind: "file", path: "binary" },
     ];
     const trial = f.make("run-010", { evidence: references });
     const directory = await f.save(trial);
@@ -238,9 +235,31 @@ test("diagnostic attachments load only by registered index with a bounded text p
     await assert.rejects(benchmarkAttachment("ws-bench", trial.id, 999, undefined, f.root), /引用/);
     await assert.rejects(benchmarkAttachment("ws-bench", trial.id, -1, undefined, f.root), /序号/);
     await writeFile(join(directory, "details.json"), "changed");
-    await assert.rejects(benchmarkAttachment("ws-bench", trial.id, 0, undefined, f.root), /hash mismatch/);
+    assert.equal((await benchmarkAttachment("ws-bench", trial.id, 0, undefined, f.root)).text, "changed");
     assert.deepEqual(parseBenchmarkRequest(new URLSearchParams("project=ws-bench&run=run-010&attachment=1&verification=v1")), { kind: "attachment", project: "ws-bench", run: "run-010", index: 1, verification: "v1" });
     for (const query of ["attachment=0", "project=ws-bench&run=run-010&attachment=-1", "project=ws-bench&run=run-010&attachment=1.5"]) assert.throws(() => parseBenchmarkRequest(new URLSearchParams(query)));
+  } finally { await f.cleanup(); }
+});
+
+test("selected verification diagnostics share the bounded attachment route with execution logs", async () => {
+  const f = await fixture();
+  try {
+    const trial = f.make("run-010", { evidence: [{ kind: "file", path: "stdout.log" }, { kind: "file", path: "stderr.log" }] });
+    const directory = await f.save(trial);
+    await writeFile(join(directory, "stdout.log"), "execution stdout");
+    await writeFile(join(directory, "stderr.log"), "execution stderr");
+    for (const id of ["verify-010", "verify-011"]) {
+      await f.verify(trial, id, { evidence: ["details.json", "stdout.log", "stderr.log"].map(name => ({ kind: "file", path: `verifier/${id}/${name}` })) });
+      for (const name of ["details.json", "stdout.log", "stderr.log"]) await writeFile(join(directory, "verifier", id, name), `${id}:${name}`);
+    }
+    const proof = await benchmarkEvidence("ws-bench", trial.id, { verification: "verify-010" }, f.root);
+    assert.equal(proof.evidence.items.length, 5);
+    assert.ok(proof.evidence.items.every(item => item.available));
+    for (const item of proof.evidence.items) {
+      const attachment = await benchmarkAttachment("ws-bench", trial.id, item.index, "verify-010", f.root);
+      assert.equal(attachment.text, item.index < 2 ? `execution ${item.index === 0 ? "stdout" : "stderr"}` : `verify-010:${["details.json", "stdout.log", "stderr.log"][item.index - 2]}`);
+    }
+    assert.equal((await benchmarkAttachment("ws-bench", trial.id, 2, "verify-011", f.root)).text, "verify-011:details.json");
   } finally { await f.cleanup(); }
 });
 
@@ -285,12 +304,11 @@ test("comparison retains verifier and conditions identity and labels a re-score 
     const comparison = compareResults(result, baseline);
     assert.equal(comparison.sameExecution, true);
     assert.equal(comparison.subjectsChanged, true);
-    assert.equal(comparison.compatible, true);
     assert.deepEqual(comparison.verifications, { result: "verify-011", baseline: "verify-010" });
     assert.deepEqual(comparison.rewards, [{ key: "latency", value: null, baseline: 10, delta: null }, { key: "quality", value: 1, baseline: 0, delta: 1 }]);
     const changed = compareResults({ ...result, trial: { ...trial, conditions: { backend: "different" } } }, baseline);
-    assert.equal(changed.compatible, false); assert.deepEqual(changed.changes, ["conditions"]); assert.ok(changed.rewards.every(item => item.delta === null));
-    assert.equal(compareResults({ ...result, verification: null, verifier_result: { rewards: null } }, baseline).compatible, false);
+    assert.deepEqual(changed.changes, ["conditions"]); assert.equal(changed.rewards.find(item => item.key === "quality")?.delta, 1);
+    assert.ok(compareResults({ ...result, verification: null, verifier_result: { rewards: null } }, baseline).rewards.every(item => item.delta === null));
   } finally { await f.cleanup(); }
 });
 
@@ -332,8 +350,14 @@ test("request and link helpers preserve explicit verification selections and rej
     assert.equal(benchmarkSelection(result, result).verification, "verify-010");
     assert.equal(benchmarkSelection(result, result).baselineVerification, "verify-010");
     assert.equal(benchmarkSelection(result).report, null);
-    assert.match(benchmarkCommand(f.task, "/workspace/it's here"), /'\\''/);
-    assert.ok(benchmarkCommand(f.task, f.workspace).includes(`--digest '${f.task.digest}'`));
+    const task = { ...f.task, bindings: [{ path: "/workspace/it's here/run.json", configuration: { task: f.task.name, argv: ["program"] } }] };
+    assert.match(benchmarkCommand(task, "/workspace/it's here")!, /'\\''/);
+    assert.ok(benchmarkCommand(task, f.workspace)!.includes(`--digest '${f.task.digest}'`));
+    assert.ok(benchmarkCommand(task, f.workspace)!.includes("--config "));
+    assert.equal(benchmarkCommand({ ...task, bindings: [] }, f.workspace), null);
+    const ambiguous = { ...task, bindings: [...task.bindings, { ...task.bindings[0], path: "/other.json" }] };
+    assert.equal(benchmarkCommand(ambiguous, f.workspace), null);
+    assert.ok(benchmarkCommand(ambiguous, f.workspace, "/other.json")!.endsWith("--config '/other.json'"));
     assert.match(benchmarkVerifyCommand(trial), /bench verify 'run-010'/);
     const parsed = parseBenchmarkRequest(new URLSearchParams("project=ws-bench&run=run-010&report=legacy-report"));
     assert.equal(parsed.kind, "detail"); if (parsed.kind === "detail") assert.equal(parsed.query.verification, "legacy-report");

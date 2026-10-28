@@ -10,13 +10,9 @@ export const HARBOR_CONTRACT_REVISION = "f3a5a923f6d722472c9e797af836ae4425fb215
 const defaults = ["__pycache__/", "*.pyc", ".DS_Store", "*.swp", "*.swo", "*~"];
 const exists = async (path: string) => stat(path).then(() => true, error => { if (error.code === "ENOENT") return false; throw error; });
 const posix = (path: string) => path.split(sep).join("/");
-export async function hashFile(path: string, byteLength?: number): Promise<string> {
-  if (byteLength !== undefined && (!Number.isSafeInteger(byteLength) || byteLength < 0)) throw new Error("Invalid evidence prefix length");
+export async function hashFile(path: string): Promise<string> {
   const hash = createHash("sha256");
-  if (byteLength === 0) return hash.digest("hex");
-  let read = 0;
-  for await (const chunk of createReadStream(path, byteLength === undefined ? {} : { end: byteLength - 1 })) { hash.update(chunk); read += chunk.length; }
-  if (byteLength !== undefined && read !== byteLength) throw new Error("Evidence prefix is incomplete");
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
   return hash.digest("hex");
 }
 /** Reject traversal and links escaping the trusted root, including a symlinked leaf. */

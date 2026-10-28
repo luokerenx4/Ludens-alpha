@@ -16,7 +16,7 @@ test.each([
   const source = `import { run } from ${JSON.stringify(resolve(import.meta.dir, `../src/benchmark/cases/${id}.ts`))};
 import { EventLog } from ${JSON.stringify(resolve(import.meta.dir, "../src/harness/events.ts"))};
 const log = new EventLog(${JSON.stringify(runDir)}, {id: "offline-benchmark", now: () => performance.now()});
-const result = await run({runDir: ${JSON.stringify(runDir)}, workspace: ${JSON.stringify(workspace)}, log, metadata: {}, model: "openai-codex/gpt-6.1-sol", seconds: 30, maxRequests: 10, seed: 7});
+const result = await run({runDir: ${JSON.stringify(runDir)}, workspace: ${JSON.stringify(workspace)}, log, metadata: {}, model: "openai-codex/gpt-6.1-sol", seconds: 30, maxRequests: 10, seed: 7, budget: {deadlineMs: Date.now() + 30_000, signal: new AbortController().signal}});
 await Bun.write(${JSON.stringify(join(directory, "outcome.json"))}, JSON.stringify(result));`;
   const child = Bun.spawn([process.execPath, "-e", source], { cwd: resolve(import.meta.dir, ".."), stdout: "pipe", stderr: "pipe" });
   const timeout = setTimeout(() => child.kill(), 25_000);
@@ -70,7 +70,7 @@ Object.defineProperty(log, "record", {value: (type, data, trace, metadata) => {
     : ${JSON.stringify(id)} === "ws-recovery" ? type === "benchmark_transport_step" : type === "compaction_http_end";
   if (trigger && !fired) { fired = true; queueMicrotask(() => control.abort(new Error("benchmark cancelled"))); }
 }});
-try { await run({runDir: ${JSON.stringify(runDir)}, workspace: ${JSON.stringify(workspace)}, log, metadata: {}, model: "openai-codex/gpt-6.1-sol", seconds: 30, maxRequests: 10, seed: 7, signal: control.signal}); }
+try { await run({runDir: ${JSON.stringify(runDir)}, workspace: ${JSON.stringify(workspace)}, log, metadata: {}, model: "openai-codex/gpt-6.1-sol", seconds: 30, maxRequests: 10, seed: 7, signal: control.signal, budget: {deadlineMs: Date.now() + 30_000, signal: new AbortController().signal}}); }
 catch (error) { caught = String(error); }
 let pythonGone = true;
 const pidFile = Bun.file(${JSON.stringify(join(workspace, "handoff-python.pid"))});

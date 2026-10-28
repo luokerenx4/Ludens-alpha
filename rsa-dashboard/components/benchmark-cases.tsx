@@ -138,10 +138,14 @@ export function BenchmarkCases({ search, refresh, navigate, onNavigate }: {
       </aside>
       <div className="bench-case-main">
         {chosenTask && <section className="surface bench-result">
-          <header className="bench-result-heading"><div><h2>{chosenTask.title}</h2><p>{chosenTask.config.task.description ?? chosenTask.name}</p></div>
-            {workspace && <button className="control-button" onClick={() => void copy(benchmarkCommand(chosenTask, workspace))}>复制运行命令</button>}</header>
-          {workspace && <div className="bench-command"><code>{benchmarkCommand(chosenTask, workspace)}</code><span role="status">{copied || "在终端显式提交给 Shiori"}</span></div>}
-          {!chosenTask.name.startsWith("ludens/") && <p className="bench-note">自定义任务还需用 --config 指定 Shiori 执行配置。</p>}
+          <header className="bench-result-heading"><div><h2>{chosenTask.title}</h2><p>{chosenTask.config.task.description ?? chosenTask.name}</p></div></header>
+          {workspace && chosenTask.bindings.map(binding => {
+            const command = benchmarkCommand(chosenTask, workspace, binding.path)!;
+            return <div className="bench-command" key={binding.path}><code>{command}</code>
+              <button className="control-button" onClick={() => void copy(command)}>复制运行命令</button></div>;
+          })}
+          {copied && <span role="status">{copied}</span>}
+          {!chosenTask.bindings.length && <p className="bench-note">没有执行配置。在此任务来源的 benchmarks/runs 中添加 task 字段匹配的 JSON 配置，或在终端用 --config 选择配置。</p>}
           {chosenTask.unsupportedRequirements.length > 0 && <div className="bench-warning">当前环境不支持：{chosenTask.unsupportedRequirements.join("、")}</div>}
         </section>}
         <section className="surface bench-history"><div className="surface-heading"><h2>执行历史</h2><span>{rows.length} 次执行 · 评分修订不增加执行次数</span></div>
@@ -170,11 +174,12 @@ export function BenchmarkCases({ search, refresh, navigate, onNavigate }: {
             <div className="bench-result-layers"><div><span>执行</span><strong>{statusLabels[selected.trial.status]}</strong></div>
               <div><span>评分</span><strong>{verificationLabel(selected.verification)}</strong><small>{selected.verification?.id ?? "未提交"}</small></div>
               <div><span>任务版本</span><code>{short(selected.trial.task.digest)}</code></div></div>
-            <section className="bench-report"><h3>评分版本</h3><p className="bench-note">重评使用固定证据，不重做动作。数值为零不代表执行错误。</p>
+            <section className="bench-report"><h3>评分版本</h3><p className="bench-note">重评读取已保存产物，不重做动作。数值为零不代表执行错误。</p>
               {proof!.verifications.verifications.map(verification => <p key={verification.id}>
                 <button className="text-button" aria-pressed={selected.verification?.id === verification.id}
                   onClick={() => navigate({ verification: verification.id, report: null, evidenceCursor: null })}>{verification.id}</button>
                 {" · "}{verificationLabels[verification.status]} · {date(verification.startedAt)} · {verification.reason}
+                {" · "}<button className="text-button" onClick={() => navigate({ baseline: resultKey(selected.trial), baselineVerification: verification.id, baselineReport: null })}>设为基线</button>
               </p>)}
               {!proof!.verifications.verifications.length && <p>尚无评分记录。</p>}
               <div className="bench-selectors">{query.get("verificationCursor") && <button className="text-button" onClick={() => navigate({ verificationCursor: null })}>最新评分页</button>}
@@ -184,7 +189,7 @@ export function BenchmarkCases({ search, refresh, navigate, onNavigate }: {
             {baselineKey && <p className="bench-note">比较基线：<code>{baselineKey}</code>{baseline?.verification && ` @ ${baseline.verification.id}`} <button className="text-button" onClick={() => navigate({ baseline: null, baselineVerification: null, baselineReport: null })}>移除</button></p>}
             {baselineLoad?.error && <div className="error-banner" role="alert">基线读取失败：{baselineLoad.error}</div>}
             {baselineKey && !baseline && !baselineLoad?.error && <p role="status">正在读取基线…</p>}
-            {comparison && !comparison.compatible && <p className="bench-warning">本次与基线不满足可比条件，暂不计算差值。{comparison.changes.length ? `不同项：${comparison.changes.join("、")}` : "需要两次执行和评分均完成且有有效 reward。"}</p>}
+            {!!comparison?.changes.length && <p className="bench-note">不同项：{comparison.changes.join("、")}。差值仅表示数值变化，请结合这些差异解读。</p>}
             {comparison?.sameExecution && <p className="bench-note">这是同一次执行的评分比较，不是两个独立试验。</p>}
             {comparison?.subjectsChanged && <p className="bench-note">被测代码或模型版本有变化；任务和条件差异仍独立检查。</p>}
             <h3>Reward</h3>
@@ -199,7 +204,6 @@ export function BenchmarkCases({ search, refresh, navigate, onNavigate }: {
               {proof!.evidence.nextCursor && <button className="text-button" onClick={() => navigate({ evidenceCursor: proof!.evidence.nextCursor! })}>更多证据 →</button>}</div>
             {selected.trial.parentRunId && <p><a href={benchmarkRunUrl({ project: selected.trial.project, runId: selected.trial.parentRunId })} onClick={event => link(event, benchmarkRunUrl({ project: selected.trial.project, runId: selected.trial.parentRunId! }))}>查看发起评测的运行 ↗</a></p>}
             {!!selected.trial.limitations?.length && <div className="bench-limitations"><h3>适用范围与限制</h3><ul>{selected.trial.limitations.map((item, index) => <li key={index}>{item}</li>)}</ul></div>}
-            {!!selected.trial.artifacts?.length && <div className="bench-limitations"><h3>测量产物</h3><ul>{selected.trial.artifacts.map((item, index) => <li key={index}>{item.label && `${item.label} · `}<code>{item.path}</code></li>)}</ul></div>}
             <details className="bench-provenance"><summary>条件、被测版本与来源</summary><pre>{JSON.stringify({ task: selected.trial.task, parameters: selected.trial.parameters,
               conditions: selected.trial.conditions, subjects: selected.trial.subjects, trace: selected.trial.trace, legacy: selected.trial.legacy,
               verification: selected.verification }, null, 2)}</pre>{baseline && <><h3>基线</h3><pre>{JSON.stringify({ task: baseline.trial.task, parameters: baseline.trial.parameters,

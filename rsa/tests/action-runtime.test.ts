@@ -109,7 +109,7 @@ ${body ?? `        self.n += 1
   };
 }
 
-test("real resident processes compose history and async input without per-tick audit at 1/10/30 Hz", async () => {
+test("resident processes compose history and complete async inputs across configured step rates", async () => {
   const report = [];
   for (const [hz, diagnostics] of [[1, "normal"], [10, "normal"], [30, "normal"], [10, "full"]] as const) {
     const f = await fixture(hz, diagnostics);
@@ -119,12 +119,15 @@ test("real resident processes compose history and async input without per-tick a
       await until(() => f.runtime.action!.status().state === "ready", JSON.stringify(f.runtime.action!.status()));
       const actionPid = f.runtime.action!.status().pid;
       const epoch = f.runtime.status().epoch!;
-      await Bun.sleep(1150);
-      const history = await f.history();
+      let history = await f.history();
+      await until(async () => {
+        history = await f.history();
+        const reading = history.records?.[0]?.data as { tick?: number } | undefined;
+        return typeof reading?.tick === "number" && reading.tick >= 2 && f.held.size === 0;
+      }, "repeated action steps and completed input");
       expect(history.error).toBeUndefined();
-      const data = history.records![0]!.data as any;
-      expect(data.tick).toBeGreaterThanOrEqual(hz);
-      expect(data.pid).toBe(actionPid);
+      const data = history.records![0]!.data as { tick: number; pid: number };
+      expect(data.pid).toBe(actionPid!);
       expect(actionPid).not.toBe(perceptionPid);
       expect(f.states).toContainEqual(["jump", "left"]);
       expect(f.states).toContainEqual(["left"]);

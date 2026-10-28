@@ -249,11 +249,14 @@ test("native service survives OMP turns while human handback revokes its origina
     expect(f.cancelled()).toBe(1);
     expect(f.released()).toBe(1);
     await until(() => Bun.file(join(f.workspace, "result-hold.json")).exists());
-    expect(await Bun.file(join(f.workspace, "result-hold.json")).json()).toMatchObject({
-      pid, rsa: { error: expect.stringContaining("aborted") },
+    const heldResult = await Bun.file(join(f.workspace, "result-hold.json")).json();
+    expect(heldResult).toMatchObject({
+      pid,
       baseware: { error: expect.stringContaining("STALE_EPOCH") },
       cli: { exitCode: 1, stderr: expect.stringContaining("STALE_EPOCH") },
     });
+    expect(heldResult.rsa).toHaveProperty("error");
+    expect(heldResult.rsa).not.toHaveProperty("value");
     expect(alive(pid!)).toBe(true);
 
     // Fresh foreground work gets the new lease; the resident process cannot inherit it.

@@ -9,7 +9,7 @@ import { datasetDigest, meanRewards, prepareMetricInput, readDataset } from "../
 import { importLegacyTrial } from "../src/benchmark/legacy-import.ts";
 import { readReward } from "../src/benchmark/reward.ts";
 import { createTrial, createVerification, finishTrial, finishVerification, get, history, inspectEvidence, readTrial, verifications } from "../src/benchmark/store.ts";
-import { hashFile, pinTask, readTask, taskDigest } from "../src/benchmark/task.ts";
+import { pinTask, readTask, taskDigest } from "../src/benchmark/task.ts";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
@@ -85,10 +85,17 @@ test("reward JSON wins, zero is valid, null/nested/bool/nonfinite are not reward
   expect(await readReward(root)).toEqual({ reward: 1 });
   await file(join(root, "reward.json"), '{"accuracy":0,"latency_ms":2.5}');
   expect(await readReward(root)).toEqual({ accuracy: 0, latency_ms: 2.5 });
+  await file(join(root, "reward.json"), '{"constructor":2,"toString":3,"__proto__":4}');
+  expect(await readReward(root)).toEqual(JSON.parse('{"constructor":2,"toString":3,"__proto__":4}'));
   await file(join(root, "reward.json"), "null");
   await expect(readReward(root)).rejects.toThrow("flat object");
   for (const value of [null, { value: true }, { value: {} }, { value: Infinity }, { value: NaN }]) expect(() => validateRewards(value)).toThrow();
   expect(() => validateRewards({})).not.toThrow();
+  await rm(join(root, "reward.json"));
+  await file(join(root, "outside.json"), '{"reward":1}');
+  const nested = join(root, "verifier"); await mkdir(nested);
+  await symlink(join(root, "outside.json"), join(nested, "reward.json"));
+  await expect(readReward(nested)).rejects.toThrow("escapes");
 });
 
 test("one terminal CAS, verification selected after reward commit, failure never reuses prior score", async () => {
@@ -101,6 +108,9 @@ test("one terminal CAS, verification selected after reward commit, failure never
   const v1 = await createVerification(root, value.id, verification(value.id, "v1"));
   expect((await get(root, value.id)).verification).toBeNull();
   await expect(finishVerification(root, value.id, "v1", { status: "completed", endedAt: "2026-10-28T01:01:02Z" })).rejects.toThrow("Missing verifier reward");
+  expect((await readTrial(root, value.id)).selectedVerificationId).toBeUndefined();
+  await file(join(v1.directory, "reward.json"), '{"reward":true}');
+  await expect(finishVerification(root, value.id, "v1", { status: "completed", endedAt: "2026-10-28T01:01:02Z" })).rejects.toThrow("flat object");
   expect((await readTrial(root, value.id)).selectedVerificationId).toBeUndefined();
   await file(join(v1.directory, "reward.json"), '{"reward":0}');
   const result = await finishVerification(root, value.id, "v1", { status: "completed", endedAt: "2026-10-28T01:01:02Z" });
@@ -126,22 +136,38 @@ test("history is paginated compact summaries and never opens verifier outputs", 
   expect("conditions" in page.trials[0]!).toBe(false);
 });
 
-test("fixed file/prefix and timeline evidence detect edits, missing originals and pending encoding", async () => {
+test("file and event evidence remain readable after edits while missing paths and pending media fail", async () => {
   const root = await temporary(), value = await completed(root);
   const path = join(root, "logs", value.id, "artifacts/data.json"); await file(path, '{"value":1}');
-  const ref = { kind: "file" as const, path: "artifacts/data.json", sha256: await hashFile(path) };
+  const ref = { kind: "file" as const, path: "artifacts/data.json", sizeBytes: 11 };
   expect((await inspectEvidence(root, value.id, ref)).available).toBe(true);
-  await writeFile(path, '{"value":2}'); expect((await inspectEvidence(root, value.id, ref)).available).toBe(false);
+  await writeFile(path, '{"value":200}'); expect((await inspectEvidence(root, value.id, ref)).available).toBe(true);
+  await rm(path); expect((await inspectEvidence(root, value.id, ref)).available).toBe(false);
+  expect((await inspectEvidence(root, value.id, { ...ref, path: "../trial.json" })).available).toBe(false);
+  await file(join(root, "outside.json"), "{}");
+  await symlink(join(root, "outside.json"), path);
+  expect((await inspectEvidence(root, value.id, ref)).available).toBe(false);
   const event = JSON.stringify({ seq: 1, origin: { eventId: "local:1" }, type: "measured" }) + "\n";
   const log = join(root, "logs", value.id, "events.jsonl"); await file(log, event + '{"seq":2}\n');
-  const prefix = { kind: "event" as const, runId: value.id, path: "events.jsonl", byteLength: Buffer.byteLength(event), sha256: await hashFile(log, Buffer.byteLength(event)) };
+  const prefix = { kind: "event" as const, runId: value.id, path: "events.jsonl", byteLength: Buffer.byteLength(event) };
   expect((await inspectEvidence(root, value.id, prefix)).available).toBe(true);
+  await file(log, event.replace("measured", "modified") + '{"seq":2}\n');
+  expect((await inspectEvidence(root, value.id, prefix)).available).toBe(true);
+  expect(await inspectEvidence(root, value.id, { ...prefix, seq: 1 })).toMatchObject({ available: true, event: { type: "modified" } });
+  expect((await inspectEvidence(root, value.id, { ...prefix, seq: 2 })).available).toBe(false);
+  await file(log, "");
+  expect((await inspectEvidence(root, value.id, prefix)).available).toBe(false);
+  expect((await inspectEvidence(root, value.id, { ...prefix, byteLength: 0 })).available).toBe(true);
+  expect((await inspectEvidence(root, value.id, { ...prefix, byteLength: 0, seq: 1 })).available).toBe(false);
   const timeline = { asset: "video/aaaaaaaa.mp4", video: { pts: 0, timeBase: [1, 30] as [number, number], width: 4, height: 4 } };
   await file(join(root, ".rsa/timeline/video/aaaaaaaa.mp4"), "recorded");
   await file(join(root, ".rsa/timeline/video/aaaaaaaa.mp4.json"), '{"status":"pending"}');
   expect((await inspectEvidence(root, value.id, { kind: "timeline", timeline })).available).toBe(false);
   await file(join(root, ".rsa/timeline/video/aaaaaaaa.mp4.json"), '{"status":"ready"}');
   expect((await inspectEvidence(root, value.id, { kind: "timeline", timeline })).available).toBe(true);
+  expect((await inspectEvidence(root, value.id, { kind: "timeline", timeline: { ...timeline, video: { ...timeline.video, status: "gap", reason: "lost" } } })).available).toBe(false);
+  await rm(join(root, ".rsa/timeline/video/aaaaaaaa.mp4"));
+  expect((await inspectEvidence(root, value.id, { kind: "timeline", timeline })).available).toBe(false);
 });
 
 test("dataset standard digest and metric rows preserve null, policy and independent-trial count", async () => {
@@ -162,16 +188,31 @@ test("dataset standard digest and metric rows preserve null, policy and independ
   expect((await readDataset(join(root, "dataset.toml"))).digest).not.toBe(dataset.digest);
 });
 
-test("comparison fixes task/verifier and conditions, subject candidate may change", async () => {
+test("comparison reports differing settings and scoring without suppressing numeric deltas", async () => {
   const root = await temporary(), value = await completed(root), v = await createVerification(root, value.id, verification(value.id, "v1"));
   await file(join(v.directory, "reward.json"), '{"correct":1}');
   await finishVerification(root, value.id, "v1", { status: "completed", endedAt: "2026-10-28T01:01:02Z" });
   const result = await get(root, value.id), baseline = structuredClone(result);
   baseline.trial.subjects = [{ id: "model", revision: "old" }]; baseline.verifier_result.rewards = { correct: 0 };
-  expect(compareResults(result, baseline)).toMatchObject({ compatible: true, subjectsChanged: true, rewards: [{ key: "correct", value: 1, baseline: 0, delta: 1 }] });
+  expect(compareResults(result, baseline)).toMatchObject({ changes: [], sameExecution: true, subjectsChanged: true, rewards: [{ key: "correct", value: 1, baseline: 0, delta: 1 }] });
   baseline.trial.conditions = { fixture: "other" };
-  expect(compareResults(result, baseline).compatible).toBe(false);
-  expect(compareResults(result, baseline).rewards[0]!.delta).toBeNull();
+  baseline.trial.parameters = { model: "other" };
+  baseline.trial.task = { ...identity, version: "other" };
+  baseline.verification!.task = { ...identity, digest: `sha256:${"2".repeat(64)}` };
+  expect(compareResults(result, baseline)).toMatchObject({ changes: ["task", "verifier", "parameters", "conditions"], rewards: [{ key: "correct", delta: 1 }] });
+  baseline.trial.id = "other-run";
+  expect(compareResults(result, baseline).sameExecution).toBe(false);
+  result.verifier_result.rewards = JSON.parse('{"constructor":6,"toString":4,"__proto__":2,"current":1}');
+  baseline.verifier_result.rewards = JSON.parse('{"constructor":2,"__proto__":1,"previous":3}');
+  expect(compareResults(result, baseline).rewards).toEqual([
+    { key: "__proto__", value: 2, baseline: 1, delta: 1 },
+    { key: "constructor", value: 6, baseline: 2, delta: 4 },
+    { key: "current", value: 1, baseline: null, delta: null },
+    { key: "previous", value: null, baseline: 3, delta: null },
+    { key: "toString", value: 4, baseline: null, delta: null },
+  ]);
+  baseline.verifier_result.rewards = null;
+  expect(compareResults(result, baseline).rewards.every(row => row.baseline === null && row.delta === null)).toBe(true);
 });
 
 test("legacy is explicit one-time import, fixed report links and diagnostic unknown checks survive", async () => {
@@ -201,13 +242,20 @@ test("publisher root negation semantics and case-sensitive paths match Harbor", 
   expect(files).not.toContain("environment/dir/drop.txt");
 });
 
-test("sealed reward mutations fail instead of changing a fixed verification's score", async () => {
+test("selected reward edits are read and explicit verification selection remains independent", async () => {
   const root = await temporary(), value = await completed(root);
   const { directory } = await createVerification(root, value.id, verification(value.id, "v1"));
   await file(join(directory, "reward.json"), '{"reward":1}');
   await finishVerification(root, value.id, "v1", { status: "completed", endedAt: "2026-10-28T01:01:02Z" });
   await file(join(directory, "reward.json"), '{"reward":9}');
-  await expect(get(root, value.id)).rejects.toThrow("Sealed verifier reward changed");
+  expect((await get(root, value.id)).verifier_result.rewards).toEqual({ reward: 9 });
+  const second = await createVerification(root, value.id, verification(value.id, "v2"));
+  await file(join(second.directory, "reward.json"), '{"reward":3}');
+  await finishVerification(root, value.id, "v2", { status: "completed", endedAt: "2026-10-28T01:02:02Z" });
+  expect((await get(root, value.id)).verifier_result.rewards).toEqual({ reward: 3 });
+  expect((await get(root, value.id, "v1")).verifier_result.rewards).toEqual({ reward: 9 });
+  await file(join(directory, "reward.json"), '{"reward":null}');
+  await expect(get(root, value.id, "v1")).rejects.toThrow("flat object");
 });
 
 
@@ -218,10 +266,18 @@ test("isolated child timeline references retain their owner without copying orig
   const original = join(root, workspaceRelative, ".rsa/timeline", timeline.asset);
   await file(original, "isolated original");
   await file(original + ".json", '{"status":"ready"}');
-  const reference = { kind: "timeline" as const, workspaceRelative, timeline, sha256: await hashFile(original) };
+  const reference = { kind: "timeline" as const, workspaceRelative, timeline };
   expect(await inspectEvidence(root, value.id, reference)).toMatchObject({ available: true, path: original });
   expect((await inspectEvidence(root, value.id, { ...reference, workspaceRelative: ".." })).available).toBe(false);
   expect((await inspectEvidence(root, value.id, { ...reference, workspaceRelative: undefined })).available).toBe(false);
   const outside = await temporary(); await symlink(outside, join(root, "outside-owner"));
   expect((await inspectEvidence(root, value.id, { ...reference, workspaceRelative: "outside-owner" })).available).toBe(false);
+});
+
+test("means count owned prototype-named dimensions and null rows normally", () => {
+  const rewards = JSON.parse('{"constructor":6,"toString":9,"__proto__":3}');
+  expect(meanRewards([rewards, {}, null])).toEqual(JSON.parse('{"constructor":2,"toString":3,"__proto__":1}'));
+  expect(meanRewards([JSON.parse('{"constructor":6}'), {}, null])).toEqual({ mean: 2 });
+  const inherited = Object.create({ constructor: 100, toString: 100, __proto__: 100 });
+  expect(meanRewards([rewards, inherited])).toEqual(JSON.parse('{"constructor":3,"toString":4.5,"__proto__":1.5}'));
 });

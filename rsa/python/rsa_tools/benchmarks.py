@@ -70,11 +70,12 @@ class Trial:
         return item
 
     def artifact(self, path, value=_MISSING, *, label=None):
-        """Freeze a workspace file or JSON value; recorded media stays referenced.
+        """Register a workspace file or JSON value; recorded media stays referenced.
 
-        artifact("samples.json", samples) writes JSON into this trial's artifacts.
-        artifact(existing_path) copies a file by content hash. Existing timeline
-        envelopes are validated and referenced without copying video or images.
+        artifact("samples.json", samples) creates JSON in this trial's artifacts.
+        artifact(existing_path) copies external files by content hash, or records
+        files already in the artifacts directory. Neither operation seals files.
+        Timeline envelopes are validated and referenced without copying media.
         """
         if label is not None and not isinstance(label, str):
             raise ValueError("Artifact label must be a string")
@@ -89,7 +90,7 @@ class Trial:
             source = (self.artifacts / relative).resolve()
             source.relative_to(self.artifacts)
             source.parent.mkdir(parents=True, exist_ok=True)
-            # Evidence already published in this execution is never overwritten.
+            # Creating an artifact must not accidentally replace an existing file.
             with source.open("x", encoding="utf-8") as output:
                 output.write(_json(value) + "\n")
         else:

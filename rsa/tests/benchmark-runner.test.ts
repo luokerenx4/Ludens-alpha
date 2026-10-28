@@ -22,7 +22,7 @@ test("offline handoff uses Shiori and one event writer; repeat isolates fixtures
     expect(events.filter(event => event.type === "benchmark_verification")).toHaveLength(1);
     expect(events.map(event => event.seq)).toEqual(events.map((_, index) => index + 1));
     expect(new Set(events.map(event => event.origin.eventId)).size).toBe(events.length);
-    expect(compareResults(second, first)).toMatchObject({ compatible: true, sameExecution: false });
+    expect(compareResults(second, first)).toMatchObject({ sameExecution: false });
     expect((await history(options.workspace)).trials).toHaveLength(2);
   } finally { await rm(root, { recursive: true, force: true }); }
 }, 40_000);

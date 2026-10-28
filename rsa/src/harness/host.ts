@@ -1,5 +1,5 @@
 import { delimiter, resolve } from "node:path";
-import { Runtime, type DeviceSession } from "./runtime.ts";
+import { Runtime, type DeviceSession, type SharedBudget } from "./runtime.ts";
 import { WorkspaceController } from "./controller.ts";
 import { PerceptionRuntime } from "./perception.ts";
 import { ActionRuntime } from "./action.ts";
@@ -11,11 +11,11 @@ export async function createHostRuntime(options: {
   devices: DeviceSession; workspace: string; runDir: string; state: WorkspaceState;
   log: EventLog; record?: RecordEvent; rsaSocket: string; basewareSocket: string;
   seconds: number; model?: string; maxRequests: number; resume?: string; compactionThreshold?: number;
-  action?: boolean;
+  action?: boolean; budget?: SharedBudget;
 }) {
   const { devices, workspace, runDir, state, log, rsaSocket, basewareSocket } = options;
   const record = options.record ?? log.record;
-  const runtime = new Runtime(devices, record, options.seconds, log.clock.id, log.diagnostics);
+  const runtime = new Runtime(devices, record, options.seconds, log.clock.id, log.diagnostics, options.budget);
   const binDir = resolve(import.meta.dir, "../../bin");
   const env = {
     RSA_SOCKET: rsaSocket, BASEWARE_SOCKET: basewareSocket, RSA_WORKSPACE: workspace, RSA_RUN_ID: log.clock.id,
