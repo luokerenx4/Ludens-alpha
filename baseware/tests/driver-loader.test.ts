@@ -58,6 +58,32 @@ test("GitHub caches distinguish real repositories and revisions and retry failed
   }
 }, 30_000);
 
+test("discover validates file packages without knowing the driver id and rejects invalid exports", async () => {
+  const root = await mkdtemp(join(tmpdir(), "driver-discover-"));
+  const good = join(root, "good.ts");
+  const bad = join(root, "bad.ts");
+  await writeFile(good, `export default { id: "fixture", transport: "bridge", defaultPort: 47111, version: "1.0",
+    launchHint: "hint", async load() { return { capabilities: { controllers: [] }, onDisconnect() {}, close() {} }; } };`);
+  await writeFile(bad, `export default { version: "1.0" };`);
+  const source = (spec: string) => `import { discoverDriver } from ${JSON.stringify(join(import.meta.dir, "../src/drivers/loader.ts"))};
+    const r = await discoverDriver(${JSON.stringify(spec)}, ${JSON.stringify(join(root, "cache"))});
+    if (typeof r.load !== "function") throw new Error("discover must not strip load()");
+    console.log(JSON.stringify({ id: r.id, transport: r.transport, defaultPort: r.defaultPort, version: r.version, launchHint: r.launchHint }));`;
+  const run = async (spec: string, expectedCode = 0) => {
+    const child = Bun.spawn([process.execPath, "--eval", source(spec)], { stdout: "pipe", stderr: "pipe" });
+    const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    expect(code, stderr).toBe(expectedCode);
+    return expectedCode === 0 ? JSON.parse(stdout) : stderr;
+  };
+  try {
+    expect(await run(`file:${good}`)).toEqual({ id: "fixture", transport: "bridge", defaultPort: 47111, version: "1.0", launchHint: "hint" });
+    expect(await run(`file:${bad}`, 1)).toContain("registration");
+    expect(await run(`file:${join(root, "missing.ts")}`, 1)).toContain("Driver path not found");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("serve forwards explicit bridge ports without defaults and publishes registration version and launch environment", async () => {
   const root = await mkdtemp(join(tmpdir(), "driver-serve-"));
   const entry = join(import.meta.dir, "../src/main.ts");

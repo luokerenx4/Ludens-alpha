@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import type { CapabilityEntry, CapabilitiesResult } from "@/lib/capabilities";
+import type { DiscoveredDriver } from "@/lib/drivers";
 
 function useJson<T>(url: string | null): { value?: T; error?: string } {
   const [loaded, setLoaded] = useState<{ url: string; value?: T; error?: string } | null>(null);
@@ -28,6 +29,51 @@ const controlLabel = (item: CapabilityEntry) => item.requiresControl === null ? 
 const readOnlyLabel = (item: CapabilityEntry) => item.readOnly === null ? ""
   : item.readOnly ? " · 只读" : " · 有副作用";
 
+function DiscoverDriver() {
+  const [spec, setSpec] = useState("");
+  const [pending, setPending] = useState(false);
+  const [result, setResult] = useState<DiscoveredDriver | null>(null);
+  const [failure, setFailure] = useState("");
+  const [copied, setCopied] = useState(false);
+  const discover = async () => {
+    setPending(true); setFailure(""); setResult(null); setCopied(false);
+    try {
+      const response = await fetch(`/api/drivers/discover?spec=${encodeURIComponent(spec)}`, { cache: "no-store" });
+      const value = await response.json();
+      if (!response.ok) throw new Error(value.error ?? "读取失败");
+      setResult(value as DiscoveredDriver);
+    } catch (error) {
+      setFailure(error instanceof Error ? error.message : String(error));
+    } finally {
+      setPending(false);
+    }
+  };
+  const command = result ? `rsa init --driver ${result.id} --driver-package ${spec.trim()}` : "";
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(command); setCopied(true); }
+    catch { setCopied(false); }
+  };
+  return <section className="surface" aria-label="外部驱动">
+    <div className="surface-heading"><h2>外部驱动 · Driver</h2><span>按需验证</span></div>
+    <p className="bench-note">粘贴驱动包地址（npm 名、github:org/repo#rev 或 file: 路径），验证它是否符合驱动约定并查看后端准备指引。本页不维护驱动清单，社区发布无需等待收录。</p>
+    <div className="caps-discover-row">
+      <input value={spec} onChange={event => setSpec(event.target.value)} placeholder="github:org/repo#rev"
+        aria-label="驱动包地址" spellCheck={false} />
+      <button className="control-button" disabled={pending || !spec.trim()} onClick={discover}>
+        {pending ? "验证中…" : "验证"}
+      </button>
+    </div>
+    {failure ? <p role="alert" className="bench-note">{failure}</p> : null}
+    {result ? <div className="caps-discover-result">
+      <p><code>{result.id}</code> · {result.version}{result.transport ? ` · ${result.transport}` : ""}{result.defaultPort !== undefined ? ` · 端口 ${result.defaultPort}` : ""}{result.needsGame ? " · 需预备后端" : ""}</p>
+      {result.launchHint ? <p className="bench-note">{result.launchHint}</p> : null}
+      <div className="caps-discover-row">
+        <code>{command}</code>
+        <button className="text-button" onClick={copy}>{copied ? "已复制" : "复制安装命令"}</button>
+      </div>
+    </div> : null}
+  </section>;
+}
 export function CapabilitiesView({ project, ready, catalogError }: { project: string; ready: boolean; catalogError?: string }) {
   const capsLoad = useJson<CapabilitiesResult>(project ? `/api/capabilities?project=${encodeURIComponent(project)}` : null);
   const caps = capsLoad.value;
@@ -43,6 +89,7 @@ export function CapabilitiesView({ project, ready, catalogError }: { project: st
     {caps.issues.length > 0 && <details className="bench-warning"><summary>读取诊断</summary>
       {caps.issues.map((issue, index) => <p key={index}>{issue.error}</p>)}
     </details>}
+    <DiscoverDriver />
     <section className="metrics" aria-label="能力概览">
       {caps.groups.map(group => <div className="metric" key={group.id}>
         <span>{group.title}</span><strong>{group.items.length}</strong><small>项能力</small>

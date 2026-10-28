@@ -3,6 +3,7 @@ import type { aliceState, recordAliceConsumer, setAliceTarget } from "./alice-st
 import type { benchmarkAttachment, benchmarkCatalog, benchmarkEvidence } from "./benchmark-data";
 import type { BenchmarkQuery, BenchmarkDetailQuery } from "./benchmarks";
 import type { capabilities } from "./capabilities";
+import type { discoverDriver } from "./drivers";
 import type { archiveBuild, catalog, getRun, mediaFile, stopRun, timelineRecord } from "./data";
 import type { docGroups, readDoc } from "./docs";
 import type { getReplay, ReplayQuery } from "./replay";
@@ -25,6 +26,7 @@ export interface DashboardMethods {
   benchmarkEvidence: { args: [project: string, run: string, query?: BenchmarkDetailQuery]; result: Awaited<ReturnType<typeof benchmarkEvidence>> };
   benchmarkAttachment: { args: [project: string, run: string, index: number, verification?: string]; result: Awaited<ReturnType<typeof benchmarkAttachment>> };
   capabilities: { args: [project?: string]; result: Awaited<ReturnType<typeof capabilities>> };
+  discoverDriver: { args: [spec: string]; result: Awaited<ReturnType<typeof discoverDriver>> };
   docGroups: { args: []; result: Awaited<ReturnType<typeof docGroups>> };
   readDoc: { args: [id: string]; result: Awaited<ReturnType<typeof readDoc>> };
   stop: { args: [project: string, run: string, epoch: string | null]; result: Awaited<ReturnType<typeof stopRun>> };
