@@ -13,11 +13,6 @@ import { childTrace, type EventTrace, type RecordEvent } from "../events.ts";
 import { pythonEnvironment } from "../../../../shared/python.ts";
 import { observationBytes, perceptionInput, type DeriveMedia, type TimelineMedia, type ObservationQuery, type PerceptionRead, type PerceptionRecord, type PerceptionStatus } from "../perception.ts";
 
-function perceptionState(status: PerceptionStatus) {
-  const { state, generation, codeSHA, sampleHz, error } = status;
-  return { state, generation, codeSHA, sampleHz, ...(error ? { error } : {}) };
-}
-
 export async function media(observations: Observation[], record?: RecordEvent, trace?: EventTrace, derive?: DeriveMedia) {
   return Promise.all(observations.map(async (observation) => {
     if (observation.mediaType.startsWith("text/") || observation.mediaType === "application/json") {
@@ -74,10 +69,9 @@ export function createRsaExtension(options: {
   const batchQueries = new Set<string>();
   let explicitPerception = false;
   let lastMain: Pick<PerceptionRecord, "id" | "sequence" | "generation"> | undefined;
-  let lastControl = "", lastPerception = "", lastSkills = "";
+  let lastPerceptionState = "";
   const deliveredBackground = new Set<string>();
-  let latestContext: { observations: string[]; deliveryIds: string[]; skillVersion?: string; memoryVersion?: string }
-    = { observations: [], deliveryIds: [] };
+  let latestContext: { observations: string[]; deliveryIds: string[] } = { observations: [], deliveryIds: [] };
   const trace = (toolCallId?: string): EventTrace => ({ epoch: options.cycle().epoch, ...options.trace?.(toolCallId), ...(toolCallId ? { toolCallId } : {}) });
   const observeParameters = z.object({
     capability: z.string().nullable().optional().describe("Perception capability ID, or '*' for all. Default: Perception.sample."),
@@ -200,7 +194,7 @@ export function createRsaExtension(options: {
   function resetContext() {
     resetBatch();
     lastMain = undefined;
-    lastControl = lastPerception = lastSkills = "";
+    lastPerceptionState = "";
     deliveredBackground.clear();
     latestContext = { observations: [], deliveryIds: [] };
   }
@@ -208,41 +202,39 @@ export function createRsaExtension(options: {
   function receipt(parent: EventTrace, origin: string, observations: string[], queries: string[]) {
     const delivery = childTrace(parent);
     runtime.record("observation_context", { id: delivery.spanId!, origin, purpose: options.cycle().purpose,
-      observations, queries, skillVersion: latestContext.skillVersion, memoryVersion: latestContext.memoryVersion }, delivery);
+      observations, queries }, delivery);
     latestContext.observations.push(...observations);
     latestContext.deliveryIds.push(delivery.spanId!);
   }
 
   async function captureContext(parent: EventTrace, origin: "prompt_start" | "tool_batch") {
     const cycle = options.cycle();
-    cycle.signal.throwIfAborted();
     const status = runtime.status();
-    const state = perceptionState(status.perception ?? { state: "unimplemented", generation: null });
     const consolidating = cycle.purpose === "consolidate";
-    let content: Awaited<ReturnType<typeof perceptionContent>>["content"] = [];
-    // A known stopped/failed sampler needs a state notice, not another failed RPC.
-    // Native tool images only replace perception when their timeline source is known.
+    let content: (ImageContent | { type: "text"; text: string })[] = [];
+    // Perception is the only proactive channel: new samples plus sampler state
+    // transitions (with the repair-relevant error and code identity), so
+    // silence is never ambiguous between "no new frame" and "the sampler is
+    // dead". Control status and skill or memory indexes are on demand: the
+    // model reads files or runs `rsa status`; ops metadata lives in logs.
+    const perception = status.perception;
+    const state: { state: PerceptionStatus["state"]; codeSHA?: string; error?: string } = perception
+      ? { state: perception.state, codeSHA: perception.codeSHA, ...(perception.error ? { error: perception.error } : {}) }
+      : { state: "unimplemented" };
+    const stateVersion = JSON.stringify(state);
     if (!consolidating && !explicitPerception && !batchImages.some(image => image.timeline?.recordId)
-      && runtime.perceptionInjectionEnabled() && state.state === "ready") {
-      const read = await readPerception(cycle.signal, parent);
-      if (!read.ok || read.records.some(record => record.id !== lastMain?.id)) {
-        content = (await perceptionContent(read, parent)).content;
+      && runtime.perceptionInjectionEnabled()) {
+      if (stateVersion !== lastPerceptionState) content.push({ type: "text", text: JSON.stringify({ perception: state }) });
+      if (state.state === "ready") {
+        const read = await readPerception(cycle.signal, parent);
+        if (!read.ok || read.records.some(record => record.id !== lastMain?.id)) {
+          content.push(...(await perceptionContent(read, parent)).content);
+        }
       }
+      // Suppressed or cancelled delivery must leave the state notice pending.
+      lastPerceptionState = stateVersion;
     }
-    const skills = await workspace.snapshot();
-    cycle.signal.throwIfAborted();
-    // Countdown changes every second; it remains available through rsa status.
-    const { perception: _perception, remainingSeconds: _remaining, ...control } = status;
-    const controlVersion = JSON.stringify(control), perceptionVersion = JSON.stringify(state);
-    const skillsVersion = `${skills.version}:${skills.memory.version}`;
-    const changes = {
-      ...(controlVersion !== lastControl ? { control } : {}),
-      ...(perceptionVersion !== lastPerception ? { perception: state } : {}),
-      ...(skillsVersion !== lastSkills ? { skills } : {}),
-    };
-    lastControl = controlVersion; lastPerception = perceptionVersion; lastSkills = skillsVersion;
-    if (Object.keys(changes).length) content.unshift({ type: "text", text: JSON.stringify(changes) });
-    latestContext = { observations: [], deliveryIds: [], skillVersion: skills.version, memoryVersion: skills.memory.version };
+    latestContext = { observations: [], deliveryIds: [] };
     if (content.length || batchImages.length || batchQueries.size) {
       receipt(parent, origin, [...new Set(batchImages.map(image => image.id))], [...batchQueries]);
     }
@@ -259,7 +251,8 @@ export function createRsaExtension(options: {
     // Keep history immutable between compactions so provider prefixes can be reused.
     pi.on("before_agent_start", async () => {
       const cycle = options.cycle();
-      cycle.signal.throwIfAborted();
+      // Passive under handback: native abort owns interruption; hooks never throw.
+      if (cycle.signal.aborted) return;
       // Existing processes retain their startup epoch. Only future shells get
       // this lease; child processes never inherit a later takeover implicitly.
       Object.assign(process.env, environment, {
@@ -306,7 +299,6 @@ export function createRsaExtension(options: {
     });
     pi.on("context", async (event) => {
       const cycle = options.cycle();
-      cycle.signal.throwIfAborted();
       // OMP delivers async images as custom messages, outside tool_result.
       // Inspect only the new tail, not old images carried across compactions.
       const tail = (event.messages ?? []).slice((event.messages ?? []).findLastIndex(message => message.role === "assistant") + 1);
@@ -329,15 +321,17 @@ export function createRsaExtension(options: {
         requests = 0;
       }
       if (requests >= options.maxRequests) {
+        // Entry-level stop aborts the run natively. Attempts after the stop are
+        // gate-blocked and not counted as cycle requests.
         await runtime.stop("model request budget");
-        cycle.signal.throwIfAborted();
+        return;
       }
       runtime.record("context", { request: ++requests, purpose: cycle.purpose, ...latestContext }, { epoch: cycle.epoch });
     });
-    pi.on("tool_call", async (event) => {
-      if (options.cycle().signal.aborted) return { block: true, reason: "Human reclaimed control" };
-      // OMP prepares all validated calls before dispatching the batch. Invalid
-      // calls never execute or emit tool_result, so do not count them here.
+    pi.on("tool_call", (event) => {
+      // Handback interrupts the turn via session.abort(); this hook only tracks
+      // the prepared batch so tool_result can attach one observation per batch.
+      // Invalid calls never execute or emit tool_result.
       pendingTools.add(event.toolCallId);
     });
   };

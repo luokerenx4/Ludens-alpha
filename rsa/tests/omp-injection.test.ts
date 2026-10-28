@@ -127,9 +127,9 @@ class Perception:
     for (const index of [1, 2, 3]) {
       expect(snapshots[index]!.images).toEqual([]);
       expect(snapshots[index]!.text).not.toContain("Perception is stopped");
-      expect(snapshots[index]!.json.some(value => value.perception || value.records || value.snapshot || value.observations)).toBe(false);
-      if (index === 1) expect(snapshots[index]!.json.find(value => value.control)?.control.context.perceptionInjection).toBe(false);
-      else expect(snapshots[index]!.json.some(value => value.control || value.skills)).toBe(false);
+      // Control status and skill or memory indexes are never injected.
+      expect(snapshots[index]!.json.some(value => value.control || value.skills || value.perception
+        || value.records || value.snapshot || value.observations)).toBe(false);
     }
     const idRead = snapshots[4]!, firstPage = snapshots[5]!, secondPage = snapshots[6]!;
     const idMetadata = idRead.json.find(value => value.records);
@@ -147,7 +147,8 @@ class Perception:
     expect(continuation.hasMore).toBe(false);
     expect([...page.records, ...continuation.records].map(record => record.id)).toEqual(history.map(record => record.id));
     expect(snapshots[7]!.images).toHaveLength(1);
-    expect(snapshots[7]!.json.find(value => value.control)?.control.context.perceptionInjection).toBe(true);
+    expect(snapshots[7]!.json.some(value => value.control || value.skills)).toBe(false);
+    expect(runtime.perceptionInjectionEnabled()).toBe(true);
     expect(runtime.perception.status()).toMatchObject({ state: "ready", generation });
 
     const explicit = session.sessionManager.getEntries().flatMap(entry => entry.type === "message" && entry.message.role === "toolResult"

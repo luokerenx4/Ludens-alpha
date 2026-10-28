@@ -43,7 +43,11 @@ test("request budgets reset on a new takeover while repeated prompts share the s
         await handlers.context({});
       }
       expect(runtime.status()).toMatchObject({mode: "auto", epoch});
-      await expect(handlers.context({})).rejects.toThrow();
+      // Post-stop attempts are gate-blocked and not recorded; no hook error.
+      await handlers.context({});
+      // Await the real settle chain (run promise includes the finally that
+      // clears `running`), so round 2's start() sees a finished cycle.
+      await runtime.runSettled;
       expect(runtime.status()).toMatchObject({mode: "manual", reason: "model request budget", thinking: false});
     }
     expect(epochs[0]).not.toBe(epochs[1]);
@@ -283,3 +287,86 @@ test("automatic delivery stays bounded across fast tools, unavailable sampling a
     await rm(directory, { recursive: true, force: true });
   }
 }, 20_000);
+
+test.each(["injection disabled", "explicit observe", "timeline image", "context replacement"])(
+  "sampler state remains deliverable after %s",
+  async (suppression) => {
+    const directory = await mkdtemp(join(tmpdir(), "rsa-state-delivery-"));
+    const runtime = createTestRuntime({ controllers: [] });
+    const perception = runtime.perception = new PerceptionRuntime({ workspace: directory, runDir: join(directory, "run"), record: runtime.record });
+    let status: PerceptionStatus = { state: "error", generation: "generation", codeSHA: "source", error: "original failure" };
+    perception.status = () => status;
+    perception.observe = async () => ({ queryId: "explicit-query", ok: true, query: {}, hasMore: false, records: [] });
+    const abort = new AbortController();
+    const extension = createRsaExtension({ runtime, workspace: new Workspace(directory, join(directory, "versions")),
+      basewareSocket: "/tmp/unused.sock", binDir: "/tmp", maxRequests: 10,
+      cycle: () => ({ epoch: "test", signal: abort.signal }) });
+    const handlers: Record<string, (event: any) => any> = {};
+    await extension.factory({ on(name: string, handler: (event: any) => any) { handlers[name] = handler; } } as ExtensionAPI);
+    const states = (content: any[] = []) => content.flatMap(part => {
+      if (part.type !== "text") return [];
+      try { const value = JSON.parse(part.text); return value.perception ? [value.perception] : []; } catch { return []; }
+    });
+    try {
+      expect(states((await handlers.before_agent_start({})).message.content)).toEqual([
+        { state: "error", codeSHA: "source", error: "original failure" },
+      ]);
+      if (suppression === "context replacement") {
+        await handlers.session_compact({});
+      } else {
+        status = { ...status, codeSHA: "changed-source", error: "new failure" };
+        if (suppression === "injection disabled") {
+          runtime.setPerceptionInjection(false);
+          expect(await handlers.before_agent_start({})).toBeUndefined();
+          runtime.setPerceptionInjection(true);
+        } else {
+          await handlers.assistant_message({});
+          await handlers.tool_call({ toolCallId: "explicit" });
+          let result;
+          if (suppression === "explicit observe") {
+            const observe = customToolToDefinition(extension.tools[0]);
+            result = await observe.execute("explicit", {}, abort.signal, () => {}, {} as ExtensionContext);
+          } else {
+            perception.deliveredMediaReference = () => ({ sha256: "image-hash", asset: "image.bin", mediaType: "image/png",
+              bytes: 5, recordId: "retained-frame", sequence: 1, sourceAsset: "image.bin", transform: "identity" });
+            result = { content: [{ type: "image", data: Buffer.from("image").toString("base64"), mimeType: "image/png" }] };
+          }
+          const enriched = await handlers.tool_result({ toolCallId: "explicit", toolName: suppression === "explicit observe" ? "observe" : "bash", input: {}, ...result });
+          expect(states(enriched.content)).toEqual([]);
+        }
+      }
+      const delivered = await handlers.before_agent_start({});
+      expect(states(delivered?.message.content)).toEqual([{ state: status.state, codeSHA: status.codeSHA, error: status.error }]);
+      expect(await handlers.before_agent_start({})).toBeUndefined();
+    } finally {
+      await handlers.session_shutdown({});
+      await runtime.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+test("cancelled perception reads do not consume an undelivered sampler state", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "rsa-state-abort-"));
+  const runtime = createTestRuntime({ controllers: [] });
+  const perception = runtime.perception = new PerceptionRuntime({ workspace: directory, runDir: join(directory, "run"), record: runtime.record });
+  perception.status = () => ({ state: "ready", generation: "generation", codeSHA: "source" });
+  let abort = new AbortController();
+  perception.observe = async (signal) => { abort.abort(); signal.throwIfAborted(); throw new Error("unreachable"); };
+  const extension = createRsaExtension({ runtime, workspace: new Workspace(directory, join(directory, "versions")),
+    basewareSocket: "/tmp/unused.sock", binDir: "/tmp", maxRequests: 10,
+    cycle: () => ({ epoch: "test", signal: abort.signal }) });
+  const handlers: Record<string, (event: any) => any> = {};
+  await extension.factory({ on(name: string, handler: (event: any) => any) { handlers[name] = handler; } } as ExtensionAPI);
+  try {
+    await expect(handlers.before_agent_start({})).rejects.toThrow();
+    abort = new AbortController();
+    perception.observe = async () => ({ queryId: "empty-query", ok: true, query: {}, hasMore: false, records: [] });
+    const delivered = await handlers.before_agent_start({});
+    expect(JSON.parse(delivered.message.content[0].text)).toEqual({ perception: { state: "ready", codeSHA: "source" } });
+  } finally {
+    await handlers.session_shutdown({});
+    await runtime.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

@@ -94,13 +94,9 @@ test("consolidation uses the same session with file tools, records memory reads,
     expect(events.find(event => event.epoch === "consolidate" && event.type === "read")?.data)
       .toMatchObject({ path: note, hash: expect.any(String), isError: false });
     const contexts = events.filter(event => event.epoch === "consolidate" && event.type === "observation_context");
-    // Reading unchanged memory does not append another full context block.
-    // Writing it produces a new version receipt without starting perception.
-    expect(contexts).toHaveLength(1);
-    expect(contexts[0]!.data).toMatchObject({ observations: [], queries: [], purpose: "consolidate" });
-    const initial = events.find(event => event.epoch === "play-before" && event.type === "observation_context")!;
-    expect(initial.data.memoryVersion).not.toBe(contexts[0]!.data.memoryVersion);
-    expect(extension.context().memoryVersion).toBe(contexts[0]!.data.memoryVersion);
+    // Consolidation injects nothing: no perception, no versions, so no receipts.
+    // The memory write reaches the model through its next read, not the prompt.
+    expect(contexts).toHaveLength(0);
     cycle = { epoch: "play-after", signal: control.signal };
     await session.prompt("Continue playing.");
     expect(captures).toBe(2);

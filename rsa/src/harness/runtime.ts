@@ -38,6 +38,8 @@ export class Runtime {
   private stopping?: Promise<void>;
   private running?: Promise<void>;
   private aborting?: Promise<void>;
+  /** Resolves when the active agent run fully settles (including post-abort cleanup); undefined when idle. */
+  get runSettled(): Promise<void> | undefined { return this.running; }
   private consolidating = false;
   private timer?: ReturnType<typeof setTimeout>;
   private takeoverDeadlineMs = 0;

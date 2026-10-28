@@ -103,13 +103,13 @@ manifest 记录 Git commit/dirty、continue/consolidate 提示和可选 workspac
 
 查询开始记录原参数，以该次调用的 `spanId` 作为 `queryId`。查询结果只描述本次选择的记录、媒体、规范化查询和分页，不再包装成一次设备执行，也不附加采样器状态或末条记录副本。默认读取主 `Perception.sample` 能力，可通过 `capability` 筛选其他能力、`capability: "*"` 查询全轴或 `id` 定位记录。持久历史跨 reload 和 run 保留，默认最新主观测仍校验当前 generation 与采样健康，不将旧记录冒充当前采样。查询成功、采样器健康和模型输入编码成功是不同事实；感知生命周期及健康通过状态接口、统计与故障事件读取。
 
-每批交付写一条 `observation_context` 收据，包含 `id/origin/queries/observations/skillVersion/memoryVersion` 及适用时的 `purpose`，不复制记录正文、采样状态或查询结果。`queries` 关联本批主动读取，`observations` 关联实际交付的媒体；显式观察已在工具结果中，只登记到同批收据。`model_start.deliveryIds` 引用请求对应的交付收据，**表示这次追加的来源，不是模型完整上下文的图片清单**。先前消息仍可能在 OMP 历史中，完整请求以请求档案及传输追踪为准，不能用最新 driver 截图代替。旧日志的 `model_start.observations` 仍可读取，但同样不能当作完整历史清单。
+每批交付写一条 `observation_context` 收据，包含 `id/origin/queries/observations` 及适用时的 `purpose`，不复制记录正文、采样状态或查询结果，也不再写入 `skillVersion/memoryVersion`。`queries` 关联本批主动读取，`observations` 关联实际交付的媒体；显式观察已在工具结果中，只登记到同批收据。`model_start.deliveryIds` 引用请求对应的交付收据，**表示这次追加的来源，不是模型完整上下文的图片清单**。先前消息仍可能在 OMP 历史中，完整请求以请求档案及传输追踪为准，不能用最新 driver 截图代替。旧日志的 `model_start.observations` 仍可读取，但同样不能当作完整历史清单。
 
 输入编码失败另记 `perception_input_error`，不改写原查询记录，读取成功不保证输入成功。空实现或失败只给文字诊断，不回退默认截图。取消读取不杀感知进程，迟到结果不塞回已取消的模型调用。
 
 `context_policy` 记录自动感知注入开关的变化；`rsa status.context.perceptionInjection` 报告当前策略。关闭只阻止自动读取/附加，持续采样、录像及显式 `observe` 不受影响。原生 `observe`、自动附加和 CLI 图像输出共用记录与媒体的表达，记录内容和查询信息只出现一次；查询事件与交付收据通过身份关联，消费者按需读取原始时空轴。
 
-自动交付按记录 ID 去重：同一记录不随每批工具反复追加，像素相同但时间不同的记录仍是不同证据。显式历史读取和重复读取完整返回，不把历史查询当作最新观察，也不因其他客户端查询过就认为模型已收到。技能、记忆和控制信息首次完整交付，随后仅追加变化；普通 continuation 不清空游标，新 Host 恢复会话或成功压缩等上下文替换后重新交付必要信息。去重不删除或重写已存会话前缀。
+自动交付按记录 ID 去重：同一记录不随每批工具反复追加，像素相同但时间不同的记录仍是不同证据。显式历史读取和重复读取完整返回，不把历史查询当作最新观察，也不因其他客户端查询过就认为模型已收到。自动交付只追加新感知记录及采样器的 `state/codeSHA/error` 变化；控制状态、技能与记忆索引不自动推送，模型按需经工具查询（运维元数据仍在日志与 `rsa status`）。普通 continuation 不清空游标，新 Host 恢复会话或成功压缩等上下文替换后重新交付必要信息。去重不删除或重写已存会话前缀。
 
 原生 bash/read 返回的图片记录为 `observation(origin=tool_result)` 并关联对应工具，不再自动创建图片副本。CLI 图像输出只有同时匹配显式记录标签和已登记交付字节，才能关联具体 record；仅匹配已有 `objects/<sha256>.bin` 时只能复用资产，不能推断 `recordId/sequence` 或采样时间。无关工具图片不能代替当前设备观察；仅返回 JSON 路径也不计作图片交付。没有原件时只记交付元数据，不声称已保存。
 
