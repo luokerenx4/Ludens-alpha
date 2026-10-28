@@ -127,6 +127,7 @@ export default function Dashboard() {
             ? "alice"
             : "live";
   const benchmarkCases = view === "benchmark" && query.get("bench") === "cases";
+  const includeEmptyProjects = view === "caps";
   const [projects, setProjects] = useState<Project[]>([]);
   const [catalogReady, setCatalogReady] = useState(false);
   const [catalogError, setCatalogError] = useState("");
@@ -194,7 +195,7 @@ export default function Dashboard() {
     let timer: ReturnType<typeof setTimeout>;
     const load = async () => {
       try {
-        const value = await json<Project[]>("/api/catalog", controller.signal);
+        const value = await json<Project[]>(includeEmptyProjects ? "/api/catalog?includeEmpty=1" : "/api/catalog", controller.signal);
         setProjects(value);
         setCatalogError("");
       } catch (e) {
@@ -211,7 +212,7 @@ export default function Dashboard() {
       controller.abort();
       clearTimeout(timer);
     };
-  }, []);
+  }, [includeEmptyProjects]);
   useEffect(() => {
     if (benchmarkCases || view === "replay" || view === "docs" || view === "caps" || !selection.project || !run) return;
     const controller = new AbortController();
@@ -530,7 +531,7 @@ export default function Dashboard() {
           ) : view === "docs" ? (
             <DocsView search={search} navigate={navigate} />
           ) : view === "caps" ? (
-            <CapabilitiesView />
+            <CapabilitiesView project={selection.project} ready={catalogReady} catalogError={catalogError} />
           ) : view === "replay" ? (
             <TimelinePlayer key={scopeKey} project={selection.project} run={run} epoch={selection.epoch || "latest"}
               onOverview={onReplayOverview} archiveRevision={archiveRevision}

@@ -185,6 +185,8 @@ Dashboard 共享日志客户端有变化时，重新构建 `rsa-companion` 并�
 
 打开 [本地控制台](http://127.0.0.1:3015)。另一个终端运行 `rsa-companion/bin/rsa-companion --show-window`，Electron 加载同一页面。关闭窗口只隐藏，双击卢登斯/点击托盘重开，Quit 才退出。
 
+侧栏“文档”可浏览当前教程、接口规范和设想，并跳转文档与章节。“能力”跟随顶部选择的工作区，已注册但尚无运行记录的工作区也可查看；它读取连接时保存的设备目录快照、静态解析 Python `@capability` 声明，并列出评测任务。读取不会执行工作区代码或连接设备，发现错误会显示在页面中。
+
 在共享界面选择“让 Ludens Pet 跟随此工作区”即可热切换；历史回放不改变关注目标，Pet 跟随该 workspace 最新非 Benchmark 运行。`--workspace PATH` / `RSA_WORKSPACE` 只提供首次默认选择，`--dashboard URL` 指定本地服务，`--profile PATH` 使用独立偏好目录。默认实例会复用已有窗口。
 
 控制台只监听 localhost；启动 Pet 不发模型请求或游戏输入。浏览器可切关注目标，音量、音频导入等原生设置需桌面端操作。日志消费、媒体和统计见 [logging](../reference/logging.md)。

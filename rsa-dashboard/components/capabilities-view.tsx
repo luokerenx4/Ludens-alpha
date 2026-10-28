@@ -1,13 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-
-interface CapabilityEntry { id: string; kind: string; description: string; requiresControl: boolean | null; readOnly: boolean | null }
-interface CapabilitiesResult {
-  project: string | null; workspace: string | null;
-  groups: { id: string; title: string; items: CapabilityEntry[] }[];
-  tasks: { name: string; digest: string; title: string }[];
-  issues: { error: string }[];
-}
+import type { CapabilityEntry, CapabilitiesResult } from "@/lib/capabilities";
 
 function useJson<T>(url: string | null): { value?: T; error?: string } {
   const [loaded, setLoaded] = useState<{ url: string; value?: T; error?: string } | null>(null);
@@ -35,14 +28,15 @@ const controlLabel = (item: CapabilityEntry) => item.requiresControl === null ? 
 const readOnlyLabel = (item: CapabilityEntry) => item.readOnly === null ? ""
   : item.readOnly ? " · 只读" : " · 有副作用";
 
-export function CapabilitiesView() {
-  const capsLoad = useJson<CapabilitiesResult>("/api/capabilities");
+export function CapabilitiesView({ project, ready, catalogError }: { project: string; ready: boolean; catalogError?: string }) {
+  const capsLoad = useJson<CapabilitiesResult>(project ? `/api/capabilities?project=${encodeURIComponent(project)}` : null);
   const caps = capsLoad.value;
-  if (!caps) return <section className="surface empty-state main-empty" aria-live="polite">
-    <h2>{capsLoad.error ? "暂时无法读取能力" : "正在读取能力"}</h2>
-    <p>{capsLoad.error ?? "从所选工作空间的 Baseware 目录与 Python 发现读取。"}</p>
+  const error = catalogError || capsLoad.error;
+  if (error || !ready || (project && !caps)) return <section className="surface empty-state main-empty" aria-live="polite">
+    <h2>{error ? "暂时无法读取能力" : "正在读取能力"}</h2>
+    <p>{error ?? "从所选工作空间的 Baseware 目录与 Python 发现读取。"}</p>
   </section>;
-  if (!caps.project) return <section className="surface empty-state main-empty">
+  if (!caps?.project) return <section className="surface empty-state main-empty">
     <h2>还没有工作空间</h2><p>启动 RSA 并注册工作空间后，这里展示它的设备能力、自创能力与评测任务。</p>
   </section>;
   return <div className="caps-layout">

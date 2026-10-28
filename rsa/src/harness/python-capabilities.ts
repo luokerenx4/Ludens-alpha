@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import { resolve } from "node:path";
-import { pythonExecutable, pythonEnvironment } from "../../../shared/python.ts";
+import { delimiter, resolve } from "node:path";
+import { pythonExecutable, pythonEnvironment, pythonModulePaths } from "../../../shared/python.ts";
 export { pythonModulePaths } from "../../../shared/python.ts";
 import { childTrace, type EventTrace, type RecordEvent } from "./events.ts";
 
@@ -63,7 +63,7 @@ export class PythonCapabilities {
     const trace = childTrace(parent), started = performance.now();
     this.emit("python_capabilities_start", {}, trace);
     try {
-      const processResult = await this.run({ action: "discover", workspace: this.workspace }, { signal });
+      const processResult = await this.run({ action: "discover", workspace: this.workspace }, { signal }, true);
       if (processResult.exitCode !== 0) throw new Error(`Python capability discovery failed: ${processResult.stdout || processResult.stderr}`);
       const result = JSON.parse(processResult.stdout) as PythonDiscovery;
       this.catalog = new Map(result.capabilities.map(capability => [capability.id, capability]));
@@ -113,14 +113,19 @@ export class PythonCapabilities {
     }
   }
 
-  private run(request: unknown, options: PythonInvocationOptions): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  private run(request: unknown, options: PythonInvocationOptions, sourceOnly = false): Promise<{ exitCode: number; stdout: string; stderr: string }> {
     options.signal?.throwIfAborted();
     const input = JSON.stringify(request);
     const env = pythonEnvironment({ ...options.env, RSA_WORKSPACE: this.workspace });
+    // Static discovery must not import workspace modules that shadow the bridge
+    // or its standard-library imports. Invocation retains the author's environment.
+    if (sourceOnly) env.PYTHONPATH = pythonModulePaths().join(delimiter);
     for (const name of ["RSA_EPOCH", "RSA_TRACE"]) delete env[name];
     env.PYTHONDONTWRITEBYTECODE = "1";
     return new Promise((done, fail) => {
-      const child = spawn(this.pythonPath, ["-B", "-m", "rsa_tools._bridge"], { cwd: this.workspace, env, detached: true, stdio: ["pipe", "pipe", "pipe"] });
+      const child = spawn(this.pythonPath, ["-B", "-m", "rsa_tools._bridge"], {
+        cwd: sourceOnly ? pythonModulePaths()[0] : this.workspace, env, detached: true, stdio: ["pipe", "pipe", "pipe"],
+      });
       let stdout = "", stderr = "";
       const cancel = () => {
         if (child.pid) {

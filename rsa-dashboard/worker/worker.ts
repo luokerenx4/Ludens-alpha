@@ -14,7 +14,7 @@ const port = parentPort!;
 const handlers: { [K in DashboardMethod]: (args: DashboardMethods[K]["args"], signal: AbortSignal) => unknown } = {
   diagnosticEvents: ([project, run, query], signal) => diagnosticEvents(project, run, query, signal),
   diagnostics: () => ({ memory: process.memoryUsage(), index: indexCacheStats(), activeRequests: requests.size - 1 }),
-  catalog: () => catalog(),
+  catalog: ([includeEmpty]) => catalog(undefined, includeEmpty),
   archiveBuild: ([project, run, action, buildId]) => archiveBuild(project, run, action, buildId),
   run: ([project, run, epoch, page], signal) => getRun(project, run, epoch, page, signal),
   activity: ([project, run, epoch, query], signal) => getActivity(project, run, epoch, query, signal),
@@ -24,7 +24,7 @@ const handlers: { [K in DashboardMethod]: (args: DashboardMethods[K]["args"], si
   benchmarkCatalog: ([query]) => benchmarkCatalog(query),
   benchmarkEvidence: ([project, run, query], signal) => benchmarkEvidence(project, run, query, undefined, signal),
   benchmarkAttachment: ([project, run, index, verification], signal) => benchmarkAttachment(project, run, index, verification, undefined, signal),
-  capabilities: ([project]) => capabilities(project),
+  capabilities: ([project], signal) => capabilities(project, undefined, signal),
   docGroups: () => docGroups(),
   readDoc: ([id]) => readDoc(id),
   stop: ([project, run, epoch]) => stopRun(project, run, epoch),

@@ -1,11 +1,11 @@
 import { readFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
-import { catalog } from "./data";
+import { execFile } from "node:child_process";
+import { delimiter, join } from "node:path";
+import { artifactRoot, catalog } from "./data";
 import type { Project } from "./types";
 import { discoverTasks } from "../../rsa/src/benchmark/catalog";
-
-const repoRoot = resolve(process.cwd(), "..");
+import { isObject } from "../../rsa/src/benchmark/contract";
+import { pythonExecutable, pythonEnvironment, pythonModulePaths } from "../../shared/python";
 
 export interface CapabilityEntry {
   id: string;
@@ -15,44 +15,51 @@ export interface CapabilityEntry {
   readOnly: boolean | null;
 }
 
-interface ControllerJson {
-  name: string;
-  description?: string;
-  requiresControl?: boolean;
-  annotations?: { readOnlyHint?: boolean };
-}
-
-async function deviceCapabilities(workspace: string): Promise<CapabilityEntry[]> {
-  let document: { controllers?: ControllerJson[] };
-  try {
-    document = JSON.parse(await readFile(join(workspace, "baseware.json"), "utf8"));
-  } catch { return []; }
-  const controllers = Array.isArray(document.controllers) ? document.controllers : [];
-  return controllers
-    .filter(item => typeof item?.name === "string")
-    .map(item => ({ id: `controller/${item.name}`, kind: "device" as const,
+async function deviceCapabilities(workspace: string, signal?: AbortSignal): Promise<CapabilityEntry[]> {
+  const document: unknown = JSON.parse(await readFile(join(workspace, "baseware.json"), { encoding: "utf8", signal }));
+  if (!isObject(document) || !Array.isArray(document.controllers)) throw new Error("设备目录缺少 controllers 数组");
+  return document.controllers.map(item => {
+    if (!isObject(item) || typeof item.name !== "string" || !item.name
+        || item.description !== undefined && typeof item.description !== "string"
+        || item.requiresControl !== undefined && typeof item.requiresControl !== "boolean"
+        || item.annotations !== undefined && !isObject(item.annotations)
+        || isObject(item.annotations) && item.annotations.readOnlyHint !== undefined && typeof item.annotations.readOnlyHint !== "boolean") {
+      throw new Error("设备目录包含无效能力声明");
+    }
+    return { id: `controller/${item.name}`, kind: "device" as const,
       description: item.description ?? "", requiresControl: item.requiresControl ?? null,
-      readOnly: item.annotations?.readOnlyHint ?? null }));
+      readOnly: isObject(item.annotations) && typeof item.annotations.readOnlyHint === "boolean" ? item.annotations.readOnlyHint : null };
+  });
 }
 
-const discoverScript = [
-  "import json, sys",
-  "sys.path.insert(0, sys.argv[1])",
-  "from rsa_tools._capabilities import discover",
-  "caps, _ = discover(sys.argv[2])",
-  "print(json.dumps([{'id': 'python/' + c['id'], 'description': c.get('doc') or ''} for c in caps]))",
-].join("; ");
-
-async function workspaceCapabilities(workspace: string): Promise<CapabilityEntry[]> {
-  const probe = spawnSync("python3", ["-c", discoverScript, join(repoRoot, "rsa", "python"), workspace],
-    { encoding: "utf8", timeout: 15000 });
-  if (probe.status !== 0) return [];
-  try {
-    const parsed = JSON.parse(probe.stdout) as { id: string; description: string }[];
-    return parsed.filter(item => typeof item?.id === "string")
-      .map(item => ({ id: item.id, kind: "workspace" as const,
-        description: item.description ?? "", requiresControl: null, readOnly: null }));
-  } catch { return []; }
+async function workspaceCapabilities(workspace: string, signal?: AbortSignal) {
+  const paths = pythonModulePaths();
+  const env = pythonEnvironment({ RSA_WORKSPACE: workspace, PYTHONPATH: paths.join(delimiter), PYTHONDONTWRITEBYTECODE: "1" });
+  // The bridge only parses source. Keep workspace modules out of Python's startup
+  // search path so names such as json.py cannot execute while importing the bridge.
+  const stdout = await new Promise<string>((resolve, reject) => {
+    const child = execFile(pythonExecutable(), ["-B", "-m", "rsa_tools._bridge"], {
+      cwd: paths[0], env, signal, timeout: 15_000, maxBuffer: 16 * 1024 * 1024, encoding: "utf8",
+    }, (error, output, stderr) => {
+      if (error) reject(new Error(`Python capability discovery failed: ${stderr || output || error.message}`, { cause: error }));
+      else resolve(output);
+    });
+    child.stdin?.on("error", error => { if ((error as NodeJS.ErrnoException).code !== "EPIPE") reject(error); });
+    child.stdin?.end(JSON.stringify({ action: "discover", workspace }));
+  });
+  const result: unknown = JSON.parse(stdout);
+  if (!isObject(result) || !Array.isArray(result.capabilities) || !Array.isArray(result.diagnostics)) throw new Error("Invalid Python discovery response");
+  const items: CapabilityEntry[] = result.capabilities.map(item => {
+    if (!isObject(item) || !isObject(item.origin) || typeof item.origin.path !== "string"
+        || typeof item.origin.function !== "string" || typeof item.description !== "string") throw new Error("Invalid Python capability declaration");
+    return { id: `python/${item.origin.path}:${item.origin.function}`, kind: "workspace",
+      description: item.description, requiresControl: null, readOnly: null };
+  });
+  const issues = result.diagnostics.map(item => {
+    if (!isObject(item) || typeof item.path !== "string" || typeof item.message !== "string") throw new Error("Invalid Python discovery diagnostic");
+    return { error: `${item.path}${typeof item.line === "number" ? `:${item.line}` : ""}: ${item.message}` };
+  });
+  return { items, issues };
 }
 
 export interface CapabilitiesResult {
@@ -63,24 +70,33 @@ export interface CapabilitiesResult {
   issues: { error: string }[];
 }
 
-export async function capabilities(projectId?: string): Promise<CapabilitiesResult> {
-  const projects: Project[] = await catalog(undefined, true);
+export async function capabilities(projectId?: string, root = artifactRoot, signal?: AbortSignal): Promise<CapabilitiesResult> {
+  signal?.throwIfAborted();
+  const projects: Project[] = await catalog(root, true);
   const withWorkspace = projects.filter((item): item is Project & { workspace: string } => !!item.workspace);
   const project = projectId ? withWorkspace.find(item => item.id === projectId) : withWorkspace[0];
-  if (projectId && !project) throw new Error("未找到评测工作区");
+  if (projectId && !project) throw new Error("未找到能力工作区");
   if (!project) return { project: null, workspace: null, groups: [], tasks: [], issues: [] };
-  const [device, python, tasks] = await Promise.all([
-    deviceCapabilities(project.workspace),
-    workspaceCapabilities(project.workspace),
-    discoverTasks(project.workspace).catch(error => ({ tasks: [], diagnostics: [{ path: "", message: String(error) }] })),
+  signal?.throwIfAborted();
+  const [device, python, tasks] = await Promise.allSettled([
+    deviceCapabilities(project.workspace, signal),
+    workspaceCapabilities(project.workspace, signal),
+    discoverTasks(project.workspace),
   ]);
+  signal?.throwIfAborted();
+  const issues: CapabilitiesResult["issues"] = [];
+  for (const [source, result] of [["baseware.json", device], ["Python 能力发现", python], ["评测任务发现", tasks]] as const) {
+    if (result.status === "rejected") issues.push({ error: `${source}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}` });
+  }
+  if (python.status === "fulfilled") issues.push(...python.value.issues);
+  if (tasks.status === "fulfilled") issues.push(...tasks.value.diagnostics.map(item => ({ error: `${item.path}: ${item.message}` })));
   return {
     project: project.id, workspace: project.workspace,
     groups: [
-      { id: "device", title: "设备能力 · Baseware 实际目录", items: device },
-      { id: "workspace", title: "自创能力 · Workspace @capability", items: python },
+      { id: "device", title: "设备能力 · 连接时目录快照", items: device.status === "fulfilled" ? device.value : [] },
+      { id: "workspace", title: "自创能力 · Workspace @capability", items: python.status === "fulfilled" ? python.value.items : [] },
     ],
-    tasks: tasks.tasks.map(task => ({ name: task.name, digest: task.digest, title: task.title })),
-    issues: tasks.diagnostics.map(item => ({ error: `${item.path}: ${item.message}` })),
+    tasks: tasks.status === "fulfilled" ? tasks.value.tasks.map(task => ({ name: task.name, digest: task.digest, title: task.title })) : [],
+    issues,
   };
 }
