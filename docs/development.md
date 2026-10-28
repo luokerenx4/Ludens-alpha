@@ -105,14 +105,17 @@ rsa auto on
 
 `init` 生成配置和 workspace 模板，不覆盖已有文件；`up --dry-run` 只打印计划。`up` 启动或复用 Baseware、Host、Dashboard、Alice，新 Host 保持 manual，`auto on` 才请求模型和接管。复用中的 auto Host 继续原周期；感知初始化与会话约定见 [workspace.md](workspace.md)。
 
+外部 driver 可用 `rsa init --driver <id> --driver-package <spec>` 初始化；包契约与缓存见 [Baseware](baseware.md#driver-包与启动描述)。相对 `file:` 路径以选定 workspace 为基准，初始化时保存绝对路径；手写配置中的相对路径在 `up` 时也按 workspace 解析，不受启动命令当前目录影响。
+
 `rsa.json` 字段与默认值由 [workspace.ts](../rsa/src/app/workspace.ts) 定义：
 
 | 字段 | 默认值与用途 |
 | --- | --- |
-| `driver` | 必选：`mgba` / `ryubing` / `azahar` / `cua` |
-| `game` | Ryubing/Azahar 可选；路径相对 workspace。省略则连接已准备的外部模拟器 |
-| `port` | mGBA 47653、Ryubing 47663、Azahar 47673；Cua 不使用 |
-| `cuaCommand` | 仅 Cua 可用；默认从 PATH 查找 `cua-driver` |
+| `driver` | 必选 driver ID；内置 `mgba` / `ryubing` / `azahar` / `cua`，外部 driver 与包导出的 ID 一致 |
+| `driverPackage` | 可选外部 driver：npm 包 spec、`github:org/repo#revision` 或 `file:path`；包会执行代码，只加载可信来源 |
+| `game` | 支持自动启动的 driver 可选；路径相对 workspace。省略则连接已准备的外部设备；mGBA 不接受此字段 |
+| `port` | 显式值优先，否则使用 driver manifest 默认端口；内置 mGBA 47653、Ryubing 47663、Azahar 47673；stdio driver 不使用 |
+| `cuaCommand` | stdio driver 的可执行命令；内置 Cua 默认从 PATH 查找 `cua-driver` |
 | `model` | `openai-codex/gpt-6.1-sol` |
 | `seconds` / `requests` | 1800 / 1000；每次接管重置，任一预算用完即交还控制 |
 | `compactionThreshold` | 256000，使用 OMP 原生压缩 |

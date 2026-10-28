@@ -76,6 +76,16 @@ RSA 的持久连接持有有期限的 epoch，CLI/API/MCP 继承该上下文，�
 
 Baseware 是设备事实的唯一持久来源。每个服务实例独立保存 `source.json` 和 `events/diagnostics`，默认一小时或 256 MiB 切段；`origin.eventId=serviceId:seq` 唯一标识事实。RSA manifest 的 `eventSources` 声明来源根、`recordingId` 与 seq 观察窗口，读者按需合并，RSA 不再复制订阅正文。请求携带的不透明 recordingId 在动作开始时冻结，晚到结束仍按原身份读取；没有归属的背景只在明确关闭的观察窗口内展示，不能猜到当前 run。来源缺失明确报错，保存失败也不能阻挡控制释放或触发动作重试。具体格式与查询见 [日志](logging.md)。
 
+## Driver 包与启动描述
+
+`baseware serve --driver <id> --driver-package <spec>` 可加载外部 driver；不传包时从内置注册表选择。包导出 `DriverRegistration`（默认导出，或 `registration` / `driver`），`id` 必须与参数一致，`load({ port, command, clock })` 返回能力目录、断线回调和关闭方法。包的入口代码会在解析时执行，`rsa init` 和 `up --dry-run` 也不构成沙箱；只使用可信包。
+
+包 spec 支持 npm（含 scope 和版本）、`github:org/repo#revision` / GitHub URL，以及 `file:path`。npm 包由 Bun 安装到仓外隔离缓存；GitHub 按仓库和 revision 区分缓存，完成 checkout 和依赖安装后才发布缓存目录，入口遵循包的 `exports` 解析。安装行为遵循 Bun 的生命周期脚本与信任配置，不将不可信包视为安全数据。需要可重现执行时使用确切 npm 版本或 Git commit SHA，不依赖可移动的标签或分支。
+
+`DriverManifest` 描述 `transport`（`bridge` / `stdio`）、可选 `defaultPort`、`needsGame`、准备提示 `launchHint`，以及启动后端的 `launchCommand` argv 和 `launchEnv` 环境变量。RSA 按该描述装配进程，不按 driver ID 选择端口或应用路径。`launchCommand` 不包含游戏路径，由 launcher 追加；参数不是待检查的文件。Ryubing 的启动环境保留 `DOTNET_DefaultStackSize=200000`。
+
+端口以显式 `--port` 为先，其次为 manifest 默认值；stdio 不使用桥端口。运行目录中的 driver 版本依次采用 provider 实际版本、registration 声明版本、内置 fallback，最后才是 `unknown`。连接后的 `baseware driver list` 返回当前 driver 的描述，不是所有可安装包的目录。
+
 ## 上游契约与升级
 
 [CUA 契约快照](../baseware/contracts/cua-driver/) 固定上游版本、来源、许可证和哈希。它用于审计原子能力与发现回归，不用来筛选运行期 `tools/list`；平台或版本新增的工具可以自然暴露。原生通用 manifest 与本机平台目录的覆盖范围不同，不能把其中一份当成全部平台能力。
