@@ -18,16 +18,12 @@ export interface TaskDefinition extends TaskIdentity {
   schemaVersion: "1.4"; config: TaskConfig; unsupportedRequirements: string[];
 }
 export interface SubjectReference { id: string; path?: string; sha256?: string; revision?: string }
-export interface ArtifactReference {
-  /** Run-relative, never an arbitrary absolute path. Timeline originals use timeline evidence. */
-  path: string; label?: string; sha256?: string; sizeBytes?: number; mediaType?: string;
-}
 export type EvidenceReference = (
-  | { kind: "file"; path: string; runId?: string; sha256: string; sizeBytes?: number }
+  | { kind: "file"; path: string; runId?: string; sizeBytes?: number }
   | { kind: "event"; runId: string; seq?: number; eventId?: string; source?: string;
-      /** A sealed prefix of the event file, so subsequent appends cannot change scoring input. */
-      path?: string; byteLength?: number; sha256?: string }
-  | { kind: "timeline"; timeline: TimelineAssetReference; recordId?: string; sequence?: number; sha256?: string;
+      /** Optional recorded byte prefix; later events are outside this reference. */
+      path?: string; byteLength?: number }
+  | { kind: "timeline"; timeline: TimelineAssetReference; recordId?: string; sequence?: number;
       /** Timeline owner relative to trial.workspace, for an isolated child workspace. */
       workspaceRelative?: string }
 ) & { label?: string; reward?: string };
@@ -40,14 +36,13 @@ export interface Trial {
   workspace: string; project: string; parentRunId?: string; trace?: Record<string, string>;
   status: TrialStatus; startedAt: string; endedAt?: string; durationMs?: number;
   parameters: Record<string, unknown>; conditions: Record<string, unknown>;
-  subjects: SubjectReference[]; evidence: EvidenceReference[]; artifacts?: ArtifactReference[];
+  subjects: SubjectReference[]; evidence: EvidenceReference[];
   limitations?: string[]; selectedVerificationId?: string; error?: Failure; legacy?: LegacyImport;
 }
 export interface Verification {
   schemaVersion: 1; id: string; trialId: string; task: TaskIdentity;
   status: VerificationStatus; startedAt: string; endedAt?: string;
   reason: string; evidence: EvidenceReference[]; error?: Failure; legacy?: LegacyImport;
-  reward?: { file: "reward.json" | "reward.txt"; sha256: string };
 }
 /** Reward bytes live only in verifier/<id>/reward.json (or Harbor reward.txt). */
 export interface BenchmarkResult {
@@ -81,8 +76,8 @@ function validateEvidence(items: EvidenceReference[]) {
   if (!Array.isArray(items)) throw new Error("Evidence must be an array");
   for (const item of items) {
     if (!isObject(item) || !["file", "event", "timeline"].includes(item.kind)) throw new Error("Invalid evidence reference");
-    if (item.kind === "file" && (!nonempty(item.path) || !/^(sha256:)?[0-9a-f]{64}$/.test(item.sha256))) throw new Error("File evidence requires a fixed hash");
-    if (item.kind === "event" && (!validId(item.runId) || !(Number.isSafeInteger(item.seq) && item.seq! >= 0 || nonempty(item.eventId)) && !(Number.isSafeInteger(item.byteLength) && item.byteLength! >= 0 && nonempty(item.path) && nonempty(item.sha256)))) throw new Error("Event evidence requires a fixed event or prefix");
+    if (item.kind === "file" && !nonempty(item.path)) throw new Error("File evidence requires a path");
+    if (item.kind === "event" && (!validId(item.runId) || !(Number.isSafeInteger(item.seq) && item.seq! >= 0 || nonempty(item.eventId)) && !(Number.isSafeInteger(item.byteLength) && item.byteLength! >= 0 && nonempty(item.path)))) throw new Error("Event evidence requires a fixed event or prefix");
     if (item.kind === "timeline" && (!isObject(item.timeline) || !nonempty(item.timeline.asset))) throw new Error("Invalid timeline evidence");
   }
 }
@@ -120,12 +115,13 @@ export function comparisonChanges(result: BenchmarkResult, baseline: BenchmarkRe
 }
 export function compareResults(result: BenchmarkResult, baseline: BenchmarkResult) {
   const changes = comparisonChanges(result, baseline);
-  const compatible = changes.length === 0 && result.trial.status === "completed" && baseline.trial.status === "completed" && result.verification?.status === "completed" && baseline.verification?.status === "completed" && result.verifier_result.rewards !== null && baseline.verifier_result.rewards !== null;
-  return { compatible, changes, sameExecution: result.trial.workspace === baseline.trial.workspace && result.trial.id === baseline.trial.id,
+  return { changes, sameExecution: result.trial.workspace === baseline.trial.workspace && result.trial.id === baseline.trial.id,
     verifications: { result: result.verification?.id ?? null, baseline: baseline.verification?.id ?? null },
     subjectsChanged: canonical(result.trial.subjects) !== canonical(baseline.trial.subjects),
     rewards: [...new Set([...Object.keys(result.verifier_result.rewards ?? {}), ...Object.keys(baseline.verifier_result.rewards ?? {})])].sort().map(key => {
-      const value = result.verifier_result.rewards?.[key] ?? null, previous = baseline.verifier_result.rewards?.[key] ?? null;
-      return { key, value, baseline: previous, delta: compatible && value !== null && previous !== null ? value - previous : null };
+      const current = result.verifier_result.rewards, prior = baseline.verifier_result.rewards;
+      const value = current && Object.hasOwn(current, key) && Number.isFinite(current[key]) ? current[key]! : null;
+      const previous = prior && Object.hasOwn(prior, key) && Number.isFinite(prior[key]) ? prior[key]! : null;
+      return { key, value, baseline: previous, delta: value !== null && previous !== null ? value - previous : null };
     }) };
 }

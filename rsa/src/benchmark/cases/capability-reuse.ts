@@ -77,7 +77,7 @@ export async function run(ctx: BenchmarkContext): Promise<Record<string, unknown
     await writeCapabilityDocument(devices.catalog, join(ctx.workspace, "baseware.json"));
     await writeFile(join(ctx.workspace, "perception.py"), perceptionTemplate, { flag: "wx" });
     runtime = await createHostRuntime({ devices, record, workspace: ctx.workspace, runDir: ctx.runDir,
-      state, log: ctx.log, basewareSocket, rsaSocket, seconds: ctx.seconds,
+      state, log: ctx.log, basewareSocket, rsaSocket, seconds: ctx.seconds, budget: ctx.budget,
       model: ctx.model, maxRequests: ctx.maxRequests, compactionThreshold: 256000, action: false });
     devices.onHandback(reason => { void runtime!.stop(reason); });
     devices.onDisconnect(error => { void runtime!.disconnected(error); });

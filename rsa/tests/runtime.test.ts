@@ -55,6 +55,26 @@ test("takeover time remaining ignores host age and resets on each epoch", async 
   } finally { now.mockRestore(); await runtime.close(); }
 });
 
+test("a nested Runtime retains the enclosing deadline across takeovers and releases on its stop signal", async () => {
+  const { devices } = createTestDeviceSession({ controllers: [] });
+  const budgetEnd = new AbortController();
+  const runtime = new Runtime(devices, () => {}, 300, "nested", "normal", { deadlineMs: 11_000, signal: budgetEnd.signal });
+  const now = spyOn(Date, "now").mockReturnValue(1000);
+  const monotonic = spyOn(performance, "now").mockReturnValue(100);
+  const release = spyOn(devices, "release");
+  try {
+    expect((await runtime.start()).remainingSeconds).toBe(10);
+    await runtime.stop("human");
+    now.mockReturnValue(5000); monotonic.mockReturnValue(4100);
+    expect((await runtime.start()).remainingSeconds).toBe(6);
+    budgetEnd.abort("time budget");
+    await runtime.close();
+    expect(runtime.status()).toMatchObject({ mode: "manual", thinking: false, reason: "time budget" });
+    expect(release).toHaveBeenCalledTimes(2);
+    await expect(runtime.start()).rejects.toBe("time budget");
+  } finally { now.mockRestore(); monotonic.mockRestore(); await runtime.close(); release.mockRestore(); }
+});
+
 test("a human takeover message reaches only its own cycle and malformed arguments cannot acquire control", async () => {
   const { runtime, owner } = fixture();
   const messages: (string | undefined)[] = [];

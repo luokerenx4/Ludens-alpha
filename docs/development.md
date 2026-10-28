@@ -243,7 +243,7 @@ OMP 专项测试从公开 provider API 和 Agent 入口调用固定依赖，测�
 (cd rsa && bun run test:transport)
 (cd rsa && bun run check)
 # 带标准事件和检查证据的两个真实故障族，可由现有看板读取：
-rsa/bin/rsa --workspace /absolute/path/to/workspace bench run ws-recovery
+rsa/bin/rsa --workspace /absolute/path/to/workspace bench run ludens/ws-recovery
 ```
 
 ### 构建依据

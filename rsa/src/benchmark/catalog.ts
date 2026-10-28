@@ -3,13 +3,21 @@ import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
 import type { TaskDefinition } from "./contract.ts";
 import { readTask } from "./task.ts";
-
+import { discoverBindings, type TaskWithBindings } from "./bindings.ts";
 export const repositoryTasksRoot = fileURLToPath(new URL("../../benchmarks/tasks/", import.meta.url));
 export async function discoverTasks(workspace: string, repositoryRoot = repositoryTasksRoot) {
-  const tasks: TaskDefinition[] = [], diagnostics: { path: string; message: string }[] = [];
+  const tasks: TaskWithBindings[] = [], diagnostics: { path: string; message: string }[] = [];
+  const repository = await discoverBindings(resolve(repositoryRoot, "../runs"));
+  const local = resolve(workspace, "benchmarks/tasks") === resolve(repositoryRoot)
+    ? repository : await discoverBindings(join(workspace, "benchmarks/runs"));
+  diagnostics.push(...repository.diagnostics, ...(local === repository ? [] : local.diagnostics));
   async function visit(path: string, source: TaskDefinition["source"]) {
     if ((await stat(join(path, "task.toml")).catch(() => undefined))?.isFile()) {
-      try { tasks.push(await readTask(path, source)); } catch (error) { diagnostics.push({ path, message: String(error) }); }
+      try {
+        const task = await readTask(path, source);
+        const bindings = (source === "repository" ? repository : local).bindings.filter(binding => binding.configuration.task === task.name);
+        tasks.push({ ...task, bindings });
+      } catch (error) { diagnostics.push({ path, message: String(error) }); }
       return;
     }
     const entries = await readdir(path, { withFileTypes: true }).catch(error => { if (error.code === "ENOENT") return []; throw error; });
@@ -19,7 +27,7 @@ export async function discoverTasks(workspace: string, repositoryRoot = reposito
   if (resolve(workspace, "benchmarks/tasks") !== resolve(repositoryRoot)) await visit(join(workspace, "benchmarks/tasks"), "workspace");
   return { tasks: tasks.sort((a, b) => a.name.localeCompare(b.name) || a.digest.localeCompare(b.digest)), diagnostics };
 }
-export async function resolveTask(workspace: string, name: string, digest?: string): Promise<TaskDefinition> {
+export async function resolveTask(workspace: string, name: string, digest?: string): Promise<TaskWithBindings> {
   const catalog = await discoverTasks(workspace);
   const matches = catalog.tasks.filter(task => task.name === name && (!digest || task.digest === digest));
   const identities = new Set(matches.map(task => task.digest));

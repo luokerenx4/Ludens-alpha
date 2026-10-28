@@ -3,9 +3,11 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { runTask, verifyTask, aggregateTasks } from "../src/harness/shiori-benchmark.ts";
-import { get, history } from "../src/benchmark/store.ts";
-import { compareResults } from "../src/benchmark/contract.ts";
+import { get, history, inspectEvidence } from "../src/benchmark/store.ts";
+import { compareResults, type BenchmarkResult } from "../src/benchmark/contract.ts";
 import { readTask } from "../src/benchmark/task.ts";
+import { discoverTasks, resolveTask } from "../src/benchmark/catalog.ts";
+import { readRunConfiguration } from "../src/benchmark/bindings.ts";
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "shiori-benchmark-")), workspace = join(root, "workspace"), task = join(workspace, "benchmarks/tasks/jump");
   await mkdir(join(task, "tests"), { recursive: true }); await mkdir(join(task, "environment"));
@@ -27,7 +29,8 @@ Path(os.environ["RSA_BENCH_ARTIFACTS"],"measurements.json").write_text('{"height
     config: { task: "local/jump", argv: ["{python}", program] } }, cleanup: () => rm(root, { recursive: true, force: true }) };
 }
 test("CLI uses separate binding; reward zero, offline reads and verification never repeat actions", async () => {
-  const f = await fixture(), cli = resolve(import.meta.dir, "../src/benchmark/cli.ts"), binding = join(f.root, "run.json");
+  const f = await fixture(), cli = resolve(import.meta.dir, "../src/benchmark/cli.ts"), binding = join(f.workspace, "benchmarks/runs/arbitrary-name.json");
+  await mkdir(join(f.workspace, "benchmarks/runs"), { recursive: true });
   await writeFile(binding, JSON.stringify(f.options.config));
   const command = async (args: string[], code = 0) => {
     const child = Bun.spawn([process.execPath, "-e", `import {benchmarkCommand} from ${JSON.stringify(cli)}; await benchmarkCommand(${JSON.stringify(args)},${JSON.stringify(f.options.artifactRoot)},${JSON.stringify(f.workspace)});`], { stdout: "pipe", stderr: "pipe" });
@@ -35,8 +38,9 @@ test("CLI uses separate binding; reward zero, offline reads and verification nev
     expect({ code: actual, stderr: err }).toEqual({ code, stderr: "" }); return JSON.parse(out);
   };
   try {
-    expect((await command(["list"])).tasks.some((t: any) => t.name === "local/jump")).toBe(true);
-    const first = await command(["run", "local/jump", "--config", binding]);
+    expect((await command(["list"])).tasks.some((t: { name: string }) => t.name === "local/jump")).toBe(true);
+    expect((await command(["help", "local/jump"])).bindings[0].path).toBe(binding);
+    const first = await command(["run", "local/jump"]);
     expect(first.trial.status).toBe("completed"); expect(first.verifier_result.rewards.landed).toBe(0); expect(first).not.toHaveProperty("verdict");
     const id = first.trial.id;
     await writeFile(f.program, "raise RuntimeError('must not execute on verification')\n");
@@ -49,7 +53,7 @@ test("CLI uses separate binding; reward zero, offline reads and verification nev
     expect(await readFile(join(f.workspace, "actions.txt"), "utf8")).toBe("1");
   } finally { await f.cleanup(); }
 }, 20_000);
-test("invalid score is separate from execution; a new verifier regrades fixed evidence and detects tampering", async () => {
+test("invalid score is separate from execution; a new verifier regrades recorded evidence", async () => {
   const f = await fixture();
   try {
     await writeFile(f.verifier, 'printf \'{"height":null}\' > "$RSA_BENCH_VERIFIER_DIR/reward.json"\n');
@@ -66,8 +70,6 @@ test("invalid score is separate from execution; a new verifier regrades fixed ev
     expect(compareResults(second, first).changes).toContain("verifier");
     expect(await readFile(join(f.workspace, "actions.txt"), "utf8")).toBe("1");
     expect((await history(f.workspace)).trials).toHaveLength(1);
-    await writeFile(join(f.workspace, "logs", first.trial.id, "artifacts/measurements.json"), '{"height":99}');
-    expect((await verifyTask(f.workspace, first.trial.id)).verification?.status).toBe("error");
   } finally { await f.cleanup(); }
 }, 15_000);
 test("Shiori cancellation drains ordinary process and finalizes exactly once", async () => {
@@ -107,3 +109,89 @@ test("execution errors stay errors; metric receives one reward or null per expli
     expect((await aggregateTasks(f.workspace, dataset, [good.trial.id, failed.trial.id])).metrics).toEqual({ samples: 2, missing: 1 });
   } finally { await f.cleanup(); }
 }, 20_000);
+
+test("edited measurements can be regraded and execution and verifier diagnostics stay readable", async () => {
+  const f = await fixture();
+  const attachment = async (result: BenchmarkResult, suffix: string) => {
+    const reference = [...result.trial.evidence, ...result.verification?.evidence ?? []]
+      .find(item => item.kind === "file" && item.path.endsWith(suffix));
+    if (!reference) throw new Error(`Missing attachment: ${suffix}`);
+    const inspected = await inspectEvidence(f.workspace, result.trial.id, reference);
+    expect(inspected.available).toBe(true);
+    return readFile(inspected.path!, "utf8");
+  };
+  try {
+    await writeFile(f.program, (await readFile(f.program, "utf8")) + '\nprint("measurement completed")\n');
+    await writeFile(f.verifier, 'python3 "$RSA_BENCH_TASK_DIR/tests/verify.py"\n');
+    await writeFile(join(f.task, "tests/verify.py"), `import json,os
+from pathlib import Path
+measurement=json.loads(Path(os.environ["RSA_BENCH_ARTIFACTS"],"measurements.json").read_text())
+output=Path(os.environ["RSA_BENCH_VERIFIER_DIR"])
+(output/"reward.json").write_text(json.dumps({"height":measurement["height"]}))
+(output/"details.json").write_text(json.dumps({"measuredHeight":measurement["height"]}))
+print("graded saved measurements")
+`);
+    const first = await runTask("local/jump", f.options);
+    expect(first.verifier_result.rewards).toEqual({ height: 24 });
+    expect(JSON.parse(await attachment(first, "/details.json"))).toEqual({ measuredHeight: 24 });
+    expect(await attachment(first, "stdout.log")).toContain("measurement completed");
+    await writeFile(join(f.workspace, "logs", first.trial.id, "artifacts/measurements.json"), '{"height":99}');
+    await writeFile(f.program, "raise RuntimeError('measurement must not rerun')\n");
+    const regraded = await verifyTask(f.workspace, first.trial.id);
+    expect(regraded.verifier_result.rewards).toEqual({ height: 99 });
+    expect(JSON.parse(await attachment(regraded, "/details.json"))).toEqual({ measuredHeight: 99 });
+    expect((await get(f.workspace, first.trial.id, first.verification!.id)).verifier_result.rewards).toEqual({ height: 24 });
+    await writeFile(f.verifier, 'printf "cannot grade measurements\\n" >&2\nexit 7\n');
+    const failed = await verifyTask(f.workspace, first.trial.id, { taskPath: f.task });
+    expect(failed.trial.status).toBe("completed");
+    expect(failed.verification?.status).toBe("error");
+    expect(failed.verifier_result.rewards).toBeNull();
+    expect(await attachment(failed, `verifier/${failed.verification!.id}/stderr.log`)).toContain("cannot grade measurements");
+    expect(await readFile(join(f.workspace, "actions.txt"), "utf8")).toBe("1");
+  } finally { await f.cleanup(); }
+}, 15_000);
+
+test("default aggregation accepts selected results from different verifier versions", async () => {
+  const f = await fixture();
+  try {
+    const first = await runTask("local/jump", f.options), second = await runTask("local/jump", f.options);
+    await writeFile(f.verifier, 'printf \'{"height":48,"landed":0}\' > "$RSA_BENCH_VERIFIER_DIR/reward.json"\n');
+    const regraded = await verifyTask(f.workspace, first.trial.id, { taskPath: f.task });
+    expect(regraded.verification?.task.digest).not.toBe(second.verification?.task.digest);
+    const dataset = join(f.root, "dataset.toml");
+    await writeFile(dataset, `schema_version="1.0"\n[dataset]\nname="local/sample"\n[[tasks]]\nname="local/jump"\ndigest="${first.trial.task.digest}"\n`);
+    const aggregate = await aggregateTasks(f.workspace, dataset, [first.trial.id, second.trial.id]);
+    expect(aggregate.counts).toMatchObject({ trials: 2, included: 2, valid: 2 });
+    expect(aggregate.metrics.byTask).toEqual({ [`local/jump@${first.trial.task.digest}`]: { height: 36, landed: 0 } });
+    expect(await readFile(join(f.workspace, "actions.txt"), "utf8")).toBe("2");
+  } finally { await f.cleanup(); }
+}, 15_000);
+
+test("bindings match task fields within each source and require explicit ambiguous selection", async () => {
+  const f = await fixture();
+  try {
+    const runs = join(f.workspace, "benchmarks/runs"), repository = join(f.root, "repository/tasks");
+    await mkdir(runs, { recursive: true });
+    await mkdir(join(f.root, "repository/runs"), { recursive: true });
+    await writeFile(join(f.root, "repository/runs/jump.json"), JSON.stringify({ task: "local/jump", argv: ["wrong-source"] }));
+    let task = (await discoverTasks(f.workspace, repository)).tasks.find(task => task.name === "local/jump")!;
+    expect(task.bindings).toHaveLength(0);
+    await expect(readRunConfiguration(task, f.workspace)).rejects.toThrow("--config");
+    await writeFile(join(runs, "not-the-task-name.json"), JSON.stringify(f.options.config));
+    task = await resolveTask(f.workspace, "local/jump");
+    expect(await readRunConfiguration(task, f.workspace)).toEqual(f.options.config);
+    await writeFile(join(runs, "another.json"), JSON.stringify({ ...f.options.config, argv: ["alternative"] }));
+    task = await resolveTask(f.workspace, "local/jump");
+    await expect(readRunConfiguration(task, f.workspace)).rejects.toThrow("Multiple program bindings");
+    expect((await readRunConfiguration(task, f.workspace, "benchmarks/runs/another.json")).argv).toEqual(["alternative"]);
+    await writeFile(join(runs, "foreign.json"), JSON.stringify({ task: "different/task", argv: ["wrong-task"] }));
+    await expect(readRunConfiguration(task, f.workspace, "benchmarks/runs/foreign.json")).rejects.toThrow("another Task");
+    const builtin = (await discoverTasks(f.workspace)).tasks.find(task => task.source === "repository")!;
+    await writeFile(join(f.task, "task.toml"), `schema_version="1.4"\n[task]\nname="${builtin.name}"\n`);
+    const shadow = await readTask(f.task, "workspace");
+    const resolved = await resolveTask(f.workspace, shadow.name, shadow.digest);
+    expect(resolved.source).toBe("workspace");
+    expect(resolved.bindings).toHaveLength(0);
+    await expect(readRunConfiguration(resolved, f.workspace)).rejects.toThrow("--config");
+  } finally { await f.cleanup(); }
+});

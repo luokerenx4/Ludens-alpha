@@ -70,7 +70,7 @@ def sample(controller_id: str, arguments: dict) -> dict:
 
 `@capability` 是感知和动作共用的能力声明，记录实际调用；类方法可标注，只有带参数类型的顶层同步函数进入 Controller 目录。辅助函数无需装饰。发现只读 AST，新增和删除在下次查询可见，跳过日志、`.rsa/` 会话数据、Git、依赖与虚拟环境。函数需 docstring 和参数类型，支持标量、列表、字符串键字典与可空类型；不支持的签名返回诊断。详见 [Python 发现与加载](../rsa/python/rsa_tools/_capabilities.py)。
 
-评测使用 Task 包和 `rsa bench`，由 Shiori 统一运行；Python 测量程序用 `current_trial()` 登记已分配运行的事实，独立 verifier 评分，不新增 Controller 条目。完整接口见 [Benchmark](benchmark.md)。
+评测使用 Task 包和 `rsa bench`，由 Shiori 统一运行；工作区 Task 与对应运行绑定可直接被 CLI 和 Dashboard 发现。普通 Python 测量程序直接写入分配的产物目录即可，也可用 `current_trial()` 辅助登记，独立 verifier 评分，不新增 Controller 条目。完整接口见 [Benchmark](benchmark.md)。
 
 ## 能力留档与 workspace 时空轴
 

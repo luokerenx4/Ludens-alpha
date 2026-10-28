@@ -10,8 +10,8 @@ import { resolveWorkspaceState } from "../harness/workspace-state.ts";
 import { isObject, trialSummary, validId, validateTrial, validateVerification, verificationSummary,
   type BenchmarkResult, type EvidenceReference, type Failure, type HistoryQuery, type PageQuery,
   type Trial, type TrialPage, type TrialSummary, type Verification, type VerificationPage } from "./contract.ts";
-import { containedPath, hashFile } from "./task.ts";
-import { readRewardRecord } from "./reward.ts";
+import { containedPath } from "./task.ts";
+import { readReward } from "./reward.ts";
 
 export async function atomicJson(path: string, value: unknown) {
   const temporary = `${path}.${randomUUID()}.tmp`;
@@ -70,7 +70,7 @@ export async function readTrial(workspace: string, runId: string): Promise<Trial
   if (trial.id !== runId || trial.workspace !== await realpath(workspace)) throw new Error("Trial identity mismatch");
   return trial;
 }
-export type TrialFinish = Pick<Trial, "status" | "endedAt" | "durationMs"> & Partial<Pick<Trial, "conditions" | "subjects" | "evidence" | "artifacts" | "limitations" | "error">>;
+export type TrialFinish = Pick<Trial, "status" | "endedAt" | "durationMs"> & Partial<Pick<Trial, "conditions" | "subjects" | "evidence" | "limitations" | "error">>;
 /** CAS only. The sole Shiori EventLog owner emits a terminal event iff changed is true. */
 export async function finishTrial(workspace: string, runId: string, patch: TrialFinish): Promise<{ trial: Trial; changed: boolean }> {
   if (patch.status === "running") throw new Error("finishTrial requires a terminal status");
@@ -86,7 +86,7 @@ export async function createVerification(workspace: string, runId: string, verif
   validateVerification(verification, runId);
   if (verification.status !== "running") throw new Error("New verification must be running");
   const run = await trustedRun(workspace, runId), trial = await readTrial(workspace, runId);
-  if (trial.status === "running") throw new Error("Execution facts must be sealed before verification");
+  if (trial.status === "running") throw new Error("Execution must finish before verification");
   const directory = verificationDirectory(workspace, runId, verification.id);
   return withTrialLock(run, async () => {
     await mkdir(join(run, "verifier"), { recursive: true });
@@ -112,9 +112,7 @@ export async function finishVerification(workspace: string, runId: string, id: s
     const verification: Verification = { ...current, ...patch };
     validateVerification(verification, runId);
     const directory = verificationDirectory(workspace, runId, id);
-    if (verification.status === "completed") {
-      const reward = await readRewardRecord(directory); verification.reward = { file: reward.file, sha256: reward.sha256 };
-    }
+    if (verification.status === "completed") await readReward(directory);
     await atomicJson(join(directory, "verification.json"), verification);
     const trial = await readTrial(workspace, runId);
     await writeTrial(run, { ...trial, selectedVerificationId: id });
@@ -126,9 +124,7 @@ export async function get(workspace: string, runId: string, verificationId?: str
   const verification = id ? await readVerification(workspace, runId, id) : null;
   let rewards = null;
   if (verification?.status === "completed") {
-    const record = await readRewardRecord(verificationDirectory(workspace, runId, verification.id));
-    if (!verification.reward || verification.reward.file !== record.file || verification.reward.sha256 !== record.sha256) throw new Error("Sealed verifier reward changed");
-    rewards = record.rewards;
+    rewards = await readReward(verificationDirectory(workspace, runId, verification.id));
   }
   return { trial, verification, verifier_result: { rewards } };
 }
@@ -195,13 +191,13 @@ export async function inspectEvidence(workspace: string, runId: string, referenc
         if (!isObject(state) || state.status !== "ready") throw new Error("Recording segment is not ready");
       }
       const path = await containedPath(root, reference.timeline.asset);
-      if (reference.sha256 && await hashFile(path) !== reference.sha256.replace(/^sha256:/, "")) throw new Error("Timeline evidence hash mismatch");
+      if (!(await stat(path)).isFile()) throw new Error("Timeline asset is not a file");
       return { reference, available: true, path };
     }
     const run = await trustedRun(workspace, reference.runId ?? runId);
     if (reference.kind === "file") {
       const path = await containedPath(run, reference.path);
-      if (reference.sizeBytes !== undefined && (await stat(path)).size !== reference.sizeBytes || await hashFile(path) !== reference.sha256.replace(/^sha256:/, "")) throw new Error("File evidence hash mismatch");
+      if (!(await stat(path)).isFile()) throw new Error("Evidence path is not a file");
       return { reference, available: true, path };
     }
     if (!reference.path && reference.byteLength === undefined && (reference.eventId || reference.source)) {
@@ -212,9 +208,12 @@ export async function inspectEvidence(workspace: string, runId: string, referenc
       throw new Error("Registered source event is unavailable");
     }
     const path = await containedPath(run, reference.path ?? "events.jsonl");
+    const metadata = await stat(path);
+    if (!metadata.isFile()) throw new Error("Event evidence path is not a file");
     if (reference.byteLength !== undefined) {
-      if (!reference.sha256 || await hashFile(path, reference.byteLength) !== reference.sha256.replace(/^sha256:/, "")) throw new Error("Event prefix hash mismatch");
+      if (!Number.isSafeInteger(reference.byteLength) || reference.byteLength < 0 || metadata.size < reference.byteLength) throw new Error("Recorded event prefix is unavailable");
       if (reference.seq === undefined && reference.eventId === undefined) return { reference, available: true, path };
+      if (reference.byteLength === 0) throw new Error("Recorded event is unavailable");
     }
     const input = createReadStream(path, reference.byteLength === undefined ? {} : { end: reference.byteLength - 1 });
     const lines = createInterface({ input, crlfDelay: Infinity });

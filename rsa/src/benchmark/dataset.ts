@@ -68,5 +68,5 @@ export function meanRewards(rows: (Rewards | null)[]): Rewards {
   if (!rows.length) throw new Error("Mean requires at least one trial");
   const keys = [...new Set(rows.flatMap(row => Object.keys(row ?? {})))].sort();
   if (keys.length <= 1) return { mean: rows.reduce((total, row) => total + (row === null ? 0 : Object.values(row)[0] ?? 0), 0) / rows.length };
-  return Object.fromEntries(keys.map(key => [key, rows.reduce((total, row) => total + (row?.[key] ?? 0), 0) / rows.length]));
+  return Object.fromEntries(keys.map(key => [key, rows.reduce((total, row) => total + (row !== null && Object.hasOwn(row, key) ? row[key]! : 0), 0) / rows.length]));
 }
