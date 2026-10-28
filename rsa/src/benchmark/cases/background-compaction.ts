@@ -62,7 +62,7 @@ export async function run(ctx: BenchmarkContext): Promise<Record<string, unknown
   const headers = events.find(e => e.type === "compaction_http_end" && e.trace.httpId === http[0]?.trace.httpId);
   const spans = new Set(events.flatMap(e => e.trace.spanId ? [e.trace.spanId] : []));
   const orphanParents = events.filter(e => e.trace.parentSpanId && !spans.has(e.trace.parentSpanId));
-  ctx.metadata.limitations = ["使用真实 OMP SessionMaintenance、原生 V2 序列化/解析、提交与历史重放；摘要内容和网络等待由本地 SSE fixture 控制。", "显式提供接近阈值的 token 计数触发维护路径；生产压缩阈值仍为 256000，不改变真实 workspace。", "取消场景含预期取消事件，不应当作真实运行故障率。"];
+  ctx.metadata.limitations = ["使用真实 OMP SessionMaintenance、原生 V2 序列化/解析、提交与历史重放；摘要内容和网络等待由本地 SSE fixture 控制。", "fixture 显式固定 256000 阈值，并提供接近阈值的 token 计数触发维护路径；不改变真实 workspace 配置。", "取消场景含预期取消事件，不应当作真实运行故障率。"];
   return {
     requests, commits, originalLeaf, tailPreserved, cancellationSettled, cancelCommitted, cancellationMs,
     originEpoch, laterEpoch, cancelEpoch, started, armed, applied, lifecycle, http, maintenance, headers,

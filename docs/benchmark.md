@@ -157,7 +157,7 @@ workspace/logs/<run-id>/
 | `ludens/perception-lifecycle` | 真实 Python、合成模型/媒体：持续采样、reload、历史、修复、不可变归档；不测 PyTorch/设备 |
 | `ludens/control-handoff` | 真实 Runtime/Baseware/Python、模拟驱动：中断、释放、旧 epoch 拒绝；不测真实模拟器延迟 |
 | `ludens/ws-recovery` | 真实 provider、模拟 WS/HTTP 和虚拟冷却：回退、全量恢复、delta、工具不重放 |
-| `ludens/background-compaction` | 原生 OMP maintenance/V2、受控 SSE/token：候选复用、尾部保留、归属和取消；保持 256k 阈值 |
+| `ludens/background-compaction` | 原生 OMP maintenance/V2、受控 SSE/token：候选复用、尾部保留、归属和取消；fixture 显式固定 256k 阈值 |
 | `ludens/capability-reuse` | 真实模型、隔离装配台：两批订单、自创函数、跨批有效复用；不证明长期泛化 |
 | `ludens/clamp` | 已加载 Python 函数的样本结果与调用时间；不采内存 |
 | `ludens/video-storage` | 双流合成图像的编码、冷查询与 RSS；名义 sample_hz 不等于有效采集率 |
