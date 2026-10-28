@@ -127,9 +127,9 @@ class Perception:
     for (const index of [1, 2, 3]) {
       expect(snapshots[index]!.images).toEqual([]);
       expect(snapshots[index]!.text).not.toContain("Perception is stopped");
-      expect(snapshots[index]!.json.some(value => value.perception || value.records || value.snapshot || value.observations)).toBe(false);
-      if (index === 1) expect(snapshots[index]!.json.find(value => value.control)?.control.context.perceptionInjection).toBe(false);
-      else expect(snapshots[index]!.json.some(value => value.control || value.skills)).toBe(false);
+      // Control status and skill or memory indexes are never injected.
+      expect(snapshots[index]!.json.some(value => value.control || value.skills || value.perception
+        || value.records || value.snapshot || value.observations)).toBe(false);
     }
     const idRead = snapshots[4]!, firstPage = snapshots[5]!, secondPage = snapshots[6]!;
     const idMetadata = idRead.json.find(value => value.records);

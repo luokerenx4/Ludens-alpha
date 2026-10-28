@@ -13,11 +13,6 @@ import { childTrace, type EventTrace, type RecordEvent } from "../events.ts";
 import { pythonEnvironment } from "../../../../shared/python.ts";
 import { observationBytes, perceptionInput, type DeriveMedia, type TimelineMedia, type ObservationQuery, type PerceptionRead, type PerceptionRecord, type PerceptionStatus } from "../perception.ts";
 
-function perceptionState(status: PerceptionStatus) {
-  const { state, generation, codeSHA, sampleHz, error } = status;
-  return { state, generation, codeSHA, sampleHz, ...(error ? { error } : {}) };
-}
-
 export async function media(observations: Observation[], record?: RecordEvent, trace?: EventTrace, derive?: DeriveMedia) {
   return Promise.all(observations.map(async (observation) => {
     if (observation.mediaType.startsWith("text/") || observation.mediaType === "application/json") {
@@ -74,10 +69,9 @@ export function createRsaExtension(options: {
   const batchQueries = new Set<string>();
   let explicitPerception = false;
   let lastMain: Pick<PerceptionRecord, "id" | "sequence" | "generation"> | undefined;
-  let lastControl = "", lastPerception = "", lastSkills = "";
+  let lastPerceptionState = "";
   const deliveredBackground = new Set<string>();
-  let latestContext: { observations: string[]; deliveryIds: string[]; skillVersion?: string; memoryVersion?: string }
-    = { observations: [], deliveryIds: [] };
+  let latestContext: { observations: string[]; deliveryIds: string[] } = { observations: [], deliveryIds: [] };
   const trace = (toolCallId?: string): EventTrace => ({ epoch: options.cycle().epoch, ...options.trace?.(toolCallId), ...(toolCallId ? { toolCallId } : {}) });
   const observeParameters = z.object({
     capability: z.string().nullable().optional().describe("Perception capability ID, or '*' for all. Default: Perception.sample."),
@@ -200,7 +194,6 @@ export function createRsaExtension(options: {
   function resetContext() {
     resetBatch();
     lastMain = undefined;
-    lastControl = lastPerception = lastSkills = "";
     deliveredBackground.clear();
     latestContext = { observations: [], deliveryIds: [] };
   }
@@ -208,7 +201,7 @@ export function createRsaExtension(options: {
   function receipt(parent: EventTrace, origin: string, observations: string[], queries: string[]) {
     const delivery = childTrace(parent);
     runtime.record("observation_context", { id: delivery.spanId!, origin, purpose: options.cycle().purpose,
-      observations, queries, skillVersion: latestContext.skillVersion, memoryVersion: latestContext.memoryVersion }, delivery);
+      observations, queries }, delivery);
     latestContext.observations.push(...observations);
     latestContext.deliveryIds.push(delivery.spanId!);
   }
@@ -216,31 +209,30 @@ export function createRsaExtension(options: {
   async function captureContext(parent: EventTrace, origin: "prompt_start" | "tool_batch") {
     const cycle = options.cycle();
     const status = runtime.status();
-    const state = perceptionState(status.perception ?? { state: "unimplemented", generation: null });
     const consolidating = cycle.purpose === "consolidate";
-    let content: Awaited<ReturnType<typeof perceptionContent>>["content"] = [];
-    // A known stopped/failed sampler needs a state notice, not another failed RPC.
-    // Native tool images only replace perception when their timeline source is known.
+    let content: (ImageContent | { type: "text"; text: string })[] = [];
+    // Perception is the only proactive channel: new samples plus sampler state
+    // transitions (with the repair-relevant error and code identity), so
+    // silence is never ambiguous between "no new frame" and "the sampler is
+    // dead". Control status and skill or memory indexes are on demand: the
+    // model reads files or runs `rsa status`; ops metadata lives in logs.
+    const perception = status.perception;
+    const state: { state: PerceptionStatus["state"]; codeSHA?: string; error?: string } = perception
+      ? { state: perception.state, codeSHA: perception.codeSHA, ...(perception.error ? { error: perception.error } : {}) }
+      : { state: "unimplemented" };
+    const stateVersion = JSON.stringify(state);
     if (!consolidating && !explicitPerception && !batchImages.some(image => image.timeline?.recordId)
-      && runtime.perceptionInjectionEnabled() && state.state === "ready") {
-      const read = await readPerception(cycle.signal, parent);
-      if (!read.ok || read.records.some(record => record.id !== lastMain?.id)) {
-        content = (await perceptionContent(read, parent)).content;
+      && runtime.perceptionInjectionEnabled()) {
+      if (stateVersion !== lastPerceptionState) content.push({ type: "text", text: JSON.stringify({ perception: state }) });
+      if (state.state === "ready") {
+        const read = await readPerception(cycle.signal, parent);
+        if (!read.ok || read.records.some(record => record.id !== lastMain?.id)) {
+          content.push(...(await perceptionContent(read, parent)).content);
+        }
       }
     }
-    const skills = await workspace.snapshot();
-    // Countdown changes every second; it remains available through rsa status.
-    const { perception: _perception, remainingSeconds: _remaining, ...control } = status;
-    const controlVersion = JSON.stringify(control), perceptionVersion = JSON.stringify(state);
-    const skillsVersion = `${skills.version}:${skills.memory.version}`;
-    const changes = {
-      ...(controlVersion !== lastControl ? { control } : {}),
-      ...(perceptionVersion !== lastPerception ? { perception: state } : {}),
-      ...(skillsVersion !== lastSkills ? { skills } : {}),
-    };
-    lastControl = controlVersion; lastPerception = perceptionVersion; lastSkills = skillsVersion;
-    if (Object.keys(changes).length) content.unshift({ type: "text", text: JSON.stringify(changes) });
-    latestContext = { observations: [], deliveryIds: [], skillVersion: skills.version, memoryVersion: skills.memory.version };
+    if (!consolidating) lastPerceptionState = stateVersion;
+    latestContext = { observations: [], deliveryIds: [] };
     if (content.length || batchImages.length || batchQueries.size) {
       receipt(parent, origin, [...new Set(batchImages.map(image => image.id))], [...batchQueries]);
     }
