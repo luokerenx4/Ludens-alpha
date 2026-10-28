@@ -38,7 +38,7 @@ Python 组合在自己的进程内完成，设备调用才进入 RSA/Baseware；
 
 ## 设备与统一能力
 
-Driver 暴露 **Controller**：既可操作设备，也可返回信息或媒体；传感器属于 Controller。能力采用 CUA 原生工具约定：名称、JSON Schema、注解与原生结果；Baseware 另记录控制要求、执行状态、时序和媒体。设计理由见 [Baseware](baseware.md)。以 [设备契约](../../../baseware/src/contracts.ts) 和 [导出 schema](../../../baseware/src/catalog.ts) 为准。
+Driver 暴露 **Controller**：既可操作设备，也可返回信息或媒体；传感器属于 Controller。能力采用 CUA 原生工具约定：名称、JSON Schema、注解与原生结果；Baseware 另记录控制要求、执行状态、时序和媒体。设计理由见 [Baseware](baseware.md)。以 [设备契约](../../baseware/src/contracts.ts) 和 [导出 schema](../../baseware/src/catalog.ts) 为准。
 
 Baseware 的 CLI/API/MCP 调用同一服务。RSA 把设备能力与工作区 `@capability` 合入 `rsa controller`，按需查询；它们及 MCP 不默认注入 OMP 工具列表。
 

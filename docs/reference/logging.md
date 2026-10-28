@@ -32,11 +32,11 @@ Baseware 只对明确声明只读的查询采用减量；未知能力、有副�
 
 设备事实由 Baseware 独立保存：每个服务实例有 `source.json`、`events/` 与 `diagnostics/`，按一小时或 256 MiB 分段，配小型摘要。RSA 不再把订阅正文抄进 run；manifest 的 `eventSources` 登记 `sourceId/root/format/recordingId/windows`。`recordingId` 是不透明的运行身份，动作开始时冻结，晚到终态仍属于原运行。窗口 `afterSeq/throughSeq` 用于定位和限定无归属背景；显式 `recordingId` 才决定所属 run，晚到已归属事实可以越过窗口。
 
-[统一来源 reader](../shared/event-sources.ts) 按需合并，保留 `origin.eventId` 与来源自己的 seq，不生成新的全局序号。旧 manifest 未声明来源时只读原 run，避免再加读设备档案造成双计。缺源或身份不符明确报错；单个 run 不是自包含包，复制时要带声明的来源依赖，删除 run 不自动回收共享档案。
+[统一来源 reader](../../shared/event-sources.ts) 按需合并，保留 `origin.eventId` 与来源自己的 seq，不生成新的全局序号。旧 manifest 未声明来源时只读原 run，避免再加读设备档案造成双计。缺源或身份不符明确报错；单个 run 不是自包含包，复制时要带声明的来源依赖，删除 run 不自动回收共享档案。
 
 新观测统一存放在 `workspace/.rsa/timeline/`，跨 run 使用：`video/<id>.mp4` 保存录制图像的视频段，配套 `.mp4.json` 保存编码状态；媒体引用含 `video: {pts,timeBase,width,height}`。`objects/<sha256>.bin` 保存其他去重媒体，`segments/` 保存 JSONL 记录、定长 `.idx` 索引及 `.meta.json` 段摘要。关闭持久化时仅使用有限的 `window-<pid>-…/` 临时窗口。运行事件只引用记录与媒体，不再生成 `run/observations/` 副本。已有 run 的观测附件和日志保持原样可读，不自动迁移或删除。
 
-模型与工具档案位于 `workspace/.rsa/archive/objects/<sha256>.json.gz`，只存文本和结构，大消息、工具定义和正文按内容共享，跨请求、跨 run 去重。引用使用 `encoding: "rsa-json-v1"`、对象路径、内容 hash 和原始 JSON 字节数；对象用 tagged JSON 区分用户数据与内部引用，不占用用户的 `$ref` 等字段。流事件使用 `rsa-stream-v1`，`dataRef` 中不超过 2 KiB 的编码根节点可以内联，避免每个 token delta 占一个文件；大子节点仍共享。所有读者使用 [同一个 codec](../shared/log-archive.ts)。
+模型与工具档案位于 `workspace/.rsa/archive/objects/<sha256>.json.gz`，只存文本和结构，大消息、工具定义和正文按内容共享，跨请求、跨 run 去重。引用使用 `encoding: "rsa-json-v1"`、对象路径、内容 hash 和原始 JSON 字节数；对象用 tagged JSON 区分用户数据与内部引用，不占用用户的 `$ref` 等字段。流事件使用 `rsa-stream-v1`，`dataRef` 中不超过 2 KiB 的编码根节点可以内联，避免每个 token delta 占一个文件；大子节点仍共享。所有读者使用 [同一个 codec](../../shared/log-archive.ts)。
 
 已知 image/audio 字段、data URL 和 JSON 工具文本中的媒体引用时空轴已有资产；JSON 字符转义不产生媒体副本。未录制媒体只保存 hash、大小和不可恢复原因，不由日志永久留存。默认读取返回媒体引用；完整读取对原样保留的对象加载字节并核验 hash，过期、删除或未录制时明确失败。视频引用标记 `approximate: true`，保存的 hash/bytes 是当时交付身份；Dashboard/历史观测可从视频做视觉复原，`logs read --full` 对有损视频明确报错，不伪造与原始模型请求一致的字节。媒体引用不能冒充 provider 输入。
 
