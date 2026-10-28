@@ -9,6 +9,8 @@ import { AliceSettings } from "@/components/alice-settings";
 import { AliceFollowCard, useAliceFollow } from "@/components/alice-follow";
 import { DesktopBridge } from "@/components/desktop-bridge";
 import { BenchmarkCases } from "@/components/benchmark-cases";
+import { DocsView } from "@/components/docs-view";
+import { CapabilitiesView } from "@/components/capabilities-view";
 import { TimelinePlayer } from "@/components/timeline-player";
 import { ArchiveBuild } from "@/components/archive-build";
 import {
@@ -35,6 +37,8 @@ const views = {
   live: ["运行", "运行现场", "看看它正在看什么、做什么。"],
   replay: ["回放", "经历回放", "沿着同一条时间轴，回看感知、动作、模型调用和日志。"],
   benchmark: ["Benchmark", "运行性能", "沿着一次请求，找到循环里的等待。"],
+  docs: ["文档", "文档", "教程、介绍与洞见：从仓库实时读取。"],
+  caps: ["能力", "能力与评测", "工作空间的能力目录与评测任务。"],
   alice: ["Ludens Pet", "与 Ludens Pet 一起工作", "按自己的习惯，调整她的陪伴方式。"],
 } as const;
 type View = keyof typeof views;
@@ -83,6 +87,14 @@ function NavIcon({ kind }: { kind: View | "logo" }) {
         <path d="m8 5 11 7-11 7Z" fill="currentColor" stroke="none" />
       ) : kind === "replay" ? (
         <><path d="M3 10a9 9 0 1 1 1 7M3 4v6h6" /><path d="m10 8 6 4-6 4Z" /></>
+      ) : kind === "docs" ? (
+        <>
+          <path d="M5 3h11l3 3v15H5Z" /><path d="M9 9h7M9 13h7M9 17h4" />
+        </>
+      ) : kind === "caps" ? (
+        <>
+          <path d="M9 3H5v18h14V3h-4" /><path d="M9 3h6v4H9Z" /><path d="m9 16 2 2 4-4" />
+        </>
       ) : kind === "benchmark" ? (
         <>
           <path d="M4 19V11M10 19V5M16 19V8M22 19V2" strokeWidth="3" />
@@ -107,10 +119,15 @@ export default function Dashboard() {
   const view: View =
     query.get("view") === "replay" ? "replay" : query.get("view") === "benchmark"
       ? "benchmark"
-      : query.get("view") === "alice"
-        ? "alice"
-        : "live";
+      : query.get("view") === "docs"
+        ? "docs"
+        : query.get("view") === "caps"
+          ? "caps"
+          : query.get("view") === "alice"
+            ? "alice"
+            : "live";
   const benchmarkCases = view === "benchmark" && query.get("bench") === "cases";
+  const includeEmptyProjects = view === "caps";
   const [projects, setProjects] = useState<Project[]>([]);
   const [catalogReady, setCatalogReady] = useState(false);
   const [catalogError, setCatalogError] = useState("");
@@ -178,7 +195,7 @@ export default function Dashboard() {
     let timer: ReturnType<typeof setTimeout>;
     const load = async () => {
       try {
-        const value = await json<Project[]>("/api/catalog", controller.signal);
+        const value = await json<Project[]>(includeEmptyProjects ? "/api/catalog?includeEmpty=1" : "/api/catalog", controller.signal);
         setProjects(value);
         setCatalogError("");
       } catch (e) {
@@ -195,9 +212,9 @@ export default function Dashboard() {
       controller.abort();
       clearTimeout(timer);
     };
-  }, []);
+  }, [includeEmptyProjects]);
   useEffect(() => {
-    if (benchmarkCases || view === "replay" || !selection.project || !run) return;
+    if (benchmarkCases || view === "replay" || view === "docs" || view === "caps" || !selection.project || !run) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     const params = new URLSearchParams({
@@ -387,7 +404,7 @@ export default function Dashboard() {
             <strong>{views[view][0]}</strong>
           </div>
           <div className="context-controls">
-            {!benchmarkCases && (
+            {!benchmarkCases && view !== "docs" && view !== "caps" && (
               <>
                 <select
                   aria-label="运行记录"
@@ -448,7 +465,7 @@ export default function Dashboard() {
                 </select>
               </>
             )}
-            {view !== "replay" && <button
+            {view !== "replay" && view !== "docs" && view !== "caps" && <button
               className={"refresh-toggle" + (refresh ? " active" : "")}
               aria-pressed={refresh}
               title="只控制界面刷新，不影响 Agent"
@@ -467,7 +484,7 @@ export default function Dashboard() {
                 {benchmarkCases ? "重复评测能力，查看指标、条件与原始证据。" : views[view][2]}
               </p>
             </div>
-            {view !== "alice" && view !== "replay" && !benchmarkCases && (
+            {view !== "alice" && view !== "replay" && view !== "docs" && view !== "caps" && !benchmarkCases && (
               <button
                 className="control-button handback"
                 disabled={!data?.controlAllowed || !auto || stopping}
@@ -499,9 +516,9 @@ export default function Dashboard() {
               ))}
             </nav>
           )}
-          {!benchmarkCases && view !== "alice" && <ArchiveBuild key={selection.project + "/" + run}
+          {!benchmarkCases && view !== "alice" && view !== "docs" && view !== "caps" && <ArchiveBuild key={selection.project + "/" + run}
             project={selection.project} run={run} onReady={archiveReady} />}
-          {!benchmarkCases && (catalogError || (view !== "replay" && error)) && (
+          {!benchmarkCases && view !== "docs" && view !== "caps" && (catalogError || (view !== "replay" && error)) && (
             <div className="error-banner" role="alert">
               {catalogError || error}
               {data && (
@@ -511,6 +528,10 @@ export default function Dashboard() {
           )}
           {view === "alice" ? (
             <AliceSettings follow={alice} projects={projects} />
+          ) : view === "docs" ? (
+            <DocsView search={search} navigate={navigate} />
+          ) : view === "caps" ? (
+            <CapabilitiesView project={selection.project} ready={catalogReady} catalogError={catalogError} />
           ) : view === "replay" ? (
             <TimelinePlayer key={scopeKey} project={selection.project} run={run} epoch={selection.epoch || "latest"}
               onOverview={onReplayOverview} archiveRevision={archiveRevision}

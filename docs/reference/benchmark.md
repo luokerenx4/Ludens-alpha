@@ -43,7 +43,7 @@ rsa bench aggregate <dataset.toml> <run-id> <another-run-id> --policy all
 
 argv 是参数数组，不经过 shell 拼接；支持 `{rsa}`、`{python}`、`{bun}`、`{workspace}`、`{workdir}`、`{artifacts}`、`{task}` 和 `{param.key}`。`{workspace}` 始终是作者的原工作区；`{workdir}` 是本次执行工作区，isolated 模式下为单独分配的目录。省略 `cwd` 时在执行工作区启动；显式相对 `cwd` 和相对 `--config` 都从原工作区解析，不受启动 CLI 的目录影响。
 
-Shiori 的 program 模式运行普通命令，不经过模型推理。需要 Agent 的任务仍使用 [公共 Host 装配](../rsa/src/harness/host.ts)，包括 OMP、Controller、感知和控制周期，不另写一个 Agent loop。离线场景也通过同一个 Shiori 生命周期启动和取消。测量预算由外层 Runtime 统一计时，包含启动时间；内置 module 测量及其嵌套 Host 共享 `ctx.budget` 的截止时间，不重新获得一整段预算。预算到期允许测量停止并写出事实，沿用最多两秒的进程收尾期限；普通命令超时、程序失败或被强制终止仍是执行错误。用户取消通过独立的 `ctx.signal` 传递，不当作正常测量完成。场景内部的 `finally` 继续负责关闭自己创建的资源。
+Shiori 的 program 模式运行普通命令，不经过模型推理。需要 Agent 的任务仍使用 [公共 Host 装配](../../rsa/src/harness/host.ts)，包括 OMP、Controller、感知和控制周期，不另写一个 Agent loop。离线场景也通过同一个 Shiori 生命周期启动和取消。测量预算由外层 Runtime 统一计时，包含启动时间；内置 module 测量及其嵌套 Host 共享 `ctx.budget` 的截止时间，不重新获得一整段预算。预算到期允许测量停止并写出事实，沿用最多两秒的进程收尾期限；普通命令超时、程序失败或被强制终止仍是执行错误。用户取消通过独立的 `ctx.signal` 传递，不当作正常测量完成。场景内部的 `finally` 继续负责关闭自己创建的资源。
 
 先读任务说明和绑定确认副作用：`capability-reuse` 使用在线模型，其余内置场景使用合成设备、数据或传输。Native profile 是普通本机进程，不是权限沙盒。默认 verifier 不继承 live socket、控制 epoch 或模型凭据；脚本仍具有当前用户的普通系统权限。不要把环境变量清理等同于文件系统或网络隔离。
 
@@ -90,7 +90,7 @@ name = "my-org/example"
 digest = "sha256:<64 位内容摘要>"
 ```
 
-引用按名称和完整 digest 匹配本地任务；缺少精确版本时报告错误，不自动换成同名最新版本。仓库 [dataset.toml](../rsa/benchmarks/dataset.toml) 列出当前内置任务。修改任务内容后必须同步它的 digest。
+引用按名称和完整 digest 匹配本地任务；缺少精确版本时报告错误，不自动换成同名最新版本。仓库 [dataset.toml](../../rsa/benchmarks/dataset.toml) 列出当前内置任务。修改任务内容后必须同步它的 digest。
 
 ## Python 辅助登记是可选的
 
@@ -112,7 +112,7 @@ trial.flush()
 
 Python 只写 `artifacts/context.json` 和作者明确生成的产物。context 记录 trialId、workspace 以及 conditions、subjects、artifacts、limitations 和实际 capability 调用统计，不是第二份 trial 或成绩。正常进程退出会 flush；常驻程序在交还结果前应显式 flush。被硬杀前尚未 flush 的内存统计不完整，不能推断成功。
 
-本地 observer 收集实际调用的 capability 和加载时 codeSHA，覆盖顶层函数及实例方法，且不要求逐次调用进入持久日志。统计证明该版本在本进程参与执行，不证明另一常驻进程的效果，也不自动证明任务成功。普通 Python 调用保留对象，不强制序列化模型参数或返回对象。完整示例见 [clamp.py](../rsa/benchmarks/examples/clamp.py)。
+本地 observer 收集实际调用的 capability 和加载时 codeSHA，覆盖顶层函数及实例方法，且不要求逐次调用进入持久日志。统计证明该版本在本进程参与执行，不证明另一常驻进程的效果，也不自动证明任务成功。普通 Python 调用保留对象，不强制序列化模型参数或返回对象。完整示例见 [clamp.py](../../rsa/benchmarks/examples/clamp.py)。
 
 `artifact("samples.json", value)` 新建 JSON 产物，不覆盖已有文件；`artifact(path)` 按内容 hash 命名并复制外部文件，已位于产物目录内的文件直接登记。这些操作不保证文件之后不可修改。已录制媒体用 `artifact(media)` 或 `artifact(media["timeline"])`，核对 canonical record 身份、片段与 PTS 后保持引用，不复制图片或视频。视频仍是近似重建帧；gap、丢失和未收尾按原件状态报告，不补取当前画面。
 
@@ -182,6 +182,6 @@ CLI 与 Dashboard 都展示执行附件，以及所选 verification 自己的 `d
 
 `capability-reuse` 使用新 session、空 skills/memory、空感知入口和公共 Host 装配，不预填解法。普通 import、本地 API 和 controller 调用都可形成证据，装饰器和查询目录不是学习的必要条件。完成订单须有环境接受和成功设备终态；复用须关联同一自主函数、两批、不同模型轮次与真实订单。
 
-[该任务的 verifier](../rsa/benchmarks/tasks/capability-reuse/tests/evaluate.ts) 从执行阶段已保存的必要事件判定，不重新运行 workspace 代码。直接 import 的静态分析覆盖简单 Python shell 调用，不覆盖任意动态控制流；证据不足的复用维度省略，不能等同“没学会”。后台命令仅提交成功、无关 helper、只 import、仅有文件或结束后 AST 盘点，都不算有效复用。实现与测试分别见 [cases](../rsa/src/benchmark/cases/) 和 [开发文档](development.md)。
+[该任务的 verifier](../../rsa/benchmarks/tasks/capability-reuse/tests/evaluate.ts) 从执行阶段已保存的必要事件判定，不重新运行 workspace 代码。直接 import 的静态分析覆盖简单 Python shell 调用，不覆盖任意动态控制流；证据不足的复用维度省略，不能等同“没学会”。后台命令仅提交成功、无关 helper、只 import、仅有文件或结束后 AST 盘点，都不算有效复用。实现与测试分别见 [cases](../../rsa/src/benchmark/cases/) 和 [开发文档](../tutorials/development.md)。
 
 Native `metric.py` 使用当前配置的 Python 环境，支持随 Dataset 声明并校验 digest 的同目录文件；不自动创建 Harbor 的 uv/PEP 723 依赖环境。模型名称也被记录为 subject，运行参数或模型配置不同会提示差异，但不阻止展示数值变化，也不自动宣称公平对照。

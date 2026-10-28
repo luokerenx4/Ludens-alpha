@@ -24,9 +24,9 @@ workspace/
   ...                      自行组织脚本、数据、模型、实验
 ```
 
-`rsa init` 写入缺失的 [AGENTS 模板](../rsa/templates/AGENTS.md)、[感知模板](../rsa/templates/perception.py) 和 [动作模板](../rsa/templates/action.py)。`AGENTS.md` 可修改或删除，普通启动不补回；Host 启动时按原生项目上下文加载它，保留 OMP 默认系统提示词。修改后需重启 Host。
+`rsa init` 写入缺失的 [AGENTS 模板](../../rsa/templates/AGENTS.md)、[感知模板](../../rsa/templates/perception.py) 和 [动作模板](../../rsa/templates/action.py)。`AGENTS.md` 可修改或删除，普通启动不补回；Host 启动时按原生项目上下文加载它，保留 OMP 默认系统提示词。修改后需重启 Host。
 
-Workspace 的 canonical path 决定独立身份与默认 socket，改名或移动会改变身份。OMP 会话与默认续接指针在 `.rsa/shiori/`，日志在 `logs/<run-id>/`；技能版本和供 Dashboard 发现 workspace 的注册信息仍在仓库同级的 `../artifacts/rsa/ws-<name>-<hash>/`，由 [workspace-state](../rsa/src/harness/workspace-state.ts) 管理。默认重启续接当前会话；`rsa run --new-session` 按原生语义新建上下文并保留工作区文件，`--resume <session.jsonl>` 选择同工作区的已有会话文件，路径经 realpath 规范化并校验归属。
+Workspace 的 canonical path 决定独立身份与默认 socket，改名或移动会改变身份。OMP 会话与默认续接指针在 `.rsa/shiori/`，日志在 `logs/<run-id>/`；技能版本和供 Dashboard 发现 workspace 的注册信息仍在仓库同级的 `../artifacts/rsa/ws-<name>-<hash>/`，由 [workspace-state](../../rsa/src/harness/workspace-state.ts) 管理。默认重启续接当前会话；`rsa run --new-session` 按原生语义新建上下文并保留工作区文件，`--resume <session.jsonl>` 选择同工作区的已有会话文件，路径经 realpath 规范化并校验归属。
 
 旧 managed 布局在新 Host 取得 workspace socket 独占权后一次性迁移：整个 `sessions/`（含资源）和当前会话指针进入 `.rsa/shiori/`，旧 `sessions/` 留符号链接，保护历史绝对资源路径。迁移不清空上下文。OMP 全局 blob 存储本次不迁，因此不能仅复制 workspace 就视为完整、独立的会话导出。
 
@@ -44,7 +44,7 @@ rsa controller python/scripts/action.py:perform --help
 
 `controller/<id>` 来自 Baseware，参数是能力 inputSchema 定义的 JSON 对象；`python/<相对路径.py>:<函数>` 来自工作区装饰器；两类能力的 CLI 都用 `--args '<JSON object>'` 或 `--file <参数文件>` 传参。以实际目录和 help 为准。
 
-Host 启动 OMP 前刷新 `baseware.json`，也可用 `baseware export` 刷新。它包含原生工具名称、inputSchema、可选 outputSchema、注解、控制要求及执行结果信封；不包含 epoch 或 socket。导出只读目录，不采样。契约见 [catalog.ts](../baseware/src/catalog.ts)。
+Host 启动 OMP 前刷新 `baseware.json`，也可用 `baseware export` 刷新。它包含原生工具名称、inputSchema、可选 outputSchema、注解、控制要求及执行结果信封；不包含 epoch 或 socket。导出只读目录，不采样。契约见 [catalog.ts](../../baseware/src/catalog.ts)。
 
 Python 使用统一入口：
 
@@ -68,9 +68,9 @@ def sample(controller_id: str, arguments: dict) -> dict:
 
 设备参数由 Baseware 按原生 schema 校验，Python 能力的跨进程 JSON 参数在调用入口校验；本地 import 和 `Client.call("python/…")` 保留普通 Python 对象。已加载模块按 Python 规则缓存，编辑代码后需重跑相应程序。
 
-`@capability` 是感知和动作共用的能力声明，记录实际调用；类方法可标注，只有带参数类型的顶层同步函数进入 Controller 目录。辅助函数无需装饰。发现只读 AST，新增和删除在下次查询可见，跳过日志、`.rsa/` 会话数据、Git、依赖与虚拟环境。函数需 docstring 和参数类型，支持标量、列表、字符串键字典与可空类型；不支持的签名返回诊断。详见 [Python 发现与加载](../rsa/python/rsa_tools/_capabilities.py)。
+`@capability` 是感知和动作共用的能力声明，记录实际调用；类方法可标注，只有带参数类型的顶层同步函数进入 Controller 目录。辅助函数无需装饰。发现只读 AST，新增和删除在下次查询可见，跳过日志、`.rsa/` 会话数据、Git、依赖与虚拟环境。函数需 docstring 和参数类型，支持标量、列表、字符串键字典与可空类型；不支持的签名返回诊断。详见 [Python 发现与加载](../../rsa/python/rsa_tools/_capabilities.py)。
 
-评测使用 Task 包和 `rsa bench`，由 Shiori 统一运行；工作区 Task 与对应运行绑定可直接被 CLI 和 Dashboard 发现。普通 Python 测量程序直接写入分配的产物目录即可，也可用 `current_trial()` 辅助登记，独立 verifier 评分，不新增 Controller 条目。完整接口见 [Benchmark](benchmark.md)。
+评测使用 Task 包和 `rsa bench`，由 Shiori 统一运行；工作区 Task 与对应运行绑定可直接被 CLI 和 Dashboard 发现。普通 Python 测量程序直接写入分配的产物目录即可，也可用 `current_trial()` 辅助登记，独立 verifier 评分，不新增 Controller 条目。完整接口见 [Benchmark](../reference/benchmark.md)。
 
 ## 能力留档与 workspace 时空轴
 
@@ -95,7 +95,7 @@ def temperature() -> dict:
 
 ## 常驻感知与历史读取
 
-`perception.py:Perception` 在专用 Python 进程中运行：`start(context)` 初始化一次；`sample()` 按 `sample_hz` 连续执行（默认 30 Hz）；`close()` 释放自建资源。AI 可修改类上的 `sample_hz`，执行 `rsa perception reload` 生效。context 含 `workspace/runDir/generation`。在 `sample()` 上使用 `@capability` 和 `@record`；sampler 不再隐式保存结果。类实例、模块和模型跨模型轮次保留，慢采样不重叠、不补跑。模板见 [perception.py](../rsa/templates/perception.py)。
+`perception.py:Perception` 在专用 Python 进程中运行：`start(context)` 初始化一次；`sample()` 按 `sample_hz` 连续执行（默认 30 Hz）；`close()` 释放自建资源。AI 可修改类上的 `sample_hz`，执行 `rsa perception reload` 生效。context 含 `workspace/runDir/generation`。在 `sample()` 上使用 `@capability` 和 `@record`；sampler 不再隐式保存结果。类实例、模块和模型跨模型轮次保留，慢采样不重叠、不补跑。模板见 [perception.py](../../rsa/templates/perception.py)。
 
 装饰器标记的是任意能力，不限定屏幕数量或媒体类型；`@record` 在能力实际调用成功时记录。自动定频调度只调用主 `Perception.sample()`，不会为每个被标记的能力另开循环。录像编码器共用 `sample_hz` 作为名义频率，缺省也是 30；没有独立 FPS 配置。独立能力仍按实际调用时间记录，视频不按名义频率重采样；频率改变后开启新视频段。
 
@@ -150,7 +150,7 @@ CLI 默认返回 JSON，`--images` 用 OMP 原生终端图像通道交付所选�
 
 ## 常驻动作
 
-`action.py:Action` 在独立 Python 进程中运行：`start(context)` 初始化一次；`step()` 按 `step_hz` 执行（默认 30 Hz，可调）；`close()` 释放资源。`step()` 使用 `@capability`，需要记录决策或结果时再加 `@record`，返回同一记录信封。context 含 `workspace/runDir/generation/epoch`；实例、模块和模型跨 Shiori 轮次保留，慢步骤不重叠、不补跑。模板见 [action.py](../rsa/templates/action.py)，没有预设控制策略。
+`action.py:Action` 在独立 Python 进程中运行：`start(context)` 初始化一次；`step()` 按 `step_hz` 执行（默认 30 Hz，可调）；`close()` 释放资源。`step()` 使用 `@capability`，需要记录决策或结果时再加 `@record`，返回同一记录信封。context 含 `workspace/runDir/generation/epoch`；实例、模块和模型跨 Shiori 轮次保留，慢步骤不重叠、不补跑。模板见 [action.py](../../rsa/templates/action.py)，没有预设控制策略。
 
 动作通过 `Client().observe(query)` 读取同一时空轴，返回与 `rsa observe` 相同的查询结果；默认取感知主通道最新记录。动作留档仍交给感知 writer，不另存一套媒体。感知进程停止时查询和记录明确失败。
 

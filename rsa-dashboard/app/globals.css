@@ -1928,3 +1928,32 @@ pre {
 .archive-build { display: flex; align-items: center; justify-content: space-between; gap: 1.5rem; padding: 1rem 1.25rem; margin-bottom: 1rem; border: 1px solid var(--border, #343b32); border-radius: 10px; }
 .archive-build p { margin: .35rem 0 0; color: var(--muted, #9ca596); font-size: .875rem; }
 .archive-build button { flex-shrink: 0; }
+/* Docs: two-column reader, markdown body. */
+.docs-layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 16px; align-items: start; }
+.docs-nav { padding: 12px; display: flex; flex-direction: column; gap: 16px; }
+.docs-group .bench-list-heading { display: flex; flex-direction: column; gap: 2px; padding: 4px 8px 8px; }
+.docs-article { min-width: 0; }
+.docs-body { padding: 4px 20px 28px; max-width: 860px; }
+.docs-body h1 { font-size: 24px; margin: 20px 0 10px; }
+.docs-body h2 { font-size: 17px; margin: 22px 0 8px; }
+.docs-body h3 { font-size: 15px; margin: 18px 0 6px; }
+.docs-body h4 { font-size: 14px; margin: 14px 0 6px; }
+.docs-body p { margin: 0 0 10px; }
+.docs-body ul { margin: 0 0 12px; padding-left: 22px; }
+.docs-body li { margin-bottom: 5px; }
+.docs-body li::marker { color: var(--subtle); }
+.docs-body code { background: #141a15; border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; font-size: 12.5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.docs-body pre { background: #141a15; border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; overflow: auto; margin: 0 0 14px; }
+.docs-body pre code { background: none; border: 0; padding: 0; font-size: 12.5px; line-height: 1.6; }
+.docs-body .doc-table { overflow-x: auto; margin: 0 0 14px; border: 1px solid var(--line); border-radius: 8px; }
+.docs-body table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.docs-body th, .docs-body td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.docs-body th { color: var(--muted); font-weight: 600; background: #1b201c; }
+.docs-body tr:last-child td { border-bottom: 0; }
+.docs-body a { color: var(--gold); }
+.docs-body .doc-ref { color: var(--gold); cursor: pointer; }
+.docs-body .doc-ref:hover { text-decoration: underline; }
+.docs-body .doc-repo { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+/* Capabilities: overview cards + tables. */
+.caps-layout { display: flex; flex-direction: column; gap: 16px; }
+@media (max-width: 900px) { .docs-layout { grid-template-columns: minmax(0, 1fr); } }

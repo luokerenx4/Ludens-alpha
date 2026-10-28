@@ -5,7 +5,8 @@ export const runtime = "nodejs";
 export async function GET(request: Request) {
   try {
     localRequest(request);
-    return Response.json(await dashboardWorker().call("catalog", [], request.signal));
+    const includeEmpty = new URL(request.url).searchParams.get("includeEmpty") === "1";
+    return Response.json(await dashboardWorker().call("catalog", [includeEmpty], request.signal));
   } catch (e) {
     return errorResponse(e);
   }
