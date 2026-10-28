@@ -64,7 +64,7 @@ RSA 的持久连接持有有期限的 epoch，CLI/API/MCP 继承该上下文，�
 
 原生媒体内容及其顺序、标注在调用返回值中保留，`observations[].contentIndex` 对应原生内容位置。模拟器采集所需的文件仅在调用期间存在，读取字节后清理；CUA 内联媒体直接交付，调用者显式指定的输出文件保留。Baseware 不为每次采集建立永久截图档案，`Observation.path` 可以缺省。
 
-能力结果是否留档由 workspace 的 `@capability` / `@record` 声明决定。常驻感知进程把标记结果写入 workspace 的 `.rsa/timeline`，持久媒体按内容去重；RSA 与 Dashboard 引用原件，不复制到 run。调用者自行保存的数据集或输出文件仍属于普通 workspace 文件。契约见 [Workspace](workspace.md#能力留档与-workspace-时空轴)。
+能力结果是否留档由 workspace 的 `@capability` / `@record` 声明决定。常驻感知进程把标记结果写入 workspace 的 `.rsa/timeline`，持久媒体按内容去重；RSA 与 Dashboard 引用原件，不复制到 run。调用者自行保存的数据集或输出文件仍属于普通 workspace 文件。契约见 [Workspace](../tutorials/workspace.md#能力留档与-workspace-时空轴)。
 
 设备日志中的 `result` 是归档表示：二进制 `data/blob` 被省略，保留媒体类型、内容位置及大小；若已有明确时空轴引用或文件路径则记录引用，否则标明 `dataOmitted/blobOmitted`。同次调用的观测放在 `execution.observations`，不再额外写一组采集生命周期。API、CLI、MCP 的真实结果保持完整，日志表示不能直接转发为原生工具结果。
 
@@ -78,7 +78,7 @@ Baseware 是设备事实的唯一持久来源。每个服务实例独立保存 `
 
 ## Driver 包与启动描述
 
-`baseware serve --driver <id> --driver-package <spec>` 可加载外部 driver；不传包时从内置注册表选择。包导出 `DriverRegistration`（默认导出，或 `registration` / `driver`），`id` 必须与参数一致，`load({ port, command, clock })` 返回能力目录、断线回调和关闭方法。包的入口代码会在解析时执行，`rsa init` 和 `up --dry-run` 也不构成沙箱；只使用可信包。
+`baseware serve --driver <id> --driver-package <spec>` 可加载外部 driver；不传包时从内置注册表选择。包导出 `DriverRegistration`（默认导出，或 `registration` / `driver`），`id` 必须与参数一致，`load({ port, command, clock })` 返回能力目录、断线回调和关闭方法。包的入口代码会在解析时执行，`rsa init` 和 `up --dry-run` 也不构成沙箱；只使用可信包。新 driver 的 socket 行协议见 [Driver Bridge 协议](driver-bridge-protocol.md)。
 
 包 spec 支持 npm（含 scope 和版本）、`github:org/repo#revision` / GitHub URL，以及 `file:path`。npm 包由 Bun 安装到仓外隔离缓存；GitHub 按仓库和 revision 区分缓存，完成 checkout 和依赖安装后才发布缓存目录，入口遵循包的 `exports` 解析。安装行为遵循 Bun 的生命周期脚本与信任配置，不将不可信包视为安全数据。需要可重现执行时使用确切 npm 版本或 Git commit SHA，不依赖可移动的标签或分支。
 

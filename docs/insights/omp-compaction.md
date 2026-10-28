@@ -1,6 +1,6 @@
 # OMP 后台压缩改造
 
-RSA 锁定 OMP 18.9.1,压缩复用其原生实现。触发阈值默认跟随所选模型的原生 OMP 设置(`contextWindow − reserve`),可经 `rsa.json`/`--compaction-threshold` 显式覆盖;本文实测数据来自显式 256000 阈值的历史 run。本篇记录我们对 OMP 压缩(speculative compaction)做了什么、为什么改、改动的行为边界与验收方式。改动全部在 [rsa/patches/](../rsa/patches/) 下的依赖补丁中,由 Bun 按 `rsa/package.json` 的 `patchedDependencies` 配置应用;agent loop 本体未替换,见 [架构边界](architecture.md)。
+RSA 锁定 OMP 18.9.1,压缩复用其原生实现。触发阈值默认跟随所选模型的原生 OMP 设置(`contextWindow − reserve`),可经 `rsa.json`/`--compaction-threshold` 显式覆盖;本文实测数据来自显式 256000 阈值的历史 run。本篇记录我们对 OMP 压缩(speculative compaction)做了什么、为什么改、改动的行为边界与验收方式。改动全部在 [rsa/patches/](../../rsa/patches/) 下的依赖补丁中,由 Bun 按 `rsa/package.json` 的 `patchedDependencies` 配置应用;agent loop 本体未替换,见 [架构边界](../reference/architecture.md)。
 
 ## OMP 原生逻辑
 
@@ -37,7 +37,7 @@ RSA 锁定 OMP 18.9.1,压缩复用其原生实现。触发阈值默认跟随所�
 
 - **删除 refresh-on-growth 作废条件**。armed 摘要只要通过保留的校验(分支未变、投影余量足够)就保留;提交时重放快照后完整尾部,历史不丢。作废统一走 `cancelSpeculation(reason, contextTokens)`,带原因和上下文规模。
 - **pendingSpec 等待**。阈值触发且 remote 候选在途时,`untilAborted` 等待其完成再校验拼接,不再 abort 重算。等待与前台 auto compaction 信号联动,预算取消随时打断,不晚提交。
-- **候选身份与可观测性**。`diagnostics_channel("omp.compaction.speculation")` 绑定 `operationId`;started / armed / failed / cancelled / applied / invalidated 全生命周期结构化日志,含耗时、`snapshotLeafId`、`contextTokensAtStart`。宿主侧 [trace.ts](../rsa/src/harness/omp/trace.ts) 订阅该 channel 记录 `compaction_speculation` 事件,HTTP 子 span 与重试沿用候选身份。
+- **候选身份与可观测性**。`diagnostics_channel("omp.compaction.speculation")` 绑定 `operationId`;started / armed / failed / cancelled / applied / invalidated 全生命周期结构化日志,含耗时、`snapshotLeafId`、`contextTokensAtStart`。宿主侧 [trace.ts](../../rsa/src/harness/omp/trace.ts) 订阅该 channel 记录 `compaction_speculation` 事件,HTTP 子 span 与重试沿用候选身份。
 - **后台候选会话隔离**。compaction 请求用独立 `sessionId: "<id>:spec:<snowflake>"` 加新增 `parentSessionId` 保持 prompt-cache 亲和,强制 `preferWebsockets: false`,避免与活跃轮次的 sticky session 交错。
 
 ### pi-agent-core / pi-ai(管道)
@@ -53,6 +53,6 @@ RSA 锁定 OMP 18.9.1,压缩复用其原生实现。触发阈值默认跟随所�
 
 ## 验收
 
-- [rsa/tests/omp-speculation.test.ts](../rsa/tests/omp-speculation.test.ts):真实 OMP preparation/validation/commit/尾部重放,覆盖阈值等待、armed 后增长存活、分支/余量失效仍刷新、后台失败回退、预算取消可打断等待且不重发、不晚提交、operation 上下文贯穿前后台。
-- [rsa bench run ludens/background-compaction](benchmark.md):离线 case,验证只提交一次、尾部完整、HTTP 子链明确、取消后不晚提交。
-- 运行证据:`compaction_speculation` 事件按 `operationId` 贯穿,Dashboard 与 `analyze-run.py` 可核对候选归属;归属规则见 [日志](logging.md)。
+- [rsa/tests/omp-speculation.test.ts](../../rsa/tests/omp-speculation.test.ts):真实 OMP preparation/validation/commit/尾部重放,覆盖阈值等待、armed 后增长存活、分支/余量失效仍刷新、后台失败回退、预算取消可打断等待且不重发、不晚提交、operation 上下文贯穿前后台。
+- [rsa bench run ludens/background-compaction](../reference/benchmark.md):离线 case,验证只提交一次、尾部完整、HTTP 子链明确、取消后不晚提交。
+- 运行证据:`compaction_speculation` 事件按 `operationId` 贯穿,Dashboard 与 `analyze-run.py` 可核对候选归属;归属规则见 [日志](../reference/logging.md)。

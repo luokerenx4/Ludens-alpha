@@ -48,7 +48,7 @@ Baseware 只对明确声明只读的查询采用减量；未知能力、有副�
 
 OMP 原生 session、blob 和恢复机制不改，真实模型输入不替换为日志引用。共享 archive 与 timeline 不是单个 run 的附属文件：只复制或删除 `logs/<run-id>` 不会复制或回收它们。本次不迁移旧日志、不实现自动垃圾回收，避免让历史引用失效。
 
-manifest 记录 Git commit/dirty、continue/consolidate 提示和可选 workspace AGENTS 的 hash；dirty 不代表代码快照。认证头不入日志。结构见 [events.ts](../rsa/src/harness/events.ts)、[Baseware protocol](../baseware/src/protocol.ts)、[provenance.ts](../rsa/src/harness/provenance.ts)。
+manifest 记录 Git commit/dirty、continue/consolidate 提示和可选 workspace AGENTS 的 hash；dirty 不代表代码快照。认证头不入日志。结构见 [events.ts](../../rsa/src/harness/events.ts)、[Baseware protocol](../../baseware/src/protocol.ts)、[provenance.ts](../../rsa/src/harness/provenance.ts)。
 
 每行包含当前写入者的 `runId` 或 `serviceId`、`seq`、墙钟 `at`、单调时钟 `atMs`，以及：
 
@@ -99,7 +99,7 @@ manifest 记录 Git commit/dirty、continue/consolidate 提示和可选 workspac
 
 每条记录有 ID、递增 sequence、能力身份及实际加载源码 hash、runId、`recordedAt` 和 `sampling` 区间，以及适用时的 generation、`sampledAt/sources/space`。`recordedAt` 是记录墙钟；`sampling.clock/startedAtMs/finishedAtMs` 是同一进程单调时钟区间；`sampledAt` 由 workspace 提供，表示已知的来源时刻，不能用记录时间伪造设备帧时间。观测可包含文字、任意 JSON 数据和多种媒体，时间与空间信息不局限于视频。记录失败属于能力失败，会抛错；不重试感知调用或动作，也不伪造成功记录。
 
-持久化开启时，媒体按内容哈希保存一次，记录携带 `timeline: {recordId, sequence, asset}` 引用，`asset` 是时空轴根内的相对路径；之后的历史读取不复制或覆盖原件。默认热窗口 600 秒、分段 3600 秒，并受字节预算约束；完整配置见 [Workspace](workspace.md#常驻感知与历史读取)。关闭持久化时记录和媒体只存在于有限窗口，选中媒体交付期间受保护，必要时随响应携带字节，不另建永久审计副本。窗口淘汰或进程关闭后，对应媒体可以过期。
+持久化开启时，媒体按内容哈希保存一次，记录携带 `timeline: {recordId, sequence, asset}` 引用，`asset` 是时空轴根内的相对路径；之后的历史读取不复制或覆盖原件。默认热窗口 600 秒、分段 3600 秒，并受字节预算约束；完整配置见 [Workspace](../tutorials/workspace.md#常驻感知与历史读取)。关闭持久化时记录和媒体只存在于有限窗口，选中媒体交付期间受保护，必要时随响应携带字节，不另建永久审计副本。窗口淘汰或进程关闭后，对应媒体可以过期。
 
 查询开始记录原参数，以该次调用的 `spanId` 作为 `queryId`。查询结果只描述本次选择的记录、媒体、规范化查询和分页，不再包装成一次设备执行，也不附加采样器状态或末条记录副本。默认读取主 `Perception.sample` 能力，可通过 `capability` 筛选其他能力、`capability: "*"` 查询全轴或 `id` 定位记录。持久历史跨 reload 和 run 保留，默认最新主观测仍校验当前 generation 与采样健康，不将旧记录冒充当前采样。查询成功、采样器健康和模型输入编码成功是不同事实；感知生命周期及健康通过状态接口、统计与故障事件读取。
 
@@ -119,13 +119,13 @@ manifest 记录 Git commit/dirty、continue/consolidate 提示和可选 workspac
 
 Dashboard 从项目注册的 workspace 解析时空轴引用，校验真实路径与目录边界；旧 run 附件仍按原边界读取。记录详情展开时按引用读取单条记录的 `data/space`，不把它们复制回事件；窗口记录仅查询当前宿主，不启动采样。未录制媒体显示交付记录，过期引用返回明确状态并显示过期提示，不渲染失效图片。临时窗口媒体和记录详情不做持久浏览器缓存。
 
-generation 后台 trace 不继承重载请求或控制 epoch，保留 recordingId；查询另有主动调用身份，不重新执行 workspace 采样代码。接口及 reload 见 [Workspace](workspace.md)。
+generation 后台 trace 不继承重载请求或控制 epoch，保留 recordingId；查询另有主动调用身份，不重新执行 workspace 采样代码。接口及 reload 见 [Workspace](../tutorials/workspace.md)。
 
 ## Shiori、压缩与传输
 
-[Shiori telemetry](../rsa/src/harness/omp/shiori.ts) 用 OMP 原生 OTel ID/状态，局部 provider 不全局注册。`captureMessageContent=none` 避免复制正文；`shiori_run_end` 保存单次 agentLoop 的 summary/coverage，一次接管可含多个 loop。
+[Shiori telemetry](../../rsa/src/harness/omp/shiori.ts) 用 OMP 原生 OTel ID/状态，局部 provider 不全局注册。`captureMessageContent=none` 避免复制正文；`shiori_run_end` 保存单次 agentLoop 的 summary/coverage，一次接管可含多个 loop。
 
-[模型追踪](../rsa/src/harness/omp/trace.ts) 保留请求 payload、传输方式、WS full/delta、HTTP 尝试和响应流：
+[模型追踪](../../rsa/src/harness/omp/trace.ts) 保留请求 payload、传输方式、WS full/delta、HTTP 尝试和响应流：
 
 - HTTP 的 dispatch → headers 是响应头等待；HTTP end 不表示流已完成。
 - WS 出站 `response.create` 是 dispatch，不是首个响应。Dashboard 的“WS 首事件等待”是 dispatch → 第一个入站事件；不能用 HTTP 响应头指标代替。
@@ -133,7 +133,7 @@ generation 后台 trace 不继承重载请求或控制 epoch，保留 recordingI
 
 后台候选创建时由 `omp.compaction.speculation` 固定 operationId/epoch，HTTP 子 span 和重试沿用候选身份。started→armed/failed/cancelled 是准备，waiting/applied/invalidated 沿用身份：armed 表示摘要可用，applied 表示选中提交，HTTP end 仅为响应头。前台 auto_compaction_start/end 独立维护 span，保留开始身份/耗时；追踪不改调度或阈值。
 
-事件归属以 `trace.epoch` 为准；交还后的完成、重试、清理仍属于原周期。控制起止仅决定活跃时长和动作频率分母。旧事件缺少候选身份时保持未知，不用 snapshot leaf、当前 epoch 或时间邻近补全。WS 故障工况来源见 [WS 恢复测试依据](development.md#ws-恢复测试依据)。
+事件归属以 `trace.epoch` 为准；交还后的完成、重试、清理仍属于原周期。控制起止仅决定活跃时长和动作频率分母。旧事件缺少候选身份时保持未知，不用 snapshot leaf、当前 epoch 或时间邻近补全。WS 故障工况来源见 [WS 恢复测试依据](../insights/ws-recovery.md)。
 
 ## 消费与指标解释
 
