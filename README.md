@@ -15,7 +15,7 @@ The project combines local device control, a persistent agent session, workspace
 - **Use one interface across environments.** Discover device controls and workspace Python capabilities through `rsa controller`, with parameters available on demand.
 - **Let the agent build its own perception.** A persistent `perception.py` process can retain models, state, and background sampling between observations.
 - **Reuse code and experience.** Ordinary Python imports and `rsa_tools.Client` support in-process composition; `skills/` and `memory/` persist across runs.
-- **Inspect what actually happened.** The console shows model inputs, activity, tool results, timing, and linked device calls. Alice provides a desktop companion view of the same run data.
+- **Inspect what actually happened.** The console shows model inputs, activity, tool results, timing, and linked device calls. Ludens Pet provides a desktop companion view of the same run data.
 - **Measure changes.** Repository and workspace Harbor tasks share Shiori execution, independent verifiers, and the same result/history interface.
 
 These are mechanisms for experimenting with adaptation, not a claim that an agent will learn a particular game or generalize to new tasks.
@@ -75,7 +75,7 @@ rsa up
 rsa services
 ```
 
-`rsa init` creates `rsa.json` and starter workspace files. `rsa up --dry-run` prints the launch plan without starting services. `rsa up` starts or reuses Baseware, the agent host, the Dashboard, and Alice. A newly started host remains in manual mode.
+`rsa init` creates `rsa.json` and starter workspace files. `rsa up --dry-run` prints the launch plan without starting services. `rsa up` starts or reuses Baseware, the agent host, the Dashboard, and Ludens Pet. A newly started host remains in manual mode.
 
 To choose another environment, replace the `rsa init` command above with exactly one of:
 
@@ -108,7 +108,7 @@ rsa down --keep-emulator  # Stop the host and Baseware; keep the game open
 rsa down                  # Also stop the workspace-managed emulator
 ```
 
-Save your game before closing its emulator. Shared Dashboard and Alice processes remain running by default; see the [lifecycle guide](docs/development.md#工作区启动与停止) for shutdown options and configuration changes.
+Save your game before closing its emulator. Shared Dashboard and Ludens Pet processes remain running by default; see the [lifecycle guide](docs/development.md#工作区启动与停止) for shutdown options and configuration changes.
 
 ## How it works
 
@@ -118,8 +118,8 @@ Ludens separates the device, the agent runtime, and the code the agent develops.
 | --- | --- |
 | [Baseware](baseware/README.md) | Device drivers, observations, control leases, and CLI / API / MCP access. |
 | [RSA](rsa/README.md) | Agent lifecycle, persistent sessions, workspace capabilities, perception, benchmarks, and logging. |
-| [Dashboard](rsa-dashboard/README.md) | A local web console for live runs, timeline replay, run analysis, benchmarks, and Alice settings. |
-| [Alice companion](rsa-companion/README.md) | An Electron shell loading the same console, plus the native desktop pet, tray, and audio. |
+| [Dashboard](rsa-dashboard/README.md) | A local web console for live runs, timeline replay, run analysis, benchmarks, and Ludens Pet settings. |
+| [Ludens Pet companion](rsa-companion/README.md) | An Electron shell loading the same console, plus the native desktop pet, tray, and audio. |
 
 RSA uses **Shiori** as its sole runner. Agent execution uses **OMP 18.9.1**; ordinary benchmark programs, verifiers and metrics use the same budget and cancellation lifecycle without model calls. The agent uses OMP's native coding and process-management tools. Device and workspace capabilities are discovered through the CLI rather than automatically added to the model's tool list.
 
@@ -184,5 +184,5 @@ The original [unified console](docs/history/unified-console/prd.html) and [bench
 
 ## License and attribution
 
-A repository-wide license has not yet been declared. Alice's retained [license](rsa-companion/LICENSE), [provenance record](rsa-companion/upstream.json), and [asset notices](rsa-companion/ui/public/companion/NOTICE.md) document the companion's existing licensing and sources; they are not a repository-wide license declaration.
+A repository-wide license has not yet been declared. Ludens Pet's retained [license](rsa-companion/LICENSE), [provenance record](rsa-companion/upstream.json), and [asset notices](rsa-companion/ui/public/companion/NOTICE.md) document the companion's existing licensing and sources; they are not a repository-wide license declaration.
 

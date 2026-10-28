@@ -73,7 +73,7 @@ export function recordAliceConsumer(input: unknown, root = artifactRoot): AliceS
       !["idle", "switching", "following", "error"].includes(value.phase ?? "") ||
       !["revision", "workspace", "runId", "error"].every((key) =>
         value[key as keyof AliceConsumer] === null || typeof value[key as keyof AliceConsumer] === "string"))
-    throw new Error("无效的 Alice 状态");
+    throw new Error("无效的 Ludens Pet 状态");
   write(root, consumerFile, {
     instanceId: value.instanceId,
     pid: value.pid,

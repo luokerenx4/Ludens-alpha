@@ -35,7 +35,7 @@ const views = {
   live: ["运行", "运行现场", "看看它正在看什么、做什么。"],
   replay: ["回放", "经历回放", "沿着同一条时间轴，回看感知、动作、模型调用和日志。"],
   benchmark: ["Benchmark", "运行性能", "沿着一次请求，找到循环里的等待。"],
-  alice: ["Alice", "与 Alice 一起工作", "按自己的习惯，调整她的陪伴方式。"],
+  alice: ["Ludens Pet", "与 Ludens Pet 一起工作", "按自己的习惯，调整她的陪伴方式。"],
 } as const;
 type View = keyof typeof views;
 function workspaceName(project?: Project) {

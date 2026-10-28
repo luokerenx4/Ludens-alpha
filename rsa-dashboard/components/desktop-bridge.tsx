@@ -63,7 +63,7 @@ export function DesktopBridge({
         >
           <div>
             <span className="desktop-notification-label">
-              ALICE · {input.block?.kind ?? "活动"}
+              LUDENS PET · {input.block?.kind ?? "活动"}
             </span>
             <button
               aria-label="关闭通知"

@@ -103,16 +103,19 @@ rsa controller list
 rsa auto on
 ```
 
-`init` 生成配置和 workspace 模板，不覆盖已有文件；`up --dry-run` 只打印计划。`up` 启动或复用 Baseware、Host、Dashboard、Alice，新 Host 保持 manual，`auto on` 才请求模型和接管。复用中的 auto Host 继续原周期；感知初始化与会话约定见 [workspace.md](workspace.md)。
+`init` 生成配置和 workspace 模板，不覆盖已有文件；`up --dry-run` 只打印计划。`up` 启动或复用 Baseware、Host、Dashboard、Ludens Pet，新 Host 保持 manual，`auto on` 才请求模型和接管。复用中的 auto Host 继续原周期；感知初始化与会话约定见 [workspace.md](workspace.md)。
+
+外部 driver 可用 `rsa init --driver <id> --driver-package <spec>` 初始化；包契约与缓存见 [Baseware](baseware.md#driver-包与启动描述)。相对 `file:` 路径以选定 workspace 为基准，初始化时保存绝对路径；手写配置中的相对路径在 `up` 时也按 workspace 解析，不受启动命令当前目录影响。
 
 `rsa.json` 字段与默认值由 [workspace.ts](../rsa/src/app/workspace.ts) 定义：
 
 | 字段 | 默认值与用途 |
 | --- | --- |
-| `driver` | 必选：`mgba` / `ryubing` / `azahar` / `cua` |
-| `game` | Ryubing/Azahar 可选；路径相对 workspace。省略则连接已准备的外部模拟器 |
-| `port` | mGBA 47653、Ryubing 47663、Azahar 47673；Cua 不使用 |
-| `cuaCommand` | 仅 Cua 可用；默认从 PATH 查找 `cua-driver` |
+| `driver` | 必选 driver ID；内置 `mgba` / `ryubing` / `azahar` / `cua`，外部 driver 与包导出的 ID 一致 |
+| `driverPackage` | 可选外部 driver：npm 包 spec、`github:org/repo#revision` 或 `file:path`；包会执行代码，只加载可信来源 |
+| `game` | 支持自动启动的 driver 可选；路径相对 workspace。省略则连接已准备的外部设备；mGBA 不接受此字段 |
+| `port` | 显式值优先，否则使用 driver manifest 默认端口；内置 mGBA 47653、Ryubing 47663、Azahar 47673；stdio driver 不使用 |
+| `cuaCommand` | stdio driver 的可执行命令；内置 Cua 默认从 PATH 查找 `cua-driver` |
 | `model` | `openai-codex/gpt-6.1-sol` |
 | `seconds` / `requests` | 1800 / 1000；每次接管重置，任一预算用完即交还控制 |
 | `compactionThreshold` | 256000，使用 OMP 原生压缩 |
@@ -125,13 +128,13 @@ rsa auto on
 - `rsa action status/reload/stop`：查看、重载或禁用 `action.py` 常驻动作。manual 下 reload 只启用待加载入口；auto 下 stop/reload 会取消本 workspace 的全部当前输入（包括并发 CLI），不重启 OMP、感知或接管预算。步骤异常需修复后 reload；详见 [workspace](workspace.md#常驻动作)。
 - `rsa down`：先交还控制、等清理，再停止本 workspace 管理的 Host、Baseware 和模拟器。外部手动启动的进程不归它关闭；先保存游戏。
 - `rsa down --keep-emulator`：保留模拟器现场，用于修改预算、模型或加载 Host/Baseware 代码；随后 `rsa up`、`rsa services`、`rsa auto on`。
-- `down` 默认保留共享 Dashboard/Alice；`--pet` 关闭受管理的共享 Pet，单独打开的实例仍由应用退出；`--dashboard` 只关闭本 workspace 启动的 Dashboard，会影响其他消费者。
+- `down` 默认保留共享 Dashboard/Ludens Pet；`--pet` 关闭受管理的共享 Pet，单独打开的实例仍由应用退出；`--dashboard` 只关闭本 workspace 启动的 Dashboard，会影响其他消费者。
 
 重复 `up` 不加载新配置。重启默认续接原 workspace 的 OMP 会话，日志另写新 run。会话默认存放于 `.rsa/shiori/sessions/`，当前路径见 `.rsa/shiori/current-session.json` 或 run 的 `session` 事件。`rsa run --new-session` 按原生语义开新上下文并保留工作区文件；`--resume /absolute/path/to/session.jsonl` 选择同一 workspace 的已有会话，经 realpath 规范化并校验归属。
 
 新 Host 取得 workspace socket 独占权后，会一次性迁移旧 managed sessions 整目录和当前指针，保留旧目录符号链接以维持历史绝对资源引用，不清空会话。技能版本与 workspace 注册信息仍在 `../artifacts/rsa/ws-<name>-<hash>/`；OMP 全局 blob 不迁移，workspace 尚非独立导出包。存储边界见 [workspace.md](workspace.md#文件与会话)。
 
-[launch-background.py](../rsa/scripts/launch-background.py) 将工作区日志/job 写到 `logs/background/`；共享 Alice 在 `../artifacts/rsa/alice/background/`，label 为 `dev.playness.alice.pet`。服务脱离终端，不自动重启/开机启动。故障先看 `rsa services` 和对应日志，避免重复启动。
+[launch-background.py](../rsa/scripts/launch-background.py) 将工作区日志/job 写到 `logs/background/`；共享 Ludens Pet 在 `../artifacts/rsa/alice/background/`，label 为 `dev.playness.alice.pet`（历史 label 与目录名保留）。服务脱离终端，不自动重启/开机启动。故障先看 `rsa services` 和对应日志，避免重复启动。
 
 ## 独立组件与控制台
 
@@ -180,7 +183,7 @@ Dashboard 共享日志客户端有变化时，重新构建 `rsa-companion` 并�
 
 打开 [本地控制台](http://127.0.0.1:3015)。另一个终端运行 `rsa-companion/bin/rsa-companion --show-window`，Electron 加载同一页面。关闭窗口只隐藏，双击卢登斯/点击托盘重开，Quit 才退出。
 
-在共享界面选择“让 Alice 跟随此工作区”即可热切换；历史回放不改变关注目标，Pet 跟随该 workspace 最新非 Benchmark 运行。`--workspace PATH` / `RSA_WORKSPACE` 只提供首次默认选择，`--dashboard URL` 指定本地服务，`--profile PATH` 使用独立偏好目录。默认实例会复用已有窗口。
+在共享界面选择“让 Ludens Pet 跟随此工作区”即可热切换；历史回放不改变关注目标，Pet 跟随该 workspace 最新非 Benchmark 运行。`--workspace PATH` / `RSA_WORKSPACE` 只提供首次默认选择，`--dashboard URL` 指定本地服务，`--profile PATH` 使用独立偏好目录。默认实例会复用已有窗口。
 
 控制台只监听 localhost；启动 Pet 不发模型请求或游戏输入。浏览器可切关注目标，音量、音频导入等原生设置需桌面端操作。日志消费、媒体和统计见 [logging.md](logging.md)。
 

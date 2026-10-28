@@ -8,7 +8,7 @@ import "./alice-settings.css";
 async function request(init?: RequestInit): Promise<AliceState> {
   const response = await fetch("/api/alice", { cache: "no-store", ...init });
   const value = await response.json();
-  if (!response.ok) throw new Error(value.error ?? "无法连接 Alice");
+  if (!response.ok) throw new Error(value.error ?? "无法连接 Ludens Pet");
   return value;
 }
 
@@ -68,9 +68,9 @@ export function AliceFollowCard({
   const target = follow.state?.target;
   const selected = !!project?.workspace && target?.project === project.id;
   return <div className="alice-follow-card">
-    <button className="alice-follow-heading" onClick={onSettings} aria-label="管理 Alice 跟随">
-      <span className="alice-follow-avatar" aria-hidden="true">A</span>
-      <span><strong>Alice</strong><small>
+    <button className="alice-follow-heading" onClick={onSettings} aria-label="管理 Ludens Pet 跟随">
+      <span className="alice-follow-avatar" aria-hidden="true">L</span>
+      <span><strong>Ludens Pet</strong><small>
         <i className={"status-dot " + (follow.state?.connected ? "online" : "")} />
         {follow.error ? "连接遇到问题" : aliceStatus(follow.state)}
       </small></span>
@@ -80,9 +80,9 @@ export function AliceFollowCard({
     {project?.workspace ? <button className="control-button alice-follow-action"
       disabled={follow.pending || !follow.state || selected}
       onClick={() => void follow.follow(project.id)}>
-      {follow.pending ? "正在更新…" : selected ? "已关注此工作区" : "让 Alice 跟随此工作区"}
+      {follow.pending ? "正在更新…" : selected ? "已关注此工作区" : "让 Ludens Pet 跟随此工作区"}
     </button> : <button className="control-button alice-follow-action" onClick={onSettings}>选择关注的工作区</button>}
-    {follow.error && <small className="setting-error" role="alert">无法更新 Alice 状态，请到 Alice 页面重试。</small>}
+    {follow.error && <small className="setting-error" role="alert">无法更新 Ludens Pet 状态，请到 Ludens Pet 页面重试。</small>}
   </div>;
 }
 
@@ -91,15 +91,15 @@ export function AliceFollowSettings({ follow, projects }: { follow: AliceFollow;
   const target = state?.target;
   const options = projects.filter((project) => project.workspace);
   return <section className="setting-group alice-follow-settings">
-    <header><h3>关注的工作区</h3><p>Alice 持续跟随这里的最新运行。你可以自由浏览其他工作区和历史记录。</p></header>
+    <header><h3>关注的工作区</h3><p>Ludens Pet 持续跟随这里的最新运行。你可以自由浏览其他工作区和历史记录。</p></header>
     <div className="alice-follow-status" role="status">
       <i className={"status-dot " + (state?.connected ? "online" : "")} />
       <strong>{error ? "连接遇到问题" : aliceStatus(state)}</strong>
       <span>{target ? workspaceLabel({ id: target.project, workspace: target.workspace }) : "未关注任何工作区"}</span>
     </div>
     <label className="setting-row">
-      <span className="setting-label">让 Alice 跟随<small>切换展示内容，不改变 AI 的接管状态。</small></span>
-      <select aria-label="Alice 关注的工作区" value={target?.project ?? ""}
+      <span className="setting-label">让 Ludens Pet 跟随<small>切换展示内容，不改变 AI 的接管状态。</small></span>
+      <select aria-label="Ludens Pet 关注的工作区" value={target?.project ?? ""}
         disabled={pending || !state} onChange={(event) => void follow.follow(event.target.value || null)}>
         <option value="">停止跟随</option>
         {target && !options.some((project) => project.id === target.project) &&
@@ -108,7 +108,7 @@ export function AliceFollowSettings({ follow, projects }: { follow: AliceFollow;
       </select>
     </label>
     {target && <p className="setting-help alice-target-path">{target.workspace}</p>}
-    {state && !state.connected && <p className="setting-help">Alice 桌面应用尚未连接。选择会保留，打开 Alice 后自动生效。</p>}
+    {state && !state.connected && <p className="setting-help">Ludens Pet 桌面应用尚未连接。选择会保留，打开 Ludens Pet 后自动生效。</p>}
     {state?.connected && target && state.consumer?.workspace === target.workspace && state.consumer.error &&
       <p className="setting-error" role="alert">{state.consumer.error}</p>}
     {error && <p className="setting-error" role="alert">{error}</p>}

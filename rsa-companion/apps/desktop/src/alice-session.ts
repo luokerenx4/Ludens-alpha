@@ -59,7 +59,7 @@ export class AliceSessionCoordinator implements RsaActivitySource {
       headers: { Origin: this.origin, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     })
-    if (!response.ok) throw new Error(`Alice 日志服务 HTTP ${response.status}`)
+    if (!response.ok) throw new Error(`Ludens Pet 日志服务 HTTP ${response.status}`)
     return response.json()
   }
   async start(workspace?: string) {
@@ -81,7 +81,7 @@ export class AliceSessionCoordinator implements RsaActivitySource {
       if (this.stopped) return
       const next = state.target
       if (next !== null && (!next || typeof next.project !== 'string' || typeof next.workspace !== 'string' || typeof next.revision !== 'string'))
-        throw new Error('Alice 跟随目标无效')
+        throw new Error('Ludens Pet 跟随目标无效')
       if (next?.revision !== this.target?.revision || next?.workspace !== this.target?.workspace || next?.project !== this.target?.project
         || (next && !this.source) || (!next && this.phase === 'error')) this.select(next)
     } catch (error) {

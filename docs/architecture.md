@@ -9,8 +9,8 @@ RSA（Recursive Self-Adaptation）让 Coding Agent 在 workspace 中探索设备
 | `baseware/` | 独立设备服务：装配 driver，提供能力目录、控制权、取消、媒体和设备日志；外放 CLI、TS/Python API 与 MCP。 |
 | `rsa/` | Harness：工作区、接管预算、统一能力入口、感知与动作进程、Benchmark，以及 Shiori 的装配与日志。 |
 | Shiori | 唯一执行内核的职责名：RSA Host Runtime 统一控制周期、预算、取消与清理。Agent 模式由 OMP 实现；普通程序、verifier 和 metric 使用同一 Runtime，不启动模型。 |
-| `rsa-dashboard/` | 归档读取 worker、HTTP API 与统一的运行、回放、Benchmark、Alice 界面，读取运行事实并提供人工交还入口。 |
-| `rsa-companion/` | Electron 壳与原生 Alice Pet，复用同一 Dashboard 界面和日志来源。 |
+| `rsa-dashboard/` | 归档读取 worker、HTTP API 与统一的运行、回放、Benchmark、Ludens Pet 界面，读取运行事实并提供人工交还入口。 |
+| `rsa-companion/` | Electron 壳与原生 Ludens Pet，复用同一 Dashboard 界面和日志来源。 |
 
 ```mermaid
 flowchart LR
@@ -29,7 +29,7 @@ flowchart LR
     B --> L
     L --> R[Dashboard 归档读取 worker]
     R --> V[Dashboard 网页 / Electron 界面]
-    R --> A[Alice 增量展示]
+    R --> A[Ludens Pet 增量展示]
 ```
 
 Python 组合在自己的进程内完成，设备调用才进入 RSA/Baseware；执行方式见 [workspace](workspace.md)。
@@ -106,4 +106,4 @@ workspace 的 `.rsa/timeline/` 是显式记录能力结果的唯一原件归属�
 
 感知记录、动作、模型调用和日志共享 workspace 的绝对时间坐标。原始内容仍留在各自存储，通过 recordId、事件序号、模型/工具/动作 ID 和 trace 关联。Dashboard 按需投影为时间点或区间；对齐采用现有时间戳，不额外做硬件同步。
 
-回放读取感知层实际留档的连续采样，包括未被模型读取的帧。模型输入详情按明确引用追到当时交付的观测。播放器在同一游标下展示画面、动作、模型调用与日志，复用已有文件索引和媒体原件；播放历史不执行操作、不启动采样，也不修改 Alice 关注目标。实施与验收见 [经历回放方案](experience-replay-plan.md)。
+回放读取感知层实际留档的连续采样，包括未被模型读取的帧。模型输入详情按明确引用追到当时交付的观测。播放器在同一游标下展示画面、动作、模型调用与日志，复用已有文件索引和媒体原件；播放历史不执行操作、不启动采样，也不修改 Ludens Pet 关注目标。实施与验收见 [经历回放方案](experience-replay-plan.md)。

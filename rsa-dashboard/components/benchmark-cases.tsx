@@ -126,7 +126,7 @@ export function BenchmarkCases({ search, refresh, navigate, onNavigate }: {
       onChange={event => navigate({ ...reset, benchWorkspace: event.target.value || null, case: null })}>
       {!catalog.projects.length && <option value="">没有工作区</option>}
       {catalog.projects.map(project => <option key={project.id} value={project.id}>{project.workspace}</option>)}
-    </select></label><p className="bench-note">每页读取 25 次执行。查看评测不会启动任务或切换 Alice 的关注目标。</p></div>
+    </select></label><p className="bench-note">每页读取 25 次执行。查看评测不会启动任务或切换 Ludens Pet 的关注目标。</p></div>
     <div className="bench-case-layout">
       <aside className="surface bench-case-list" aria-label="评测目录"><div className="bench-list-heading"><span>{catalog.tasks.length} 个任务包</span></div>
         <button className={`bench-case-item${!query.get("case") ? " selected" : ""}`} onClick={() => navigate({ ...reset, case: null })}>全部执行历史</button>
