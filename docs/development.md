@@ -118,8 +118,10 @@ rsa auto on
 | `cuaCommand` | stdio driver 的可执行命令；内置 Cua 默认从 PATH 查找 `cua-driver` |
 | `model` | `openai-codex/gpt-6.1-sol` |
 | `seconds` / `requests` | 1800 / 1000；每次接管重置，任一预算用完即交还控制 |
-| `compactionThreshold` | 256000，使用 OMP 原生压缩 |
+| `compactionThreshold` | 不设，跟随 OMP 对所选模型的原生触发点 |
 | `dashboard` / `pet` | 均为 true；Pet 需要 Dashboard |
+
+旧版 `rsa init` 生成的 `rsa.json` 可能已包含 `compactionThreshold: 256000`，升级后仍视为显式覆盖。希望跟随模型原生阈值时，删除该字段；升级不会自动修改已有 workspace 配置。
 
 从其他目录管理用 `rsa --workspace /absolute/path/to/workspace status` 或 `RSA_WORKSPACE`。workspace 隔离会话和默认 socket；真实设备仍需独立实例/端口，同一 workspace 不能有两个 Host。
 
@@ -283,6 +285,6 @@ Bun 1.4、打补丁的 `@oh-my-pi/pi-ai@18.9.1` 调用真实 `streamOpenAICodexR
 
 2026-10-21 先加 R3 Agent 回归：旧实现工具回调 **0 次，期望 1 次**。恢复原生边界后验证同一 prompt 内恢复、执行一次并提交结果，以及冷却后全历史 WS → delta。text/thinking 改为原生恢复预期，完整工具不重放检查保留；最新通过数以命令为准。
 
-测试只证明受控行为，不证明线上永不掉线或实际重连耗时；长跑、调度、吞吐仍看日志。256k 阈值、模型、游戏策略不在变更范围。
+测试只证明受控行为，不证明线上永不掉线或实际重连耗时；长跑、调度、吞吐仍看日志。该次 WS 修复未调整当时的 256k 阈值、模型或游戏策略。
 
 看板基准 [ws-recovery.ts](../rsa/src/benchmark/cases/ws-recovery.ts) 复现两类实际事件，在 `benchmark_fault` 标明来源与模拟条件；完整矩阵留在外部测试。升级 OMP 时先跑专项再跑基准，不复制测试进依赖。

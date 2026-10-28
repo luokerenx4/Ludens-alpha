@@ -1,6 +1,6 @@
 # OMP 后台压缩改造
 
-RSA 锁定 OMP 18.9.1,压缩复用其原生实现,阈值 256000。本篇记录我们对 OMP 压缩(speculative compaction)做了什么、为什么改、改动的行为边界与验收方式。改动全部在 [rsa/patches/](../rsa/patches/) 下的依赖补丁中,由 Bun 按 `rsa/package.json` 的 `patchedDependencies` 配置应用;agent loop 本体未替换,见 [架构边界](architecture.md)。
+RSA 锁定 OMP 18.9.1,压缩复用其原生实现。触发阈值默认跟随所选模型的原生 OMP 设置(`contextWindow − reserve`),可经 `rsa.json`/`--compaction-threshold` 显式覆盖;本文实测数据来自显式 256000 阈值的历史 run。本篇记录我们对 OMP 压缩(speculative compaction)做了什么、为什么改、改动的行为边界与验收方式。改动全部在 [rsa/patches/](../rsa/patches/) 下的依赖补丁中,由 Bun 按 `rsa/package.json` 的 `patchedDependencies` 配置应用;agent loop 本体未替换,见 [架构边界](architecture.md)。
 
 ## OMP 原生逻辑
 
@@ -46,7 +46,7 @@ RSA 锁定 OMP 18.9.1,压缩复用其原生实现,阈值 256000。本篇记录�
 
 ## 行为边界
 
-- 调度与阈值不变:仍是 256000,预测带、方法选择、投影校验逻辑原样保留。
+- 调度不变:触发阈值默认跟随所选模型的原生 OMP 设置(历史 run 曾显式用 256000),预测带、方法选择、投影校验逻辑原样保留。
 - 摘要"旧"的代价:快照后的新增消息原样带入新历史,增加保留尾部的 token 数,以复用已有摘要。有效候选已就绪时可避免重新请求摘要;候选仍在途或校验失败时仍可能等待。
 - 作废仍然发生:分支变化、投影余量不足、配置变更、取消,都会按原语义作废,只是不再因增长作废。
 - 适用前提是实时控制循环。若场景允许压缩时安全暂停设备,此改动价值下降,可重新权衡。
