@@ -1,0 +1,17 @@
+{
+  "task": "ludens/clamp",
+  "argv": [
+    "{python}",
+    "{rsa}/benchmarks/examples/clamp.py",
+    "--samples",
+    "{param.samples}",
+    "--seed",
+    "{param.seed}"
+  ],
+  "workspace": "isolated",
+  "seconds": 300,
+  "parameters": {
+    "samples": 1000,
+    "seed": 7
+  }
+}

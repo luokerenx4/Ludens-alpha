@@ -1,121 +1,88 @@
 import type { Event } from "./types";
-import type {
-  BenchmarkDefinition,
-  BenchmarkCheck,
-  BenchmarkResult,
-  BenchmarkReport,
-  BenchmarkStatus,
-  BenchmarkVerdict,
-} from "../../rsa/src/benchmark/contract";
-export {
-  compatibleBaseline,
-  comparisonChanges,
-  compareResults,
-} from "../../rsa/src/benchmark/contract";
-export type {
-  BenchmarkDefinition,
-  BenchmarkResult,
-  BenchmarkReport,
-  BenchmarkStatus,
-  BenchmarkVerdict,
-} from "../../rsa/src/benchmark/contract";
+import type { BenchmarkResult, EvidenceReference, TaskDefinition, TrialSummary, TrialPage, VerificationPage, VerificationStatus, TrialStatus } from "../../rsa/src/benchmark/contract";
+export { compareResults, comparisonChanges } from "../../rsa/src/benchmark/contract";
+export type { BenchmarkResult, EvidenceReference, TaskDefinition, TrialSummary, Trial, Verification, VerificationSummary } from "../../rsa/src/benchmark/contract";
 
-export interface BenchmarkEntry {
-  key: string;
-  definition: BenchmarkDefinition;
-  project?: string;
-  workspace?: string;
-  available: boolean;
-}
+export interface BenchmarkQuery { project?: string; taskName?: string; cursor?: string; limit?: number }
+export interface BenchmarkDetailQuery { verification?: string; verificationCursor?: string; evidenceCursor?: string }
 export interface BenchmarkCatalog {
-  benchmarks: BenchmarkEntry[];
-  results: BenchmarkResult[];
-  issues: { project: string; runId?: string; error: string }[];
+  projects: { id: string; workspace: string }[];
+  project: string | null;
+  tasks: TaskDefinition[];
+  history: TrialPage;
+  issues: { project: string; error: string }[];
 }
+export interface BenchmarkEvidenceItem {
+  index: number;
+  reference: EvidenceReference;
+  available: boolean;
+  error?: string;
+  event?: Event;
+}
+export interface BenchmarkAttachment { reference: EvidenceReference; text: string; truncated: boolean }
 export interface BenchmarkEvidence {
   result: BenchmarkResult;
-  events: Event[];
-  missingSeq: number[];
-  missingEvents?: string[];
-  epoch: string | null;
-  epochs: string[];
-  logAvailable: boolean;
+  verifications: VerificationPage;
+  evidence: { items: BenchmarkEvidenceItem[]; nextCursor?: string };
 }
-export const statusLabels: Record<BenchmarkStatus, string> = {
-  running: "未记录结束",
-  completed: "已完成",
-  error: "执行异常",
-  cancelled: "已取消",
+export const statusLabels: Record<TrialStatus, string> = {
+  running: "尚未记录结束", completed: "执行完成", error: "执行异常", cancelled: "已取消",
 };
-export const verdictLabels: Record<Exclude<BenchmarkVerdict, null>, string> = {
-  passed: "通过",
-  failed: "未通过",
-  inconclusive: "证据不足",
+export const verificationLabels: Record<VerificationStatus, string> = {
+  running: "评分中", completed: "评分完成", error: "评分异常",
 };
-export const resultLabel = (result: BenchmarkResult) =>
-  statusLabels[result.status] +
-  (result.report?.errors.length
-    ? " · 报告无效"
-    : result.verdict
-      ? ` · ${verdictLabels[result.verdict]}`
-      : "");
-export const resultKey = (result: BenchmarkResult) =>
-  `${result.project}/${result.runId}`;
-export const definitionKey = (
-  definition: BenchmarkDefinition,
-  project?: string,
-) =>
-  `${definition.source === "builtin" ? "builtin" : project}/${definition.id}`;
-export function benchmarkRunUrl(
-  result: BenchmarkResult,
-  epoch?: string | null,
-  event?: Event,
-) {
-  const params = new URLSearchParams({
-    view: "benchmark",
-    project: result.project,
-    run: result.runId,
-  });
-  if (epoch) params.set("epoch", epoch);
-  if (event?.trace.modelCallId) params.set("call", event.trace.modelCallId);
+export const verificationLabel = (value: BenchmarkResult["verification"]) => value ? verificationLabels[value.status] : "尚未评分";
+export const resultLabel = (value: BenchmarkResult) => `${statusLabels[value.trial.status]} · ${verificationLabel(value.verification)}`;
+export const resultKey = (value: Pick<TrialSummary, "project" | "runId">) => `${value.project}/${value.runId}`;
+export const taskKey = (value: TaskDefinition) => `${value.name}@${value.digest}`;
+export function parseResultKey(value: string | null): { project: string; run: string } | null {
+  if (!value) return null;
+  const [project, run, extra] = value.split("/");
+  return project && run && !extra && [project, run].every(id => /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(id)) ? { project, run } : null;
+}
+export function benchmarkRunUrl(trial: Pick<TrialSummary, "project" | "runId">, event?: Event, reference?: EvidenceReference) {
+  const params = new URLSearchParams({ view: "benchmark", project: trial.project,
+    run: reference?.kind === "event" ? reference.runId : trial.runId });
+  if (event?.trace?.epoch) params.set("epoch", event.trace.epoch);
+  if (event?.trace?.modelCallId) params.set("call", event.trace.modelCallId);
   return "/?" + params;
 }
-const shellQuote = (value: string) =>
-  "'" + value.replaceAll("'", "'\\''") + "'";
-export function benchmarkCommand(entry: BenchmarkEntry) {
-  return `rsa${entry.workspace ? ` --workspace ${shellQuote(entry.workspace)}` : ""} bench run ${shellQuote(entry.definition.id)}`;
+const shellQuote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+export function benchmarkCommand(task: TaskDefinition, workspace: string) {
+  return `rsa --workspace ${shellQuote(workspace)} bench run ${shellQuote(task.name)} --digest ${shellQuote(task.digest)}`;
 }
-
-export const reportLabel = (report: BenchmarkReport | null) =>
-  report ? (report.errors.length ? "报告无效" : "有效报告") : "尚无报告";
-export const displayCheckValue = (value: unknown) =>
-  value === undefined
-    ? "未提供"
-    : typeof value === "string"
-      ? value
-      : JSON.stringify(value);
-export function benchmarkReportCommand(result: BenchmarkResult) {
-  return `rsa --workspace ${shellQuote(result.workspace)} bench report ${shellQuote(result.runId)} --file report.json`;
+export function benchmarkVerifyCommand(trial: Pick<TrialSummary, "workspace" | "runId">) {
+  return `rsa --workspace ${shellQuote(trial.workspace)} bench verify ${shellQuote(trial.runId)}`;
 }
-/** Pin both immutable report IDs; a report revision is not another trial. */
-export function benchmarkSelection(
-  result: BenchmarkResult,
-  baseline?: BenchmarkResult,
-) {
-  return {
-    case: definitionKey(result.definition, result.project),
-    result: resultKey(result),
-    report: result.report?.id ?? null,
-    baseline: baseline ? resultKey(baseline) : null,
-    baselineReport: baseline?.report?.id ?? null,
-  };
+/** URL selections pin a verification, never count a re-score as another execution. */
+export function benchmarkSelection(result: BenchmarkResult, baseline?: BenchmarkResult) {
+  return { benchWorkspace: result.trial.project, case: result.trial.task.name, caseDigest: result.trial.task.digest, result: resultKey(result.trial),
+    verification: result.verification?.id ?? null, baseline: baseline ? resultKey(baseline.trial) : null,
+    baselineVerification: baseline?.verification?.id ?? null, report: null, baselineReport: null };
 }
-
-/** Source identities and old local sequence references are distinct evidence addresses. */
-export function checkEvidence(check?: Pick<BenchmarkCheck, "evidenceSeq" | "evidenceEvents">): (number | string)[] {
-  return [...(check?.evidenceSeq ?? []), ...(check?.evidenceEvents ?? [])];
+export function evidenceLabel(reference: EvidenceReference) {
+  if (reference.label) return reference.label;
+  if (reference.kind === "event") return `${reference.runId} · ${reference.eventId ?? `${reference.source ?? "source"} #${reference.seq ?? "prefix"}`}`;
+  if (reference.kind === "timeline") return reference.recordId ?? reference.timeline.asset;
+  return reference.path;
 }
-export function evidenceEvent(proof: BenchmarkEvidence, reference: number | string) {
-  return typeof reference === "string" ? proof.events.find(event => event.origin?.eventId === reference)
-    : proof.missingSeq.includes(reference) ? undefined : proof.events.find(event => event.seq === reference);
+export function parseBenchmarkRequest(params: URLSearchParams):
+  | { kind: "catalog"; query: BenchmarkQuery }
+  | { kind: "detail"; project: string; run: string; query: BenchmarkDetailQuery }
+  | { kind: "attachment"; project: string; run: string; index: number; verification?: string } {
+  const project = params.get("project") || undefined, run = params.get("run") || undefined;
+  const verification = params.get("verification") ?? params.get("report") ?? undefined;
+  const verificationCursor = params.get("verificationCursor") || undefined, evidenceCursor = params.get("evidenceCursor") || undefined;
+  if (run && !project) throw new Error("执行详情需要 project 和 run");
+  const attachment = params.get("attachment");
+  if ((verification || verificationCursor || evidenceCursor || attachment !== null) && !run) throw new Error("评分和证据查询需要 project 和 run");
+  if (attachment !== null) {
+    const index = Number(attachment);
+    if (!/^\d+$/.test(attachment) || !Number.isSafeInteger(index)) throw new Error("无效的附件序号");
+    return { kind: "attachment", project: project!, run: run!, index, verification };
+  }
+  if (project && run) return { kind: "detail", project, run, query: { verification, verificationCursor, evidenceCursor } };
+  const limitText = params.get("limit"), limit = limitText === null ? undefined : Number(limitText);
+  if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)) throw new Error("limit 必须是 1 到 100 的整数");
+  return { kind: "catalog", query: { project, taskName: params.get("task") || undefined, cursor: params.get("cursor") || undefined, limit } };
 }

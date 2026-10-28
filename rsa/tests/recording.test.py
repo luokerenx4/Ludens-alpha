@@ -20,7 +20,7 @@ from rsa_tools._context import current, scope
 from rsa_tools._recording import RecordingWindow
 
 
-SOURCE = '''from rsa_tools import capability, record, benchmark
+SOURCE = '''from rsa_tools import capability, record
 from rsa_tools._context import current
 seen = []
 @capability
@@ -33,7 +33,6 @@ def helper(fail=False):
 @capability
 def sample(nested=True, fail=False):
     return {"text": helper(fail) if nested else "frame"}
-@benchmark(targets=["python/fixture.py:helper"])
 def quality():
     """Measure actual imported capability use."""
     helper()
@@ -241,58 +240,28 @@ class Perception:
         self.assertEqual(wire["arguments"], {"keys": ["a"]})
         self.assertEqual(wire["trace"], {"traceId": "explicit", "recordingPurpose": "continuous-perception", "recordingId": "host-run"})
 
-    def test_benchmark_subject_does_not_require_a_persisted_call(self):
+    def test_trial_subject_does_not_require_a_persisted_call(self):
+        from rsa_tools.benchmarks import Trial
         for continuous, host in ((True, True), (True, False), (False, True), (False, False)):
             with self.subTest(continuous=continuous, host=host), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory).resolve()
+                artifacts = root / "artifacts"
+                artifacts.mkdir()
+                input_path = root / "input.json"
+                input_path.write_text("{}")
                 base = context(root, socket_path="fake.sock" if host else "",
                                recording_purpose="continuous-perception" if continuous else None)
                 functions = load(root, base)
-                with patch("rsa_tools._context.request", return_value={"logging": {"diagnostics": "normal", "basewareDiagnostics": "normal"}}) as rpc, patch.dict(os.environ, {"RSA_ARTIFACT_ROOT": str(root / "index")}), scope(base):
-                    functions["quality"]()
-                runs = list((root / "logs").glob("*/benchmark.json"))
-                self.assertEqual(len(runs), 1)
-                result = json.loads(runs[0].read_text())
+                with scope(base):
+                    trial = Trial("test", root, artifacts, root, input_path)
+                    with patch("rsa_tools._context._trial_observer", trial._observe), patch("rsa_tools._context.request") as rpc:
+                        functions["quality"]()
+                        trial.flush()
+                result = json.loads((artifacts / "context.json").read_text())
                 self.assertIn({"id": "python/fixture.py:helper", "revision": hashlib.sha256(SOURCE.encode()).hexdigest()}, result["subjects"])
-                self.assertEqual(result["conditions"]["diagnostics"], "normal")
-                events = [json.loads(line) for line in runs[0].with_name("events.jsonl").read_text().splitlines()]
-                calls = [event for event in events if event["type"].startswith("python_call")]
-                self.assertEqual(len(calls), 2 if not continuous and not host else 0)
-                self.assertEqual(rpc.call_count, (2 if host and not continuous else 0) + int(host))
-
-    def test_full_benchmark_preflight_checks_real_host_and_device_modes_before_execution(self):
-        from rsa_tools.benchmarks import _recording_conditions
-        for run_id in ("host-run", None):
-            base = context(".", diagnostics="full", run_id=run_id)
-            with patch("rsa_tools._context.request", return_value={"logging": {"diagnostics": "full", "basewareDiagnostics": "normal"}}) as rpc:
-                with self.assertRaisesRegex(ValueError, "BENCHMARK_CONDITIONS_UNMET"):
-                    _recording_conditions({"requiredDiagnostics": "full"}, base)
-                rpc.assert_called_once()
-                actual = _recording_conditions({}, base)
-                self.assertEqual(actual["basewareDiagnostics"], "normal")
-            with patch("rsa_tools._context.request", return_value={"logging": {"diagnostics": "full", "basewareDiagnostics": "full"}}):
-                self.assertEqual(_recording_conditions({"requiredDiagnostics": "full"}, base), {
-                    "diagnostics": "full", "hostDiagnostics": "full", "basewareDiagnostics": "full"})
-        with patch("rsa_tools._context.request") as rpc:
-            self.assertEqual(_recording_conditions({"requiredDiagnostics": "full"}, context(".", socket_path="", diagnostics="full")), {"diagnostics": "full"})
-            rpc.assert_not_called()
-
-    def test_full_benchmark_declaration_is_discovered_and_refuses_a_normal_run(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory).resolve()
-            base = context(root, socket_path="")
-            source = SOURCE.replace('@benchmark(targets=["python/fixture.py:helper"])',
-                                    '@benchmark(targets=["python/fixture.py:helper"], diagnostics="full")')
-            path = root / "fixture.py"
-            path.write_text(source)
-            namespace = {"__file__": str(path)}
-            with scope(base), patch.dict(os.environ, {"RSA_ARTIFACT_ROOT": str(root / "index")}):
-                exec(compile(source, str(path), "exec"), namespace)
-                definition = namespace["quality"].__rsa_benchmark_definition__
-                self.assertEqual(definition["requiredDiagnostics"], "full")
-                with self.assertRaisesRegex(ValueError, "BENCHMARK_CONDITIONS_UNMET"):
-                    namespace["quality"]()
-                self.assertEqual(namespace["seen"], [])
+                self.assertEqual(result["capabilityCalls"][0]["succeeded"], 1)
+                self.assertFalse((root / "events.jsonl").exists())
+                self.assertEqual(rpc.call_count, 2 if host and not continuous else 0)
 
 
 if __name__ == "__main__":

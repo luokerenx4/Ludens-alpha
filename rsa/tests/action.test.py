@@ -194,7 +194,7 @@ class ActionTests(unittest.TestCase):
     def test_capability_methods_preserve_objects_without_becoming_cli_entries(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            source = '''from rsa_tools import capability, record, benchmark
+            source = '''from rsa_tools import capability, record
 MODEL = object()
 @capability
 def model():
@@ -206,7 +206,6 @@ class Action:
     @record
     @capability
     def saved(self): return {"data": True}
-@benchmark(targets=["python/program.py:Action.step"])
 def quality():
     """Measure the actual local action capability."""
     value = Action().step()
@@ -217,14 +216,22 @@ def quality():
             self.assertEqual(catalog["diagnostics"], [])
             self.assertEqual([x["origin"]["function"] for x in catalog["capabilities"]], ["model"])
             namespace = {"__name__": "program", "__file__": str(root / "program.py")}
+            from rsa_tools.benchmarks import Trial
+            artifacts = root / "artifacts"
+            artifacts.mkdir()
+            input_path = root / "input.json"
+            input_path.write_text("{}")
             with scope({**current(), "workspace": str(root), "run_id": None, "socket_path": None,
-                        "recording_purpose": "continuous-action"}), patch.dict(os.environ, {"RSA_ARTIFACT_ROOT": str(root / "index")}):
+                        "recording_purpose": "continuous-action"}):
                 exec(compile(source, str(root / "program.py"), "exec"), namespace)
                 self.assertIs(namespace["model"](), namespace["MODEL"])
                 self.assertIs(namespace["Action"]().step(), namespace["MODEL"])
-                namespace["quality"]()
-            result = json.loads(next((root / "logs").glob("*/benchmark.json")).read_text())
-            self.assertEqual(result["status"], "completed")
+                trial = Trial("trial", root, artifacts, root, input_path)
+                with patch("rsa_tools._context._trial_observer", trial._observe):
+                    namespace["quality"]()
+                    trial.flush()
+            result = json.loads((artifacts / "context.json").read_text())
+            self.assertNotIn("status", result)
             self.assertEqual(result["subjects"], [{"id": "python/program.py:Action.step",
                 "revision": hashlib.sha256(source.encode()).hexdigest()}])
 

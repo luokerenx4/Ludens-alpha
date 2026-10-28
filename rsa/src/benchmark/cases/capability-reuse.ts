@@ -1,22 +1,21 @@
 import { readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
-import { EventLog as DeviceEventLog } from "../../../../baseware/src/events.ts";
+import { join } from "node:path";
 import { readRunEvents } from "../../../../shared/event-sources.ts";
+import { freezeReuseEvents } from "../fixtures/reuse-facts.ts";
+import { EventLog as DeviceEventLog } from "../../../../baseware/src/events.ts";
 import { atomicJson } from "../store.ts";
 import { BasewareCore } from "@playness/baseware/core";
 import { writeCapabilityDocument } from "@playness/baseware/catalog";
 import { listen as listenBaseware } from "@playness/baseware/server";
 import { connectBaseware } from "../../harness/baseware.ts";
-import { WorkspaceController } from "../../harness/controller.ts";
+import { createHostRuntime } from "../../harness/host.ts";
 import { PythonCapabilities } from "../../harness/python-capabilities.ts";
-import { PerceptionRuntime } from "../../harness/perception.ts";
 import { Runtime } from "../../harness/runtime.ts";
 import { listen as listenRsa } from "../../harness/transport.ts";
 import { resolveWorkspaceState } from "../../harness/workspace-state.ts";
 import type { RecordEvent } from "../../harness/events.ts";
-import type { BenchmarkContext, AuthorReport } from "../types.ts";
+import type { BenchmarkContext } from "../types.ts";
 import { ReuseEnvironment } from "../fixtures/reuse-environment.ts";
-import { evaluateReuse, type ReuseEvent } from "../fixtures/reuse-evaluator.ts";
 import perceptionTemplate from "../../../templates/perception.py" with { type: "text" };
 
 async function workspaceBaseline(workspace: string) {
@@ -37,7 +36,7 @@ async function workspaceBaseline(workspace: string) {
 }
 
 /** Real Shiori + production CLI/API + a tiny simulated device, never a scripted agent. */
-export async function run(ctx: BenchmarkContext): Promise<AuthorReport> {
+export async function run(ctx: BenchmarkContext): Promise<Record<string, unknown>> {
   ctx.signal?.throwIfAborted();
   const baseline = await workspaceBaseline(ctx.workspace);
   const recordBenchmark = ctx.log.recorder({ component: "benchmark", implementation: "assembly-bench", implementationVersion: "1" });
@@ -77,23 +76,15 @@ export async function run(ctx: BenchmarkContext): Promise<AuthorReport> {
       eventSources: devices.eventSources, logging: {diagnostics: ctx.log.diagnostics, basewareDiagnostics: devices.diagnostics} });
     await writeCapabilityDocument(devices.catalog, join(ctx.workspace, "baseware.json"));
     await writeFile(join(ctx.workspace, "perception.py"), perceptionTemplate, { flag: "wx" });
-    runtime = new Runtime(devices, record, ctx.seconds, ctx.log.clock.id, ctx.log.diagnostics);
-    const binDir = resolve(import.meta.dir, "../../../bin");
-    const env = { RSA_SOCKET: rsaSocket, BASEWARE_SOCKET: basewareSocket,
-      RSA_WORKSPACE: ctx.workspace, RSA_RUN_ID: ctx.log.clock.id, RSA_LOG_DIAGNOSTICS: ctx.log.diagnostics,
-      PATH: [dirname(process.execPath), binDir, process.env.PATH ?? ""].join(":") };
-    runtime.controller = new WorkspaceController({ workspace: ctx.workspace, devices, env, record });
-    runtime.perception = new PerceptionRuntime({ workspace: ctx.workspace, runDir: ctx.runDir, env, record, registerMedia: ctx.log.registerMedia, diagnostics: ctx.log.diagnostics });
+    runtime = await createHostRuntime({ devices, record, workspace: ctx.workspace, runDir: ctx.runDir,
+      state, log: ctx.log, basewareSocket, rsaSocket, seconds: ctx.seconds,
+      model: ctx.model, maxRequests: ctx.maxRequests, compactionThreshold: 256000, action: false });
     devices.onHandback(reason => { void runtime!.stop(reason); });
     devices.onDisconnect(error => { void runtime!.disconnected(error); });
     closeRsa = await listenRsa(rsaSocket, runtime);
-    await runtime.perception.reload();
-    const { createOmpAgent } = await import("../../harness/omp/session.ts");
-    runtime.agent = await createOmpAgent({ runtime, workspace: ctx.workspace, runDir: ctx.runDir, state,
-      basewareSocket, rsaSocket, binDir, model: ctx.model, maxRequests: ctx.maxRequests,
-      compactionThreshold: 256000, log: ctx.log });
+    await runtime.perception!.reload();
     ctx.signal?.throwIfAborted();
-    epoch = (await runtime.start("Complete both batches of assembly orders shown on the supplied display. A new batch arrives after the previous operation returns. Use the supplied capabilities and your workspace.")).epoch!;
+    epoch = (await runtime.start(await readFile(join(process.env.RSA_BENCH_TASK_DIR!, "instruction.md"), "utf8"))).epoch!;
     ctx.signal?.throwIfAborted();
     while (runtime.status().mode !== "manual" || runtime.status().thinking) await Bun.sleep(50);
     recordBenchmark("benchmark_reuse_finished", { ...environment.summary(), reason: runtime.status().reason }, { epoch });
@@ -111,7 +102,8 @@ export async function run(ctx: BenchmarkContext): Promise<AuthorReport> {
   // This read-only AST audit proves creation, never agent discovery or invocation.
   const inventory = await new PythonCapabilities(ctx.workspace).discover(ctx.signal);
   recordBenchmark("benchmark_reuse_inventory", { stage: "post-run", ...inventory }, { epoch });
-  const events: ReuseEvent[] = [];
-  for await (const event of readRunEvents(ctx.runDir)) events.push(event as unknown as ReuseEvent);
-  return evaluateReuse(events, epoch!, ctx.runDir, ctx.metadata);
+  await ctx.log.flush();
+  const events = [];
+  for await (const event of readRunEvents(ctx.runDir)) events.push(event);
+  return { epoch, baseline, environment: environment.summary(), events: freezeReuseEvents(events, ctx.runDir) };
 }

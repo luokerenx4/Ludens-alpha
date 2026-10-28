@@ -1,0 +1,10 @@
+schema_version = "1.4"
+
+[task]
+name = "ludens/index-memory"
+version = "1"
+description = "在隔离缓存中重建已有归档、核对历史查询与索引释放。"
+
+[metadata]
+title = "大日志索引与释放"
+scope = "只读原始归档、独立缓存；不代表在线 Next.js 端到端内存。"

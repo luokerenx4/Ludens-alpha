@@ -1,0 +1,10 @@
+schema_version = "1.4"
+
+[task]
+name = "ludens/control-handoff"
+version = "1"
+description = "长动作执行中交还控制，检查输入释放、嵌套 Python 退出和旧 epoch 拒绝。"
+
+[metadata]
+title = "接管中断"
+scope = "真实 RSA / Baseware 调用链，可中断的模拟驱动；不操作游戏。"

@@ -3,7 +3,7 @@ import { archiveBuild, catalog, getRun, mediaFile, stopRun, timelineRecord } fro
 import { diagnosticEvents } from "../lib/diagnostic-events";
 import { getActivity } from "../lib/activity";
 import { getReplay } from "../lib/replay";
-import { benchmarkCatalog, benchmarkEvidence } from "../lib/benchmark-data";
+import { benchmarkAttachment, benchmarkCatalog, benchmarkEvidence } from "../lib/benchmark-data";
 import { aliceState, setAliceTarget, recordAliceConsumer } from "../lib/alice-state";
 import { closeLogIndexes, indexCacheStats } from "../lib/log-index";
 import { workerFailure, type DashboardMethods, type DashboardMethod, type WorkerRequest, type WorkerResponse } from "../lib/dashboard-protocol";
@@ -20,8 +20,9 @@ const handlers: { [K in DashboardMethod]: (args: DashboardMethods[K]["args"], si
   replay: ([project, run, query], signal) => getReplay(project, run, query, undefined, signal),
   media: ([project, run, id], signal) => mediaFile(project, run, id, undefined, signal),
   timelineRecord: ([project, run, record, sequence, source], signal) => timelineRecord(project, run, record, sequence, source, undefined, signal),
-  benchmarkCatalog: () => benchmarkCatalog(),
-  benchmarkEvidence: ([project, run, report], signal) => benchmarkEvidence(project, run, undefined, report, signal),
+  benchmarkCatalog: ([query]) => benchmarkCatalog(query),
+  benchmarkEvidence: ([project, run, query], signal) => benchmarkEvidence(project, run, query, undefined, signal),
+  benchmarkAttachment: ([project, run, index, verification], signal) => benchmarkAttachment(project, run, index, verification, undefined, signal),
   stop: ([project, run, epoch]) => stopRun(project, run, epoch),
   aliceState: () => aliceState(),
   aliceTarget: ([project, ifUnset]) => setAliceTarget(project, ifUnset),

@@ -1,0 +1,17 @@
+{
+  "task": "ludens/video-storage",
+  "argv": [
+    "{python}",
+    "{rsa}/scripts/verify-video-storage.py",
+    "--records",
+    "{param.records}",
+    "--rate",
+    "{param.rate}"
+  ],
+  "workspace": "isolated",
+  "seconds": 300,
+  "parameters": {
+    "records": 2400,
+    "rate": 30
+  }
+}

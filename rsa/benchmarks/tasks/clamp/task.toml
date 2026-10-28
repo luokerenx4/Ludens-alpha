@@ -1,0 +1,10 @@
+schema_version = "1.4"
+
+[task]
+name = "ludens/clamp"
+version = "1"
+description = "在同一 Python 进程调用已加载函数，记录随机输入与结果。"
+
+[metadata]
+title = "Python clamp 测量"
+scope = "纯 Python 示例，无设备、在线模型或隔离承诺。"

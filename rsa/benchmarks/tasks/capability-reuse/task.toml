@@ -1,0 +1,10 @@
+schema_version = "1.4"
+
+[task]
+name = "ludens/capability-reuse"
+version = "3"
+description = "从空白感知与工作区自行采样，完成两批装配订单，检查自主创建并跨批复用 Python 函数的证据；支持直接 import 或统一接口调用。"
+
+[metadata]
+title = "重复操作能力复用"
+scope = "真实模型与隔离的图像环境；任务完成和能力复用分别判定，接口选择只作诊断。"

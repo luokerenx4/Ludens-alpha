@@ -1,18 +1,16 @@
 #!/usr/bin/env bun
 import { mkdir, realpath, writeFile } from "node:fs/promises";
-import { resolve, join, delimiter } from "node:path";
+import { resolve, join } from "node:path";
 import { parseArgs } from "node:util";
 import { cli, HELP } from "../harness/cli.ts";
 import { Runtime } from "../harness/runtime.ts";
 import { listen } from "../harness/transport.ts";
 import { connectBaseware } from "../harness/baseware.ts";
-import { WorkspaceController } from "../harness/controller.ts";
+import { createHostRuntime } from "../harness/host.ts";
 import { defaultSocket } from "@playness/baseware/address";
 import { writeCapabilityDocument } from "@playness/baseware/catalog";
 import { EventLog, EVENT_SCHEMA_VERSION } from "../harness/events.ts";
 import { runProvenance } from "../harness/provenance.ts";
-import { PerceptionRuntime } from "../harness/perception.ts";
-import { ActionRuntime } from "../harness/action.ts";
 import { readCurrentSession, resolveWorkspaceState } from "../harness/workspace-state.ts";
 import { migrateWorkspaceSessions, validateSessionWorkspace } from "../harness/omp/workspace-session.ts";
 import perceptionTemplate from "../../templates/perception.py" with { type: "text" };
@@ -45,7 +43,7 @@ async function main() {
     console.log(`${WORKSPACE_HELP}\n\n${RUN_HELP}\n${HELP}\nrsa bench <list|help|run|history|compare> — unified benchmarks; rsa bench --help\n${LOG_HELP}`);
     return;
   }
-  if (args[0] === "bench") return (await import("../benchmark/runner.ts")).benchmarkCommand(args.slice(1), artifactRoot, selectedWorkspace);
+  if (args[0] === "bench") return (await import("../benchmark/cli.ts")).benchmarkCommand(args.slice(1), artifactRoot, selectedWorkspace);
   if (args[0] === "logs") return logCommand(args.slice(1));
   if (["init", "up", "services", "down"].includes(args[0]!)) return workspaceCommand(args[0]!, args.slice(1), selectedWorkspace);
   if (args[0] !== "run") {
@@ -122,26 +120,6 @@ async function main() {
     log.record("run_start", { workspace, workspaceId: state.id, diagnostics });
     devices = await connectBaseware({ socket: basewareSocket, seconds, runDir, record: log.record });
     await writeCapabilityDocument(devices.catalog, join(workspace, "baseware.json"));
-    runtime = new Runtime(devices, log.record, seconds, runId, diagnostics);
-    const binDir = resolve(import.meta.dir, "../../bin");
-    const environment = {
-      RSA_SOCKET: socket, BASEWARE_SOCKET: basewareSocket,
-      RSA_WORKSPACE: workspace, RSA_RUN_ID: runId,
-      RSA_LOG_DIAGNOSTICS: diagnostics,
-      BASEWARE_TRACE: JSON.stringify({ recordingId: runId }),
-      PATH: [binDir, resolve(import.meta.dir, "../../../baseware/bin"), process.env.PATH ?? ""].join(delimiter),
-    };
-    runtime.controller = new WorkspaceController({ workspace, devices, record: log.record, env: environment });
-    runtime.perception = new PerceptionRuntime({ workspace, runDir, env: environment, record: log.record,
-      registerMedia: log.registerMedia, diagnostics, clock });
-    const hostRuntime = runtime, deviceSession = devices;
-    runtime.action = new ActionRuntime({ workspace, runDir, env: environment, record: log.record, diagnostics,
-      isAuto: epoch => hostRuntime.status().mode === "auto" && hostRuntime.status().epoch === epoch,
-      setInputGeneration: (epoch, generation) => deviceSession.setInputGeneration!(epoch, generation),
-      onCleanupError: error => { void hostRuntime.stop(error.message); },
-    });
-    devices.onHandback(reason => { void runtime!.stop(reason); });
-    devices.onDisconnect((error) => { void runtime!.disconnected(error); });
     const model = values.model ?? "openai-codex/gpt-6.1-sol";
     if (!values["device-only"]) {
       // Device-only mode can run without importing OMP or opening credential storage.
@@ -150,11 +128,12 @@ async function main() {
       // await this host's cleanup too. The signal and finally share one promise.
       unregisterCleanup = postmortem.register("rsa-run", close, { exitOnly: true });
       exit = postmortem.quit;
-      const { createOmpAgent } = await import("../harness/omp/session.ts");
-      runtime.agent = await createOmpAgent({ runtime, workspace, state, runDir, log, resume,
-        binDir, rsaSocket: socket, basewareSocket, model, maxRequests, compactionThreshold,
-      });
     }
+    runtime = await createHostRuntime({ devices, workspace, state, runDir, log, resume,
+      rsaSocket: socket, basewareSocket, seconds, model: values["device-only"] ? undefined : model,
+      maxRequests, compactionThreshold });
+    devices.onHandback(reason => { void runtime!.stop(reason); });
+    devices.onDisconnect(error => { void runtime!.disconnected(error); });
     await writeFile(join(runDir, "manifest.json"), JSON.stringify({ runId, workspace, workspaceId: state.id, stateDir: state.dir, socket,
       drivers: devices.catalog.drivers, basewareSocket, omp: "18.9.1", eventSchemaVersion: EVENT_SCHEMA_VERSION,
       logging: { diagnostics, basewareDiagnostics: devices.diagnostics }, eventSources: devices.eventSources,
@@ -162,7 +141,7 @@ async function main() {
       provenance: await runProvenance(workspace), model: values["device-only"] ? null : model,
       seconds, maxRequests, resume, perception: { entry: "perception.py:Perception" }, action: { entry: "action.py:Action" }, compactionThreshold: compactionThreshold ?? null }, null, 2));
     ready = true;
-    await runtime.perception.reload();
+    await runtime.perception!.reload();
     console.log(JSON.stringify({ ready: true, socket, workspace, stateDir: state.dir, runDir, ...runtime.status() }, null, 2));
     await new Promise<void>((done) => { process.once("SIGINT", done); process.once("SIGTERM", done); });
   } finally {

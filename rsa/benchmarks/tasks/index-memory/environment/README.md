@@ -1,0 +1,1 @@
+Native profile: ludens-native. Requires the repository-locked Bun runtime/dependencies; Python tasks additionally use the RSA Python environment. Execution bindings and their source revisions are supplied by Shiori run configuration, not task metadata. No container or global /logs path is required.

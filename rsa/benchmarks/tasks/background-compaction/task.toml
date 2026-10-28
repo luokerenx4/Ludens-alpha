@@ -1,0 +1,10 @@
+schema_version = "1.4"
+
+[task]
+name = "ludens/background-compaction"
+version = "1"
+description = "延迟摘要并追加历史，检查候选复用、尾部保留、晚到归属和取消后不提交。"
+
+[metadata]
+title = "后台压缩"
+scope = "真实 OMP maintenance 与原生 V2 压缩，模拟响应；保持 256k 阈值。"

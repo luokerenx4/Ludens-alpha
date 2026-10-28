@@ -1,0 +1,13 @@
+{
+  "task": "ludens/control-handoff",
+  "argv": [
+    "{bun}",
+    "{rsa}/src/harness/module-program.ts",
+    "{rsa}/src/benchmark/cases/control-handoff.ts"
+  ],
+  "workspace": "isolated",
+  "seconds": 180,
+  "parameters": {
+    "seed": 7
+  }
+}

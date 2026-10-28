@@ -1,32 +1,29 @@
-import { spawn } from "node:child_process";
-import { join } from "node:path";
-import { pythonExecutable, pythonEnvironment } from "../../../shared/python.ts";
-import type { PythonDiagnostic } from "../harness/python-capabilities.ts";
-import type { BenchmarkDefinition } from "./contract.ts";
-import { builtinDefinitions } from "./builtins.ts";
-import { atomicJson, indexWorkspace } from "./store.ts";
+import { readdir, stat } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { join, resolve } from "node:path";
+import type { TaskDefinition } from "./contract.ts";
+import { readTask } from "./task.ts";
 
-export const pythonBridge = ["-B", "-m", "rsa_tools._bridge"];
-export function pythonEnv(workspace: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
-  return pythonEnvironment({ ...extra, RSA_WORKSPACE: workspace, PYTHONDONTWRITEBYTECODE: "1" });
+export const repositoryTasksRoot = fileURLToPath(new URL("../../benchmarks/tasks/", import.meta.url));
+export async function discoverTasks(workspace: string, repositoryRoot = repositoryTasksRoot) {
+  const tasks: TaskDefinition[] = [], diagnostics: { path: string; message: string }[] = [];
+  async function visit(path: string, source: TaskDefinition["source"]) {
+    if ((await stat(join(path, "task.toml")).catch(() => undefined))?.isFile()) {
+      try { tasks.push(await readTask(path, source)); } catch (error) { diagnostics.push({ path, message: String(error) }); }
+      return;
+    }
+    const entries = await readdir(path, { withFileTypes: true }).catch(error => { if (error.code === "ENOENT") return []; throw error; });
+    for (const entry of entries) if (entry.isDirectory() && !entry.name.startsWith(".")) await visit(join(path, entry.name), source);
+  }
+  await visit(repositoryRoot, "repository");
+  if (resolve(workspace, "benchmarks/tasks") !== resolve(repositoryRoot)) await visit(join(workspace, "benchmarks/tasks"), "workspace");
+  return { tasks: tasks.sort((a, b) => a.name.localeCompare(b.name) || a.digest.localeCompare(b.digest)), diagnostics };
 }
-export async function discoverBenchmarks(workspace: string, artifactRoot: string) {
-  const state = await indexWorkspace(workspace, artifactRoot);
-  const discovery = await new Promise<{ benchmarks: BenchmarkDefinition[]; diagnostics: PythonDiagnostic[] }>((done, fail) => {
-    const child = spawn(pythonExecutable(), pythonBridge, {
-      cwd: state.workspace, env: pythonEnv(state.workspace, { RSA_ARTIFACT_ROOT: artifactRoot }), stdio: ["pipe", "pipe", "pipe"],
-    });
-    let stdout = "", stderr = "";
-    child.stdout.on("data", data => { stdout += data; }); child.stderr.on("data", data => { stderr += data; });
-    child.once("error", fail);
-    child.stdin.on("error", error => { if ((error as NodeJS.ErrnoException).code !== "EPIPE") fail(error); });
-    child.once("close", code => {
-      try { if (code !== 0) throw new Error(`Benchmark discovery failed: ${stdout || stderr}`); done(JSON.parse(stdout)); }
-      catch (error) { fail(error); }
-    });
-    child.stdin.end(JSON.stringify({ action: "discover_benchmarks", workspace: state.workspace }));
-  });
-  const catalog = { benchmarks: [...builtinDefinitions, ...discovery.benchmarks], diagnostics: discovery.diagnostics };
-  await atomicJson(join(state.workspace, "logs", "benchmarks-catalog.json"), catalog);
-  return catalog;
+export async function resolveTask(workspace: string, name: string, digest?: string): Promise<TaskDefinition> {
+  const catalog = await discoverTasks(workspace);
+  const matches = catalog.tasks.filter(task => task.name === name && (!digest || task.digest === digest));
+  const identities = new Set(matches.map(task => task.digest));
+  if (!matches.length) throw new Error(`Task not found: ${name}${digest ? `@${digest}` : ""}`);
+  if (identities.size > 1) throw new Error(`Ambiguous task ${name}; specify its digest`);
+  return matches.find(task => task.source === "workspace") ?? matches[0]!;
 }

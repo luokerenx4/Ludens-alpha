@@ -249,6 +249,25 @@ test("assessment failure is distinct from execution/report errors and missing ve
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("Shiori benchmark lifecycle distinguishes execution and verification without scoring rewards", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "rsa-verification-")));
+  try {
+    const blocks = await activityBlocks(root, [
+      event("benchmark_start", 1, { executionStatus: "running", verificationStatus: "missing" }),
+      event("benchmark_end", 2, { executionStatus: "completed", verificationStatus: "missing" }),
+      event("benchmark_verification", 3, { executionStatus: "completed", verificationStatus: "completed", rewards: { success: 0 } }),
+      event("benchmark_verification", 4, { executionStatus: "completed", verificationStatus: "error", error: "missing reward" }),
+      event("benchmark_end", 5, { executionStatus: "error", verificationStatus: "missing" }),
+      event("benchmark_end", 6, { executionStatus: "cancelled", verificationStatus: "missing" }),
+    ]);
+    assert.deepEqual(blocks.map(block => [block.kind, block.status, block.outcome]), [
+      ["system", "complete", undefined], ["system", "complete", undefined], ["system", "complete", undefined],
+      ["system", "error", undefined], ["system", "error", undefined], ["system", "complete", undefined],
+    ]);
+    assert.equal(new Set(blocks.map(block => block.id)).size, blocks.length);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("model cancellation closes partial output without inventing a failure or completing an executing tool", async () => {
   const temporary = await mkdtemp(join(tmpdir(), "rsa-activity-abort-"));
   const root = await realpath(temporary);

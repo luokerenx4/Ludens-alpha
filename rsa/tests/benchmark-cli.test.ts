@@ -2,192 +2,108 @@ import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { discoverBenchmarks } from "../src/benchmark/catalog.ts";
-import { runBenchmark, type RunOptions } from "../src/benchmark/runner.ts";
-import { validateResult } from "../src/benchmark/contract.ts";
-import { history } from "../src/benchmark/store.ts";
-
-test("workspace catalog, CLI run/history/compare and the shared Python result contract agree", async () => {
-  const root = await mkdtemp(join(tmpdir(), "rsa-bench-cli-"));
-  const workspace = join(root, "workspace"), artifactRoot = join(root, "index");
-  await mkdir(join(workspace, "benchmarks"), { recursive: true });
-  await writeFile(join(workspace, "benchmarks", "model.py"), `from rsa_tools import benchmark, current_benchmark
-@benchmark(targets=["python/model.py:predict"])
-def accuracy(value: int = 5):
-    """Measure a deterministic value."""
-    current_benchmark().conditions(dataset="fixed")
-    return {"metrics": {"accuracy": {"value": value, "unit": "points", "direction": "higher"}},
-            "checks": {"nonnegative": {"passed": False}} if value < 0 else {}}
-`);
-  const runner = resolve(import.meta.dir, "../src/benchmark/runner.ts");
-  const command = async (args: string[], expectedCode = 0) => {
-    const child = Bun.spawn([process.execPath, "-e", `import { benchmarkCommand } from ${JSON.stringify(runner)}; await benchmarkCommand(${JSON.stringify(args)}, ${JSON.stringify(artifactRoot)}, ${JSON.stringify(workspace)});`],
-      { cwd: root, env: { ...process.env, RSA_RUN_ID: "", RSA_SOCKET: "", RSA_WORKSPACE: workspace }, stdout: "pipe", stderr: "pipe" });
-    const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
-    expect({ code, stderr }).toEqual({ code: expectedCode, stderr: "" });
-    return JSON.parse(stdout);
-  };
-  try {
-    const listing = await command(["list"]);
-    const definition = listing.benchmarks.find((item: any) => item.source === "workspace");
-    expect(listing.benchmarks).toHaveLength(6);
-    expect((await command(["help", definition.id])).parameters.properties.value.default).toBe(5);
-    const first = await command(["run", definition.id]);
-    const second = await command(["run", definition.id, "--args", '{"value":8}']);
-    validateResult(first); validateResult(second);
-    expect(first).toMatchObject({ status: "completed", verdict: null, parameters: { value: 5 } });
-    expect(second.metrics[0].value).toBe(8);
-    // A failed assessment preserves successful execution even though CLI exits 1.
-    const failed = await command(["run", definition.id, "--args", '{"value":-1}'], 1);
-    expect(failed).toMatchObject({ status: "completed", verdict: "failed" });
-    const failedEvents = (await readFile(join(workspace, "logs", failed.runId, "events.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
-    expect(failedEvents.find(event => event.type === "benchmark_end").data).toMatchObject({
-      executionStatus: "completed", reportStatus: "missing", verdict: null, reportId: null });
-    expect(failedEvents.at(-1).data).toMatchObject({ benchmarkId: definition.id, benchmarkRunId: failed.runId,
-      executionStatus: "completed", reportStatus: "valid", verdict: "failed", reportId: failed.report.id,
-      previousReportId: null, valid: true, protocolVersion: "1", reason: "initial" });
-    expect((await command(["history", definition.id])).results).toHaveLength(3);
-    expect(await command(["compare", second.runId, first.runId])).toMatchObject({ compatible: false, changes: ["参数"], metrics: [{ delta: 3 }] });
-    expect((await readFile(join(workspace, "logs", first.runId, "events.jsonl"), "utf8")).match(/"type":\s*"benchmark_start"/g)).toHaveLength(1);
-  } finally { await rm(root, { recursive: true, force: true }); }
-}, 30_000);
-
-test("supervised cancellation finalizes one Python run even with a partial event tail", async () => {
-  const root = await mkdtemp(join(tmpdir(), "rsa-bench-cancel-"));
-  const workspace = join(root, "workspace"), artifactRoot = join(root, "index");
-  await mkdir(workspace);
-  await writeFile(join(workspace, "wait.py"), `import time
+import { runTask, verifyTask, aggregateTasks } from "../src/harness/shiori-benchmark.ts";
+import { get, history } from "../src/benchmark/store.ts";
+import { compareResults } from "../src/benchmark/contract.ts";
+import { readTask } from "../src/benchmark/task.ts";
+async function fixture() {
+  const root = await mkdtemp(join(tmpdir(), "shiori-benchmark-")), workspace = join(root, "workspace"), task = join(workspace, "benchmarks/tasks/jump");
+  await mkdir(join(task, "tests"), { recursive: true }); await mkdir(join(task, "environment"));
+  await writeFile(join(task, "task.toml"), 'schema_version="1.4"\n[task]\nname="local/jump"\n');
+  await writeFile(join(task, "instruction.md"), "Make one synthetic jump; measure it.\n");
+  const verifier = join(task, "tests/test.sh");
+  await writeFile(verifier, 'printf \'{"height":24,"landed":0}\' > "$RSA_BENCH_VERIFIER_DIR/reward.json"\n');
+  const program = join(workspace, "jump.py");
+  await writeFile(program, `import os
 from pathlib import Path
-from rsa_tools import benchmark, current_benchmark
-@benchmark
-def wait():
-    """Wait for supervisor cancellation."""
-    with (current_benchmark().run_dir / "events.jsonl").open("a") as stream:
-        stream.write('{"seq":')
-    Path("ready").touch()
-    time.sleep(60)
+assert not os.environ.get("RSA_SOCKET")
+assert not os.environ.get("BASEWARE_SOCKET")
+assert not os.environ.get("OPENAI_API_KEY")
+actions=Path("actions.txt")
+actions.write_text(str(int(actions.read_text())+1) if actions.exists() else "1")
+Path(os.environ["RSA_BENCH_ARTIFACTS"],"measurements.json").write_text('{"height":24}')
 `);
-  const abort = new AbortController();
-  const options: RunOptions = { workspace, artifactRoot, model: "unused", seconds: 10, maxRequests: 1, seed: 7, signal: abort.signal };
-  try {
-    const { benchmarks } = await discoverBenchmarks(workspace, artifactRoot);
-    const pending = runBenchmark(benchmarks.find(item => item.source === "workspace")!, {}, options);
-    const deadline = Date.now() + 4000;
-    while (!await Bun.file(join(workspace, "ready")).exists() && Date.now() < deadline) await Bun.sleep(20);
-    expect(await Bun.file(join(workspace, "ready")).exists()).toBe(true);
-    abort.abort();
-    const { result, runDir } = await pending;
-    expect(result).toMatchObject({ status: "cancelled", verdict: null });
-    expect(result.endedAt).not.toBeNull();
-    const lines = (await readFile(join(runDir, "events.jsonl"), "utf8")).trim().split("\n");
-    expect(lines).toContain('{"seq":');
-    const events = lines.filter(line => line !== '{"seq":').map(line => JSON.parse(line));
-    expect(events.map(event => event.seq)).toEqual(events.map((_, i) => i + 1));
-    expect(events.at(-1).type).toBe("benchmark_supervisor_end");
-    expect(events.at(-1).data).toMatchObject({ benchmarkRunId: result.runId,
-      executionStatus: "cancelled", reportStatus: "missing", verdict: null, reportId: null });
-    expect((await history(workspace)).results).toHaveLength(1);
-  } finally { abort.abort(); await rm(root, { recursive: true, force: true }); }
-}, 10_000);
-
-// Reconstructs the 2026-10-21 Mario Maker failure: the jump had already happened,
-// but missing report fields caused successive real trials. A counter stands in
-// for input so this regression never controls an emulator or calls a model.
-test("report correction preserves one execution and pins revisions without importing the evaluator", async () => {
-  const root = await mkdtemp(join(tmpdir(), "rsa-bench-report-repair-"));
-  const workspace = join(root, "workspace"), artifactRoot = join(root, "index");
-  await mkdir(workspace);
-  const evaluator = join(workspace, "jump.py");
-  await writeFile(evaluator, `from pathlib import Path
-from rsa_tools import benchmark
-@benchmark(protocol="jump-v1")
-def jump():
-    """Measure one jump."""
-    counter = Path("actions.txt")
-    counter.write_text(str(int(counter.read_text()) + 1) if counter.exists() else "1")
-    return {"metrics": {"height": {"value": 24}}, "checks": {"landed": {"passed": "yes"}}}
-`);
-  const runner = resolve(import.meta.dir, "../src/benchmark/runner.ts");
-  const command = async (args: string[], expectedCode = 0) => {
-    const child = Bun.spawn([process.execPath, "-e", `import { benchmarkCommand } from ${JSON.stringify(runner)}; await benchmarkCommand(${JSON.stringify(args)}, ${JSON.stringify(artifactRoot)}, ${JSON.stringify(workspace)});`],
-      { env: { ...process.env, RSA_WORKSPACE: workspace, RSA_RUN_ID: "", RSA_SOCKET: "" }, stdout: "pipe", stderr: "pipe" });
-    const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
-    expect({ code, err }).toEqual({ code: expectedCode, err: "" });
-    return JSON.parse(out);
+  return { root, workspace, task, program, verifier, options: { workspace, artifactRoot: join(root, "index"), seconds: 5,
+    config: { task: "local/jump", argv: ["{python}", program] } }, cleanup: () => rm(root, { recursive: true, force: true }) };
+}
+test("CLI uses separate binding; reward zero, offline reads and verification never repeat actions", async () => {
+  const f = await fixture(), cli = resolve(import.meta.dir, "../src/benchmark/cli.ts"), binding = join(f.root, "run.json");
+  await writeFile(binding, JSON.stringify(f.options.config));
+  const command = async (args: string[], code = 0) => {
+    const child = Bun.spawn([process.execPath, "-e", `import {benchmarkCommand} from ${JSON.stringify(cli)}; await benchmarkCommand(${JSON.stringify(args)},${JSON.stringify(f.options.artifactRoot)},${JSON.stringify(f.workspace)});`], { stdout: "pipe", stderr: "pipe" });
+    const [actual, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    expect({ code: actual, stderr: err }).toEqual({ code, stderr: "" }); return JSON.parse(out);
   };
   try {
-    const first = await command(["run", "python/jump.py:jump"], 2);
-    expect(first.status).toBe("completed"); expect(first.verdict).toBeNull();
-    expect(first.report.outcome).toBeNull();
-    expect(first.report.errors.map((error: any) => error.path)).toEqual(expect.arrayContaining(["/metrics/height", "/checks/landed/passed"]));
-    expect(first.report.raw.metrics.height.value).toBe(24);
-    const runDir = join(workspace, "logs", first.runId);
-    const execution = await readFile(join(runDir, "benchmark.json"), "utf8");
-    expect(JSON.parse(execution)).not.toHaveProperty("checks");
-    expect(JSON.parse(execution)).not.toHaveProperty("verdict");
-    expect(JSON.parse(await readFile(join(runDir, "reports", first.report.id + ".raw.json"), "utf8")).raw).toEqual(first.report.raw);
-    // report/validate must still work even when the evaluator can no longer load.
-    await writeFile(evaluator, "raise ImportError('must not run for report correction')\n");
-    const report = { metrics: { height: { value: 24, unit: "px", direction: "higher" } },
-      checks: { landed: { passed: true, expected: true, actual: true } } };
-    const reportPath = join(workspace, "report.json");
-    await writeFile(reportPath, JSON.stringify(report));
-    expect((await command(["validate", "report.json"])).errors).toEqual([]);
-    const corrected = await command(["report", first.runId, "--file", "report.json"]);
-    expect(corrected).toMatchObject({ status: "completed", verdict: "passed", checks: [{ id: "landed", expected: true, actual: true, evidenceSeq: [] }] });
-    expect(corrected.report.previousReportId).toBe(first.report.id);
-    expect(corrected.reports).toHaveLength(2);
-    expect(corrected.report.protocolVersion).toBe("jump-v1");
-    report.metrics.height.value = 25;
-    report.checks.landed.passed = false;
-    await writeFile(reportPath, JSON.stringify(report));
-    const rescored = await command(["report", first.runId, "--file", "report.json", "--protocol", "jump-v2", "--reason", "updated scoring"]);
-    expect(rescored.verdict).toBe("failed");
-    const comparison = await command(["compare", `${first.runId}@${rescored.report.id}`, `${first.runId}@${corrected.report.id}`]);
-    expect(comparison).toMatchObject({ sameExecution: true, compatible: false, changes: ["评测口径"], metrics: [{ baseline: 24, value: 25, delta: 1 }] });
-    const reformatted = await command(["report", first.runId, "--file", "report.json"]);
-    expect(reformatted.report.protocolVersion).toBe("jump-v2");
-    expect(await readFile(join(runDir, "benchmark.json"), "utf8")).toBe(execution);
-    expect(await readFile(join(workspace, "actions.txt"), "utf8")).toBe("1");
-    expect((await command(["history"])).results).toHaveLength(1);
-    expect(corrected.reports[0].outcome).toBeNull();
-    const pinned = await command(["compare", `${first.runId}@${corrected.report.id}`, `${first.runId}@${corrected.report.id}`]);
-    expect(pinned.metrics[0].value).toBe(24);
-    const events = (await readFile(join(runDir, "events.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    expect((await command(["list"])).tasks.some((t: any) => t.name === "local/jump")).toBe(true);
+    const first = await command(["run", "local/jump", "--config", binding]);
+    expect(first.trial.status).toBe("completed"); expect(first.verifier_result.rewards.landed).toBe(0); expect(first).not.toHaveProperty("verdict");
+    const id = first.trial.id;
+    await writeFile(f.program, "raise RuntimeError('must not execute on verification')\n");
+    const second = await command(["verify", id]);
+    expect(second.verification.id).not.toBe(first.verification.id);
+    expect((await command(["get", `${id}@${first.verification.id}`])).verifier_result.rewards.height).toBe(24);
+    expect((await command(["history", "local/jump", "--limit", "1"])).trials).toHaveLength(1);
+    expect((await command(["verifications", id])).verifications).toHaveLength(2);
+    expect((await command(["compare", `${id}@${first.verification.id}`, `${id}@${second.verification.id}`])).sameExecution).toBe(true);
+    expect(await readFile(join(f.workspace, "actions.txt"), "utf8")).toBe("1");
+  } finally { await f.cleanup(); }
+}, 20_000);
+test("invalid score is separate from execution; a new verifier regrades fixed evidence and detects tampering", async () => {
+  const f = await fixture();
+  try {
+    await writeFile(f.verifier, 'printf \'{"height":null}\' > "$RSA_BENCH_VERIFIER_DIR/reward.json"\n');
+    const first = await runTask("local/jump", f.options);
+    expect(first.trial.status).toBe("completed"); expect(first.verification?.status).toBe("error");
+    const execution = JSON.stringify({ ...first.trial, selectedVerificationId: undefined });
+    await writeFile(f.program, "raise ImportError('evaluator is gone')\n");
+    await writeFile(f.verifier, 'printf \'{"height":24}\' > "$RSA_BENCH_VERIFIER_DIR/reward.json"\n');
+    const second = await verifyTask(f.workspace, first.trial.id, { taskPath: f.task, reason: "corrected verifier" });
+    expect(second.verifier_result.rewards).toEqual({ height: 24 });
+    expect(JSON.stringify({ ...second.trial, selectedVerificationId: undefined })).toBe(execution);
+    expect(second.verification?.task.digest).not.toBe(first.verification?.task.digest);
+    expect((await get(f.workspace, first.trial.id, first.verification!.id)).verifier_result.rewards).toBeNull();
+    expect(compareResults(second, first).changes).toContain("verifier");
+    expect(await readFile(join(f.workspace, "actions.txt"), "utf8")).toBe("1");
+    expect((await history(f.workspace)).trials).toHaveLength(1);
+    await writeFile(join(f.workspace, "logs", first.trial.id, "artifacts/measurements.json"), '{"height":99}');
+    expect((await verifyTask(f.workspace, first.trial.id)).verification?.status).toBe("error");
+  } finally { await f.cleanup(); }
+}, 15_000);
+test("Shiori cancellation drains ordinary process and finalizes exactly once", async () => {
+  const f = await fixture(), cancel = new AbortController();
+  try {
+    await writeFile(f.program, 'import time\nfrom pathlib import Path\nPath("ready").touch()\ntime.sleep(60)\n');
+    const pending = runTask("local/jump", { ...f.options, signal: cancel.signal });
+    const deadline = Date.now() + 4000;
+    while (!await Bun.file(join(f.workspace, "ready")).exists() && Date.now() < deadline) await Bun.sleep(20);
+    expect(await Bun.file(join(f.workspace, "ready")).exists()).toBe(true); cancel.abort();
+    const result = await pending;
+    expect(result.trial.status).toBe("cancelled"); expect(result.verification).toBeNull();
+    const events = (await readFile(join(f.workspace, "logs", result.trial.id, "events.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
     expect(events.filter(event => event.type === "benchmark_start")).toHaveLength(1);
     expect(events.filter(event => event.type === "benchmark_end")).toHaveLength(1);
-    expect(events.filter(event => event.type === "benchmark_report")).toHaveLength(4);
-    const reports = events.filter(event => event.type === "benchmark_report").map(event => event.data);
-    expect(reports.map(data => [data.executionStatus, data.reportStatus, data.verdict])).toEqual([
-      ["completed", "invalid", null], ["completed", "valid", "passed"],
-      ["completed", "valid", "failed"], ["completed", "valid", "failed"],
-    ]);
-    expect(reports[2]).toMatchObject({ benchmarkRunId: first.runId, reportId: rescored.report.id,
-      previousReportId: corrected.report.id, protocolVersion: "jump-v2", reason: "updated scoring", valid: true });
-    expect(events.map(event => event.seq)).toEqual(events.map((_, i) => i + 1));
-  } finally { await rm(root, { recursive: true, force: true }); }
-}, 30_000);
-
-test("CLI preserves the real load exception and report repair cannot turn it into completed", async () => {
-  const root = await mkdtemp(join(tmpdir(), "rsa-bench-load-error-"));
-  const workspace = join(root, "workspace"), artifactRoot = join(root, "index");
-  await mkdir(workspace);
-  await writeFile(join(workspace, "broken.py"), `from rsa_tools import benchmark
-from missing_action_module import pause_menu_visible
-@benchmark
-def evaluate():
-    """Import a missing action before evaluation."""
-    return {}
-`);
-  try {
-    const { benchmarks } = await discoverBenchmarks(workspace, artifactRoot);
-    const { result, runDir } = await runBenchmark(benchmarks.find(item => item.source === "workspace")!, {},
-      { workspace, artifactRoot, model: "unused", seconds: 5, maxRequests: 1, seed: 7 });
-    expect(result).toMatchObject({ status: "error", errorPhase: "load", report: null });
-    expect(result.error).toContain("ModuleNotFoundError");
-    expect(result.error).toContain("missing_action_module");
-    const { saveReport, readResult } = await import("../src/benchmark/store.ts");
-    await saveReport(runDir, result, { checks: { repaired: { passed: true } } });
-    expect(await readResult(workspace, result.runId)).toMatchObject({ status: "error", errorPhase: "load", verdict: null });
-  } finally { await rm(root, { recursive: true, force: true }); }
+    expect(events.map(event => event.seq)).toEqual(events.map((_, index) => index + 1));
+  } finally { cancel.abort(); await f.cleanup(); }
 }, 10_000);
+test("execution errors stay errors; metric receives one reward or null per explicitly selected trial", async () => {
+  const f = await fixture();
+  try {
+    const good = await runTask("local/jump", f.options);
+    await writeFile(f.program, "raise ImportError('missing_measurement_dependency')\n");
+    const failed = await runTask("local/jump", f.options);
+    expect(failed.trial.status).toBe("error"); expect(failed.verification).toBeNull();
+    expect(await readFile(join(f.workspace, "logs", failed.trial.id, "stderr.log"), "utf8")).toContain("missing_measurement_dependency");
+    const task = await readTask(f.task), dataset = join(f.root, "dataset.toml");
+    await writeFile(dataset, `schema_version="1.0"\n[dataset]\nname="local/sample"\n[[tasks]]\nname="local/jump"\ndigest="${task.digest}"\n`);
+    const aggregate = await aggregateTasks(f.workspace, dataset, [good.trial.id, failed.trial.id]);
+    expect(aggregate.counts).toMatchObject({ trials: 2, valid: 1, executionErrors: 1 });
+    expect(Object.values(aggregate.metrics.byTask)[0]).toEqual({ height: 12, landed: 0 });
+    const newer = await verifyTask(f.workspace, good.trial.id);
+    await expect(aggregateTasks(f.workspace, dataset, [good.trial.id, `${good.trial.id}@${newer.verification!.id}`])).rejects.toThrow("Duplicate trial");
+    await writeFile(join(f.root, "metric.py"), 'import argparse,json\nfrom metric_data import SCALE\np=argparse.ArgumentParser();p.add_argument("-i","--input-path");p.add_argument("-o","--output-path");a=p.parse_args();rows=[json.loads(x) for x in open(a.input_path)];json.dump({"samples":len(rows)*SCALE,"missing":sum(x is None for x in rows)},open(a.output_path,"w"))\n');
+    await writeFile(join(f.root, "metric_data.py"), "SCALE=1\n");
+    await writeFile(dataset, (await readFile(dataset, "utf8")) + '\n[[files]]\npath="metric_data.py"\n');
+    expect((await aggregateTasks(f.workspace, dataset, [good.trial.id, failed.trial.id])).metrics).toEqual({ samples: 2, missing: 1 });
+  } finally { await f.cleanup(); }
+}, 20_000);

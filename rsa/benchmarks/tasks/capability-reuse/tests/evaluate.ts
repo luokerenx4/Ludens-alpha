@@ -1,15 +1,18 @@
 import { spawnSync } from "node:child_process";
 import { posix } from "node:path";
-import { readArtifactSync } from "../../../../shared/log-archive.ts";
-import type { EventTrace } from "../../harness/events.ts";
-import type { AuthorReport, CaseMetadata } from "../types.ts";
+// Private diagnostic structure for this task, not the public benchmark protocol.
+interface ReuseDiagnostics {
+  checks: Record<string, { label: string; passed: boolean | null; expected: string; actual: string; evidenceSeq?: number[]; evidenceEvents?: string[] }>;
+  metrics: Record<string, { label: string; value: number | null; unit: string; direction?: "higher" | "lower" | "none" }>;
+}
+interface ReuseMetadata { limitations?: string[] }
 
 export interface ReuseEvent {
   seq: number;
   origin?: { eventId: string; clockId?: string };
   type: string;
   source?: { component: string };
-  trace: EventTrace;
+  trace: Record<string, any>;
   data: any;
 }
 
@@ -30,15 +33,10 @@ const shellCommand = (event: ReuseEvent): string | undefined => {
   return typeof command === "string" ? command : undefined;
 };
 
-function successfulShellEnd(event: ReuseEvent, runDir?: string): boolean {
+function successfulShellEnd(event: ReuseEvent): boolean {
   if (event.type === "exec_result") return event.data.exitCode === 0;
   if (event.type !== "tool_end" || event.data.toolName !== "bash" || event.data.isError !== false) return false;
   let result = event.data.result;
-  if (result?.encoding === "gzip" || result?.encoding === "rsa-json-v1") {
-    if (!runDir) return false;
-    try { result = readArtifactSync(runDir, result, { media: "reference" }); }
-    catch { return false; }
-  }
   // Native bash omits exitCode on success. A background/service launch is only
   // acceptance, not a completed command; never turn it into positive reuse.
   if (!result || result.isError || result.details?.timedOut || result.details?.service) return false;
@@ -57,23 +55,17 @@ function parsePython(events: (ReuseEvent & { position: number })[]) {
     return [];
   });
   if (!inputs.length) return new Map<number, PythonEvidence>();
-  const parsed = spawnSync("python3", [new URL("./reuse-python.py", import.meta.url).pathname], { input: JSON.stringify(inputs), encoding: "utf8" });
+  const parsed = spawnSync("python3", [new URL("./parse-python.py", import.meta.url).pathname], { input: JSON.stringify(inputs), encoding: "utf8" });
   if (parsed.status !== 0) throw new Error(`Python evidence parser failed: ${parsed.stderr || parsed.error}`);
   return new Map<number, PythonEvidence>(
     JSON.parse(parsed.stdout).map((item: any) => [item.seq, item]));
 }
 
 /** Judge the environment's facts and causality; agent prose is never a verdict. */
-export function evaluateReuse(all: ReuseEvent[], epoch: string, runDir?: string, metadata: CaseMetadata = {}): AuthorReport {
+export function evaluateReuse(all: ReuseEvent[], epoch: string, metadata: ReuseMetadata = {}): ReuseDiagnostics {
   // The reader supplies a stable chronological view; source-local seq is an
   // identity, never a cross-process clock. Positions below are view-local only.
-  const events = all.filter(event => event.trace.epoch === epoch).map((event, index) => {
-    const positioned = { ...event, position: index + 1 };
-    if (event.type !== "tool_start" || !event.data.argsRef || !runDir) return positioned;
-    try { return { ...positioned, data: { ...event.data,
-      args: readArtifactSync(runDir, event.data.argsRef, { media: "reference" }) } }; }
-    catch { return positioned; }
-  });
+  const events = all.filter(event => event.trace.epoch === epoch).map((event, index) => ({ ...event, position: index + 1 }));
   const benchmark = (type: string) => events.filter(event => event.type === type && event.source?.component === "benchmark");
   const baseline = benchmark("benchmark_reuse_workspace")[0];
   const before = new Set<string>(baseline?.data.pythonFiles ?? []);
@@ -156,7 +148,7 @@ export function evaluateReuse(all: ReuseEvent[], epoch: string, runDir?: string,
     if (!call || !key) return [];
     const write = writes.filter(write => write.path === call.path && write.end.position < event.position).at(-1);
     const result = events.find(result => spanKey(result) === key && result.position > event.position
-      && successfulShellEnd(result, runDir));
+      && successfulShellEnd(result));
     if (!write?.passiveModule || !write.effectfulFunctions?.includes(call.function) || !result) return [];
     const delivered = orders.filter(({ execution }) => isDescendant(execution, key) && !calls.some(call => isDescendant(execution, call.key)));
     return delivered.length ? [{ event, id: publicId(call)!, key, route: "import",
@@ -196,7 +188,7 @@ export function evaluateReuse(all: ReuseEvent[], epoch: string, runDir?: string,
     "两批难度相近但不是严格对照实验，请求/订单变化仅作诊断。",
     "这是合作式 Agent 的功能评测，workspace 没有对恶意篡改日志做安全隔离。",
   ];
-  const report: AuthorReport = {
+  const report: ReuseDiagnostics = {
     checks: {
       "fresh-workspace": { label: "干净 workspace 与新会话", passed: baseline ? before.size === 0 && baseline.data.experienceFiles === 0 && baseline.data.session === "new" : null,
         expected: "开始时无 Python 能力、skill 或 memory，创建新会话", actual: baseline ? `${before.size} 个 Python 文件，${baseline.data.experienceFiles} 个经验文件` : "缺少基线记录",

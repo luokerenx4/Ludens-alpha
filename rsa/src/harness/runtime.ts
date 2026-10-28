@@ -4,6 +4,7 @@ import type { DiagnosticsMode, EventTrace, RecordEvent } from "./events.ts";
 import type { PerceptionRuntime } from "./perception.ts";
 import type { WorkspaceController } from "./controller.ts";
 import type { ActionRuntime } from "./action.ts";
+import { executeProgram, type Program } from "./program.ts";
 
 export interface AgentRunner {
   run(context: { epoch: string; signal: AbortSignal; message?: string }): Promise<void>;
@@ -37,18 +38,21 @@ export class Runtime {
   private reason = "startup";
   private connected = true;
   private perceptionInjection = true;
+  private ownsDevice = false;
   private calls = new Set<Promise<unknown>>();
   agent?: AgentRunner;
   controller?: WorkspaceController;
   perception?: PerceptionRuntime;
   action?: ActionRuntime;
 
-  constructor(private devices: DeviceSession, readonly record: RecordEvent, private maxSeconds = 300, private runId: string = crypto.randomUUID(), readonly diagnostics: DiagnosticsMode = "normal") {}
+  constructor(private devices: DeviceSession | undefined, readonly record: RecordEvent, private maxSeconds = 300, private runId: string = crypto.randomUUID(), readonly diagnostics: DiagnosticsMode = "normal") {
+    if (!Number.isFinite(maxSeconds) || maxSeconds <= 0 || maxSeconds * 1000 > 2_147_483_647) throw new Error("Invalid Shiori time budget");
+  }
 
   status() {
     // The host can outlive many takeovers; its log clock is not this cycle's budget.
     const remainingSeconds = this.mode === "auto" ? Math.max(0, Math.ceil((this.takeoverDeadlineMs - performance.now()) / 1000)) : null;
-    return { runId: this.runId, maxSeconds: this.maxSeconds, remainingSeconds, mode: this.mode, epoch: this.mode === "auto" ? this.epoch : null, connected: this.connected, reason: this.reason, agent: !!this.agent, thinking: !!this.running, consolidating: this.consolidating, perception: this.perception?.status(), action: this.action?.status(), context: { perceptionInjection: this.perceptionInjection }, logging: { diagnostics: this.diagnostics, basewareDiagnostics: this.devices.diagnostics ?? "normal" } };
+    return { runId: this.runId, maxSeconds: this.maxSeconds, remainingSeconds, mode: this.mode, epoch: this.mode === "auto" ? this.epoch : null, connected: this.connected, reason: this.reason, agent: !!this.agent, thinking: !!this.running, consolidating: this.consolidating, perception: this.perception?.status(), action: this.action?.status(), context: { perceptionInjection: this.perceptionInjection }, logging: { diagnostics: this.diagnostics, basewareDiagnostics: this.devices?.diagnostics ?? "normal" } };
   }
 
   perceptionInjectionEnabled(): boolean { return this.perceptionInjection; }
@@ -61,7 +65,7 @@ export class Runtime {
     return { perceptionInjection: this.perceptionInjection };
   }
 
-  list() { return this.devices.catalog; }
+  list() { if (!this.devices) throw new Error("This Shiori execution has no device"); return this.devices.catalog; }
 
   checkInputGeneration(epoch: string | undefined, trace: EventTrace = {}) {
     if (trace.inputGeneration !== undefined && !this.action?.accepts(epoch, trace.inputGeneration))
@@ -85,13 +89,15 @@ export class Runtime {
     finally { this.calls.delete(call); }
   }
 
-  async start(message?: string) {
+  async start(message?: string, program?: (context: { epoch: string; signal: AbortSignal }) => Promise<void>) {
     if (this.mode !== "manual" || this.running || this.calls.size) throw new Error("Previous control cycle has not finished");
     if (!this.connected) throw new Error("Baseware disconnected; restart the application");
     const epoch = this.epoch = crypto.randomUUID();
     const control = this.control = new AbortController();
+    this.ownsDevice = !program;
+    if (this.ownsDevice && !this.devices) throw new Error("Agent control requires a device session");
     this.mode = "acquiring";
-    this.opening = this.devices.acquire(epoch);
+    this.opening = this.ownsDevice ? this.devices!.acquire(epoch) : Promise.resolve();
     try { await this.opening; }
     catch (error) { await this.stop(String(error)); throw error; }
     if (control.signal.aborted) return this.status();
@@ -101,11 +107,12 @@ export class Runtime {
     this.record("control", this.status(), { epoch });
     if (message) this.record("user_message", { text: message }, { epoch });
     this.timer = setTimeout(() => void this.stop("time budget").catch((e) => this.record("error", String(e))), this.maxSeconds * 1000);
-    try { await this.action?.activate(epoch); }
+    try { if (this.ownsDevice) await this.action?.activate(epoch); }
     catch (error) { await this.stop(String(error)); throw error; }
     if (control.signal.aborted) return this.status();
-    if (this.agent) {
-      this.running = this.agent.run({ epoch, signal: control.signal, message })
+    const work = program ?? (this.agent ? (context: { epoch: string; signal: AbortSignal }) => this.agent!.run({ ...context, message }) : undefined);
+    if (work) {
+      this.running = Promise.resolve().then(() => work({ epoch, signal: control.signal }))
         .catch((error) => { if (!control.signal.aborted) this.record("error", String(error)); })
         .finally(async () => {
           await this.stop("agent ended");
@@ -114,6 +121,24 @@ export class Runtime {
         });
     }
     return this.status();
+  }
+
+  /** Ordinary programs use Shiori's same budget, cancellation and drain path, without OMP or a device lease. */
+  async runProgram(program: Program, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
+    let failure: unknown;
+    const cancel = () => { void this.stop("cancelled"); };
+    signal?.addEventListener("abort", cancel, { once: true });
+    try {
+      await this.start(undefined, async ({ signal: controlSignal }) => {
+        try { await executeProgram(program, controlSignal, this.record); }
+        catch (error) { failure = error; throw error; }
+      });
+      if (signal?.aborted) cancel();
+      await this.running;
+      if (failure) throw failure;
+      signal?.throwIfAborted();
+    } finally { signal?.removeEventListener("abort", cancel); }
   }
 
   async consolidate(seconds = 600) {
@@ -169,7 +194,7 @@ export class Runtime {
     void actionStopped?.catch(error => this.record("error", String(error), { epoch: this.epoch }));
     this.stopping = (async () => {
       await this.opening?.catch(() => {});
-      try { await this.devices.release(this.epoch); }
+      try { if (this.ownsDevice) await this.devices!.release(this.epoch); }
       catch (error) {
         this.connected = false;
         this.record("error", String(error));

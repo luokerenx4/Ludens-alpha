@@ -1,0 +1,13 @@
+{
+  "task": "ludens/background-compaction",
+  "argv": [
+    "{bun}",
+    "{rsa}/src/harness/module-program.ts",
+    "{rsa}/src/benchmark/cases/background-compaction.ts"
+  ],
+  "workspace": "isolated",
+  "seconds": 180,
+  "parameters": {
+    "seed": 7
+  }
+}

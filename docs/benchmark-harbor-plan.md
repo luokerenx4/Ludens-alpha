@@ -1,6 +1,15 @@
 # Ludens Benchmark 收窄重构方案
 
-状态：待实施，2026 年 10 月 28 日。本轮只确定方案，现行接口仍以 [Benchmark](benchmark.md) 为准。
+状态：已实施，2026 年 10 月 28 日。当前接口、命令和使用边界以 [Benchmark](benchmark.md) 为准。本文保留当时的设计依据、施工顺序与验收目标；它不是另一份待办列表，也不表示所有在线或设备场景都已实跑验收。
+
+## 实现落点与验证范围
+
+- [Shiori 入口](../rsa/src/harness/shiori-benchmark.ts) 和 [Runtime](../rsa/src/harness/runtime.ts) 统一管理程序、评分与聚合的生命周期；日常 Agent 和 Agent benchmark 复用 [Host 装配](../rsa/src/harness/host.ts)。CLI 只负责提交与读取，Python 的 `current_trial()` 只登记已分配 trial 的证据。
+- 作者使用 [Task 包](../rsa/benchmarks/tasks/)、独立 [运行绑定](../rsa/benchmarks/runs/) 和 [Dataset](../rsa/benchmarks/dataset.toml)。测量程序输出固定事实，任务内 verifier 写唯一 reward；旧 `@benchmark`、隐式 Python 生命周期和公共 AuthorReport 协议已移除。
+- [公共契约与存储](../rsa/src/benchmark/contract.ts) 区分 Trial、Verification 和 Reward，Dashboard/Electron 按摘要与详情读取；重评不重做被测动作。离线回归和 Dashboard 生产构建已完成验证；在线 `capability-reuse` 未运行，不能据此声称在线模型或真实设备效果已经验证。
+- 盘点旧 workspace 未发现 `benchmark.json`，本次没有需要转换的实际旧 benchmark 档案；保留的一次性迁移入口通过 fixture 验证，不声称已迁移用户实档。
+
+Native profile 是本机执行适配，不是 sandbox，也不是 Harbor 全量执行环境兼容层。独立 CLI 重评不会切换 Pet 的游戏关注来源，不保证额外气泡。模型参数或其他执行条件不同会严格显示比较条件差异。完整边界与当前行为见 [现行文档](benchmark.md)。
 
 ## 目标
 
@@ -12,9 +21,9 @@
 
 验收的北极星是：**新增一个任务包和必要的执行绑定，就能通过 Shiori 运行，被现有所有消费者发现、读取、重评和比较，不修改 Harness 的 case 注册表，不给 Dashboard、Python 或桌宠另写成绩解析分支。日常 Agent 任务与 Agent benchmark 使用同一套装配和执行路径。**
 
-## 现状和需要收掉的分叉
+## 重构前的分叉（设计背景）
 
-目前 CLI 与 Dashboard 已共用一部分 contract、store 和比较逻辑，问题并不是每个组件都有一套 runner。主要分叉在作者入口与记录所有权：
+编写本方案时，CLI 与 Dashboard 已共用一部分 contract、store 和比较逻辑，问题并不是每个组件都有一套 runner。当时的主要分叉在作者入口与记录所有权：
 
 - 内置任务来自 `cases.json` 和 TS registry；workspace 任务来自 Python `@benchmark` 的 AST 发现，两者使用不同身份和入口描述。
 - TS runner 创建 trial 后，Python 通过 `prepared_run` 接续；直接 import 时，Python 装饰器又自己创建 trial。已有接续机制，并非每次实际创建两份运行，但双方都维护生命周期和异常收尾。
@@ -66,7 +75,7 @@ flowchart LR
 
 一次 trial 对应一次实际执行；一次 verification 对应一次依据既有产物的评分。两者有独立 ID 和终态。重评增加 verification，不增加 trial 数，不启动被测能力或 Agent。
 
-这是待实施的职责归并。当前架构把 Shiori 定义为由 OMP 实现的 Agent Loop，`omp/shiori.ts` 主要负责 telemetry，`omp/session.ts` 提供模型执行。重构把统一运行入口归到 Shiori，普通程序执行模式复用现有调用能力；不把整套运行逻辑塞进 telemetry 文件，也不声称这些接口已经完成。RSA Runtime 继续提供控制权、预算计时与释放等底层机制，不与 Shiori 平行调度任务。
+这次职责归并已落在 `harness/shiori-benchmark.ts`、Runtime 的普通程序模式和公共 Host 装配中。重构前 Shiori 主要指由 OMP 实现的 Agent Loop，`omp/shiori.ts` 负责 telemetry，`omp/session.ts` 提供模型执行；这些职责继续保留，没有把全部运行逻辑塞进 telemetry 文件。RSA Runtime 继续提供控制权、预算计时与释放等底层机制，不与 Shiori 平行调度任务。
 
 普通程序、verifier 和 metric 不因进入 Shiori 就加载模型或申请设备控制权。真实设备输入继续由 Baseware 的 epoch、generation 和人工接管规则裁决。统一入口必须复用现有运行装配，不能新造一个 benchmark coordinator 再把它命名成 Shiori。
 
@@ -113,7 +122,7 @@ Shiori 的执行配置沿用 RSA 的模型、预算、workspace、trace 和控�
 
 重评输入必须在执行结束时固定：文件使用不可变副本或 hash，持续日志固定读取截止，timeline 固定 record、片段和 PTS。只指向不断增长的目录或最新截图不足以支持同一次 trial 的重评。既有 canonical 原件可以继续被引用，无需复制整套日志。
 
-Python 只加入 Shiori 已分配的 trial，以下是测量程序的拟议用法：
+Python 只加入 Shiori 已分配的 trial，以下是已实现的测量程序用法：
 
 ```python
 trial = bench.current_trial()  # Shiori 传入身份和输出位置
@@ -197,7 +206,7 @@ workspace/logs/<run-id>/
     verification.json              输入引用、评分代码版本、时间、状态、异常
     reward.json                    此次评分的唯一权威数值
     details.json                   可选诊断，不是第二份通用成绩 schema
-    stdout.txt / stderr.txt
+    stdout.log / stderr.log
 ```
 
 初次评分和重评使用同一个入口，每次写新目录。旧执行事实不改；新的 verification 指明依据哪个原 trial、使用哪个任务/verifier digest 以及原因。只保留明确的来源关系，不维护任意手写报告的修订 DAG。所选评分 ID 是可变的小指针；历史比较总是返回解析后的具体 ID。
@@ -219,7 +228,7 @@ verification 的输出与状态完整落盘后，才原子更新所选评分指�
 
 操作定义共用，不要求每个界面开放全部操作。CLI/Python 向 Shiori 提交执行和评分，Dashboard 继续只读，不增加网页控制入口。历史读取不要求 Host 或模拟器在线；证据仍通过既有可信 workspace 路径与来源解析，不能相信结果文件中的任意路径。
 
-现有 `rsa bench` 保留为命令入口，移除 `python/path:function` 和旧作者 report 格式。`bench schema/validate` 改为检查 Task/Reward/Dataset；删除手写 `bench report --file` 的成绩注入入口，以可追溯的 verifier 重评替代。CLI 进程退出码表示执行/评分命令是否正常完成，不把某个 reward 等于零自动解释成进程崩溃；CI 要求成功率或性能阈值时调用任务明确的验收规则。
+现有 `rsa bench` 保留为命令入口，移除 `python/path:function` 和旧作者 report 格式。`bench schema/validate` 改为 Task/Reward/Dataset 的静态说明与校验；手写 `bench report --file` 成绩注入入口已删除，以可追溯的 verifier 重评替代。CLI 进程退出码表示执行/评分命令是否正常完成，不把某个 reward 等于零自动解释成进程崩溃；CI 要求成功率或性能阈值时调用任务明确的验收规则。
 
 比较首先固定 task 与评分版本、参数、数据/初态和环境条件，之后比较 subject 的候选版本。任务包或评分规则变化时不自动给出“提升”结论；必要时先把两份旧证据按同一 verifier 重评。被测代码、权重和进程实际加载版本是 subject provenance，不能因为换了候选模型就把测试任务身份也改掉。
 
@@ -240,7 +249,7 @@ Dashboard 的“运行剖析”标签和“运行性能”页继续分析普通 
 | capability-reuse | 同一任务包约定，Agent 执行 | 两批订单、跨轮真实复用、普通 import 的调用证据；沿用并独立调用 reuse-evaluator |
 | clamp.py 示例及 workspace 评测 | 标准任务包；Python 加入 Shiori trial | 普通 capability 保留；样本作为评分输入 |
 | verify-video-storage.py | video-storage 任务 | 双流合成输入、实际采样、冷解码误差、压缩比和 RSS 样本 |
-| check-index-memory.ts | archive-index 任务 | 大日志重建、首中尾历史一致性、重复查询、缓存释放和父子进程 RSS |
+| check-index-memory.ts | index-memory 任务 | 大日志重建、首中尾历史一致性、重复查询、缓存释放和父子进程 RSS |
 
 这八类入口使用同一套 Task/Reward/结果读取，不把工程性能评测排除在统一目标之外。后续 driver 横向评测也只能走这条接口。
 
@@ -266,7 +275,7 @@ Dashboard 的“运行剖析”标签和“运行性能”页继续分析普通 
 
 历史原始产物不作为这次删代码的对象，也不自动改写 AI workspace。切换前盘点已有 benchmark 历史：可识别的旧 execution/report 逐项通过一次性离线转换，保留旧 ID 映射、固定报告链接、旧口径和原报告引用，标注为 legacy import。`passed:null`、expected/actual、无效报告和手工修订等非 reward 内容保留为诊断，不能伪造 verifier、缺失测量或可重评能力。真正损坏的数据列出迁移失败项并保留原件。转换工具不成为每次查询都运行的兼容层，新写入只允许新约定。
 
-## 施工顺序
+## 原定施工顺序（保留设计过程）
 
 1. **固定契约样例。**从所选 Harbor 版本建立 Task、Dataset、Reward、Metric IO 的正反样例，明确 native profile 与不支持字段；先不动真实运行。
 2. **统一 Shiori 运行入口。**收敛日常与 benchmark 的 Host/Runtime 装配，Agent 与普通程序由同一 Shiori 驱动；将 trial、评分和聚合接入该生命周期，撤掉独立 benchmark runner 与 Python 运行所有者。
@@ -276,7 +285,7 @@ Dashboard 的“运行剖析”标签和“运行性能”页继续分析普通 
 
 每阶段只增加下一阶段确实需要的字段。暂不做 Harbor Hub/registry 下载、分布式 runner、环境插件框架、自动实验搜索或 ATIF 全量导出。后续需要这些功能时仍围绕同一 Task/Reward 约定接入。
 
-## 验收标准
+## 验收目标与保留边界
 
 | 验收项 | 必须看到的结果 |
 | --- | --- |
@@ -296,4 +305,4 @@ Dashboard 的“运行剖析”标签和“运行性能”页继续分析普通 
 | 消费者一致 | CLI/Python 与 Dashboard 对同一 verification 的 reward 和异常一致；历史、附件、回放链接可用，Pet 每次重要终态只消费一次；评测不抢占最新游戏 run 或 Alice 跟随目标 |
 | 历史切换 | 旧固定 reportId 链接、未知检查值和无效报告仍可追溯；legacy 数据不会冒充新 verifier 的执行结果 |
 
-先用离线 fixture 验证三种执行入口和异常路径，Agent 的在线、真实设备及桌面效果在后续明确的验证运行中检查。合成录像不替代实际帧率，提交动作不替代执行成功，复用代码不替代学会任务；这些证据边界在新契约下继续保留。
+本轮以离线 fixture 和回归验证执行、评分与异常路径；Agent 的在线运行、真实设备及桌面效果仍需后续明确的验证运行。合成录像不替代实际帧率，提交动作不替代执行成功，复用代码不替代学会任务；这些证据边界在新契约下继续保留。

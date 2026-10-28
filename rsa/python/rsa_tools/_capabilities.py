@@ -81,14 +81,14 @@ def validate(value, schema, location="arguments"):
             validate(item, child_schema, location + "." + name)
 
 
-def function_schema(node, kind="capability"):
+def function_schema(node):
     if isinstance(node, ast.AsyncFunctionDef):
-        raise ValueError("Async %s are unsupported; use a synchronous function" % ("capabilities" if kind == "capability" else "benchmarks"))
+        raise ValueError("Async capabilities are unsupported by the CLI; use a synchronous function")
     if node.args.posonlyargs or node.args.vararg or node.args.kwarg:
         raise ValueError("Positional-only parameters, *args and **kwargs are unsupported")
     description = ast.get_docstring(node)
     if not description or not description.strip():
-        raise ValueError("A %s must have a docstring describing its use" % kind)
+        raise ValueError("A capability must have a docstring describing its use")
     args = node.args.args + node.args.kwonlyargs
     defaults = [None] * (len(node.args.args) - len(node.args.defaults)) + node.args.defaults + node.args.kw_defaults
     properties, required = {}, []
@@ -189,7 +189,7 @@ def discover(workspace):
     return {"capabilities": capabilities, "diagnostics": diagnostics}
 
 
-def load_function(workspace, relative_path, function_name, *, raw=None, marker="capability"):
+def load_function(workspace, relative_path, function_name, *, raw=None):
     """Load a marked function once, sharing ordinary Python imports by file."""
     workspace = Path(workspace).resolve()
     source = (workspace / relative_path).resolve()
@@ -230,8 +230,8 @@ def load_function(workspace, relative_path, function_name, *, raw=None, marker="
             if parent is not None:
                 setattr(parent, child_name, module)
     function = getattr(module, function_name)
-    if not callable(function) or not getattr(function, "__rsa_%s__" % marker, False):
-        raise ValueError("The selected function is not marked @%s" % marker)
+    if not callable(function) or not getattr(function, "__rsa_capability__", False):
+        raise ValueError("The selected function is not marked @capability")
     return function
 
 

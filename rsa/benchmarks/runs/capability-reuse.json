@@ -1,0 +1,16 @@
+{
+  "task": "ludens/capability-reuse",
+  "argv": [
+    "{bun}",
+    "{rsa}/src/harness/module-program.ts",
+    "{rsa}/src/benchmark/cases/capability-reuse.ts"
+  ],
+  "workspace": "isolated",
+  "seconds": 180,
+  "parameters": {
+    "seed": 7,
+    "model": "openai-codex/gpt-6.1-sol",
+    "maxRequests": 30
+  },
+  "onlineModel": true
+}

@@ -14,6 +14,7 @@ import time
 
 from PIL import Image, ImageChops, ImageDraw, ImageStat
 from rsa_tools._observation_history import ObservationHistory
+from rsa_tools import current_trial
 
 
 def picture(index, channel):
@@ -35,10 +36,20 @@ def rss_bytes():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--output", type=Path)
     parser.add_argument("--records", type=int, default=2400)
     parser.add_argument("--rate", type=float, default=30)
     arguments = parser.parse_args()
+    trial = current_trial() if os.environ.get("RSA_BENCH_TRIAL_ID") else None
+    if arguments.output is None:
+        if trial is None:
+            parser.error("--output is required outside a Shiori trial")
+        arguments.output = trial.artifacts / "recording-workspace"
+    if arguments.records < 2 or arguments.rate <= 0:
+        parser.error("--records must be at least 2 and --rate must be positive")
+    if trial:
+        trial.conditions(records=arguments.records, sample_hz=arguments.rate, streams=2)
+        trial.limitations("Synthetic images; RSS is sampled. Cold decode measures recorded frames, not a live device.")
     arguments.output.mkdir(parents=True, exist_ok=False)
     os.environ["RSA_PERCEPTION_HOT_BYTES"] = "1048576"
     os.environ["RSA_PERCEPTION_HOT_SECONDS"] = "1"
@@ -89,7 +100,10 @@ def main():
               "rssTailMeanBytes": statistics.mean(point["rssBytes"] for point in tail),
               "hotPeakBytes": max(point["hotBytes"] for point in points), "samples": points,
               "imageFiles": len(list(arguments.output.rglob("*.png"))) + len(list(arguments.output.rglob("*.bin")))}
-    (arguments.output / "verification.json").write_text(json.dumps(report, indent=2) + "\n")
+    if trial:
+        trial.artifact("measurements.json", report)
+    else:
+        (arguments.output / "measurements.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps({key: value for key, value in report.items() if key != "samples"}, indent=2))
 
 

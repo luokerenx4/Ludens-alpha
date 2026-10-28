@@ -1,10 +1,8 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { readEvents } from "../src/benchmark/fixtures/evidence.ts";
-import type { AuthorReport } from "../src/benchmark/types.ts";
-import { validateAuthorReport } from "../src/benchmark/report.ts";
 
 // Each benchmark owns its transport globals, matching the production benchmark runner.
 test.each([
@@ -25,19 +23,35 @@ await Bun.write(${JSON.stringify(join(directory, "outcome.json"))}, JSON.stringi
   try {
     const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
     expect({ code, stdout, stderr }).toEqual({ code: 0, stdout: "", stderr: "" });
-    const result: AuthorReport = JSON.parse(await readFile(join(directory, "outcome.json"), "utf8"));
-    expect(validateAuthorReport(result).errors).toEqual([]);
-    expect(Object.keys(result.checks!).length).toBeGreaterThanOrEqual(4);
-    expect(Object.values(result.checks!).filter(check => check.passed !== true)).toEqual([]);
+    const measurements = JSON.parse(await readFile(join(directory, "outcome.json"), "utf8"));
+    const { verify } = await import(`../benchmarks/tasks/${id}/tests/verify.ts`);
+    const result = verify(measurements);
+    const checks = Array.isArray(result.details) ? result.details.flatMap((d: any) => Object.values(d.checks)) : Object.values(result.details.checks);
+    expect(checks.length).toBeGreaterThanOrEqual(4);
+    expect(checks.filter((passed: unknown) => passed !== true)).toEqual([]);
     const events = await readEvents(runDir);
     for (const type of requiredEvents) expect(events.some(event => event.type === type)).toBe(true);
-    const sequences = new Set(events.map(event => event.seq));
-    for (const check of Object.values(result.checks!)) {
-      expect(check.evidenceSeq!.length).toBeGreaterThan(0);
-      expect(check.evidenceSeq!.every(seq => sequences.has(seq))).toBe(true);
+    expect(Object.keys(result.rewards).length).toBeGreaterThanOrEqual(6);
+    expect(Object.values(result.rewards).every(value => typeof value === "number" && Number.isFinite(value))).toBe(true);
+    // The same packaged entry is usable after pinning, with only native-profile
+    // environment paths. It cannot rerun the case and needs no live socket.
+    const artifacts = join(runDir, "artifacts"), verifierDir = join(directory, "verification");
+    await mkdir(artifacts, { recursive: true }); await mkdir(verifierDir);
+    await writeFile(join(artifacts, "measurements.json"), JSON.stringify(measurements));
+    await writeFile(join(directory, "input.json"), "{}");
+    const taskDir = resolve(import.meta.dir, `../benchmarks/tasks/${id}`);
+    const verifier = Bun.spawn(["sh", join(taskDir, "tests/test.sh")], { cwd: directory,
+      env: { PATH: process.env.PATH, RSA_BENCH_TASK_DIR: taskDir, RSA_BENCH_INPUT: join(directory, "input.json"),
+        RSA_BENCH_ARTIFACTS: artifacts, RSA_BENCH_VERIFIER_DIR: verifierDir }, stdout: "pipe", stderr: "pipe" });
+    expect({ code: await verifier.exited, stderr: await new Response(verifier.stderr).text() }).toEqual({ code: 0, stderr: "" });
+    expect(JSON.parse(await readFile(join(verifierDir, "reward.json"), "utf8"))).toEqual(result.rewards);
+    // Verifier consumes frozen measurements; changing a decision input changes
+    // its reward without invoking the production scenario again.
+    if (id === "control-handoff") {
+      const changed = structuredClone(measurements); changed.measurements[0].neutral = false;
+      expect(verify(changed).rewards[changed.measurements[0].scenario + "-interrupted"]).toBe(0);
     }
-    expect(Object.values(result.metrics!).some(metric => metric.value !== null)).toBe(true);
-    expect(Object.values(result.metrics!).every(metric => metric.value === null || Number.isFinite(metric.value))).toBe(true);
+
   } finally { clearTimeout(timeout); if (child.exitCode === null) child.kill(); await rm(directory, { recursive: true, force: true }); }
 }, 30_000);
 

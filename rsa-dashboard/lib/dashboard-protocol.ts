@@ -1,6 +1,7 @@
 import type { getActivity, ActivityQuery } from "./activity";
 import type { aliceState, recordAliceConsumer, setAliceTarget } from "./alice-state";
-import type { benchmarkCatalog, benchmarkEvidence } from "./benchmark-data";
+import type { benchmarkAttachment, benchmarkCatalog, benchmarkEvidence } from "./benchmark-data";
+import type { BenchmarkQuery, BenchmarkDetailQuery } from "./benchmarks";
 import type { archiveBuild, catalog, getRun, mediaFile, stopRun, timelineRecord } from "./data";
 import type { getReplay, ReplayQuery } from "./replay";
 import type { RunPage } from "./run-index";
@@ -18,8 +19,9 @@ export interface DashboardMethods {
   replay: { args: [project: string, run: string, query: ReplayQuery]; result: Awaited<ReturnType<typeof getReplay>> };
   media: { args: [project: string, run: string, id: string]; result: Awaited<ReturnType<typeof mediaFile>> };
   timelineRecord: { args: [project: string, run: string, record: string, sequence: number, source: { call?: string; observation?: string }]; result: Awaited<ReturnType<typeof timelineRecord>> };
-  benchmarkCatalog: { args: []; result: Awaited<ReturnType<typeof benchmarkCatalog>> };
-  benchmarkEvidence: { args: [project: string, run: string, report?: string]; result: Awaited<ReturnType<typeof benchmarkEvidence>> };
+  benchmarkCatalog: { args: [query?: BenchmarkQuery]; result: Awaited<ReturnType<typeof benchmarkCatalog>> };
+  benchmarkEvidence: { args: [project: string, run: string, query?: BenchmarkDetailQuery]; result: Awaited<ReturnType<typeof benchmarkEvidence>> };
+  benchmarkAttachment: { args: [project: string, run: string, index: number, verification?: string]; result: Awaited<ReturnType<typeof benchmarkAttachment>> };
   stop: { args: [project: string, run: string, epoch: string | null]; result: Awaited<ReturnType<typeof stopRun>> };
   aliceState: { args: []; result: ReturnType<typeof aliceState> };
   aliceTarget: { args: [project: unknown, ifUnset: boolean]; result: Awaited<ReturnType<typeof setAliceTarget>> };

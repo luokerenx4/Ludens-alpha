@@ -14,11 +14,12 @@ import { Runtime } from "../src/harness/runtime.ts";
 import { listen as listenRsa } from "../src/harness/transport.ts";
 import { renderBoard } from "../src/benchmark/fixtures/reuse-board.ts";
 import { ReuseEnvironment } from "../src/benchmark/fixtures/reuse-environment.ts";
-import { evaluateReuse, type ReuseEvent } from "../src/benchmark/fixtures/reuse-evaluator.ts";
+import { evaluateReuse, type ReuseEvent } from "../benchmarks/tasks/capability-reuse/tests/evaluate.ts";
+import { freezeReuseEvents } from "../src/benchmark/fixtures/reuse-facts.ts";
 import { readArtifactSync } from "../../shared/log-archive.ts";
 
 const passed = (events: ReuseEvent[], epoch: string, id: string, runDir?: string) =>
-  evaluateReuse(events, epoch, runDir).checks![id]?.passed;
+  evaluateReuse(runDir ? freezeReuseEvents(events, runDir) : events, epoch).checks![id]?.passed;
 
 test("the benchmark sensor emits an actual readable, deterministic PNG", async () => {
   const view = { phase: 1, order: 1, completed: 0, values: [0, 0, 0], target: [2, 4, 1], waiting: false, done: false, notice: "READY" };
@@ -130,7 +131,7 @@ def configure(values: list[int]) -> dict:
     recordBenchmark("benchmark_reuse_finished", environment.summary(), { epoch });
     const events: ReuseEvent[] = [];
     for await (const event of readRunEvents(runDir)) events.push(event as unknown as ReuseEvent);
-    const judge = (records: ReuseEvent[]) => evaluateReuse(records, epoch, runDir);
+    const judge = (records: ReuseEvent[]) => evaluateReuse(freezeReuseEvents(records, runDir), epoch);
     const check = (records: ReuseEvent[], id: string) => passed(records, epoch, id, runDir);
     const outcome = judge(events);
     expect(Object.values(outcome.checks!).filter(check => check.passed !== true)).toEqual([]);

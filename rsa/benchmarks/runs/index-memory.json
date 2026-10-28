@@ -1,0 +1,16 @@
+{
+  "task": "ludens/index-memory",
+  "argv": [
+    "node",
+    "--expose-gc",
+    "--import",
+    "tsx",
+    "scripts/check-index-memory.ts",
+    "--run",
+    "{param.run}"
+  ],
+  "workspace": "isolated",
+  "seconds": 300,
+  "parameters": {},
+  "cwd": "{rsa}/../rsa-dashboard"
+}

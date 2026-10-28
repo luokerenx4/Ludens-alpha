@@ -1,0 +1,10 @@
+schema_version = "1.4"
+
+[task]
+name = "ludens/video-storage"
+version = "1"
+description = "双流合成图像录制、冷历史解码与 RSS 测量。"
+
+[metadata]
+title = "视频存储与冷查询"
+scope = "生产视频存储，合成图像；性能取决于本机和采样参数。"

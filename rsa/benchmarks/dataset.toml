@@ -1,0 +1,38 @@
+schema_version = "1.0"
+
+[dataset]
+name = "ludens/native"
+version = "1"
+description = "Ludens native harness, capability and storage tasks; execution bindings are separate."
+
+[[tasks]]
+name = "ludens/background-compaction"
+digest = "sha256:f49257c5b8d62d34b62045667a10698bd1db64a85d6b0760eddd2a7c864ecd2c"
+
+[[tasks]]
+name = "ludens/capability-reuse"
+digest = "sha256:cb91b07ddff17e0eb50d9c586991b626d40a8b23b78fb592cd3223abcb6d2c11"
+
+[[tasks]]
+name = "ludens/clamp"
+digest = "sha256:cdb59fdc2ddd4fb87314ecaa8dc23624fa2160ce9c36f98e526577e017548ded"
+
+[[tasks]]
+name = "ludens/control-handoff"
+digest = "sha256:03d13bcd4e56f82aa6381a9ee7480d9f5861f953999e217a9f2cd6e1fc4b2ae0"
+
+[[tasks]]
+name = "ludens/index-memory"
+digest = "sha256:0ed3a2f02594dbe9c24f7192b4be15be15cc6f0f40b0af9fb4c23708f7576cb1"
+
+[[tasks]]
+name = "ludens/perception-lifecycle"
+digest = "sha256:e0eccf558eefc10ff5283de13cc5f27561b54cfb15fba67276b16f10c6fa527a"
+
+[[tasks]]
+name = "ludens/video-storage"
+digest = "sha256:0b2f67b6ce576353e5953d6422999fbb9f8949c5739c3366868a52fc542cce79"
+
+[[tasks]]
+name = "ludens/ws-recovery"
+digest = "sha256:3e2406d519322227611b45b2815d3f7466b80ec17cd2431f33e4b5121a7ff712"

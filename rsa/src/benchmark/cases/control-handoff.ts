@@ -8,11 +8,11 @@ import { connectBaseware } from "../../harness/baseware.ts";
 import { WorkspaceController } from "../../harness/controller.ts";
 import { Runtime } from "../../harness/runtime.ts";
 import { listen as listenRsa, send } from "../../harness/transport.ts";
-import type { BenchmarkContext, AuthorReport } from "../types.ts";
+import type { BenchmarkContext } from "../types.ts";
 import { readEvents, seqs, eventIds, until } from "../fixtures/evidence.ts";
 
 /** Real sockets, arbitration and Python cancellation; only the physical driver is simulated. */
-export async function run(ctx: BenchmarkContext): Promise<AuthorReport> {
+export async function run(ctx: BenchmarkContext): Promise<Record<string, unknown>> {
   ctx.signal?.throwIfAborted();
   const prefix = `/tmp/rsa-bench-${crypto.randomUUID()}`;
   const basewareSocket = `${prefix}-b.sock`, rsaSocket = `${prefix}-r.sock`;
@@ -124,27 +124,14 @@ def hold():
     await runtime.close(); devices.close(); await closeRsa(); await closeBaseware();
   }
   ctx.signal?.throwIfAborted();
+  await ctx.log.flush();
   const events = await readEvents(ctx.runDir);
   ctx.metadata.limitations = ["使用真实 Unix socket、Runtime、Baseware 仲裁与 Python 子进程；物理设备以可中断的内存 driver 代替，不能据此证明真实模拟器响应时间。"];
   return {
-    checks: {
-      ...Object.fromEntries(measurements.map(m => [`${m.scenario}-interrupted`, { label: `${m.scenario} 长动作接管`,
-        passed: m.manual && m.neutral && m.cancelled && m.pythonGone,
-        expected: "交还 manual、输入归零、长动作取消、Python 子进程退出", actual: JSON.stringify(m),
-        evidenceEvents: eventIds(events, e => e.trace.epoch === m.epoch && ["control", "execution", "baseware_control"].includes(e.type)),
-        evidenceSeq: seqs(events, e => e.trace.epoch === m.epoch && ["benchmark_handoff_requested", "benchmark_handoff_result", "control", "capability_end", "execution"].includes(e.type)) }])),
-      "release-latency": { label: "输入及时释放", passed: measurements.every(m => m.neutralMs <= 500),
-        expected: "两种路径的输入释放延迟均 ≤ 500 ms（本地 fixture）", actual: measurements.map(m => `${m.scenario}: ${m.neutralMs.toFixed(2)} ms`).join(", "),
-        evidenceSeq: seqs(events, e => e.type === "benchmark_handoff_result") },
-      "stale-epoch": { label: "拒绝旧控制权", passed: staleRejected && !staleExecuted,
-        expected: "STALE_EPOCH，旧调用不进入 driver", actual: JSON.stringify({ staleRejected, staleExecuted }),
-        evidenceSeq: seqs(events, e => e.type === "benchmark_stale_epoch") },
-    },
-    metrics: {
-      "handback-ms": { label: "最慢交还控制", value: Math.max(...measurements.map(m => m.handbackMs)), unit: "ms" },
-      "neutral-ms": { label: "最慢输入释放", value: Math.max(...measurements.map(m => m.neutralMs)), unit: "ms" },
-      "caller-settle-ms": { label: "最慢调用退出", value: Math.max(...measurements.map(m => m.settleMs)), unit: "ms" },
-      "scenarios": { label: "中断路径", value: measurements.length, unit: "count" },
-    },
+    measurements, staleRejected, staleExecuted,
+    evidence: measurements.map(m => ({ scenario: m.scenario,
+      events: eventIds(events, e => e.trace.epoch === m.epoch && ["control", "execution", "baseware_control"].includes(e.type)),
+      seqs: seqs(events, e => e.trace.epoch === m.epoch && ["benchmark_handoff_requested", "benchmark_handoff_result", "control", "capability_end", "execution"].includes(e.type)) })),
+    staleEpochEvidence: seqs(events, e => e.type === "benchmark_stale_epoch"),
   };
 }

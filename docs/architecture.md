@@ -8,7 +8,7 @@ RSA（Recursive Self-Adaptation）让 Coding Agent 在 workspace 中探索设备
 | --- | --- |
 | `baseware/` | 独立设备服务：装配 driver，提供能力目录、控制权、取消、媒体和设备日志；外放 CLI、TS/Python API 与 MCP。 |
 | `rsa/` | Harness：工作区、接管预算、统一能力入口、感知与动作进程、Benchmark，以及 Shiori 的装配与日志。 |
-| Shiori | Agent Loop 内核的职责名，当前由 RSA Host 内的 OMP 实现：模型请求、工具执行、会话、上下文压缩与原生后台管理。 |
+| Shiori | 唯一执行内核的职责名：RSA Host Runtime 统一控制周期、预算、取消与清理。Agent 模式由 OMP 实现；普通程序、verifier 和 metric 使用同一 Runtime，不启动模型。 |
 | `rsa-dashboard/` | 归档读取 worker、HTTP API 与统一的运行、回放、Benchmark、Alice 界面，读取运行事实并提供人工交还入口。 |
 | `rsa-companion/` | Electron 壳与原生 Alice Pet，复用同一 Dashboard 界面和日志来源。 |
 
@@ -88,7 +88,7 @@ rsa controller controller/pad.play --args '{"inputs":[{"atMs":0,"durationMs":500
 
 ## 可核查的运行事实
 
-Baseware 记录设备事实，RSA 保存模型、工具、能力和感知记录，Shiori 接入 OMP 原生 telemetry。Dashboard 与 Pet 消费日志，不另起推理循环。来源与调用链见 [日志契约](logging.md)，评测见 [Benchmark](benchmark.md)。调用成功、文件增长或帧数增加不等于任务成功。
+Baseware 记录设备事实，RSA 保存模型、工具、能力和感知记录，Shiori 的 Agent 模式接入 OMP 原生 telemetry。Dashboard 与 Pet 消费日志，不另起推理循环。来源与调用链见 [日志契约](logging.md)，评测见 [Benchmark](benchmark.md)。调用成功、文件增长或帧数增加不等于任务成功。
 
 Dashboard 将归档读取放在独立的 Node worker 线程中，Next 路由负责请求和响应。worker 共享一份可重建目录：原始事件位置、身份关系、展示所需的位置与截止点，以及小型统计；正文仍从原始 events、streams、archive 按需读取。Activity、运行概览和回放共用这个目录，Pet 只消费 Activity 增量。冷目录由查询 worker 按需启动一个临时子进程，固定输入截止、顺序聚合并批量写入新 generation；完成后原子发布，子进程退出释放工作集。全局只同时构建一个 run，查询仍使用已有可读目录。HTTP 取消只结束读取，构建独立继续；显式取消/失败保留状态，用户重试才重新开始。默认产品入口使用生产构建，开发热更新与归档消费分开。细节见 [日志消费](logging.md#消费与指标解释) 和 [归档重构方案](dashboard-archive-refactor-plan.md)。
 

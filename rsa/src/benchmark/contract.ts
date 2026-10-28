@@ -1,142 +1,131 @@
 import type { TimelineAssetReference } from "../../../shared/timeline-types";
 
-/** Runtime-independent benchmark contract. Reports never rewrite execution facts. */
-export interface BenchmarkDefinition {
-  id: string; title: string; description: string; scope: string;
-  revision: string; protocolVersion: string;
-  requiredDiagnostics?: "full";
-  source: "builtin" | "workspace";
-  parameters: Record<string, unknown>; targets: string[];
-  entry: { kind: "builtin"; caseId: string } | { kind: "python"; path: string; function: string; codeSHA: string };
+/** Public file contract. Shiori owns execution; these types do not start work or infer a verdict. */
+export type Rewards = Record<string, number>;
+export interface TaskIdentity { name: string; digest: string; version?: string }
+export interface TaskConfig {
+  schema_version: "1.4";
+  task: { name: string; version?: string; description?: string; authors?: unknown[]; keywords?: string[] };
+  metadata?: Record<string, unknown>;
+  verifier?: Record<string, unknown>;
+  agent?: Record<string, unknown>;
+  environment?: Record<string, unknown>;
+  solution?: Record<string, unknown>;
+  [key: string]: unknown;
 }
-export interface BenchmarkCheck {
-  id: string; label: string; passed: boolean | null;
-  expected?: unknown; actual?: unknown; evidenceSeq: number[];
-  evidenceEvents?: string[];
+export interface TaskDefinition extends TaskIdentity {
+  path: string; title: string; source: "repository" | "workspace";
+  schemaVersion: "1.4"; config: TaskConfig; unsupportedRequirements: string[];
 }
-export interface BenchmarkMetric {
-  id: string; label?: string; value: number | null; unit: string;
-  direction?: "lower" | "higher" | "none"; reason?: string;
+export interface SubjectReference { id: string; path?: string; sha256?: string; revision?: string }
+export interface ArtifactReference {
+  /** Run-relative, never an arbitrary absolute path. Timeline originals use timeline evidence. */
+  path: string; label?: string; sha256?: string; sizeBytes?: number; mediaType?: string;
 }
-export interface AuthorReport {
-  checks?: Record<string, Omit<BenchmarkCheck, "id" | "label" | "evidenceSeq"> & { label?: string; evidenceSeq?: number[] }>;
-  metrics?: Record<string, Omit<BenchmarkMetric, "id">>;
+export type EvidenceReference = (
+  | { kind: "file"; path: string; runId?: string; sha256: string; sizeBytes?: number }
+  | { kind: "event"; runId: string; seq?: number; eventId?: string; source?: string;
+      /** A sealed prefix of the event file, so subsequent appends cannot change scoring input. */
+      path?: string; byteLength?: number; sha256?: string }
+  | { kind: "timeline"; timeline: TimelineAssetReference; recordId?: string; sequence?: number; sha256?: string;
+      /** Timeline owner relative to trial.workspace, for an isolated child workspace. */
+      workspaceRelative?: string }
+) & { label?: string; reward?: string };
+export interface Failure { code: string; message: string }
+export interface LegacyImport { source: string; originalId: string; importedAt: string; limitations: string[] }
+export type TrialStatus = "running" | "completed" | "error" | "cancelled";
+export type VerificationStatus = "running" | "completed" | "error";
+export interface Trial {
+  schemaVersion: 1; id: string; runId: string; task: TaskIdentity;
+  workspace: string; project: string; parentRunId?: string; trace?: Record<string, string>;
+  status: TrialStatus; startedAt: string; endedAt?: string; durationMs?: number;
+  parameters: Record<string, unknown>; conditions: Record<string, unknown>;
+  subjects: SubjectReference[]; evidence: EvidenceReference[]; artifacts?: ArtifactReference[];
+  limitations?: string[]; selectedVerificationId?: string; error?: Failure; legacy?: LegacyImport;
 }
-export interface BenchmarkReference { id: string; path?: string; sha256?: string; revision?: string }
-export interface BenchmarkArtifact {
-  /** Run-relative archive, or workspace-relative original when timeline is present. */
-  path: string; label?: string; sha256?: string;
-  timeline?: TimelineAssetReference & { recordId?: string; sequence?: number };
-  mediaType?: string; approximate?: boolean;
+export interface Verification {
+  schemaVersion: 1; id: string; trialId: string; task: TaskIdentity;
+  status: VerificationStatus; startedAt: string; endedAt?: string;
+  reason: string; evidence: EvidenceReference[]; error?: Failure; legacy?: LegacyImport;
+  reward?: { file: "reward.json" | "reward.txt"; sha256: string };
 }
-export interface CaseMetadata {
-  conditions?: Record<string, unknown>; subjects?: BenchmarkReference[];
-  artifacts?: BenchmarkArtifact[]; limitations?: string[];
+/** Reward bytes live only in verifier/<id>/reward.json (or Harbor reward.txt). */
+export interface BenchmarkResult {
+  trial: Trial; verification: Verification | null;
+  verifier_result: { rewards: Rewards | null };
 }
-export interface CaseOutcome { checks: BenchmarkCheck[]; metrics: BenchmarkMetric[] }
-export interface ReportIssue { path: string; message: string }
-export interface BenchmarkReport {
-  schemaVersion: 1; id: string; runId: string; createdAt: string;
-  previousReportId: string | null; reason: string; protocolVersion: string;
-  raw: unknown; rawText?: string; errors: ReportIssue[]; outcome: CaseOutcome | null;
+export type TrialSummary = Pick<Trial, "id" | "runId" | "task" | "workspace" | "project" | "status" | "startedAt" | "endedAt" | "durationMs" | "selectedVerificationId" | "error" | "legacy">;
+export type VerificationSummary = Pick<Verification, "id" | "trialId" | "task" | "status" | "startedAt" | "endedAt" | "reason" | "error" | "legacy">;
+export interface PageQuery { cursor?: string; limit?: number }
+export interface HistoryQuery extends PageQuery { taskName?: string }
+export interface TrialPage { trials: TrialSummary[]; nextCursor?: string; issues: { runId: string; error: string }[] }
+export interface VerificationPage { verifications: VerificationSummary[]; nextCursor?: string }
+export interface DatasetTask { name: string; digest: string }
+export interface DatasetDefinition {
+  name: string; description?: string; version?: string; tasks: DatasetTask[]; path: string; digest: string;
+  files: { path: string; digest: string }[]; metadata: Record<string, unknown>;
+  metric?: { path: string; digest: string };
 }
-export type BenchmarkStatus = "running" | "completed" | "error" | "cancelled";
-export type BenchmarkVerdict = "passed" | "failed" | "inconclusive" | null;
-export interface BenchmarkExecution extends CaseMetadata {
-  schemaVersion: 3; definition: BenchmarkDefinition; status: BenchmarkStatus;
-  startedAt: string; endedAt: string | null; durationMs: number | null;
-  runId: string; project: string; workspace: string; parentRunId?: string;
-  trace: Record<string, string>; parameters: Record<string, unknown>; provenance: Record<string, unknown>;
-  error?: string; errorPhase?: "load" | "execute";
+
+export const isObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
+const nonempty = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
+export function validId(value: unknown): value is string { return typeof value === "string" && /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(value); }
+export function validateIdentity(value: TaskIdentity): void {
+  if (!isObject(value) || typeof value.name !== "string" || !/^[A-Za-z0-9_-][A-Za-z0-9_.-]*\/[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(value.name) || value.name.includes("..") ||
+      !/^sha256:[0-9a-f]{64}$/.test(value.digest) || (value.version !== undefined && !nonempty(value.version))) throw new Error("Invalid task name/digest identity");
 }
-/** Read projection: one execution, one explicitly selected (or latest) report. */
-export interface BenchmarkResult extends BenchmarkExecution, CaseOutcome {
-  verdict: BenchmarkVerdict; report: BenchmarkReport | null; reports: BenchmarkReport[];
+export function validateRewards(value: unknown): asserts value is Rewards {
+  if (!isObject(value) || Object.values(value).some(v => typeof v !== "number" || !Number.isFinite(v))) throw new Error("Reward must be a flat object of finite numbers");
 }
-export function outcomeVerdict(outcome: CaseOutcome): BenchmarkVerdict {
-  if (outcome.checks.some(check => check.passed === false)) return "failed";
-  if (outcome.checks.some(check => check.passed === null)) return "inconclusive";
-  return outcome.checks.length ? "passed" : null;
-}
-/** Lifecycle events distinguish execution from the selected report's assessment. */
-export interface BenchmarkEventSummary {
-  benchmarkId: string; benchmarkRunId: string; executionStatus: BenchmarkStatus;
-  reportStatus: "missing" | "valid" | "invalid"; verdict: BenchmarkVerdict;
-  reportId: string | null; previousReportId: string | null;
-}
-export function benchmarkEventSummary(execution: BenchmarkExecution, report?: BenchmarkReport | null): BenchmarkEventSummary {
-  return { benchmarkId: execution.definition.id, benchmarkRunId: execution.runId,
-    executionStatus: execution.status, reportStatus: !report ? "missing" : report.outcome ? "valid" : "invalid",
-    verdict: execution.status === "completed" && report?.outcome ? outcomeVerdict(report.outcome) : null,
-    reportId: report?.id ?? null, previousReportId: report?.previousReportId ?? null };
-}
-const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
-const nonempty = (value: unknown): value is string => typeof value === "string" && value.length > 0;
-export function validateDefinition(definition: BenchmarkDefinition): void {
-  if (!object(definition) || !nonempty(definition.id) || !nonempty(definition.revision) || !nonempty(definition.protocolVersion) ||
-    !["title", "description", "scope"].every(key => typeof definition[key] === "string") ||
-    !["builtin", "workspace"].includes(definition.source) || !object(definition.parameters) ||
-    !Array.isArray(definition.targets) || !definition.targets.every(nonempty) || !object(definition.entry)) throw new Error("Invalid benchmark definition");
-  if (definition.requiredDiagnostics !== undefined && definition.requiredDiagnostics !== "full") throw new Error("Invalid benchmark diagnostics requirement");
-  const entry = definition.entry;
-  if (entry.kind === "builtin" ? !nonempty(entry.caseId) : entry.kind !== "python" ||
-    !nonempty(entry.path) || !nonempty(entry.function) || !nonempty(entry.codeSHA)) throw new Error("Invalid benchmark entry");
-}
-export function validateExecution(result: BenchmarkExecution): void {
-  if (!result || result.schemaVersion !== 3 || !nonempty(result.runId) || !nonempty(result.project) || !nonempty(result.workspace) ||
-    typeof result.startedAt !== "string" || (result.endedAt !== null && typeof result.endedAt !== "string") ||
-    (result.durationMs !== null && (typeof result.durationMs !== "number" || !Number.isFinite(result.durationMs) || result.durationMs < 0)) ||
-    !object(result.parameters) || !object(result.provenance) || !object(result.trace) ||
-    !["running", "completed", "error", "cancelled"].includes(result.status)) throw new Error("Unsupported or invalid benchmark execution (expected schemaVersion 3)");
-  validateDefinition(result.definition);
-}
-export function validateReport(report: BenchmarkReport, runId: string): void {
-  if (!report || report.schemaVersion !== 1 || report.runId !== runId || !nonempty(report.id) || !nonempty(report.createdAt) ||
-    !nonempty(report.protocolVersion) || typeof report.reason !== "string" ||
-    (report.previousReportId !== null && !nonempty(report.previousReportId)) || !Array.isArray(report.errors) ||
-    report.errors.some(error => typeof error.path !== "string" || typeof error.message !== "string") ||
-    (report.outcome === null ? !report.errors.length : report.errors.length || !Array.isArray(report.outcome.checks) || !Array.isArray(report.outcome.metrics))) {
-    throw new Error("Invalid benchmark report record");
+function validateEvidence(items: EvidenceReference[]) {
+  if (!Array.isArray(items)) throw new Error("Evidence must be an array");
+  for (const item of items) {
+    if (!isObject(item) || !["file", "event", "timeline"].includes(item.kind)) throw new Error("Invalid evidence reference");
+    if (item.kind === "file" && (!nonempty(item.path) || !/^(sha256:)?[0-9a-f]{64}$/.test(item.sha256))) throw new Error("File evidence requires a fixed hash");
+    if (item.kind === "event" && (!validId(item.runId) || !(Number.isSafeInteger(item.seq) && item.seq! >= 0 || nonempty(item.eventId)) && !(Number.isSafeInteger(item.byteLength) && item.byteLength! >= 0 && nonempty(item.path) && nonempty(item.sha256)))) throw new Error("Event evidence requires a fixed event or prefix");
+    if (item.kind === "timeline" && (!isObject(item.timeline) || !nonempty(item.timeline.asset))) throw new Error("Invalid timeline evidence");
   }
 }
-export function projectResult(execution: BenchmarkExecution, reports: BenchmarkReport[], reportId?: string): BenchmarkResult {
-  const report = reportId ? reports.find(item => item.id === reportId) : reports.at(-1) ?? null;
-  if (reportId && !report) throw new Error(`Benchmark report not found: ${reportId}`);
-  const outcome = report?.outcome ?? { checks: [], metrics: [] };
-  return { ...execution, ...outcome, reports, report: report ?? null,
-    verdict: execution.status === "completed" && report?.outcome ? outcomeVerdict(outcome) : null };
+export function validateTrial(trial: Trial): void {
+  if (!isObject(trial) || trial.schemaVersion !== 1 || !validId(trial.id) || trial.id !== trial.runId || !nonempty(trial.workspace) || !nonempty(trial.project) ||
+      !nonempty(trial.startedAt) || !["running", "completed", "error", "cancelled"].includes(trial.status) || !isObject(trial.parameters) || !isObject(trial.conditions) || !Array.isArray(trial.subjects) ||
+      (trial.status !== "running" && !nonempty(trial.endedAt)) || (trial.durationMs !== undefined && (!Number.isFinite(trial.durationMs) || trial.durationMs < 0))) throw new Error("Invalid benchmark trial");
+  validateIdentity(trial.task); validateEvidence(trial.evidence);
+  if (trial.selectedVerificationId !== undefined && !validId(trial.selectedVerificationId)) throw new Error("Invalid selected verification ID");
 }
-export function validateResult(result: BenchmarkResult): void {
-  validateExecution(result);
-  if (!Array.isArray(result.reports)) throw new Error("Missing benchmark reports");
-  for (const report of result.reports) validateReport(report, result.runId);
-  if (result.report) validateReport(result.report, result.runId);
-  if (result.verdict !== (result.status === "completed" && result.report?.outcome ? outcomeVerdict(result.report.outcome) : null)) {
-    throw new Error("Benchmark verdict does not match execution/report");
-  }
+export function validateVerification(value: Verification, trialId?: string): void {
+  if (!isObject(value) || value.schemaVersion !== 1 || !validId(value.id) || !validId(value.trialId) || trialId !== undefined && value.trialId !== trialId ||
+      !["running", "completed", "error"].includes(value.status) || !nonempty(value.startedAt) || typeof value.reason !== "string" ||
+      value.status !== "running" && !nonempty(value.endedAt)) throw new Error("Invalid benchmark verification");
+  validateIdentity(value.task); validateEvidence(value.evidence);
 }
-const canonical = (value: unknown): string => JSON.stringify(value, (_key, entry) => entry && typeof entry === "object" && !Array.isArray(entry)
-  ? Object.fromEntries(Object.keys(entry).sort().map(key => [key, entry[key]])) : entry);
+export function trialSummary(trial: Trial): TrialSummary {
+  const { id, runId, task, workspace, project, status, startedAt, endedAt, durationMs, selectedVerificationId, error, legacy } = trial;
+  return { id, runId, task, workspace, project, status, startedAt, endedAt, durationMs, selectedVerificationId, error, legacy };
+}
+export function verificationSummary(value: Verification): VerificationSummary {
+  const { id, trialId, task, status, startedAt, endedAt, reason, error, legacy } = value;
+  return { id, trialId, task, status, startedAt, endedAt, reason, error, legacy };
+}
+export function benchmarkEventSummary(trial: Trial, verification?: Verification | null) {
+  return { benchmarkId: trial.task.name, benchmarkRunId: trial.runId, taskDigest: trial.task.digest,
+    executionStatus: trial.status, verificationStatus: verification?.status ?? "missing", verificationId: verification?.id ?? null,
+    error: verification?.error ?? trial.error };
+}
+const canonical = (value: unknown): string => JSON.stringify(value, (_key, item) => isObject(item) ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
 export function comparisonChanges(result: BenchmarkResult, baseline: BenchmarkResult): string[] {
-  return [
-    ["评测身份", result.definition.id, baseline.definition.id],
-    ["评测口径", result.report?.protocolVersion ?? result.definition.protocolVersion, baseline.report?.protocolVersion ?? baseline.definition.protocolVersion],
-    ["参数", result.parameters, baseline.parameters],
-    ["评测条件", result.conditions ?? {}, baseline.conditions ?? {}],
-  ].filter(([, a, b]) => canonical(a) !== canonical(b)).map(([label]) => label as string);
-}
-export function compatibleBaseline(result: BenchmarkResult, baseline: BenchmarkResult): boolean {
-  return result.status === "completed" && baseline.status === "completed" && !!result.report?.outcome && !!baseline.report?.outcome && comparisonChanges(result, baseline).length === 0;
+  return [["task", result.trial.task, baseline.trial.task], ["verifier", result.verification?.task, baseline.verification?.task],
+    ["parameters", result.trial.parameters, baseline.trial.parameters], ["conditions", result.trial.conditions, baseline.trial.conditions]]
+    .filter(([, a, b]) => canonical(a) !== canonical(b)).map(([key]) => key as string);
 }
 export function compareResults(result: BenchmarkResult, baseline: BenchmarkResult) {
-  return { compatible: compatibleBaseline(result, baseline), changes: comparisonChanges(result, baseline),
-    sameExecution: result.project === baseline.project && result.runId === baseline.runId,
-    reports: { result: result.report?.id ?? null, baseline: baseline.report?.id ?? null },
-    subjectsChanged: canonical(result.subjects ?? []) !== canonical(baseline.subjects ?? []),
-    metrics: result.metrics.map(metric => {
-      const previous = baseline.metrics.find(item => item.id === metric.id);
-      const comparable = !!previous && previous.unit === metric.unit && (previous.direction ?? "none") === (metric.direction ?? "none");
-      return { id: metric.id, unit: metric.unit, comparable, value: metric.value, baseline: previous?.value ?? null,
-        delta: comparable && metric.value !== null && previous!.value !== null ? metric.value - previous!.value! : null };
+  const changes = comparisonChanges(result, baseline);
+  const compatible = changes.length === 0 && result.trial.status === "completed" && baseline.trial.status === "completed" && result.verification?.status === "completed" && baseline.verification?.status === "completed" && result.verifier_result.rewards !== null && baseline.verifier_result.rewards !== null;
+  return { compatible, changes, sameExecution: result.trial.workspace === baseline.trial.workspace && result.trial.id === baseline.trial.id,
+    verifications: { result: result.verification?.id ?? null, baseline: baseline.verification?.id ?? null },
+    subjectsChanged: canonical(result.trial.subjects) !== canonical(baseline.trial.subjects),
+    rewards: [...new Set([...Object.keys(result.verifier_result.rewards ?? {}), ...Object.keys(baseline.verifier_result.rewards ?? {})])].sort().map(key => {
+      const value = result.verifier_result.rewards?.[key] ?? null, previous = baseline.verifier_result.rewards?.[key] ?? null;
+      return { key, value, baseline: previous, delta: compatible && value !== null && previous !== null ? value - previous : null };
     }) };
 }

@@ -44,7 +44,7 @@ export function childTrace(parent: EventTrace = {}): EventTrace {
 export class EventLog {
   private sequence = 0;
   readonly archive?: JsonArchive;
-  constructor(readonly directory: string, readonly clock: Clock, workspace?: string, readonly diagnostics: DiagnosticsMode = "normal") {
+  constructor(readonly directory: string, readonly clock: Clock, workspace?: string, readonly diagnostics: DiagnosticsMode = "normal", private readonly sink?: RecordEvent, readonly flush: () => Promise<void> = async () => {}) {
     if (workspace) this.archive = new JsonArchive(workspace);
     else mkdirSync(join(directory, "payloads"), { recursive: true });
     mkdirSync(join(directory, "streams"), { recursive: true });
@@ -52,6 +52,7 @@ export class EventLog {
 
   readonly record: RecordEvent = (type, data, trace = {}, metadata = {}) => {
     if (metadata.channel === "diagnostic" && this.diagnostics !== "full") return;
+    if (this.sink) { this.sink(type, data, trace, metadata); return; }
     const seq = ++this.sequence;
     const at = new Date().toISOString(), atMs = this.clock.now();
     appendFileSync(join(this.directory, metadata.channel === "diagnostic" ? "diagnostics.jsonl" : "events.jsonl"), JSON.stringify({

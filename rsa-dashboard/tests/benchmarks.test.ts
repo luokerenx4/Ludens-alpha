@@ -1,622 +1,346 @@
-import {
-  projectResult,
-  type BenchmarkExecution,
-} from "../../rsa/src/benchmark/contract";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import {
-  mkdtemp,
-  mkdir,
-  writeFile,
-  realpath,
-  rm,
-  symlink,
-} from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, mkdir, writeFile, readFile, realpath, rm, symlink, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { catalog, selectRunEvents } from "../lib/data";
+import { trialSummary, type Trial, type Verification, type TaskDefinition, type EvidenceReference, type BenchmarkResult } from "../../rsa/src/benchmark/contract";
+import { readTask } from "../../rsa/src/benchmark/task";
+import { importLegacyTrial } from "../../rsa/src/benchmark/legacy-import";
+import { catalog, clearCatalogCache } from "../lib/data";
 import { initialSelection, latestGameRun } from "../lib/initial-selection";
-import type { Event, Manifest } from "../lib/types";
-import { benchmarkCatalog, benchmarkEvidence } from "../lib/benchmark-data";
-import {
-  benchmarkCommand,
-  benchmarkReportCommand,
-  benchmarkSelection,
-  displayCheckValue,
-  benchmarkRunUrl,
-  compareResults,
-  compatibleBaseline,
-  comparisonChanges,
-  definitionKey,
-  resultKey,
-  resultLabel,
-  type BenchmarkDefinition,
-  type BenchmarkResult,
-  type BenchmarkReport,
-} from "../lib/benchmarks";
+import { benchmarkAttachment, benchmarkCatalog, benchmarkEvidence } from "../lib/benchmark-data";
+import { benchmarkCommand, benchmarkVerifyCommand, benchmarkSelection, benchmarkRunUrl, compareResults, parseBenchmarkRequest, parseResultKey, resultKey, resultLabel, evidenceLabel } from "../lib/benchmarks";
+import type { Event } from "../lib/types";
 
-const definition = (
-  patch: Partial<BenchmarkDefinition> = {},
-): BenchmarkDefinition => ({
-  id: "ws-recovery",
-  title: "WS 到期恢复",
-  description: "恢复连接",
-  scope: "本地模拟传输",
-  revision: "2",
-  source: "builtin",
-  protocolVersion: "1",
-  parameters: {},
-  targets: [],
-  entry: { kind: "builtin", caseId: "ws-recovery" },
-  ...patch,
-});
-const result = (patch: Partial<BenchmarkResult> = {}): BenchmarkResult => {
-  const execution: BenchmarkExecution = {
-    schemaVersion: 3,
-    definition: definition(),
-    status: "completed",
-    startedAt: "2026-10-19T01:00:00Z",
-    endedAt: "2026-10-19T01:00:01Z",
-    durationMs: 1000,
-    runId: "new",
-    project: "ws-bench",
-    workspace: "/workspace",
-    trace: {},
-    parameters: { model: null, seconds: 180, maxRequests: 30, seed: 7 },
-    provenance: { code: null },
-    ...patch,
-  };
-  const checks = patch.checks ?? [
-    {
-      id: "recovery",
-      label: "恢复",
-      passed: false,
-      expected: "WS 恢复",
-      actual: "仍然 SSE",
-      evidenceSeq: [2, 9],
-    },
-  ];
-  const metrics = patch.metrics ?? [
-    { id: "requests", label: "请求数", value: null, unit: "次" },
-  ];
-  const report: BenchmarkReport = {
-    schemaVersion: 1,
-    id: "report-1",
-    runId: execution.runId,
-    createdAt: "2026-10-19T01:00:01Z",
-    previousReportId: null,
-    reason: "initial",
-    protocolVersion: execution.definition.protocolVersion,
-    raw: {
-      checks: Object.fromEntries(checks.map(({ id, ...value }) => [id, value])),
-      metrics: Object.fromEntries(
-        metrics.map(({ id, ...value }) => [id, value]),
-      ),
-    },
-    errors: [],
-    outcome: { checks, metrics },
-  };
-  return projectResult(execution, patch.reports ?? [report], patch.report?.id);
-};
-function executionOnly(value: BenchmarkResult): BenchmarkExecution {
-  const {
-    checks: _checks,
-    metrics: _metrics,
-    verdict: _verdict,
-    report: _report,
-    reports: _reports,
-    ...execution
-  } = value;
-  return execution;
+const json = (path: string, value: unknown) => writeFile(path, JSON.stringify(value));
+const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+const at = "2026-10-28T01:00:00.000Z";
+async function taskPackage(directory: string, name = "fixture/capability", extra = "") {
+  await mkdir(join(directory, "environment"), { recursive: true });
+  await mkdir(join(directory, "tests"), { recursive: true });
+  await writeFile(join(directory, "task.toml"), `schema_version = "1.4"\n[task]\nname = "${name}"\ndescription = "能力测试"\n${extra}`);
+  await writeFile(join(directory, "instruction.md"), "Measure a capability.");
+  await writeFile(join(directory, "tests/test.sh"), "touch MUST_NOT_EXECUTE\n");
+  return readTask(directory);
 }
 async function fixture() {
-  const temp = await mkdtemp(join(tmpdir(), "rsa-bench-dashboard-"));
-  const base = await realpath(temp),
-    root = join(base, "artifacts"),
-    workspace = join(base, "clean-workspace"),
-    directory = join(workspace, "logs/new");
+  const temporary = await mkdtemp(join(tmpdir(), "rsa-bench-dashboard-"));
+  const base = await realpath(temporary), root = join(base, "artifacts"), workspace = join(base, "workspace"), repository = join(base, "tasks");
   await mkdir(join(root, "ws-bench"), { recursive: true });
-  await mkdir(directory, { recursive: true });
-  await writeFile(
-    join(root, "ws-bench/workspace.json"),
-    JSON.stringify({ workspace }),
-  );
-  const save = async (value: BenchmarkResult) => {
-    const path = join(workspace, "logs", value.runId);
-    await mkdir(path, { recursive: true });
-    await writeFile(
-      join(path, "manifest.json"),
-      JSON.stringify({
-        kind: "benchmark",
-        model: null,
-        seconds: 180,
-        drivers: [],
-        benchmark: {
-          id: value.definition.id,
-          revision: value.definition.revision,
-          protocolVersion: value.definition.protocolVersion,
-        },
-      }),
-    );
-    await writeFile(
-      join(path, "benchmark.json"),
-      JSON.stringify({ ...executionOnly(value), workspace }),
-    );
-    await mkdir(join(path, "reports"), { recursive: true });
-    for (const report of value.reports)
-      await writeFile(
-        join(path, "reports", `${report.id}.json`),
-        JSON.stringify(report),
-      );
-    return path;
+  await mkdir(join(workspace, "logs"), { recursive: true });
+  await json(join(root, "ws-bench/workspace.json"), { workspace });
+  const task = await taskPackage(join(repository, "capability"));
+  const make = (id = "run-010", patch: Partial<Trial> = {}): Trial => ({
+    schemaVersion: 1, id, runId: id, task: { name: task.name, digest: task.digest }, project: "ws-bench", workspace,
+    status: "completed", startedAt: at, endedAt: "2026-10-28T01:00:01.000Z", durationMs: 1000,
+    parameters: { seed: 7 }, conditions: { backend: "native" }, subjects: [{ id: "capability", revision: "v1" }], evidence: [], ...patch,
+  });
+  const save = async (trial: Trial) => {
+    const directory = join(workspace, "logs", trial.runId);
+    await mkdir(directory, { recursive: true });
+    await json(join(directory, "manifest.json"), { runId: trial.runId, kind: "benchmark", model: null, seconds: 1, drivers: [], benchmark: trial.task, workspace });
+    await json(join(directory, "trial.json"), trial);
+    await json(join(directory, "trial-summary.json"), trialSummary(trial));
+    clearCatalogCache();
+    return directory;
   };
-  await save(result());
-  await writeFile(
-    join(directory, "events.jsonl"),
-    [
-      {
-        seq: 1,
-        type: "control",
-        trace: { epoch: "first" },
-        data: { mode: "auto" },
-      },
-      {
-        seq: 2,
-        type: "model_end",
-        trace: { epoch: "first", modelCallId: "call" },
-        data: { stopReason: "error" },
-      },
-      { seq: 3, type: "unrelated", trace: {}, data: { text: "not evidence" } },
-    ]
-      .map((event) => JSON.stringify(event))
-      .join("\n") + "\n",
-  );
-  const definitions = [
-    definition(),
-    definition({ id: "capability-reuse", title: "能力复用" }),
-  ];
-  return {
-    base,
-    root,
-    workspace,
-    directory,
-    definitions,
-    save,
-    cleanup: () => rm(temp, { recursive: true, force: true }),
+  const verify = async (trial: Trial, id = "verify-010", patch: Partial<Verification> = {}, rewards: Record<string, number> = { success: 0 }) => {
+    const verification: Verification = { schemaVersion: 1, id, trialId: trial.id, task: trial.task, status: "completed", startedAt: at, endedAt: "2026-10-28T01:00:02.000Z", reason: "initial", evidence: [], reward: { file: "reward.json", sha256: hash(JSON.stringify(rewards)) }, ...patch };
+    const directory = join(workspace, "logs", trial.id, "verifier", id);
+    await mkdir(directory, { recursive: true });
+    await json(join(directory, "verification.json"), verification);
+    await json(join(directory, "reward.json"), rewards);
+    return verification;
   };
+  return { base, root, workspace, repository, task, make, save, verify, cleanup: () => rm(temporary, { recursive: true, force: true }) };
 }
 
-test("unified catalog preserves execution/check distinction and does not inspect game sidecars", async () => {
+test("catalog discovers task packages without executing author programs, and keeps unsupported requirements explicit", async () => {
   const f = await fixture();
   try {
-    const game = join(f.workspace, "logs/game");
-    await mkdir(game);
-    await writeFile(
-      join(game, "manifest.json"),
-      JSON.stringify({ model: "model", drivers: [], seconds: 20 }),
-    );
-    await writeFile(join(game, "benchmark.json"), "invalid");
-    const data = await benchmarkCatalog(f.root, f.definitions);
-    assert.equal(data.benchmarks.length, 2);
-    assert.equal(data.results.length, 1);
-    assert.equal(data.results[0].status, "completed");
-    assert.equal(data.results[0].verdict, "failed");
-    assert.equal(data.results[0].checks[0].passed, false);
-    assert.equal(data.results[0].metrics[0].value, null);
-    assert.deepEqual(data.issues, []);
-    await writeFile(
-      join(f.directory, "benchmark.json"),
-      JSON.stringify({
-        ...executionOnly(result({ project: "another-workspace" })),
-        workspace: f.workspace,
-      }),
-    );
-    const invalid = await benchmarkCatalog(f.root, f.definitions);
-    assert.equal(invalid.results.length, 0);
-    assert.match(invalid.issues[0].error, /身份/);
-  } finally {
-    await f.cleanup();
-  }
+    await taskPackage(join(f.workspace, "benchmarks/tasks/custom"), "workspace/custom", "[environment]\ndocker_image = 'image:tag'\n");
+    await mkdir(join(f.workspace, "benchmarks/tasks/broken"), { recursive: true });
+    await writeFile(join(f.workspace, "benchmarks/tasks/broken/task.toml"), "not toml");
+    await f.save(f.make());
+    const page = await benchmarkCatalog({}, f.root, f.repository);
+    assert.equal(page.project, "ws-bench");
+    assert.deepEqual(page.tasks.map(task => [task.name, task.source]), [["fixture/capability", "repository"], ["workspace/custom", "workspace"]]);
+    assert.ok(page.tasks[1].unsupportedRequirements.includes("environment.docker_image"));
+    assert.equal(page.issues.length, 1);
+    assert.equal(page.history.trials.length, 1);
+    assert.equal("verifier_result" in page.history.trials[0], false);
+    await assert.rejects(access(join(f.repository, "capability/MUST_NOT_EXECUTE")));
+  } finally { await f.cleanup(); }
 });
 
-test("many evaluations share a workspace and metrics-only completion has no invented verdict", async () => {
+test("history is paged from summaries without reading full trial or reward payloads", async () => {
   const f = await fixture();
   try {
-    const measured = result({
-      runId: "z-second",
-      parentRunId: "game",
-      checks: [],
-      verdict: null,
-      metrics: [{ id: "latency", value: 23, unit: "ms", direction: "lower" }],
-    });
-    await f.save(measured);
-    await f.save(
-      result({
-        runId: "z-third",
-        status: "error",
-        verdict: null,
-        checks: [],
-        error: "sample unavailable",
-      }),
-    );
-    const data = await benchmarkCatalog(f.root, f.definitions);
-    assert.equal(data.results.length, 3);
-    const found = data.results.find((item) => item.runId === measured.runId)!;
-    assert.equal(found.parentRunId, "game");
-    assert.equal(resultLabel(found), "已完成");
-    assert.equal(resultKey(found), "ws-bench/z-second");
-    assert.equal(
-      resultLabel(data.results.find((item) => item.runId === "z-third")!),
-      "执行异常",
-    );
-  } finally {
-    await f.cleanup();
-  }
+    for (let i = 0; i < 32; i++) {
+      const trial = f.make(`run-${String(i).padStart(3, "0")}`);
+      const directory = await f.save(trial);
+      await writeFile(join(directory, "trial.json"), "deliberately invalid full detail");
+      await mkdir(join(directory, "verifier/broken"), { recursive: true });
+      await writeFile(join(directory, "verifier/broken/reward.json"), "invalid reward");
+    }
+    const first = await benchmarkCatalog({ project: "ws-bench", limit: 25 }, f.root, f.repository);
+    assert.equal(first.history.trials.length, 25);
+    assert.equal(first.history.trials[0].id, "run-031");
+    assert.equal(first.history.nextCursor, "run-007");
+    const second = await benchmarkCatalog({ project: "ws-bench", cursor: first.history.nextCursor, limit: 25 }, f.root, f.repository);
+    assert.deepEqual(second.history.trials.map(trial => trial.id), ["run-006", "run-005", "run-004", "run-003", "run-002", "run-001", "run-000"]);
+    assert.equal(second.history.nextCursor, undefined);
+    assert.equal(first.history.issues.length, 0);
+    await assert.rejects(benchmarkEvidence("ws-bench", "run-000", {}, f.root), /JSON|Unexpected/);
+  } finally { await f.cleanup(); }
 });
 
-test("snapshots list never-run workspace definitions and retain deleted definitions from results", async () => {
+test("selected historical execution remains readable without a current task or live Host", async () => {
   const f = await fixture();
   try {
-    const workspaceDefinition = definition({
-      id: "python/evaluate.py:score",
-      source: "workspace",
-      revision: "source-hash",
-      targets: ["python/vision.py:locate"],
-      entry: {
-        kind: "python",
-        path: "evaluate.py",
-        function: "score",
-        codeSHA: "source-hash",
-      },
-    });
-    const neverRunWorkspace = join(f.base, "never-run");
-    await mkdir(join(neverRunWorkspace, "logs"), { recursive: true });
-    await mkdir(join(f.root, "ws-never"));
-    await writeFile(
-      join(f.root, "ws-never/workspace.json"),
-      JSON.stringify({ workspace: neverRunWorkspace }),
-    );
-    await writeFile(
-      join(neverRunWorkspace, "logs/benchmarks-catalog.json"),
-      JSON.stringify({ benchmarks: [workspaceDefinition], diagnostics: [] }),
-    );
-    await f.save(result({ definition: workspaceDefinition }));
-    const data = await benchmarkCatalog(f.root, f.definitions);
-    const current = data.benchmarks.find(
-      (item) => item.key === definitionKey(workspaceDefinition, "ws-never"),
-    )!;
-    const historical = data.benchmarks.find(
-      (item) => item.key === definitionKey(workspaceDefinition, "ws-bench"),
-    )!;
-    assert.equal(current.available, true);
-    assert.equal(current.workspace, neverRunWorkspace);
-    assert.equal(historical.available, false);
-    assert.deepEqual(
-      historical.definition.targets,
-      workspaceDefinition.targets,
-    );
-    assert.match(
-      benchmarkCommand(current),
-      /--workspace .* bench run 'python\/evaluate.py:score'/,
-    );
-    assert.deepEqual(data.issues, []);
-  } finally {
-    await f.cleanup();
-  }
+    const trial = f.make("old-trial", { selectedVerificationId: "verify-010" });
+    await f.save(trial); await f.verify(trial);
+    await rm(f.repository, { recursive: true });
+    const list = await benchmarkCatalog({ taskName: trial.task.name }, f.root, f.repository);
+    assert.equal(list.tasks.length, 0);
+    assert.equal(list.history.trials[0].id, trial.id);
+    const proof = await benchmarkEvidence("ws-bench", trial.id, {}, f.root);
+    assert.equal(proof.result.trial.status, "completed");
+    assert.deepEqual(proof.result.verifier_result.rewards, { success: 0 });
+    assert.equal(resultLabel(proof.result), "执行完成 · 评分完成");
+    assert.equal("verdict" in proof.result, false);
+  } finally { await f.cleanup(); }
 });
 
-test("old, mismatched and corrupt results are isolated as issues", async () => {
+test("verification pagination and explicit selection never mix stale scores into a failed re-verification", async () => {
   const f = await fixture();
   try {
-    const old = await f.save(result({ runId: "old" }));
-    await writeFile(
-      join(old, "benchmark.json"),
-      JSON.stringify({ schemaVersion: 1 }),
-    );
-    const broken = await f.save(result({ runId: "broken" }));
-    await writeFile(join(broken, "benchmark.json"), "{unfinished");
-    const mismatch = await f.save(result({ runId: "mismatch" }));
-    await writeFile(
-      join(mismatch, "benchmark.json"),
-      JSON.stringify({
-        ...executionOnly(
-          result({
-            runId: "mismatch",
-            definition: definition({ revision: "other" }),
-          }),
-        ),
-        workspace: f.workspace,
-      }),
-    );
-    await writeFile(
-      join(f.workspace, "logs/benchmarks-catalog.json"),
-      JSON.stringify({
-        benchmarks: [],
-        diagnostics: [{ path: "bad.py", message: "unsupported declaration" }],
-      }),
-    );
-    const data = await benchmarkCatalog(f.root, f.definitions);
-    assert.equal(data.results.length, 1);
-    assert.equal(data.issues.length, 4);
-    assert.ok(data.issues.some((issue) => issue.error.includes("manifest")));
-    assert.ok(
-      data.issues.some((issue) =>
-        issue.error.includes("unsupported declaration"),
-      ),
-    );
-  } finally {
-    await f.cleanup();
-  }
+    const trial = f.make("run-010", { selectedVerificationId: "verify-012" });
+    await f.save(trial);
+    for (let i = 0; i <= 12; i++) await f.verify(trial, `verify-${String(i).padStart(3, "0")}`, i === 12 ? { status: "error", error: { code: "INVALID_REWARD", message: "invalid output" } } : {}, { success: i });
+    const latest = await benchmarkEvidence("ws-bench", trial.id, {}, f.root);
+    assert.equal(latest.result.trial.status, "completed");
+    assert.equal(latest.result.verification?.status, "error");
+    assert.equal(latest.result.verifier_result.rewards, null);
+    assert.equal(resultLabel(latest.result), "执行完成 · 评分异常");
+    assert.equal(latest.verifications.verifications.length, 10);
+    assert.equal(latest.verifications.nextCursor, "verify-003");
+    const pinned = await benchmarkEvidence("ws-bench", trial.id, { verification: "verify-001", verificationCursor: latest.verifications.nextCursor }, f.root);
+    assert.equal(pinned.result.verification?.id, "verify-001");
+    assert.deepEqual(pinned.result.verifier_result.rewards, { success: 1 });
+    assert.equal(pinned.verifications.verifications.length, 3);
+    assert.equal(pinned.verifications.nextCursor, undefined);
+  } finally { await f.cleanup(); }
 });
 
-test("evidence resolves committed events, exposes missing sequences and rejects symlink escape", async () => {
+test("unscored, cancelled and execution-error trials do not acquire scores from old output files", async () => {
   const f = await fixture();
   try {
-    await writeFile(join(f.directory, "events.jsonl"), '{"seq":9', { flag: "a" });
-    const evidence = await benchmarkEvidence("ws-bench", "new", f.root);
-    assert.deepEqual(
-      evidence.events.map((event) => event.seq),
-      [2],
-    );
-    assert.deepEqual(evidence.missingSeq, [9]);
-    assert.equal(evidence.epoch, "first");
-    const url = new URL(
-      benchmarkRunUrl(
-        evidence.result,
-        evidence.events[0].trace.epoch,
-        evidence.events[0],
-      ),
-      "http://localhost",
-    );
-    assert.equal(url.searchParams.get("project"), "ws-bench");
-    assert.equal(url.searchParams.get("run"), "new");
-    assert.equal(url.searchParams.get("epoch"), "first");
-    assert.equal(url.searchParams.get("call"), "call");
-    assert.equal(url.searchParams.get("bench"), null);
-    await assert.rejects(
-      benchmarkEvidence("../ws-bench", "new", f.root),
-      /无效/,
-    );
-    await rm(join(f.directory, "benchmark.json"));
-    const external = join(f.base, "outside.json");
-    await writeFile(external, JSON.stringify(result()));
-    await symlink(external, join(f.directory, "benchmark.json"));
-    await assert.rejects(
-      benchmarkEvidence("ws-bench", "new", f.root),
-      /workspace logs/,
-    );
-  } finally {
-    await f.cleanup();
-  }
+    for (const status of ["completed", "cancelled", "error"] as const) {
+      const trial = f.make(status, { status, ...(status === "error" ? { error: { code: "EXECUTION", message: "program failed" } } : {}) });
+      await f.save(trial); await f.verify(trial, "unselected");
+      const proof = await benchmarkEvidence("ws-bench", status, {}, f.root);
+      assert.equal(proof.result.verification, null);
+      assert.equal(proof.result.verifier_result.rewards, null);
+      assert.equal(proof.result.trial.status, status);
+      assert.equal(proof.verifications.verifications.length, 1);
+    }
+  } finally { await f.cleanup(); }
 });
 
-test("shared comparison reports condition/subject changes and rejects metric unit/direction deltas", () => {
-  const current = result({
-    metrics: [
-      { id: "accuracy", value: 0.9, unit: "ratio", direction: "higher" },
-    ],
-    subjects: [{ id: "model", sha256: "new" }],
-  });
-  const baseline = result({
-    runId: "old",
-    metrics: [
-      { id: "accuracy", value: 0.8, unit: "ratio", direction: "higher" },
-    ],
-    subjects: [{ id: "model", sha256: "old" }],
-  });
-  assert.equal(compatibleBaseline(current, baseline), true);
-  assert.deepEqual(comparisonChanges(current, baseline), []);
-  const compared = compareResults(current, baseline);
-  assert.equal(compared.subjectsChanged, true);
-  assert.ok(compared.metrics[0].delta! > 0.09);
-  const changed = result({
-    definition: definition({ revision: "3", protocolVersion: "2" }),
-    parameters: {},
-    conditions: { dataset: "other" },
-  });
-  assert.equal(compatibleBaseline(current, changed), false);
-  assert.deepEqual(comparisonChanges(current, changed), [
-    "评测口径",
-    "参数",
-    "评测条件",
-  ]);
-  for (const metric of [
-    { id: "accuracy", value: 80, unit: "%", direction: "higher" as const },
-    { id: "accuracy", value: 0.8, unit: "ratio", direction: "lower" as const },
-  ]) {
-    const comparison = compareResults(current, result({ metrics: [metric] }));
-    assert.equal(comparison.metrics[0].delta, null);
-    assert.equal(comparison.metrics[0].comparable, false);
-  }
-});
-
-test("newer benchmark runs do not replace the latest game selection", async () => {
+test("workspace and manifest identity checks reject foreign summaries and detail paths", async () => {
   const f = await fixture();
   try {
-    const game = join(f.workspace, "logs/game");
-    await mkdir(game);
-    await writeFile(
-      join(game, "manifest.json"),
-      JSON.stringify({ model: "model", drivers: [], seconds: 20 }),
-    );
+    await f.save(f.make("wrong-project", { project: "foreign" }));
+    const mismatch = f.make("wrong-task");
+    const directory = await f.save(mismatch);
+    await json(join(directory, "manifest.json"), { kind: "benchmark", benchmark: { name: "other/task", digest: mismatch.task.digest }, drivers: [] });
+    const list = await benchmarkCatalog({}, f.root, f.repository);
+    assert.equal(list.history.trials.length, 0);
+    assert.equal(list.history.issues.length, 2);
+    await assert.rejects(benchmarkEvidence("ws-bench", "wrong-project", {}, f.root), /身份不一致/);
+    await assert.rejects(benchmarkEvidence("ws-bench", "wrong-task", {}, f.root), /身份不一致/);
+    await assert.rejects(benchmarkEvidence("ws-bench", "../outside", {}, f.root), /无效/);
+    const outside = join(f.base, "outside"); await mkdir(outside);
+    await symlink(outside, join(f.workspace, "logs/linked"));
+    await assert.rejects(benchmarkEvidence("ws-bench", "linked", {}, f.root), /运行目录/);
+  } finally { await f.cleanup(); }
+});
+
+test("evidence resolves only a bounded page of originals, preserving missing and changed-file diagnostics", async () => {
+  const f = await fixture();
+  try {
+    const references: EvidenceReference[] = Array.from({ length: 27 }, (_, i) => ({ kind: "file", path: `evidence-${i}.txt`, sha256: hash(`payload-${i}`) }));
+    const trial = f.make("run-010", { evidence: references });
+    const directory = await f.save(trial);
+    for (let i = 0; i < 27; i++) if (i !== 25) await writeFile(join(directory, `evidence-${i}.txt`), i === 26 ? "changed" : `payload-${i}`);
+    const first = await benchmarkEvidence("ws-bench", trial.id, {}, f.root);
+    assert.equal(first.evidence.items.length, 25);
+    assert.ok(first.evidence.items.every(item => item.available));
+    assert.equal(first.evidence.nextCursor, "25");
+    const second = await benchmarkEvidence("ws-bench", trial.id, { evidenceCursor: "25" }, f.root);
+    assert.equal(second.evidence.items.length, 2);
+    assert.ok(second.evidence.items.every(item => !item.available));
+    assert.match(second.evidence.items[1].error!, /hash mismatch/);
+    assert.equal(second.evidence.nextCursor, undefined);
+    await assert.rejects(benchmarkEvidence("ws-bench", trial.id, { evidenceCursor: "-1" }, f.root), /无效/);
+    await assert.rejects(benchmarkEvidence("ws-bench", trial.id, {}, f.root, AbortSignal.abort()), /abort/i);
+  } finally { await f.cleanup(); }
+});
+
+test("timeline gaps and escaping evidence remain unavailable without capturing replacements", async () => {
+  const f = await fixture();
+  try {
+    const video = { pts: 100, timeBase: [1, 1000] as [number, number], width: 400, height: 240 };
+    const references: EvidenceReference[] = [
+      { kind: "timeline", timeline: { asset: "video/abc.mp4", video } },
+      { kind: "timeline", timeline: { asset: "video/gap-abc.mp4", video: { ...video, status: "gap", reason: "encoder busy" } } },
+      { kind: "timeline", timeline: { asset: "video/def.mp4", video } },
+      { kind: "file", path: "escape", sha256: hash("outside") },
+    ];
+    const trial = f.make("run-010", { evidence: references });
+    const directory = await f.save(trial), timeline = join(f.workspace, ".rsa/timeline");
+    await mkdir(join(timeline, "video"), { recursive: true });
+    await writeFile(join(timeline, "video/abc.mp4"), "fixture bytes");
+    await json(join(timeline, "video/abc.mp4.json"), { status: "ready" });
+    await json(join(timeline, "video/def.mp4.json"), { status: "writing" });
+    await writeFile(join(f.base, "outside"), "outside");
+    await symlink(join(f.base, "outside"), join(directory, "escape"));
+    const proof = await benchmarkEvidence("ws-bench", trial.id, {}, f.root);
+    assert.deepEqual(proof.evidence.items.map(item => item.available), [true, false, false, false]);
+    assert.match(proof.evidence.items[1].error!, /Recording gap.*encoder busy/);
+    assert.match(proof.evidence.items[2].error!, /not ready/);
+    assert.match(proof.evidence.items[3].error!, /escapes/);
+    await assert.rejects(access(join(timeline, "video/gap-abc.mp4")));
+    await assert.rejects(access(join(timeline, "video/def.mp4")));
+  } finally { await f.cleanup(); }
+});
+
+test("diagnostic attachments load only by registered index with a bounded text preview", async () => {
+  const f = await fixture();
+  try {
+    const large = "x".repeat(300 * 1024), references: EvidenceReference[] = [
+      { kind: "file", path: "details.json", sha256: hash('{"check":false}') },
+      { kind: "file", path: "large.txt", sha256: hash(large) },
+      { kind: "file", path: "binary", sha256: hash("a\0b") },
+    ];
+    const trial = f.make("run-010", { evidence: references });
+    const directory = await f.save(trial);
+    await writeFile(join(directory, "details.json"), '{"check":false}');
+    await writeFile(join(directory, "large.txt"), large);
+    await writeFile(join(directory, "binary"), "a\0b");
+    const preview = await benchmarkAttachment("ws-bench", trial.id, 0, undefined, f.root);
+    assert.equal(preview.text, '{"check":false}'); assert.equal(preview.truncated, false);
+    const truncated = await benchmarkAttachment("ws-bench", trial.id, 1, undefined, f.root);
+    assert.equal(truncated.text.length, 256 * 1024); assert.equal(truncated.truncated, true);
+    await assert.rejects(benchmarkAttachment("ws-bench", trial.id, 2, undefined, f.root), /二进制/);
+    await assert.rejects(benchmarkAttachment("ws-bench", trial.id, 999, undefined, f.root), /引用/);
+    await assert.rejects(benchmarkAttachment("ws-bench", trial.id, -1, undefined, f.root), /序号/);
+    await writeFile(join(directory, "details.json"), "changed");
+    await assert.rejects(benchmarkAttachment("ws-bench", trial.id, 0, undefined, f.root), /hash mismatch/);
+    assert.deepEqual(parseBenchmarkRequest(new URLSearchParams("project=ws-bench&run=run-010&attachment=1&verification=v1")), { kind: "attachment", project: "ws-bench", run: "run-010", index: 1, verification: "v1" });
+    for (const query of ["attachment=0", "project=ws-bench&run=run-010&attachment=-1", "project=ws-bench&run=run-010&attachment=1.5"]) assert.throws(() => parseBenchmarkRequest(new URLSearchParams(query)));
+  } finally { await f.cleanup(); }
+});
+
+test("evidence keeps source event identity distinct from a colliding run-local sequence", async () => {
+  const f = await fixture();
+  try {
+    const references: EvidenceReference[] = [{ kind: "event", runId: "run-010", seq: 2 }, { kind: "event", runId: "run-010", eventId: "service:2" }, { kind: "event", runId: "run-010", eventId: "service:99" }];
+    const trial = f.make("run-010", { evidence: references });
+    const directory = await f.save(trial), source = join(f.base, "device-source");
+    await mkdir(join(source, "events"), { recursive: true });
+    await json(join(source, "source.json"), { sourceId: "service", format: "baseware-events-v1" });
+    await writeFile(join(source, "events/2026-10-28-2.jsonl"), JSON.stringify({ seq: 2, at, atMs: Date.parse(at), type: "action_end", trace: { recordingId: trial.id, epoch: "first" }, data: { status: "completed" }, origin: { eventId: "service:2", clockId: "service", seq: 2 } }) + "\n");
+    await json(join(directory, "manifest.json"), { kind: "benchmark", benchmark: trial.task, drivers: [], eventSources: [{ sourceId: "service", root: source, format: "baseware-events-v1", recordingId: trial.id, windows: [] }] });
+    await writeFile(join(directory, "events.jsonl"), JSON.stringify({ seq: 2, at, type: "model_end", trace: { epoch: "first", modelCallId: "call" }, data: {} }) + "\n");
+    const proof = await benchmarkEvidence("ws-bench", trial.id, {}, f.root);
+    assert.deepEqual(proof.evidence.items.map(item => [item.available, item.event?.type]), [[true, "model_end"], [true, "action_end"], [false, undefined]]);
+    assert.match(benchmarkRunUrl(trial, proof.evidence.items[0].event), /call=call/);
+  } finally { await f.cleanup(); }
+});
+
+test("benchmark history does not replace a game run or Alice initial selection", async () => {
+  const f = await fixture();
+  try {
+    await f.save(f.make("z-benchmark"));
+    const directory = join(f.workspace, "logs/a-game"); await mkdir(directory);
+    await json(join(directory, "manifest.json"), { model: "game-model", seconds: 1800, drivers: [] });
+    clearCatalogCache();
     const projects = await catalog(f.root);
-    assert.equal(projects[0].runs[0].kind, "benchmark");
-    assert.equal(latestGameRun(projects[0])?.id, "game");
-    assert.deepEqual(initialSelection("?project=ws-bench", projects), {
-      project: "ws-bench",
-      run: "",
-      epoch: "",
-    });
-    assert.equal(
-      initialSelection("?project=ws-bench&run=new", projects).run,
-      "new",
-    );
-  } finally {
-    await f.cleanup();
-  }
+    assert.equal(latestGameRun(projects[0])?.id, "a-game");
+    assert.deepEqual(initialSelection("", projects), { project: "ws-bench", run: "", epoch: "" });
+    assert.equal(initialSelection("?project=ws-bench&run=z-benchmark", projects).run, "z-benchmark");
+  } finally { await f.cleanup(); }
 });
 
-test("trace epochs remain inspectable without fabricating takeover cycles", async () => {
-  const events: Event[] = [
-    {
-      seq: 1,
-      at: "2026-10-19T01:00:00Z",
-      atMs: 0,
-      type: "model_start",
-      trace: { epoch: "fixture", modelCallId: "call" },
-      data: {},
-    },
-  ];
-  const manifest = {
-    kind: "benchmark",
-    benchmark: { id: "ws-recovery", revision: "2", protocolVersion: "1" },
-  } as Manifest;
-  const scope = selectRunEvents(manifest, events);
-  assert.equal(scope.selectedEpoch, null);
-  assert.deepEqual(scope.cycles, []);
-  assert.deepEqual(scope.events, events);
-  assert.deepEqual(selectRunEvents({} as Manifest, events).events, []);
-  assert.throws(() => selectRunEvents(manifest, events, "fixture"), /周期/);
+test("comparison retains verifier and conditions identity and labels a re-score as the same execution", async () => {
   const f = await fixture();
   try {
-    await writeFile(
-      join(f.directory, "events.jsonl"),
-      JSON.stringify({ ...events[0], seq: 2 }) + "\n",
-    );
-    const proof = await benchmarkEvidence("ws-bench", "new", f.root);
-    assert.equal(proof.epoch, null);
-    assert.deepEqual(proof.epochs, []);
-    assert.equal(proof.events[0].trace.epoch, "fixture");
-  } finally {
-    await f.cleanup();
-  }
+    const trial = f.make();
+    const verification = await f.verify(trial);
+    const baseline: BenchmarkResult = { trial, verification, verifier_result: { rewards: { quality: 0, latency: 10 } } };
+    const result: BenchmarkResult = { trial: { ...trial, subjects: [{ id: "capability", revision: "v2" }] }, verification: { ...verification, id: "verify-011" }, verifier_result: { rewards: { quality: 1 } } };
+    const comparison = compareResults(result, baseline);
+    assert.equal(comparison.sameExecution, true);
+    assert.equal(comparison.subjectsChanged, true);
+    assert.equal(comparison.compatible, true);
+    assert.deepEqual(comparison.verifications, { result: "verify-011", baseline: "verify-010" });
+    assert.deepEqual(comparison.rewards, [{ key: "latency", value: null, baseline: 10, delta: null }, { key: "quality", value: 1, baseline: 0, delta: 1 }]);
+    const changed = compareResults({ ...result, trial: { ...trial, conditions: { backend: "different" } } }, baseline);
+    assert.equal(changed.compatible, false); assert.deepEqual(changed.changes, ["conditions"]); assert.ok(changed.rewards.every(item => item.delta === null));
+    assert.equal(compareResults({ ...result, verification: null, verifier_result: { rewards: null } }, baseline).compatible, false);
+  } finally { await f.cleanup(); }
 });
 
-test("report revisions preserve trial count, latest invalid report is visible, and links pin both versions", async () => {
+test("one-time legacy import preserves a fixed report link without a query-time legacy adapter", async () => {
   const f = await fixture();
   try {
-    const original = result();
-    const valid = original.report!;
-    const invalid: BenchmarkReport = {
-      ...valid,
-      id: "report-2",
-      createdAt: "2026-10-19T01:00:02Z",
-      previousReportId: valid.id,
-      reason: "bad revision",
-      raw: { metrics: { latency: { value: "bad" } } },
-      errors: [
-        {
-          path: "metrics.latency.value",
-          message: "expected finite number or null",
-        },
-      ],
-      outcome: null,
-    };
-    await writeFile(
-      join(f.directory, "reports/report-2.json"),
-      JSON.stringify(invalid),
-    );
-    const data = await benchmarkCatalog(f.root, f.definitions);
-    assert.equal(data.results.length, 1);
-    assert.equal(data.results[0].reports.length, 2);
-    assert.equal(data.results[0].status, "completed");
-    assert.equal(data.results[0].report?.id, "report-2");
-    assert.equal(data.results[0].verdict, null);
-    assert.equal(data.results[0].checks.length, 0);
-    assert.equal(
-      data.results[0].report?.errors[0].path,
-      "metrics.latency.value",
-    );
-    const pinned = await benchmarkEvidence(
-      "ws-bench",
-      "new",
-      f.root,
-      "report-1",
-    );
-    assert.equal(pinned.result.verdict, "failed");
-    assert.deepEqual(
-      pinned.events.map((event) => event.seq),
-      [2],
-    );
-    await assert.rejects(
-      benchmarkEvidence("ws-bench", "new", f.root, "not-found"),
-      /report not found/,
-    );
-    const baseline = result({ runId: "old", report: undefined });
-    const selection = benchmarkSelection(pinned.result, baseline);
-    assert.equal(selection.report, "report-1");
-    assert.equal(selection.baselineReport, "report-1");
-    const compared = compareResults(pinned.result, baseline);
-    assert.deepEqual(compared.reports, {
-      result: "report-1",
-      baseline: "report-1",
-    });
-    assert.equal(compared.sameExecution, false);
-    const revisionComparison = compareResults(pinned.result, data.results[0]);
-    assert.equal(revisionComparison.sameExecution, true);
-    assert.deepEqual(revisionComparison.reports, {
-      result: "report-1",
-      baseline: "report-2",
-    });
-    assert.equal(revisionComparison.compatible, false);
-    assert.match(
-      benchmarkReportCommand(pinned.result),
-      /bench report 'new' --file report.json/,
-    );
-  } finally {
-    await f.cleanup();
-  }
+    const runId = "legacy-run", directory = join(f.workspace, "logs", runId);
+    await mkdir(join(directory, "reports"), { recursive: true });
+    await json(join(directory, "manifest.json"), { kind: "benchmark", benchmark: { id: "legacy", revision: "1", protocolVersion: "1" }, drivers: [] });
+    await json(join(directory, "benchmark.json"), { schemaVersion: 3, runId, project: "ws-bench", workspace: f.workspace, status: "completed", startedAt: at, endedAt: at,
+      definition: { id: "legacy", revision: "1", protocolVersion: "1" } });
+    const report = { schemaVersion: 1, id: "report-1", runId, createdAt: at, reason: "manual revision", previousReportId: null, protocolVersion: "1",
+      outcome: { metrics: [{ id: "latency", value: 12 }], checks: [{ id: "goal", passed: false }] } };
+    await json(join(directory, "reports/report-1.json"), report);
+    const source = await readFile(join(directory, "reports/report-1.json"), "utf8");
+    await importLegacyTrial(f.workspace, runId);
+    clearCatalogCache();
+    const request = parseBenchmarkRequest(new URLSearchParams(`project=ws-bench&run=${runId}&report=report-1`));
+    assert.equal(request.kind, "detail"); if (request.kind !== "detail") return;
+    const proof = await benchmarkEvidence(request.project, request.run, request.query, f.root);
+    assert.equal(proof.result.verification?.id, "report-1");
+    assert.deepEqual(proof.result.verifier_result.rewards, { latency: 12 });
+    assert.equal(proof.result.trial.legacy?.originalId, "legacy");
+    assert.ok(proof.evidence.items.some(item => item.reference.kind === "file" && item.reference.path === "reports/report-1.json" && item.available));
+    assert.equal(await readFile(join(directory, "reports/report-1.json"), "utf8"), source);
+    const list = await benchmarkCatalog({}, f.root, f.repository);
+    assert.equal(list.history.trials[0].id, runId);
+  } finally { await f.cleanup(); }
 });
 
-test("load failure and missing logs do not become offline mode or a passing verdict", async () => {
+test("request and link helpers preserve explicit verification selections and reject ambiguous requests", async () => {
   const f = await fixture();
   try {
-    await f.save(
-      result({
-        status: "error",
-        error: "ImportError: missing_dependency",
-        errorPhase: "load",
-        checks: [{ id: "ok", label: "ok", passed: true, evidenceSeq: [] }],
-      }),
-    );
-    await rm(join(f.directory, "events.jsonl"));
-    const proof = await benchmarkEvidence("ws-bench", "new", f.root);
-    assert.equal(proof.result.errorPhase, "load");
-    assert.equal(proof.result.report?.outcome?.checks[0].passed, true);
-    assert.equal(proof.result.verdict, null);
-    assert.equal(proof.logAvailable, false);
-    assert.deepEqual(proof.events, []);
-    assert.equal("mode" in proof.result.definition, false);
-    assert.equal(displayCheckValue({ count: 3 }), '{"count":3}');
-    assert.equal(displayCheckValue(null), "null");
-    assert.equal(displayCheckValue(undefined), "未提供");
-    assert.doesNotMatch(
-      benchmarkCommand({
-        key: "builtin/ws-recovery",
-        definition: definition(),
-        available: true,
-      }),
-      /--live/,
-    );
-  } finally {
-    await f.cleanup();
-  }
-});
-
-test("benchmark source identities distinguish colliding service seqs from local numeric evidence", async () => {
-  const f = await fixture();
-  try {
-    await f.save(result({ checks: [{ id: "source", label: "source", passed: true, evidenceSeq: [2, 9], evidenceEvents: ["service:2", "service:9", "service:missing"] }] }));
-    const source = join(f.base, "device-source"); await mkdir(join(source, "events"), { recursive: true });
-    await writeFile(join(source, "source.json"), JSON.stringify({ sourceId: "service", format: "baseware-events-v1" }));
-    await writeFile(join(source, "events", "2026-10-27-2.jsonl"), [2, 9].map(seq => JSON.stringify({ seq, at: new Date(seq * 1000).toISOString(), atMs: seq * 1000,
-      type: "action_end", trace: { recordingId: "new", epoch: "first" }, data: { status: "completed" },
-      origin: { eventId: `service:${seq}`, clockId: "service", seq } })).join("\n") + "\n");
-    await writeFile(join(f.directory, "manifest.json"), JSON.stringify({ kind: "benchmark", eventSources: [{ sourceId: "service", root: source,
-      format: "baseware-events-v1", recordingId: "new", windows: [] }] }));
-    const proof = await benchmarkEvidence("ws-bench", "new", f.root);
-    assert.equal(proof.events[0].type, "model_end");
-    assert.deepEqual(proof.events.slice(1).map(event => event.origin?.eventId), ["service:2", "service:9"]);
-    assert.deepEqual(proof.missingSeq, [9]); assert.deepEqual(proof.missingEvents, ["service:missing"]);
+    const trial = f.make(); const verification = await f.verify(trial);
+    const result: BenchmarkResult = { trial, verification, verifier_result: { rewards: {} } };
+    assert.equal(resultKey(trial), "ws-bench/run-010");
+    assert.deepEqual(parseResultKey(resultKey(trial)), { project: "ws-bench", run: "run-010" });
+    assert.equal(parseResultKey("ws/../run"), null);
+    assert.equal(benchmarkSelection(result, result).verification, "verify-010");
+    assert.equal(benchmarkSelection(result, result).baselineVerification, "verify-010");
+    assert.equal(benchmarkSelection(result).report, null);
+    assert.match(benchmarkCommand(f.task, "/workspace/it's here"), /'\\''/);
+    assert.ok(benchmarkCommand(f.task, f.workspace).includes(`--digest '${f.task.digest}'`));
+    assert.match(benchmarkVerifyCommand(trial), /bench verify 'run-010'/);
+    const parsed = parseBenchmarkRequest(new URLSearchParams("project=ws-bench&run=run-010&report=legacy-report"));
+    assert.equal(parsed.kind, "detail"); if (parsed.kind === "detail") assert.equal(parsed.query.verification, "legacy-report");
+    assert.deepEqual(parseBenchmarkRequest(new URLSearchParams("project=ws-bench&task=fixture%2Fcapability&limit=25&cursor=run-010")), { kind: "catalog", query: { project: "ws-bench", taskName: "fixture/capability", cursor: "run-010", limit: 25 } });
+    for (const query of ["run=run-010", "report=report-1", "limit=0", "limit=101", "limit=1.5"]) assert.throws(() => parseBenchmarkRequest(new URLSearchParams(query)));
+    const reference: EvidenceReference = { kind: "event", runId: "parent", eventId: "source:42" };
+    assert.equal(evidenceLabel(reference), "parent · source:42");
+    assert.match(benchmarkRunUrl(trial, { seq: 1, at, atMs: Date.parse(at), type: "action_end", data: {}, trace: { epoch: "e" } } as Event, reference), /run=parent/);
   } finally { await f.cleanup(); }
 });

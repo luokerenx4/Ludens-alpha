@@ -17,7 +17,7 @@ uv sync --project rsa/python --frozen
 export PATH="$PWD/baseware/bin:$PWD/rsa/bin:$PWD/rsa-companion/bin:$PATH"
 ```
 
-[pyproject.toml](../rsa/python/pyproject.toml) 和 `uv.lock` 管理正式 `ludens-rsa` 包（导入名 `rsa_tools`）、PyAV/Pillow 媒体处理及 jsonschema 校验依赖。框架解释器优先使用显式 `RSA_PYTHON`，其次项目 `rsa/python/.venv`，最后 PATH 中的 `python3`；指定外部解释器时需在该环境安装包及依赖。项目环境不替换用户全局训练环境。工作区自己的任务依赖由 AI 按需管理。正式 wheel 包含报告 schema，不依赖源码目录布局；独立 Python 评测注册需明确 `RSA_ARTIFACT_ROOT`，Host/CLI 会注入它。
+[pyproject.toml](../rsa/python/pyproject.toml) 和 `uv.lock` 管理正式 `ludens-rsa` 包（导入名 `rsa_tools`）、PyAV/Pillow 媒体处理及 jsonschema 校验依赖。框架解释器优先使用显式 `RSA_PYTHON`，其次项目 `rsa/python/.venv`，最后 PATH 中的 `python3`；指定外部解释器时需在该环境安装包及依赖。项目环境不替换用户全局训练环境。工作区自己的任务依赖由 AI 按需管理。正式 wheel 提供能力与证据 client，不包含独立评测 runner 或 report schema；Task、评分和执行生命周期由 Shiori 统一管理。
 
 OMP 原生 shell 也会获得 `RSA_PYTHON`。需要与感知/能力入口共用依赖时调用 `"$RSA_PYTHON" script.py`；裸 `python3` 仍遵循用户 login shell 配置，不能假定它就是项目环境。项目环境只安装框架依赖，PyTorch 等任务依赖需安装到选定解释器，或用已装好任务依赖的解释器并补齐框架包。
 
@@ -211,7 +211,7 @@ python3 baseware/scripts/sync-cua-contract.py --check
 现有 `RSA Alice Pet` 配置目录、IPC 与启动环境变量保留以延续设置。
 
 
-评测统一用 `rsa bench`，先读 help。`capability-reuse` 调用真实模型，其他内置用例离线；自定义评测依其代码运行，见 [benchmark.md](benchmark.md)。
+评测统一用 `rsa bench`，先读 help。`ludens/capability-reuse` 调用真实模型，其他内置用例离线；自定义评测依其代码运行，见 [benchmark.md](benchmark.md)。
 
 实机测试需显式授权，会输入按键并改变控制权。以下是独立可选测试，**不要在 Agent 运行时执行**：
 

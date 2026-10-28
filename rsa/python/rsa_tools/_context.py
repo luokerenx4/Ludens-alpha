@@ -38,6 +38,7 @@ _active = ContextVar("rsa_call_context", default=None)
 _clock_id = "python-" + uuid.uuid4().hex
 _sequence = 0
 _warned = False
+_trial_observer = None
 
 
 def current():
@@ -84,13 +85,13 @@ def emit(context, event_type, data):
     observer = context.get("recording_observer")
     recorder = context.get("recording_sink")
     channel = diagnostic_channel(context)
-    if not host_available and sink is None and observer is None and recorder is None:
+    if not host_available and sink is None and observer is None and recorder is None and _trial_observer is None:
         return
     _sequence += 1
     origin = {"eventId": f"{_clock_id}:{_sequence}", "clockId": _clock_id,
               "seq": _sequence, "at": datetime.now(timezone.utc).isoformat(),
               "atMs": time.monotonic() * 1000}
-    for observer_sink in (sink, observer):
+    for observer_sink in (sink, observer, _trial_observer):
         if observer_sink is None:
             continue
         try:

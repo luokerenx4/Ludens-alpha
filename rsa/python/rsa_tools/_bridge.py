@@ -9,7 +9,6 @@ import sys
 import traceback
 
 from rsa_tools._capabilities import discover, load_function, validate
-from rsa_tools.benchmarks import discover as discover_benchmarks, prepared_run
 
 
 def invoke(workspace, request):
@@ -28,25 +27,6 @@ def invoke(workspace, request):
         result = function(**request["arguments"])
         # JSON is the cross-process contract; incidental prints go to stderr.
         encoded = json.dumps({"ok": True, "result": result}, allow_nan=False)
-    return encoded
-
-
-def invoke_benchmark(workspace, request):
-    definition = request["definition"]
-    validate(request["arguments"], definition["parameters"])
-    entry = definition["entry"]
-    source = (workspace / entry["path"]).resolve()
-    source.relative_to(workspace)
-    raw = source.read_bytes()
-    if hashlib.sha256(raw).hexdigest() != entry["codeSHA"]:
-        raise ValueError("Benchmark source changed after discovery; refresh before invoking it")
-    sys.pycache_prefix = str(workspace / "__pycache__" / ("rsa-" + os.urandom(12).hex()))
-    with invocation_output():
-        function = load_function(workspace, entry["path"], entry["function"], raw=raw, marker="benchmark")
-        request["errorPhase"] = "execute"
-        with prepared_run(request["runDir"], request["result"]):
-            function(**request["arguments"])
-        encoded = json.dumps({"ok": True, "result": request["result"]}, allow_nan=False)
     return encoded
 
 
@@ -73,19 +53,13 @@ def main():
         workspace = Path(request["workspace"]).resolve()
         if request["action"] == "discover":
             print(json.dumps(discover(workspace), allow_nan=False))
-        elif request["action"] == "discover_benchmarks":
-            print(json.dumps(discover_benchmarks(workspace), allow_nan=False))
         elif request["action"] == "invoke":
             print(invoke(workspace, request))
-        elif request["action"] == "invoke_benchmark":
-            request["errorPhase"] = "load"
-            print(invoke_benchmark(workspace, request))
         else:
             raise ValueError("Unknown Python bridge action")
     except BaseException as error:
-        phase = "report" if request.get("result", {}).get("status") == "completed" else request.get("errorPhase")
         print(json.dumps({"ok": False, "error": {"type": type(error).__name__, "message": str(error),
-                         "traceback": traceback.format_exc(), **({"phase": phase} if phase else {})}}))
+                         "traceback": traceback.format_exc()}}))
         return 1
     return 0
 

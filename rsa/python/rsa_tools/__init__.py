@@ -1,7 +1,7 @@
-"""Ordinary Python capabilities, optional timeline records, and benchmarks."""
+"""Ordinary Python capabilities, timeline records and Shiori trial evidence."""
 
 from .client import Client, RSAError
 from ._decorators import capability, record
-from .benchmarks import benchmark, current_benchmark
+from .benchmarks import current_trial
 
-__all__ = ["Client", "RSAError", "capability", "record", "benchmark", "current_benchmark"]
+__all__ = ["Client", "RSAError", "capability", "record", "current_trial"]

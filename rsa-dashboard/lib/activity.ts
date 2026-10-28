@@ -230,12 +230,12 @@ export async function activityBlocks(path: string, events: Event[], workspace?: 
 function eventHeader(path: string, event: Event): Omit<LogBlock, "text"> {
   const { data } = event;
     const raised = event.type === "python_call_end" && data.outcome === "error";
-    const assessment = ["benchmark_end", "benchmark_report", "benchmark_supervisor_end"].includes(event.type);
+    const assessment = ["benchmark_end", "benchmark_verification", "benchmark_report", "benchmark_supervisor_end"].includes(event.type);
     const unmet = assessment && data.executionStatus === "completed" && data.reportStatus === "valid" && data.verdict === "failed";
-    const failed = !raised && ((assessment && (data.executionStatus === "error" || data.reportStatus === "invalid"))
+    const failed = !raised && ((assessment && (data.executionStatus === "error" || data.verificationStatus === "error" || data.reportStatus === "invalid"))
       || data.outcome === "error" || (["perception_status", "action_status"].includes(event.type) && data.state === "error") || (data.outcome !== "cancelled" && !data.aborted
       && (event.type.endsWith("_error") || ["perception_fault", "action_fault"].includes(event.type) || (event.type === "event_source_gap" && data.phase === "start") || data.isError === true || data.stopReason === "error")));
-  const system = failed || assessment || event.type === "control" || ["perception_status", "perception_fault", "perception_fault_end", "action_status", "action_fault", "action_fault_end"].includes(event.type)
+    const system = failed || assessment || event.type === "benchmark_start" || event.type === "control" || ["perception_status", "perception_fault", "perception_fault_end", "action_status", "action_fault", "action_fault_end"].includes(event.type)
     || event.type === "device_sampling_recovered" || event.type === "event_source_gap"
     || event.type.startsWith("background_") || event.type.includes("compaction") || event.type === "run_end";
   // Action halts on its first failure; action_status is the visible notification.
@@ -450,9 +450,9 @@ export function activityProgress(index: LogIndex) {
 export async function createActivityReducer(index: LogIndex, options: {
   cold?: boolean; signal?: AbortSignal; streamLimits?: ReadonlyMap<string, number>;
 } = {}) {
-  if (index.meta("activitySemantics") !== "7") {
+  if (index.meta("activitySemantics") !== "8") {
     index.resetActivity(); index.resetStores(["activity-model-ends", "activity-deliveries"]);
-    index.setMeta("activitySemantics", "7"); activeParsers.delete(index);
+    index.setMeta("activitySemantics", "8"); activeParsers.delete(index);
   }
   let position = Number(index.meta("activityPosition") ?? 0);
   const current = new Map<string, CurrentState>();

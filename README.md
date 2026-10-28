@@ -16,7 +16,7 @@ The project combines local device control, a persistent agent session, workspace
 - **Let the agent build its own perception.** A persistent `perception.py` process can retain models, state, and background sampling between observations.
 - **Reuse code and experience.** Ordinary Python imports and `rsa_tools.Client` support in-process composition; `skills/` and `memory/` persist across runs.
 - **Inspect what actually happened.** The console shows model inputs, activity, tool results, timing, and linked device calls. Alice provides a desktop companion view of the same run data.
-- **Measure changes.** Built-in reliability cases and workspace-defined `@benchmark` functions share a result format, history, and baseline comparisons.
+- **Measure changes.** Repository and workspace Harbor tasks share Shiori execution, independent verifiers, and the same result/history interface.
 
 These are mechanisms for experimenting with adaptation, not a claim that an agent will learn a particular game or generalize to new tasks.
 
@@ -121,7 +121,7 @@ Ludens separates the device, the agent runtime, and the code the agent develops.
 | [Dashboard](rsa-dashboard/README.md) | A local web console for live runs, timeline replay, run analysis, benchmarks, and Alice settings. |
 | [Alice companion](rsa-companion/README.md) | An Electron shell loading the same console, plus the native desktop pet, tray, and audio. |
 
-RSA's agent loop is called **Shiori**; its current implementation uses **OMP 18.9.1**. The agent uses OMP's native coding and process-management tools. Device and workspace capabilities are discovered through the CLI rather than automatically added to the model's tool list.
+RSA uses **Shiori** as its sole runner. Agent execution uses **OMP 18.9.1**; ordinary benchmark programs, verifiers and metrics use the same budget and cancellation lifecycle without model calls. The agent uses OMP's native coding and process-management tools. Device and workspace capabilities are discovered through the CLI rather than automatically added to the model's tool list.
 
 ### The workspace is ordinary code
 
@@ -147,13 +147,13 @@ Run benchmarks from a workspace:
 
 ```sh
 rsa bench list
-rsa bench run perception-lifecycle
-rsa bench help capability-reuse
+rsa bench run ludens/perception-lifecycle
+rsa bench help ludens/capability-reuse
 ```
 
 The built-in cases cover perception lifecycle, control handoff, WebSocket recovery, background compaction, and capability reuse. Each run selects one case explicitly; read its help first. The capability-reuse case uses a real model in an isolated test environment.
 
-Workspace functions marked with `@benchmark` can report metrics and checks through the same interface. Inspect results in the console or use `rsa bench history` and `rsa bench compare`. Execution status and pass/fail verdicts are separate: a completed call is not evidence of task success. See the [Benchmark guide](docs/benchmark.md).
+Harbor Task packages describe the evaluation; separate run configurations select the program. Programs write facts, and `tests/test.sh` writes numeric rewards. `rsa bench verify` regrades fixed evidence without rerunning the program. Inspect results in the console or use `rsa bench history` and `rsa bench compare`. Execution and verification status are separate; a completed call does not prove task success. See the [Benchmark guide](docs/benchmark.md).
 
 ## Development
 

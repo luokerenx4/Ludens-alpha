@@ -63,7 +63,7 @@ manifest 记录 Git commit/dirty、continue/consolidate 提示和可选 workspac
 | `rsa` | 外层循环、控制周期、统一能力入口、Python 入口启动 |
 | `workspace` | 工作区装饰器函数的实际执行 |
 | `baseware` | 设备控制权、Controller 执行和采样 |
-| `benchmark` | 评测执行与报告 |
+| `benchmark` | 评测执行事实与独立 verification 生命周期 |
 | `dashboard` / `pet` | 日志读取、投影和展示消费 |
 
 顶层时间属于写入者，origin 保留产生事实的进程时间；atMs 只能在同一时钟域内相减，seq 只能在同一来源内比较。墙钟合并顺序是展示顺序，不能代替因果。媒体通过明确引用关联，不用文件路径或读取时间推测采样身份。
@@ -83,7 +83,7 @@ manifest 记录 Git commit/dirty、continue/consolidate 提示和可选 workspac
 | `action_start/end` | 已提交手柄动作的独立生命周期、actionId 和终态；沿用原 play 请求的 trace/epoch，异步结束不归到后续 wait/status 请求 |
 | `observation` | 模型/工具交付的观测事实；旧设备 `observation_start/end/error` 与独立 `observation` 仍可读，新设备详情归入 execution，不另算操作 |
 
-嵌套 Python 和 `rsa_tools.Client` 继承上下文，普通 helper 不追踪。本地 benchmark observer 始终可观察真实执行，不依赖日志 RPC。normal 省略的采样父层标记 `parentOmitted`，不能因没有对应诊断事件推成永久 pending。日志失败不改调用结果、不重试动作；真实已记录 start 缺终态仍为未知。trace 不授予操作权，epoch 校验独立执行。
+嵌套 Python 和 `rsa_tools.Client` 继承上下文，普通 helper 不追踪。加入 Shiori trial 的 Python 程序通过本地 observer 收集实际 capability 版本与调用统计，不依赖日志 RPC。normal 省略的采样父层标记 `parentOmitted`，不能因没有对应诊断事件推成永久 pending。日志失败不改调用结果、不重试动作；真实已记录 start 缺终态仍为未知。trace 不授予操作权，epoch 校验独立执行。
 
 `python_call_end.outcome=error` 只证明函数抛出异常，外层可能捕获它（例如负向测试）。Dashboard 将它保留为“函数抛异常”诊断，按显式 Python 父关系归组，展示外层返回状态、调用/抛出次数及最近异常；原始事件仍可完整搜索。异常不会覆写工具或后台任务的最终结果，也不按错误文案推断“预期”。缺少原生 bash 父 trace 的直接 import 调用保持未关联，不按 PID 或时间拼接。离线分析保留原始 span 统计，另给 `localPythonExceptions` / `localPythonExceptionGroups`：相邻异常父子调用归为一条异常链，成功祖先截断；异常链数不是任务失败次数。
 
@@ -206,6 +206,6 @@ rsa/bin/rsa logs events --run /path/to/workspace/logs/run-id --diagnostics
 
 帧号变化、exit 0、技能读写均不证明任务推进。Benchmark 故障注入的预期错误不是真实任务故障率；执行、报告、复用证据及其限制统一见 [Benchmark](benchmark.md)。
 
-Benchmark 终态与报告事件携带 `benchmarkRunId/executionStatus/reportStatus/verdict/reportId/previousReportId`。执行完成而评分失败显示“目标未达成”；执行异常和无效报告分别保留错误。修订报告只更新评分，不增加执行次数。CLI 非零退出仍如实记录，它可能表示检查未通过；不能仅凭退出码归因为 Python 崩溃。评测事件位于独立 run，通过 `parentRunId` 关联宿主，不靠 shell 文本关联具体工具；旧事件缺少评分时不推断结果。
+Benchmark 生命周期携带 `benchmarkRunId/executionStatus/verificationStatus/verificationId`，执行与评分状态分开。唯一成绩来自对应 verification 的 `reward.json`；零分不代表系统故障，缺失或无效评分明确显示，消费者不另造通用 passed/failed 判定。重评不增加 trial 次数，也不重新执行动作。Shiori 唯一写入 trial 和生命周期；Python 程序只提交测量及条件/subject/产物清单，不单独写宿主事件流。CLI 非零退出可能是执行失败或评分不可用，不能仅凭退出码归因为 Python 崩溃。独立评测 run 可用显式 parentRunId/trace 关联来源，不靠 shell 文本或时间邻近推断。
 
 设备执行返回的 `result` 保留原生工具结果。设备日志中的同名字段省略 image/audio 的 `data` 或 embedded resource 的 `blob`，通过 observation 的 `contentIndex` 对应内容位置，保留大小和明确的 `timeline` 或 `dataPath/blobPath` 引用；无原件时使用 `dataOmitted/blobOmitted` 标明未留档。API、CLI、MCP 的实际返回仍保留原生内容；日志表示不能直接冒充 MCP 返回值。

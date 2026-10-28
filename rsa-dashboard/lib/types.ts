@@ -25,7 +25,8 @@ export interface Event {
 export interface Manifest {
   kind?: string;
   parentRunId?: string;
-  benchmark?: { id: string; revision: string; protocolVersion: string };
+  /** Task identity for current runs; the old shape is read-only historical metadata. */
+  benchmark?: { name: string; digest: string; version?: string } | { id: string; revision: string; protocolVersion: string };
   shiori?: { implementation: string; implementationVersion: string } | null;
   runId: string;
   workspace: string;

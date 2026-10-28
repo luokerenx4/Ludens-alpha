@@ -1,0 +1,13 @@
+{
+  "task": "ludens/ws-recovery",
+  "argv": [
+    "{bun}",
+    "{rsa}/src/harness/module-program.ts",
+    "{rsa}/src/benchmark/cases/ws-recovery.ts"
+  ],
+  "workspace": "isolated",
+  "seconds": 180,
+  "parameters": {
+    "seed": 7
+  }
+}
