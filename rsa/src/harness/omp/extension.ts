@@ -215,7 +215,6 @@ export function createRsaExtension(options: {
 
   async function captureContext(parent: EventTrace, origin: "prompt_start" | "tool_batch") {
     const cycle = options.cycle();
-    cycle.signal.throwIfAborted();
     const status = runtime.status();
     const state = perceptionState(status.perception ?? { state: "unimplemented", generation: null });
     const consolidating = cycle.purpose === "consolidate";
@@ -230,7 +229,6 @@ export function createRsaExtension(options: {
       }
     }
     const skills = await workspace.snapshot();
-    cycle.signal.throwIfAborted();
     // Countdown changes every second; it remains available through rsa status.
     const { perception: _perception, remainingSeconds: _remaining, ...control } = status;
     const controlVersion = JSON.stringify(control), perceptionVersion = JSON.stringify(state);
@@ -259,7 +257,8 @@ export function createRsaExtension(options: {
     // Keep history immutable between compactions so provider prefixes can be reused.
     pi.on("before_agent_start", async () => {
       const cycle = options.cycle();
-      cycle.signal.throwIfAborted();
+      // Passive under handback: native abort owns interruption; hooks never throw.
+      if (cycle.signal.aborted) return;
       // Existing processes retain their startup epoch. Only future shells get
       // this lease; child processes never inherit a later takeover implicitly.
       Object.assign(process.env, environment, {
@@ -306,7 +305,6 @@ export function createRsaExtension(options: {
     });
     pi.on("context", async (event) => {
       const cycle = options.cycle();
-      cycle.signal.throwIfAborted();
       // OMP delivers async images as custom messages, outside tool_result.
       // Inspect only the new tail, not old images carried across compactions.
       const tail = (event.messages ?? []).slice((event.messages ?? []).findLastIndex(message => message.role === "assistant") + 1);
@@ -329,8 +327,10 @@ export function createRsaExtension(options: {
         requests = 0;
       }
       if (requests >= options.maxRequests) {
+        // Entry-level stop aborts the run natively. Attempts after the stop are
+        // gate-blocked and not counted as cycle requests.
         await runtime.stop("model request budget");
-        cycle.signal.throwIfAborted();
+        return;
       }
       runtime.record("context", { request: ++requests, purpose: cycle.purpose, ...latestContext }, { epoch: cycle.epoch });
     });
