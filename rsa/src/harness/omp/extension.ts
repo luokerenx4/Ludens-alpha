@@ -334,10 +334,10 @@ export function createRsaExtension(options: {
       }
       runtime.record("context", { request: ++requests, purpose: cycle.purpose, ...latestContext }, { epoch: cycle.epoch });
     });
-    pi.on("tool_call", async (event) => {
-      if (options.cycle().signal.aborted) return { block: true, reason: "Human reclaimed control" };
-      // OMP prepares all validated calls before dispatching the batch. Invalid
-      // calls never execute or emit tool_result, so do not count them here.
+    pi.on("tool_call", (event) => {
+      // Handback interrupts the turn via session.abort(); this hook only tracks
+      // the prepared batch so tool_result can attach one observation per batch.
+      // Invalid calls never execute or emit tool_result.
       pendingTools.add(event.toolCallId);
     });
   };
