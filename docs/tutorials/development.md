@@ -107,14 +107,14 @@ rsa auto on
 
 外部 driver 可用 `rsa init --driver <id> --driver-package <spec>` 初始化；包契约与缓存见 [Baseware](../reference/baseware.md#driver-包与启动描述)。相对 `file:` 路径以选定 workspace 为基准，初始化时保存绝对路径；手写配置中的相对路径在 `up` 时也按 workspace 解析，不受启动命令当前目录影响。
 
-动手前可先验证包是否符合约定，不连接任何设备、不执行包代码逻辑：
+动手前可先验证包的 registration 声明是否符合约定。验证可能下载包、运行依赖安装，并会导入包入口代码；只使用可信来源。Baseware 不调用 `load()`，但包入口本身仍能执行代码，验证通过也不表示设备或后端已可用：
 
 ```sh
 baseware driver discover --package github:org/repo#rev
 # 输出 id/version/transport/defaultPort/needsGame/launchHint；非法包非零退出并说明原因
 ```
 
-Dashboard 能力页（`?view=caps`）的"外部驱动"区提供同样的验证：粘贴包地址，通过后复制安装命令再 `rsa init`。本仓不维护驱动清单，验证通过的包即可用。
+Dashboard 能力页（`?view=caps`）的“外部驱动”区在尚无工作区时也可使用：粘贴可信包地址，通过后复制初始化命令，在目标 workspace 中执行 `rsa init`。Dashboard 的 `file:` 必须使用绝对路径；`baseware driver discover` 的相对 `file:` 按调用时当前目录解析。本仓不维护驱动清单，后端准备和设备连通仍需另行验证。
 
 `rsa.json` 字段与默认值由 [workspace.ts](../../rsa/src/app/workspace.ts) 定义：
 
