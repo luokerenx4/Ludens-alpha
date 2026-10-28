@@ -1,7 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { createAgentSession, discoverAuthStorage, ModelRegistry, SessionManager, Settings, type AgentSession } from "@oh-my-pi/pi-coding-agent";
-import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { PROVIDER_IMAGE_BUDGETS } from "@oh-my-pi/snapcompact";
 import type { AgentRunner, Runtime } from "../runtime.ts";
@@ -69,19 +68,18 @@ export async function createOmpAgent(options: {
       return cycle;
     },
   });
+  // Superset shell: override only what this host owns. Keys whose value equals
+  // the OMP default (memory.backend off, autolearn off, includeWorkspaceTree
+  // off, providers.openaiWebsockets auto, async/launch enabled) stay unset.
   const settings = Settings.isolated({
-    "memory.backend": "off", "autolearn.enabled": false, "retry.enabled": false,
-    "retry.modelFallback": false, "title.refreshOnReplan": false,
-    // Load the root AGENTS.md explicitly; growing run logs are not prompt context.
-    "includeWorkspaceTree": false,
+    // Host invariant: fallback models may lack image input, and device control
+    // plus run attribution require the selected model to stay sticky.
+    "retry.modelFallback": false,
+    // Headless host: title generation is a stray model call outside control cycles.
+    "title.refreshOnReplan": false,
     // Experiment with the existing OMP compactor; keep its native history,
     // background preparation and image retention policy intact.
     ...(options.compactionThreshold === undefined ? {} : { "compaction.thresholdTokens": options.compactionThreshold }),
-    // Keep full history server-side through OMP's native WS delta chain.
-    // The pinned pi-ai patch routes oversized bootstrap frames through SSE
-    // until native compaction, instead of repeatedly retrying close 1009.
-    "providers.openaiWebsockets": "auto",
-    "async.enabled": true, "launch.enabled": true,
   });
   const authStorage = await discoverAuthStorage(undefined, { settings, cwd: options.workspace });
   // OMP's remote/background compactor bypasses agent.streamFn. This host-local
@@ -106,7 +104,9 @@ export async function createOmpAgent(options: {
     const { session } = await createOmpSession({
       cwd: options.workspace, agentDir: join(options.runDir, "omp"),
       model, authStorage, modelRegistry, settings, sessionManager: manager, telemetry: trace.shiori.config,
-      thinkingLevel: ThinkingLevel.Low, cacheWarming: false,
+      // Cache warming schedules background provider requests outside control
+      // cycles; every provider request must be attributable to a control cycle.
+      cacheWarming: false,
       skills: [], rules: [], contextFiles: instructions === undefined ? [] : [{ path: instructionsPath, content: instructions }],
       promptTemplates: [], slashCommands: [],
       enableMCP: false, enableLsp: false, enableIrc: false, skipPythonPreflight: true,

@@ -80,7 +80,7 @@ rsa controller controller/pad.play --args '{"inputs":[{"atMs":0,"durationMs":500
 
 独立的 `action.py:Action` 进程在 auto 期间按 `step_hz`（默认 30 Hz）调用 `step()`，可读取感知历史、执行设备输入并保留跨轮状态。两个进程共用 `@capability` 和可选 `@record`，调度入口分别是 `Perception.sample()` 与 `Action.step()`；不把每个能力都变成调度任务。感知入口要求记录，动作入口可只执行。工作区实现策略，Harness 提供生命周期与输入收尾。
 
-环境在模型思考时继续运行。工作区可改感知和控制程序，不能改外层调度；见 [OMP 装配](../rsa/src/harness/omp/session.ts) 与 [扩展](../rsa/src/harness/omp/extension.ts)。
+环境在模型思考时继续运行。工作区可改感知和控制程序，不能改外层调度；见 [OMP 装配](../rsa/src/harness/omp/session.ts) 与 [扩展](../rsa/src/harness/omp/extension.ts)。装配是 OMP 的超集壳：只覆盖 host 自有契约（`retry.modelFallback` 关闭保持所选模型粘性、`title`/`cacheWarming` 关闭保证请求可归属控制周期、显式传入的压缩阈值），与 OMP 默认相同的键一律不设，模型行为参数跟随 OMP 与模型目录。
 
 压缩复用 OMP，触发阈值默认跟随所选模型的原生 OMP 设置（context window − reserve），可经 `rsa.json`/`--compaction-threshold` 显式覆盖，图片数量预算 Infinity，入历史时按 OMP 压图；后台压缩的行为改动与验收见 [OMP 后台压缩改造](omp-compaction.md)。Codex 使用 WebSocket auto；见 [WS 测试依据](development.md#ws-恢复测试依据)。
 
