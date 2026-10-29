@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useId, useState, type MouseEvent } from "react";
+import { useEffect, useState, type MouseEvent } from "react";
 import {
   benchmarkCommand, benchmarkVerifyCommand, benchmarkSelection, benchmarkRunUrl, compareResults,
   evidenceLabel, parseResultKey, resultKey, taskKey,
@@ -9,8 +9,6 @@ import { useTranslations } from "@/lib/locale";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Label } from "@/components/ui/label";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
 const date = (value?: string) => value ? new Date(value).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—";
@@ -81,32 +79,30 @@ function EvidenceDetail({ item, result, onNavigate }: { item: BenchmarkEvidenceI
   </details>;
 }
 
-export function BenchmarkCases({ search, refresh, navigate, onNavigate }: {
-  search: string; refresh: boolean; navigate: (patch: Record<string, string | null>) => void; onNavigate: (url: string) => void;
+export function BenchmarkCases({ search, workspace, ready, refresh, navigate, onNavigate }: {
+  search: string; workspace: string; ready: boolean; refresh: boolean; navigate: (patch: Record<string, string | null>) => void; onNavigate: (url: string) => void;
 }) {
   const t = useTranslations("benchmarkCases");
-  const workspaceId = useId();
   const query = new URLSearchParams(search);
   const [copied, setCopied] = useState("");
-  const params = new URLSearchParams({ limit: "25" });
-  if (query.get("benchWorkspace")) params.set("project", query.get("benchWorkspace")!);
+  const params = new URLSearchParams({ project: workspace, limit: "25" });
   if (query.get("case")) params.set("task", query.get("case")!);
   if (query.get("benchCursor")) params.set("cursor", query.get("benchCursor")!);
-  const catalogLoad = useBenchmarkRead<BenchmarkCatalog>("/api/benchmarks?" + params, refresh);
+  const catalogLoad = useBenchmarkRead<BenchmarkCatalog>(ready && workspace ? "/api/benchmarks?" + params : null, refresh);
   const catalog = catalogLoad?.value;
   const rows = catalog?.history.trials ?? [];
   const selectedKey = query.get("result") ?? (rows[0] ? resultKey(rows[0]) : null);
   const selectedSummary = rows.find(row => resultKey(row) === selectedKey);
   const requestedVerification = query.get("verification") ?? query.get("report") ?? selectedSummary?.selectedVerificationId;
-  const selectedLoad = useBenchmarkRead<BenchmarkEvidence>(detailUrl(selectedKey, requestedVerification, {
+  const selectedLoad = useBenchmarkRead<BenchmarkEvidence>(ready && workspace ? detailUrl(selectedKey, requestedVerification, {
     verification: query.get("verificationCursor"), evidence: query.get("evidenceCursor"),
-  }), refresh);
+  }) : null, refresh);
   const proof = selectedLoad?.value, selected = proof?.result;
   const baselineKey = query.get("baseline");
-  const baselineLoad = useBenchmarkRead<BenchmarkEvidence>(detailUrl(baselineKey, query.get("baselineVerification") ?? query.get("baselineReport")));
+  const baselineLoad = useBenchmarkRead<BenchmarkEvidence>(ready && workspace ? detailUrl(baselineKey, query.get("baselineVerification") ?? query.get("baselineReport")) : null);
   const baseline = baselineLoad?.value?.result;
   const comparison = selected && baseline ? compareResults(selected, baseline) : null;
-  const workspace = catalog?.projects.find(item => item.id === catalog.project)?.workspace;
+  const workspacePath = catalog?.projects.find(item => item.id === workspace)?.workspace;
   const chosenName = query.get("case") ?? selected?.trial.task.name;
   const chosenDigest = query.get("caseDigest") ?? selected?.trial.task.digest;
   const chosenTask = catalog?.tasks.find(task => task.name === chosenName && (!chosenDigest || task.digest === chosenDigest));
@@ -125,6 +121,9 @@ export function BenchmarkCases({ search, refresh, navigate, onNavigate }: {
   const rewards = selected?.verifier_result.rewards;
   const rewardKeys = comparison ? comparison.rewards.map(row => row.key) : Object.keys(rewards ?? {}).sort();
 
+  if (ready && !workspace) return <section className="surface empty-state main-empty" aria-live="polite">
+    <h2>{t("noWorkspace")}</h2><p>{t("chooseWorkspace")}</p>
+  </section>;
   if (!catalog) return <section className="surface empty-state main-empty" aria-live="polite">
     <h2>{catalogLoad?.error ? t("catalogUnavailable") : t("catalogLoading")}</h2><p>{catalogLoad?.error ?? t("catalogDescription")}</p>
   </section>;
@@ -134,16 +133,12 @@ export function BenchmarkCases({ search, refresh, navigate, onNavigate }: {
       {catalog.issues.map((issue, index) => <p key={`catalog:${index}`}><code>{issue.project}</code> · {issue.error}</p>)}
       {catalog.history.issues.map((issue, index) => <p key={`history:${index}`}><code>{issue.runId}</code> · {issue.error}</p>)}
     </details>}
-    <div className="bench-toolbar"><div className="flex min-w-0 flex-wrap items-center gap-2"><Label htmlFor={workspaceId}>{t("workspace")}</Label><NativeSelect id={workspaceId} size="sm" wrapperClassName="w-full sm:w-72" aria-label={t("workspaceAria")} value={catalog.project ?? ""}
-      onChange={event => navigate({ ...reset, benchWorkspace: event.target.value || null, case: null })}>
-      {!catalog.projects.length && <NativeSelectOption value="">{t("noWorkspace")}</NativeSelectOption>}
-      {catalog.projects.map(project => <NativeSelectOption key={project.id} value={project.id}>{project.workspace}</NativeSelectOption>)}
-    </NativeSelect></div><span className="text-muted-foreground">{t("pageNote")}</span></div>
+    <div className="bench-toolbar"><span className="text-muted-foreground">{t("pageNote")}</span></div>
     <div className="bench-case-layout">
       <aside className="surface bench-case-list" aria-label={t("catalogAria")}><div className="bench-list-heading"><span>{catalog.tasks.length} {t("taskPackages")}</span></div>
         <Button type="button" variant="ghost" className="mb-1 block h-auto w-full whitespace-normal border border-transparent px-3 py-3 text-left aria-pressed:border-primary/50 aria-pressed:bg-primary/10" aria-pressed={!query.get("case")} onClick={() => navigate({ ...reset, case: null })}>{t("allHistory")}</Button>
         {catalog.tasks.map(task => <Button type="button" variant="ghost" key={taskKey(task)} className="mb-1 flex h-auto w-full flex-col items-start gap-2 whitespace-normal border border-transparent px-3 py-3 text-left aria-pressed:border-primary/50 aria-pressed:bg-primary/10"
-          aria-pressed={chosenTask === task} onClick={() => navigate({ ...reset, case: task.name, caseDigest: task.digest })}>
+          aria-pressed={!!query.get("case") && chosenTask === task} onClick={() => navigate({ ...reset, case: task.name, caseDigest: task.digest })}>
           <strong>{task.name}</strong>{task.title !== task.name && <span className="text-xs text-muted-foreground">{task.title}</span>}<small className="text-muted-foreground">{task.source === "repository" ? t("repoTask") : t("workspaceTask")} · {task.version ?? task.schemaVersion}</small>
           <span className="flex w-full flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground"><code>{short(task.digest)}</code>{task.unsupportedRequirements.length > 0 && <Badge variant="destructive">{t("envUnmet")}</Badge>}</span>
         </Button>)}
@@ -151,8 +146,8 @@ export function BenchmarkCases({ search, refresh, navigate, onNavigate }: {
       <div className="bench-case-main">
         {chosenTask && <section className="surface bench-result">
           <header className="bench-result-heading"><div><h2>{chosenTask.name}</h2>{chosenTask.config.task.description && <p>{chosenTask.config.task.description}</p>}</div></header>
-          {workspace && chosenTask.bindings.map(binding => {
-            const command = benchmarkCommand(chosenTask, workspace, binding.path)!;
+          {workspacePath && chosenTask.bindings.map(binding => {
+            const command = benchmarkCommand(chosenTask, workspacePath, binding.path)!;
             return <div className="bench-command" key={binding.path}><code>{command}</code>
               <Button type="button" variant="outline" size="sm" onClick={() => void copy(command)}>{t("copyRunCommand")}</Button></div>;
           })}

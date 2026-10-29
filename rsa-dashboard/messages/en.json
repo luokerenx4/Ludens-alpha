@@ -16,7 +16,7 @@
   "views": {
     "live": {
       "title": "Live",
-      "description": "Watch model input frames, activity log and control state in real time."
+      "description": "Inspect model observations, recorded activity and the last known control state."
     },
     "replay": {
       "title": "Replay",
@@ -321,8 +321,8 @@
     "filterAll": "All",
     "searchAria": "Search activity log",
     "searchPlaceholder": "Search content, tools, or sources",
-    "latestTitle": "Return to the latest 100 entries under the current filter",
-    "latestLabel": "Latest",
+    "latestTitle": "Show the latest logs with the current filters. This does not change the selected run or observation.",
+    "latestLabel": "Latest logs",
     "loadErrorPrefix": "Log read failed: ",
     "loadErrorCachedSuffix": "; showing the last successful read.",
     "missingSelectionNotice": "This log is not in the current run — check the run and round selection.",
@@ -339,7 +339,11 @@
     "footerHistoryTotal": "· history total",
     "pinnedKept": " · pinned log kept",
     "footerHistorical": "Older entries · click Latest to return",
-    "footerDiagnostic": "Diagnostics on demand"
+    "footerDiagnostic": "Diagnostics on demand",
+    "emptyReadFailed": "Activity could not be loaded.",
+    "scopeMismatch": "The log belongs to a different cycle.",
+    "retryLatestHint": "Use Return to latest to read observations and logs together.",
+    "scopeChangedError": "The log changed while this page was loading. Use Return to latest to read a consistent snapshot."
   },
   "workspacesView": {
     "operationFailed": "Workspace operation failed",
@@ -818,8 +822,6 @@
     "catalogDescription": "Reading the task catalog and one page of execution summaries.",
     "keepLastPage": "Keeping the last loaded page",
     "diagnostics": "Catalog or history read diagnostics",
-    "workspace": "Workspace",
-    "workspaceAria": "Benchmark workspace",
     "noWorkspace": "No workspace",
     "pageNote": "25 runs per page · browsing benchmarks never disturbs the Agent or Ludens Pet focus",
     "catalogAria": "Benchmark catalog",
@@ -882,7 +884,8 @@
     "viewParentRun": "View the run that launched this benchmark ↗",
     "limitationsTitle": "Scope & limitations",
     "provenanceTitle": "Conditions, subject versions & provenance",
-    "baselineTitle": "Baseline"
+    "baselineTitle": "Baseline",
+    "chooseWorkspace": "Create or select a workspace to browse its benchmarks."
   },
   "runVisuals": {
     "transport": {
@@ -1161,5 +1164,39 @@
     "packageRequired": "Enter the community driver package address.",
     "verifyFirst": "Verify this package before creating the workspace.",
     "unsupportedBridge": "This driver does not declare a default bridge port, which workspace creation requires."
+  },
+  "workspacePicker": {
+    "choose": "Choose a workspace",
+    "loading": "Loading workspaces…",
+    "empty": "No workspaces — add one to begin",
+    "unavailable": "Workspace list unavailable",
+    "emptyHint": "Create a workspace or add an existing one from Workspaces.",
+    "errorHint": "The workspace list could not be loaded. Open Workspaces to retry."
+  },
+  "liveContext": {
+    "autoRefreshOn": "Auto-refresh on",
+    "autoRefreshOff": "Auto-refresh off",
+    "refreshHint": "Only refreshes this page. It does not start or control the agent.",
+    "titleLatest": "Latest recorded view",
+    "titleRun": "Viewing an earlier run",
+    "titleEpoch": "Viewing an earlier cycle",
+    "titleEvidence": "Viewing selected evidence",
+    "titleLog": "Viewing an earlier log window",
+    "returnLatest": "Return to latest",
+    "returning": "Updating latest snapshot…",
+    "detail": "Return to the newest run and cycle in this workspace. Your auto-refresh setting is kept.",
+    "lastChecked": "Last checked",
+    "hostAuto": "Agent in control",
+    "hostManual": "Manual control",
+    "hostDisconnected": "Host disconnected",
+    "hostUnavailable": "Host status unavailable",
+    "hostHistorical": "Recorded run",
+    "hostSnapshot": "Last observed",
+    "refreshFailed": "Latest snapshot could not be refreshed. Return to latest to retry observations and logs together.",
+    "scopeChanged": "The run changed while loading. Return to latest to read a matching snapshot."
+  },
+  "consoleSidebar": {
+    "menuOpen": "Open menu",
+    "menuClose": "Close menu"
   }
 }

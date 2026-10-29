@@ -59,7 +59,7 @@ export function benchmarkVerifyCommand(trial: Pick<TrialSummary, "workspace" | "
 }
 /** URL selections pin a verification, never count a re-score as another execution. */
 export function benchmarkSelection(result: BenchmarkResult, baseline?: BenchmarkResult) {
-  return { benchWorkspace: result.trial.project, case: result.trial.task.name, caseDigest: result.trial.task.digest, result: resultKey(result.trial),
+  return { project: result.trial.project, case: result.trial.task.name, caseDigest: result.trial.task.digest, result: resultKey(result.trial),
     verification: result.verification?.id ?? null, baseline: baseline ? resultKey(baseline.trial) : null,
     baselineVerification: baseline?.verification?.id ?? null, report: null, baselineReport: null };
 }

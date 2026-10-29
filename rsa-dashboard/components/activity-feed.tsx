@@ -269,14 +269,22 @@ export function ActivityFeed({ feed, expectedEpoch, selectedBlock, onSelect }: A
   const page = consistent ? feed.blocks.filter(block => matchesActivity(block, filter, query)) : [];
   const selected = consistent ? page.find(block => block.id === selectedBlock) ?? feed.selected : undefined;
   const pinned = selected && !page.some(block => block.id === selected.id) ? selected : undefined;
-  const loading = feed.loading || !consistent;
-  const missingSelection = Boolean(selectedBlock && feed.selectionReady && !selected && consistent);
+  const loading = feed.loading;
+  const missingSelection = Boolean(selectedBlock && feed.selectionReady && !selected && consistent && !feed.error);
   const list = useRef<HTMLDivElement>(null);
   const nodes = useRef(new Map<string, HTMLDivElement>());
   const initiallyPositioned = useRef(false);
   const positionLatest = useRef(false);
   const previousAnchor = useRef<{ id: string; top: number } | null>(null);
   const selectionPresent = Boolean(selected);
+  const positionedRevision = useRef(feed.resetRevision);
+  useLayoutEffect(() => {
+    if (positionedRevision.current === feed.resetRevision) return;
+    positionedRevision.current = feed.resetRevision;
+    initiallyPositioned.current = false;
+    previousAnchor.current = null;
+    positionLatest.current = true;
+  }, [feed.resetRevision]);
   useEffect(() => {
     if (selectedBlock && selectionPresent)
       nodes.current.get(selectedBlock)?.scrollIntoView({ block: "nearest" });
@@ -328,7 +336,7 @@ export function ActivityFeed({ feed, expectedEpoch, selectedBlock, onSelect }: A
           <Input className="h-8 pl-8 text-xs" aria-label={t("searchAria")} type="search" placeholder={t("searchPlaceholder")}
             value={query} onChange={(event) => setQuery(event.target.value)} />
         </label>
-        <Button type="button" variant="outline" size="sm" className="shrink-0" title={t("latestTitle")}
+        <Button type="button" variant="outline" size="sm" className="shrink-0" title={t("latestTitle")} disabled={!feed.scope}
           onClick={() => { positionLatest.current = true; feed.latest(); }}>
           {t("latestLabel")} <span aria-hidden="true">↓</span>
         </Button>
@@ -357,9 +365,9 @@ export function ActivityFeed({ feed, expectedEpoch, selectedBlock, onSelect }: A
         {page.map(renderBlock)}
         {page.length === 0 && !pinned && <div className="feed-empty">
           <BlockIcon kind={filter === "all" ? "text" : filter} />
-          <p>{loading ? t("emptyLoading") : feed.total === 0 && filter === "all" && !query
+          <p>{loading ? t("emptyLoading") : feed.error ? t("emptyReadFailed") : !consistent ? t("scopeMismatch") : feed.total === 0 && filter === "all" && !query
             ? t("emptyNone") : t("emptyFiltered")}</p>
-          <span>{!loading && !query ? t("emptyHintDefault") : query ? t("emptyHintQuery") : ""}</span>
+          <span>{!loading && (feed.error || !consistent) ? t("retryLatestHint") : !loading && !query ? t("emptyHintDefault") : query ? t("emptyHintQuery") : ""}</span>
         </div>}
       </div>
       <footer className="feed-footer">
