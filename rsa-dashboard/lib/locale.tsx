@@ -29,12 +29,14 @@ const LocaleContext = createContext<{ locale: Locale; setLocale: (locale: Locale
 });
 
 export function LocaleProvider({ children }: { children: React.ReactNode }) {
-  const [locale, setLocaleState] = useState<Locale>(() => {
+  const [locale, setLocaleState] = useState<Locale>("en");
+  useEffect(() => {
+    // Match the server on the first client render, then restore local preferences.
     try {
       const stored = window.localStorage.getItem(STORAGE_KEY);
-      return stored === "zh" || stored === "en" ? stored : browserLocale();
-    } catch { return browserLocale(); }
-  });
+      setLocaleState(stored === "zh" || stored === "en" ? stored : browserLocale());
+    } catch { setLocaleState(browserLocale()); }
+  }, []);
   useEffect(() => {
     document.documentElement.lang = locale === "zh" ? "zh-CN" : "en";
   }, [locale]);

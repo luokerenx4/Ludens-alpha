@@ -32,6 +32,7 @@ function useBenchmarkRead<T>(url: string | null, refresh = false) {
       }
     };
     void load();
+    return () => { controller.abort(); clearTimeout(timer); };
   }, [url, refresh, t]);
   return loaded?.url === url ? loaded : null;
 }

@@ -10,11 +10,16 @@ test("permanent Dashboard refuses missing, stale and replaced production builds"
   try {
     await mkdir(join(root, ".next"), { recursive: true });
     await mkdir(join(root, "worker"));
+    await mkdir(join(root, "messages"));
     await writeFile(join(root, "worker/worker.ts"), "first version");
+    await writeFile(join(root, "messages/en.json"), JSON.stringify({ title: "Console" }));
     await assert.rejects(checkBuild(root), /missing or stale/);
     await writeFile(join(root, ".next/BUILD_ID"), "built-one");
     await stampBuild(root); await checkBuild(root);
     await writeFile(join(root, "worker/worker.ts"), "new backend version");
+    await assert.rejects(checkBuild(root), /missing or stale/);
+    await stampBuild(root); await checkBuild(root);
+    await writeFile(join(root, "messages/en.json"), JSON.stringify({ title: "Ludens Console" }));
     await assert.rejects(checkBuild(root), /missing or stale/);
     await stampBuild(root); await checkBuild(root);
     await writeFile(join(root, ".next/BUILD_ID"), "another build");
