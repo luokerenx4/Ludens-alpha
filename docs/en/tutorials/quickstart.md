@@ -2,7 +2,7 @@
 
 This guide covers installing the Ludens components, configuring the Python runtime, and managing the day-to-day workspace lifecycle with `rsa init / up / auto / down`. For emulator and desktop driver setup, see [Devices & driver setup](devices.md); for single-component foreground debugging, package script conventions, and tests, see [Console debugging & verification](debugging-and-verification.md).
 
-Unless a `cd` into the target workspace is shown explicitly, run all commands from the repository root. `../artifacts/` is a local build-and-runtime state directory outside the repository; workspaces, ROMs, firmware, keys, and save files all live outside the repo and never enter the source tree.
+Unless a `cd` into the target workspace is shown explicitly, run all commands from the repository root. The global application directory defaults to `~/.ludens`; set `LUDENS_HOME` to an absolute path to override it. Workspaces can live anywhere and keep their configuration, sessions, recordings, and history together. The source repository holds no runtime state; keep ROMs, firmware, keys, and game saves outside it too.
 
 ## Install
 
@@ -49,7 +49,7 @@ The Dashboard is served in a browser by default — no Electron install is neede
 (cd rsa-companion && pnpm install --frozen-lockfile && pnpm build)
 ```
 
-When creating a workspace, append `--pet` to the chosen `rsa init --driver ...` command to explicitly enable the pet. For an existing workspace, set `"pet": true` in `rsa.json`; it starts on the next `rsa up`. An explicit `pet: true` already in the file stays enabled. Setting `"pet": false` keeps later starts on the web console only.
+When creating a workspace, append `--pet` to the chosen `rsa init --name <name> --driver ...` command to explicitly enable the pet. For an existing workspace, set `"pet": true` in `rsa.json`; it starts on the next `rsa up`. An explicit `pet: true` already in the file stays enabled. Setting `"pet": false` keeps later starts on the web console only.
 
 You can also use `rsa up --pet` or `rsa up --no-pet` to override just the current start without writing back to `rsa.json`; the two flags are mutually exclusive. Neither `pet: false` nor `--no-pet` shuts down an already-running shared pet — quit it from its tray menu.
 
@@ -59,15 +59,13 @@ The pet needs a working Dashboard and shares the same console and logs as the br
 
 ### 1. Init and lifecycle commands
 
-Prepare the target environment per [Devices & driver setup](devices.md) first, then create a directory outside the repository as the workspace. The example below uses Azahar with an explicitly pinned external driver package; mGBA and Ryubing use their respective [optional packages](devices.md#discovering-connecting-external-driver-packages), and the built-in desktop driver uses `--driver cua`:
+Prepare the target environment per [Devices & driver setup](devices.md) first. This example creates an Azahar workspace at an explicit path with a pinned external driver package; mGBA and Ryubing use their respective [optional packages](devices.md#discovering-connecting-external-driver-packages), and the built-in desktop driver uses `--driver cua`:
 
 ```sh
-mkdir -p /absolute/path/to/workspace
-cd /absolute/path/to/workspace
-
-rsa init --driver azahar \
+rsa init --name my-task --workspace /absolute/path/to/workspace --driver azahar \
   --driver-package github:luokerenx4/ludens-3ds-driver#5b9b1f4032a5973a8882aa23957c3c34da50af9e \
   --game /absolute/path/to/game.3ds --seconds 1800
+cd /absolute/path/to/workspace
 rsa up --dry-run
 rsa up
 rsa services
@@ -75,13 +73,18 @@ rsa controller list
 rsa auto on
 ```
 
-For an existing emulator workspace, add `driverPackage` per the [external driver migration notes](devices.md#discovering-connecting-external-driver-packages) instead of re-running `rsa init`. The default launch path comes from each driver's build cache; when reusing an already-installed app, pass `RSA_AZAHAR_APP` or `RSA_RYUBING_APP` on every `up` (including `--dry-run`).
+Without `--workspace`, `rsa init --name my-task --driver ...` uses the global `workspaceRoot/my-task`; the initial parent is `$LUDENS_HOME/workspaces`. Explicit relative paths resolve from the current shell directory. To initialize the current directory, use `rsa init --workspace . --driver ...` or `rsa --workspace . init --driver ...`. Use `open` or `import` below for existing workspaces instead of initializing them again. When using a name without an explicit path, unset `RSA_WORKSPACE` if your shell inherited it from another workspace.
+
+For an existing emulator workspace, add `driverPackage` per the [external driver migration notes](devices.md#discovering-connecting-external-driver-packages). The default launch path comes from each driver's build cache; when reusing an already-installed app, pass `RSA_AZAHAR_APP` or `RSA_RYUBING_APP` on every `up` (including `--dry-run`).
 
 Quick reference for common workspace and control commands:
 
 | Command | Behavior & boundaries |
 | --- | --- |
-| `rsa init` | Generates `rsa.json` plus any missing `AGENTS.md`, `perception.py`, and `action.py` templates; never overwrites existing files. Uses the web console by default; add `--pet` to explicitly enable the installed pet. |
+| `rsa init --name <name> [--workspace <path>] --driver <id>` | Creates configuration, a stable identity, missing templates, and a registry entry; a name is required without an explicit path. Global creation defaults are copied to `rsa.json`; changing them later does not change existing workspaces. Add `--pet` to enable the installed pet. |
+| `rsa config [show]` · `rsa config set <workspaceRoot\|defaults.field> <value>` | Reads global configuration or sets the parent directory and defaults for future workspaces. |
+| `rsa workspace open <path>` · `rsa workspace list` | Registers an existing workspace or lists registrations in the current global home. |
+| `rsa workspace forget <id>` | Removes only the index entry; it does not delete files, sessions, or logs, or stop services. |
 | `rsa up --dry-run` | Validates the config and prints the full process start plan without starting services; the Dashboard build check only runs on a real `rsa up` when a new Dashboard is needed. |
 | `rsa up [--pet / --no-pet]` | Starts or reuses the emulator, Baseware, Host, and Dashboard on demand; enables the pet per the `pet` setting, or override just this start with the mutually exclusive `--pet` / `--no-pet` without writing back to the config. A newly started Host is in `manual` mode; reusing an already-`auto` Host continues its control cycle. Repeating `up` does not hot-reload an edited `rsa.json`, and reusing an existing Dashboard does not hot-update its build. |
 | `rsa services` | Shows the PID, status, and latest exit code of the launchd tasks bound to the current workspace. |
@@ -92,6 +95,38 @@ Quick reference for common workspace and control commands:
 | `rsa down [--dashboard] [--pet]` | Stops this workspace's managed Host, Baseware, and emulator (**save in-game progress first**). The shared Dashboard and a running Ludens Pet are kept by default; append `--dashboard` (only from the workspace that started it) or `--pet` to shut down the corresponding shared service too. |
 
 To operate on a workspace from another directory, prefix any command with `rsa --workspace /absolute/path/to/workspace <subcommand>` or set the `RSA_WORKSPACE` environment variable.
+
+### Global settings and the default directory
+
+`$LUDENS_HOME/config.json` has the shape `{ "version": 1, "workspaceRoot": "/absolute/path", "defaults": { ... } }`. `defaults` supports `model`, `seconds`, `requests`, `compactionThreshold`, `dashboard`, and `pet`, and applies only at creation; explicit initialization arguments take precedence. Changing the parent affects future workspaces without moving registered directories:
+
+```sh
+rsa config show
+rsa config set workspaceRoot "$HOME/Ludens Workspaces"
+rsa config set defaults.seconds 1800
+rsa config set defaults.pet false
+rsa init --name desktop-task --driver cua
+rsa workspace list
+```
+
+The Dashboard Workspaces page supports creation with an optional directory, registration of existing directories, removal from the index, and editing the default parent directory. The CLI, Dashboard, and pet should use the same `LUDENS_HOME`; restart the relevant processes after changing it.
+
+### Registering and migrating existing workspaces
+
+- **Register again**: run `rsa workspace open <path>` for a workspace with `.rsa/workspace.json`. The global registry holds only `{id, workspace, name, updatedAt}`; rebuild lost entries with `open` without affecting workspace history.
+- **Move a directory**: stop its managed services, move the whole directory, then run `rsa workspace open /new/path` to update the index. The persistent ID stays the same; the original and a copy must not use the same ID simultaneously.
+- **Copy as an independent experiment**: stop Host and Baseware for the copy, then run `rsa workspace open /path/to/copy --new-id` to assign a new ID and clear the current session selection while preserving past sessions and recordings. `historyIds` in the identity file retains readable past identities; historical records never connect to the original workspace's active Host. The original workspace stays unchanged.
+- **Import the old layout**: explicitly run `import` below. `--legacy-state` points to the former `artifacts/rsa/ws-...` state directory; if the workspace moved, provide its former absolute path with `--previous-workspace`. Import brings old external state into the new layout; normal operation does not implicitly read old caches or registry directories.
+
+```sh
+rsa workspace import /absolute/path/to/workspace \
+  --legacy-state /absolute/path/to/old-artifacts/rsa/ws-name-hash \
+  --previous-workspace /previous/absolute/workspace
+```
+
+Stop related services and back up the workspace and old state before importing. Omit `--legacy-state` when there is no old external state and `--previous-workspace` when the directory has not moved. Updating source code alone neither migrates nor starts existing workspaces.
+
+Import only brings in sessions, session selection, and skill version snapshots; it preserves the external originals. Old absolute paths in logs, video references, and Benchmark records are not rewritten, and external media is not copied automatically; these records may not replay or rescore after a move. Preserve the original directory and external dependencies when old replay is needed. Workspaces recorded in the new format support moving the whole directory and registering it again.
 
 ### 2. `rsa.json` reference
 
@@ -115,4 +150,4 @@ To operate on a workspace from another directory, prefix any command with `rsa -
 ### 3. Session resumption & background service directories
 
 - **Session resumption**: workspace OMP sessions live in `.rsa/shiori/sessions/`, with the current resume pointer at `.rsa/shiori/current-session.json`. Restarting Host resumes the original session by default and opens a new `logs/<run-id>/` directory. Foreground `rsa run` accepts `--new-session` to start a fresh context (keeping workspace files), or `--resume /absolute/path/to/session.jsonl` to switch to a given historical session of the same workspace.
-- **Background service logs**: [launch-background.py](../../rsa/scripts/launch-background.py) writes the stdio and launchd state of workspace-managed processes to `<workspace>/logs/background/`; the shared Ludens Pet logs live in `../artifacts/rsa/alice/background/` next to the repo (launchd label `dev.ludens.pet`). All background services run detached from the terminal, with no boot-time autostart or crash-loop restarts; when troubleshooting, check `rsa services` and the corresponding `logs/background/` logs first.
+- **Background service logs**: [launch-background.py](../../rsa/scripts/launch-background.py) writes stdio and launchd state for workspace-managed processes to `<workspace>/logs/background/`. Shared Ludens Pet logs live in `$LUDENS_HOME/pet/background/` (launchd label `dev.ludens.pet`) and preferences in `$LUDENS_HOME/pet/profile/`. Standalone Baseware without `--data-dir` uses `$LUDENS_HOME/logs/baseware/<socket-name>/`; workspace orchestration explicitly uses `<workspace>/logs/baseware/`. Background services detach from the terminal without boot-time autostart or crash-loop restarts; check `rsa services` and the corresponding logs first when troubleshooting.

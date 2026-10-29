@@ -299,13 +299,12 @@
   },
   "capabilitiesView": {
     "readFailed": "Failed to read",
-    "copyFailed": "Couldn't copy — please select and copy the command below manually.",
     "driverSectionLabel": "External driver",
-    "driverTitle": "External Driver Verification · Driver Package",
+    "driverTitle": "Community driver verification",
     "onDemandBadge": "On demand",
     "discoverNote1a": "Enter an external driver package address (npm package name, ",
     "discoverNote1b": " or ",
-    "discoverNote1c": "), validate its registration declaration, and generate the workspace init command.",
+    "discoverNote1c": "). Check its registration before choosing it for a new workspace.",
     "examplePath": "file:/absolute/path",
     "discoverNote2a": "Note: verification may download and install dependencies and will import package code — use trusted sources only. Verification never calls ",
     "discoverNote2b": "; passing only means the declaration is compliant and does not guarantee the device is reachable.",
@@ -313,11 +312,7 @@
     "specAriaLabel": "Driver package address",
     "verifying": "Verifying…",
     "verifyDriver": "Verify driver package",
-    "verifiedPrefix": "Verified package: ",
     "defaultPortPrefix": " · default port ",
-    "needsGameNote": " · requires a backend with a launched game",
-    "copiedLabel": "Copied",
-    "copyInitCommand": "Copy init command",
     "needsControl": "Control required",
     "noControl": "No control needed",
     "readOnlySuffix": " · read-only",
@@ -325,25 +320,18 @@
     "loadErrorTitle": "Couldn't read capabilities",
     "loadingTitle": "Reading capabilities",
     "loadingDesc": "Reading baseware.json and Python @capability declarations in the current workspace…",
-    "emptyTitle": "No registered workspaces yet",
-    "emptyDesc": "Launch RSA in a workspace and its device capability snapshot, Python-defined capabilities, and eval tasks will appear here.",
+    "emptyTitle": "Choose a workspace to inspect",
+    "emptyDesc": "Create or select a registered workspace. Package verification above works independently of workspace selection.",
     "diagnosticsTitle": "Diagnostics",
     "overviewLabel": "Capability overview",
     "capabilitiesUnit": "capabilities",
-    "tasksMetricLabel": "Eval tasks",
     "taskPackagesUnit": "task packages",
-    "itemsUnit": " items",
     "capabilityCol": "Capability",
     "descriptionCol": "Description",
     "controlCol": "Control requirements",
     "noDescription": "No description",
-    "noGroupsHint": "None yet. Device capabilities come from the live directory at connection time; custom capabilities are discovered from workspace @capability declarations.",
-    "tasksSectionLabel": "Eval tasks",
-    "benchmarkTitle": "Eval Tasks · Benchmark",
-    "tasksUnit": " tasks",
     "taskCol": "Task",
     "versionCol": "Version digest",
-    "noTasksHint": "No task packages in the directory. Run history and scores live in Benchmark's eval catalog.",
     "catalogFailed": "Could not refresh the workspace list.",
     "retryCatalog": "Retry workspace list",
     "retryRead": "Retry read",
@@ -352,7 +340,61 @@
     "loadingWorkspaces": "Loading workspaces…",
     "errorDetails": "Technical details",
     "showingCached": "Showing the last loaded capabilities.",
-    "readOnlyRefreshHint": "Refresh reads the capability directory; driver verification stays unchanged."
+    "readOnlyRefreshHint": "Refresh reads the capability directory; driver verification stays unchanged.",
+    "title": "Capabilities",
+    "description": "Check a community package, create a workspace, then inspect its recorded and declared capabilities.",
+    "verifiedTitle": "Package declaration checked",
+    "verifiedBoundary": "The package declaration passed validation. Its device, game, and individual capabilities have not been tested.",
+    "declaredVersion": "Declared version",
+    "createWithDriver": "Create workspace with this driver",
+    "createWorkspace": "Create workspace",
+    "viewWorkspaces": "Manage workspaces",
+    "deviceGuide": "Device setup guide",
+    "capabilityGuide": "Capability guide",
+    "benchmarkGuide": "Eval task guide",
+    "existingWorkspaceHint": "Already have a workspace? Configure its rsa.json using the device guide; creating another workspace does not change the existing one.",
+    "creationRechecks": "Creation checks the package again and may download or import it. It does not start services.",
+    "sourcesTitle": "Workspace sources",
+    "sourcesDescription": "Each source is read independently. Counts describe recorded or declared items, not successful execution.",
+    "groupTitles": {
+      "device": "Device snapshot",
+      "workspace": "Workspace declarations",
+      "tasks": "Eval tasks"
+    },
+    "sourceStates": {
+      "available": "Read",
+      "partial": "Partially read",
+      "missing": "No snapshot",
+      "error": "Could not read"
+    },
+    "sourceDescriptions": {
+      "device": "Saved in baseware.json when a host connects. This snapshot does not confirm the current connection.",
+      "workspace": "Python @capability declarations found by a static source scan. No workspace code is executed.",
+      "tasks": "Task packages found in the repository and workspace. Discovery does not run an evaluation or establish a score."
+    },
+    "sourceEmpty": {
+      "device": "No device capabilities recorded here yet. Prepare the device and start the workspace from a terminal, then refresh this snapshot.",
+      "workspace": "No Python capabilities declared yet. Add a documented @capability function to workspace source.",
+      "tasks": "No eval task packages found. The task guide explains how to add one."
+    },
+    "sourceFailure": "This source could not be read. Review the diagnostics and refresh; other sources remain available.",
+    "snapshotAt": "Snapshot generated",
+    "snapshotTimeUnknown": "Snapshot time was not recorded.",
+    "recordedDrivers": "Recorded drivers",
+    "checkedAt": "Checked at",
+    "runtimeTitle": "Host connection check",
+    "runtimeUnchecked": "Host status has not been checked.",
+    "runtimeChecking": "Checking…",
+    "checkRuntime": "Check host status",
+    "runtimeReadOnly": "Reads only the host's reported control-connection state. It does not verify a physical device, game, or capability execution, and starts no services.",
+    "runtimeUnknown": "The host replied without a known control-connection state.",
+    "runtimeConnected": "The host reported its control connection available when checked.",
+    "runtimeDisconnected": "The host reported its control connection unavailable or uncertain when checked.",
+    "runtimeUnavailable": "The selected workspace's host could not be confirmed. Device and game availability remain unknown.",
+    "runtimeReadFailed": "Could not read host status.",
+    "runtimeStale": "Showing an earlier host observation; the latest check failed.",
+    "hostRunLabel": "Host run",
+    "viewBenchmark": "Open Benchmark"
   },
   "petSettings": {
     "title": "Ludens Pet",
@@ -1030,7 +1072,85 @@
     "limitationsTitle": "Scope & limitations",
     "provenanceTitle": "Conditions, subject versions & provenance",
     "baselineTitle": "Baseline",
-    "chooseWorkspace": "Create or select a workspace to browse its benchmarks."
+    "chooseWorkspace": "Create or select a workspace to browse its benchmarks.",
+    "workspaceLoading": "Reading workspaces",
+    "workspaceLoadingDescription": "Checking registered workspace locations before reading benchmarks.",
+    "workspaceUnavailable": "Workspace location unavailable",
+    "workspaceUnavailableDescription": "Check or reconnect this workspace in Workspaces. A saved run link can still be checked separately.",
+    "manageWorkspaces": "Manage workspaces",
+    "readQuickstart": "Read quickstart",
+    "retryWorkspaceCatalog": "Retry workspace list",
+    "workspaceReadFailed": "Could not read the workspace list",
+    "workspaceReadFailedCached": "Showing the last known workspace. Retry to confirm the current registration.",
+    "workspaceReadFailedDescription": "The workspace list could not be read. This does not mean no workspaces exist.",
+    "retrying": "Reading…",
+    "refreshHistory": "Refresh tasks & history",
+    "readFailedCached": "Keeping the last loaded data. Retry the read to check for changes.",
+    "readFailedDescription": "Retry this read, or clear the selection to return to the history. No workload is started.",
+    "catalogReadFailedDescription": "Retry tasks and history. A failed read does not mean this workspace is empty.",
+    "technicalDetails": "Technical details",
+    "firstTaskTitle": "Add your first eval task",
+    "firstTaskDescription": "Define what to run, how to score it, and the evidence to keep. The task guide explains the package and execution config.",
+    "readTaskGuide": "Read task guide",
+    "viewCapabilities": "View capabilities",
+    "inspectTaskCatalog": "Inspect task discovery in the terminal",
+    "copyListCommand": "Copy list command",
+    "copyTaskHelpCommand": "Copy task help command",
+    "missingTaskPackages": "No task packages were found. Saved run history and pinned evidence can still be inspected.",
+    "tasksUnavailable": "Some task packages could not be read. Check the diagnostics before treating the catalog as empty.",
+    "terminalRunNote": "Copying does not run the task. Review the command and execute it in your terminal when ready.",
+    "allTaskVersions": "History includes all task versions",
+    "clearTaskFilter": "Clear task filter",
+    "chooseFirstTask": "Choose a task to prepare a run",
+    "refreshSelected": "Read selected run again",
+    "refreshBaseline": "Read baseline again",
+    "refreshAttachment": "Read attachment again",
+    "clearSelected": "Clear run selection",
+    "clearBaseline": "Clear baseline",
+    "invalidSelected": "This run link is invalid. Clear the selection or choose a run from the history.",
+    "invalidBaseline": "This baseline link is invalid. Clear it and choose another baseline from the history.",
+    "selectedUnavailable": "Selected run could not be read",
+    "baselineUnavailable": "Baseline could not be read",
+    "steps": {
+      "addTask": {
+        "title": "Add task",
+        "description": "Add a task package and a matching execution config."
+      },
+      "runTerminal": {
+        "title": "Run in terminal",
+        "description": "Choose a task, inspect its command, and run it when ready."
+      },
+      "inspectEvidence": {
+        "title": "Inspect evidence",
+        "description": "Return here for the run, score versions, and recorded evidence."
+      }
+    },
+    "historyEmpty": {
+      "no-tasks": {
+        "title": "No runs yet",
+        "description": "Saved executions will appear here after a task has run."
+      },
+      "no-runs": {
+        "title": "Ready to prepare a first run",
+        "description": "Choose a task to inspect its execution config. Copying a command does not start it."
+      },
+      "filter-empty": {
+        "title": "No runs match this task filter",
+        "description": "Clear the filter to browse other tasks. This includes every recorded version of the selected task."
+      },
+      "page-empty": {
+        "title": "No runs on this older page",
+        "description": "Return to the latest page without changing the task filter or selected evidence."
+      },
+      "unreadable": {
+        "title": "Some run records could not be read",
+        "description": "Check the history diagnostics and refresh. Unreadable records are not evidence that no runs exist."
+      },
+      "tasks-unavailable": {
+        "title": "Task discovery needs attention",
+        "description": "No runs are listed. Resolve the task diagnostics before adding or running a task."
+      }
+    }
   },
   "runVisuals": {
     "transport": {

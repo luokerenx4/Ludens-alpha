@@ -12,12 +12,13 @@ import { useTranslations } from "@/lib/locale";
 import type { DiscoveredDriver } from "@/lib/drivers";
 import type { CreateWorkspaceInput } from "@/lib/workspaces";
 import {
-  emptyWorkspaceDraft, switchWorkspaceEnvironment, workspaceCreateInput, workspaceDriverCapabilities,
-  workspaceLocation, type WorkspaceEnvironment, type WorkspaceSetupIssue,
+  initialWorkspaceSetup, switchWorkspaceEnvironment, workspaceCreateInput, workspaceDriverCapabilities,
+  workspaceLocation, type WorkspaceCreationIntent, type WorkspaceEnvironment, type WorkspaceSetupIssue,
 } from "./workspace-create-model";
 
-export function WorkspaceCreateForm({ defaultRoot, pending, error, onSubmit, onCancel }: {
+export function WorkspaceCreateForm({ defaultRoot, initialIntent, pending, error, onSubmit, onCancel }: {
   defaultRoot: string;
+  initialIntent?: WorkspaceCreationIntent | null;
   pending: boolean;
   error: string;
   onSubmit(input: CreateWorkspaceInput): void;
@@ -27,8 +28,8 @@ export function WorkspaceCreateForm({ defaultRoot, pending, error, onSubmit, onC
   const id = useId();
   const form = useRef<HTMLFormElement>(null);
   const request = useRef<AbortController | null>(null);
-  const [draft, setDraft] = useState(emptyWorkspaceDraft);
-  const [driver, setDriver] = useState<DiscoveredDriver | null>(null);
+  const [draft, setDraft] = useState(() => initialWorkspaceSetup(initialIntent).draft);
+  const [driver, setDriver] = useState<DiscoveredDriver | null>(() => initialWorkspaceSetup(initialIntent).driver);
   const [discovering, setDiscovering] = useState(false);
   const [discoveryError, setDiscoveryError] = useState("");
   const [issue, setIssue] = useState<WorkspaceSetupIssue | null>(null);
@@ -132,7 +133,7 @@ export function WorkspaceCreateForm({ defaultRoot, pending, error, onSubmit, onC
               const driverPackage = event.target.value;
               resetDiscovery(); setDraft(previous => ({ ...previous, driverPackage, game: "", cuaCommand: "" }));
             }} />
-          <Button type="button" variant="outline" disabled={pending || discovering || !draft.driverPackage.trim()} onClick={() => void discover()}>
+          <Button type="button" variant="outline" aria-disabled={pending || discovering || !draft.driverPackage.trim()} className="aria-disabled:opacity-50" onClick={() => void discover()}>
             {discovering ? <LoaderCircleIcon className="animate-spin" aria-hidden="true" /> : null}
             {t(discovering ? "verifying" : "verifyPackage")}
           </Button>

@@ -177,6 +177,8 @@ workspace/logs/<run-id>/
 
 The CLI and Dashboard Benchmark views read the `Trial + Verification + Reward` triple directly, showing each dimension's numeric score, `details.json` diagnostics, and execution/scoring logs, with one-click run-command copy and baseline switching for comparison in the UI.
 
+In **Benchmark → Eval catalog**, an empty task catalog links to the task guide; a task without runs offers its version-bound terminal command. History filters match task names across versions; the selected digest binds the command, not the history filter. Empty filtered results and an empty older page offer separate reset actions. Missing or malformed run and baseline links can be retried or cleared without discarding the task selection; pinned history remains readable after a task leaves the current catalog. Browsing, refreshing, following guides, and copying commands never start an evaluation or invoke a model.
+
 ## Built-in tasks and evidence boundaries
 
 The repo ships 8 standard evaluation tasks (defined in `rsa/benchmarks/tasks/` and `rsa/src/benchmark/cases/`):

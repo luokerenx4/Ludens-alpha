@@ -4,7 +4,7 @@ import { diagnosticEvents } from "../lib/diagnostic-events";
 import { getActivity } from "../lib/activity";
 import { getReplay } from "../lib/replay";
 import { benchmarkAttachment, benchmarkCatalog, benchmarkEvidence } from "../lib/benchmark-data";
-import { capabilities } from "../lib/capabilities";
+import { capabilities, capabilityRuntime } from "../lib/capabilities";
 import { discoverDriver } from "../lib/drivers";
 import { docGroups, readDoc } from "../lib/docs";
 import { petState, setPetTarget, recordPetConsumer } from "../lib/pet-state";
@@ -32,7 +32,8 @@ const handlers: { [K in DashboardMethod]: (args: DashboardMethods[K]["args"], si
   benchmarkCatalog: ([query]) => benchmarkCatalog(query),
   benchmarkEvidence: ([project, run, query], signal) => benchmarkEvidence(project, run, query, undefined, signal),
   benchmarkAttachment: ([project, run, index, verification], signal) => benchmarkAttachment(project, run, index, verification, undefined, signal),
-  capabilities: ([project], signal) => capabilities(project, undefined, signal),
+  capabilities: ([project, workspace], signal) => capabilities(project, workspace, undefined, signal),
+  capabilityRuntime: ([project, workspace]) => capabilityRuntime(project, workspace),
   discoverDriver: ([spec], signal) => discoverDriver(spec, signal),
   docGroups: ([root, lang]) => docGroups(root, lang),
   readDoc: ([id, root, lang]) => readDoc(id, root, lang),

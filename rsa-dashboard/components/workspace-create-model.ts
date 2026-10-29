@@ -14,6 +14,17 @@ export const emptyWorkspaceDraft: WorkspaceDraft = {
   name: "", targetDirectory: "", environment: "desktop", driverPackage: "", game: "", cuaCommand: "",
 };
 
+export type WorkspaceCreationIntent = { driverPackage: string; driver?: DiscoveredDriver };
+
+/** URL prefill is only an address; verification can come only from the in-memory discovery result. */
+export function initialWorkspaceSetup(intent?: WorkspaceCreationIntent | null) {
+  const spec = intent?.driverPackage.trim() ?? "";
+  return {
+    draft: { ...emptyWorkspaceDraft, ...(spec ? { environment: "community" as const, driverPackage: spec } : {}) },
+    driver: spec && intent?.driver?.spec === spec ? intent.driver : null,
+  };
+}
+
 /** Match the local host's POSIX path normalization without importing Node in the form. */
 export function normalizedWorkspacePath(value: string): string | null {
   const path = value.trim();

@@ -2,7 +2,7 @@ import type { getActivity, ActivityQuery } from "./activity";
 import type { petState, recordPetConsumer, setPetTarget } from "./pet-state";
 import type { benchmarkAttachment, benchmarkCatalog, benchmarkEvidence } from "./benchmark-data";
 import type { BenchmarkQuery, BenchmarkDetailQuery } from "./benchmarks";
-import type { capabilities } from "./capabilities";
+import type { capabilities, capabilityRuntime } from "./capabilities";
 import type { discoverDriver } from "./drivers";
 import type { archiveBuild, catalog, getRun, mediaFile, stopRun, timelineRecord } from "./data";
 import type { docGroups, readDoc } from "./docs";
@@ -32,7 +32,8 @@ export interface DashboardMethods {
   benchmarkCatalog: { args: [query?: BenchmarkQuery]; result: Awaited<ReturnType<typeof benchmarkCatalog>> };
   benchmarkEvidence: { args: [project: string, run: string, query?: BenchmarkDetailQuery]; result: Awaited<ReturnType<typeof benchmarkEvidence>> };
   benchmarkAttachment: { args: [project: string, run: string, index: number, verification?: string]; result: Awaited<ReturnType<typeof benchmarkAttachment>> };
-  capabilities: { args: [project?: string]; result: Awaited<ReturnType<typeof capabilities>> };
+  capabilities: { args: [project: string, workspace: string]; result: Awaited<ReturnType<typeof capabilities>> };
+  capabilityRuntime: { args: [project: string, workspace: string]; result: Awaited<ReturnType<typeof capabilityRuntime>> };
   discoverDriver: { args: [spec: string]; result: Awaited<ReturnType<typeof discoverDriver>> };
   docGroups: { args: [root?: string, lang?: "en" | "zh"]; result: Awaited<ReturnType<typeof docGroups>> };
   readDoc: { args: [id: string, root?: string, lang?: "en" | "zh"]; result: Awaited<ReturnType<typeof readDoc>> };

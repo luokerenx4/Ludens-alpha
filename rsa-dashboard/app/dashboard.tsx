@@ -28,6 +28,8 @@ import { TimelinePlayer } from "@/components/timeline-player";
 import { replayEvidenceFromSearch, replayEvidencePatch } from "@/components/replay-navigation";
 import { ArchiveBuild } from "@/components/archive-build";
 import { WorkspacesView } from "@/components/workspaces-view";
+import type { DiscoveredDriver } from "@/lib/drivers";
+import { driverCreationHref } from "@/lib/driver-onboarding";
 import {
   Metric,
   ObservationPanel,
@@ -84,6 +86,10 @@ export default function Dashboard() {
   const [catalogReady, setCatalogReady] = useState(false);
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [catalogError, setCatalogError] = useState("");
+  const [verifiedCreationDriver, setVerifiedCreationDriver] = useState<DiscoveredDriver | null>(null);
+  useEffect(() => {
+    if (view !== "workspaces") setVerifiedCreationDriver(null);
+  }, [view]);
   const [loaded, setLoaded] = useState<{ key: string; revision: number; data: RunData } | null>(
     null,
   );
@@ -149,6 +155,17 @@ export default function Dashboard() {
       value ? params.set(name, value) : params.delete(name);
     navigateUrl("/?" + params.toString());
   };
+  const createWithDriver = (driver: DiscoveredDriver) => {
+    setVerifiedCreationDriver(driver);
+    navigateUrl(driverCreationHref(driver.spec));
+  };
+  const closeCreateIntent = () => {
+    setVerifiedCreationDriver(null);
+    const params = new URLSearchParams(window.location.search);
+    params.delete("create"); params.delete("driverPackage");
+    window.history.replaceState(null, "", "/?" + params.toString());
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  };
   const toggleRefresh = () => {
     if (refresh) setPausedSelection({ location: search, project: selection.project, run, requestedRun: selection.run, epoch: selection.epoch, archiveRevision });
     setRefresh(value => !value);
@@ -167,6 +184,7 @@ export default function Dashboard() {
   const viewLink = (id: View) => {
     const params = new URLSearchParams(query);
     params.set("view", id);
+    if (id !== "workspaces") { params.delete("create"); params.delete("driverPackage"); }
     if (id !== "replay" && params.get("epoch") === "all") params.delete("epoch");
     return "?" + params.toString();
   };
@@ -461,7 +479,7 @@ export default function Dashboard() {
           </div>
         </header>
         <main className="page-content">
-          {view !== "workspaces" && view !== "docs" && view !== "perception" && (view !== "replay" || entry !== "ready") && <div className={"page-heading" + (view === "settings" ? " mx-auto w-full max-w-5xl" : "")}>
+          {view !== "workspaces" && view !== "docs" && view !== "perception" && view !== "caps" && (view !== "replay" || entry !== "ready") && <div className={"page-heading" + (view === "settings" ? " mx-auto w-full max-w-5xl" : "")}>
             <div>
               <h1>{benchmarkCases ? t("benchmark.casesTitle") : t(`views.${view}.title`)}</h1>
               <p>
@@ -535,7 +553,10 @@ export default function Dashboard() {
           </section>}
           {view === "workspaces" ? (
             <WorkspacesView onChanged={refreshCatalog} onOpen={id => navigateUrl("/?" + new URLSearchParams({ view: "caps", project: id }))}
-              catalogError={catalogError} catalogLoading={catalogLoading} onRetryCatalog={refreshCatalog} />
+              catalogError={catalogError} catalogLoading={catalogLoading} onRetryCatalog={refreshCatalog}
+              createIntent={query.get("create") === "1" ? { driverPackage: query.get("driverPackage") ?? "",
+                driver: verifiedCreationDriver?.spec === query.get("driverPackage") ? verifiedCreationDriver : undefined } : null}
+              onCloseCreateIntent={closeCreateIntent} />
           ) : view === "settings" ? (
             <SettingsView follow={pet} projects={projects} />
           ) : view === "dev" ? (
@@ -547,6 +568,7 @@ export default function Dashboard() {
             <DocsView search={search} navigate={navigate} />
           ) : view === "caps" ? (
             <CapabilitiesView project={selection.project} ready={catalogReady} catalogError={catalogError}
+              workspace={project?.workspace ?? null} onCreateWithDriver={createWithDriver} onNavigate={navigateUrl}
               catalogLoading={catalogLoading} onRetryCatalog={refreshCatalog} />
           ) : runControls && entry !== "ready" ? (
             <WorkspaceRunEmpty state={entry} project={project?.id} workspaceName={workspaceName(project)}
@@ -562,6 +584,8 @@ export default function Dashboard() {
             <BenchmarkCases
               workspace={selection.project}
               ready={catalogReady}
+              workspaceAvailable={project?.available !== false}
+              catalogError={catalogError} catalogLoading={catalogLoading} onRetryCatalog={refreshCatalog}
               search={search}
               refresh={refresh}
               navigate={navigate}
