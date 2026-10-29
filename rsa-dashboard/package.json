@@ -6,7 +6,7 @@
     "dev": "next dev --hostname 127.0.0.1 --port 3015",
     "build": "node scripts/production.mjs build",
     "start": "node scripts/production.mjs start",
-    "check-build": "node scripts/production.mjs check",
+    "build:check": "node scripts/production.mjs check",
     "typecheck": "next typegen && tsc --noEmit",
     "test": "tsx --test tests/*.test.ts"
   },

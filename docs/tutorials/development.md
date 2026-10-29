@@ -40,6 +40,24 @@ export PATH="$PWD/baseware/bin:$PWD/rsa/bin:$PWD/rsa-companion/bin:$PATH"
 
 OMP 原生 shell 会自动注入 `RSA_PYTHON`。在工作区脚本中若需复用 `rsa_tools` 及框架依赖，应调用 `"$RSA_PYTHON" script.py`；直接运行裸 `python3` 仍遵循用户 login shell，不等同于框架虚拟环境。若将 `RSA_PYTHON` 指向外部训练环境（如包含 PyTorch 的 conda/venv），需在该环境中预先安装 `rsa/python` 包及其依赖。
 
+## 脚本命名与命令目录
+
+各包的 `package.json` 脚本遵循同一套命名规则，包管理器与锁文件保持各组件现有选择：
+
+- 包级通用命令使用 `dev`（开发服务）、`build`（生成构建产物）、`start`（启动已构建应用）、`test`（默认自动化测试集）、`typecheck`（类型检查）；只提供组件实际需要的命令。
+- 专用命令使用 `<对象>:<动作>[:<变体>]`，每段采用 lowercase kebab-case，例如 `pet:preview`、`omp:test:transport`。局部任务不得使用裸 `preview`、`smoke` 或 `check`；`rsa`、`baseware` 这类与 CLI 同名的透传入口允许保留，具体动作由后续子命令指定。
+- 默认 `test` 包含集成测试，不得将其命名为 `unit`。检查已有构建产物使用 `build:check`，该命令只检查，不执行构建。
+- 命令改名时同步调用方与文档，不保留旧别名。
+
+以下命令均在对应组件目录执行。Bun 包使用 `bun run <命令>`，Dashboard 使用 `npm run <命令>`，Companion 使用 `pnpm <命令>`：
+
+| 组件目录 | 包级命令 | 专用命令与入口 |
+| --- | --- | --- |
+| `baseware` | `typecheck`、`test` | `baseware`：运行设备服务 CLI。 |
+| `rsa` | `typecheck`：检查 TypeScript 与 Python；`test`：运行两种语言的默认测试集。 | `typescript:typecheck`、`python:typecheck`：单独检查对应语言；`typescript:test`、`python:test`：单独运行对应语言测试；`omp:test:transport`：运行 OMP WebSocket 传输恢复测试；`rsa`：运行 Host CLI。 |
+| `rsa-dashboard` | `dev`、`build`、`start`、`test`、`typecheck` | `build:check`：校验现有生产构建与当前源码指纹是否一致。 |
+| `rsa-companion` | `build`：使用 esbuild 生成 Electron 产物；`start`、`test`、`typecheck` | `pet:preview`：桌宠交互预览；`pet:smoke`：桌宠交互冒烟测试。两者都会先执行 `build`。 |
+
 ## 设备准备
 
 各 Driver 仅暴露设备的原生输入与采集能力，不包含游戏策略、坐标融合或自动存读档逻辑。
@@ -219,7 +237,7 @@ rsa run --model openai-codex/gpt-6.1-sol --seconds 300 --requests 50
 (cd rsa-dashboard && npm run build && npm run start)
 ```
 
-`rsa up` 在拉起设备前会调用 `npm run check-build` 校验 `rsa-dashboard` 的构建产物与当前源码指纹；若未构建或源码已更新，会明确提示先执行 `npm run build`，绝不静默运行过期界面。停止或重启 Dashboard 不会影响正在运行的 Host、Baseware 与模拟器。
+`rsa up` 在拉起设备前会调用 `npm run build:check` 校验 `rsa-dashboard` 的构建产物与当前源码指纹；若未构建或源码已更新，会明确提示先执行 `npm run build`，绝不静默运行过期界面。停止或重启 Dashboard 不会影响正在运行的 Host、Baseware 与模拟器。
 
 打开浏览器访问 `http://127.0.0.1:3015` 即可使用控制台：
 
@@ -242,9 +260,9 @@ rsa run --model openai-codex/gpt-6.1-sol --seconds 300 --requests 50
 默认自动化检查完全离线，不连接外部模型或真实模拟器：
 
 ```sh
-(cd baseware && bun run check && bun test)
+(cd baseware && bun run typecheck && bun test)
 python3 baseware/scripts/sync-cua-contract.py --check
-(cd rsa && bun run check && bun run test)
+(cd rsa && bun run typecheck && bun run test)
 (cd rsa-dashboard && npm test && npm run typecheck && npm run build)
 (cd rsa-companion && pnpm typecheck && pnpm test)
 ```

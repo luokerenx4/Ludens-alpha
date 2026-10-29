@@ -114,7 +114,7 @@ export async function launchPlan(config: LaunchConfig, workspace: string, repo =
   const bridge = manifest ? manifest.transport !== "stdio" : true;
   return {
     workspace, config, manifest, dashboardUrl: "http://127.0.0.1:3015", background, sharedPet,
-    dashboardCheck: ["npm", "--prefix", join(repo, "rsa-dashboard"), "run", "check-build"],
+    dashboardCheck: ["npm", "--prefix", join(repo, "rsa-dashboard"), "run", "build:check"],
     launcher: join(repo, "rsa/scripts/launch-background.py"), rsa, baseware, basewareSocket,
     commands: {
       ...(config.game && bridge && manifest?.launchCommand ? { emulator: ["env",
