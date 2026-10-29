@@ -1,6 +1,11 @@
 "use client";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useTranslations } from "@/lib/locale";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Slider } from "@/components/ui/slider";
 import {
   OMP_LAYER_DEFS, PRESETS, RSA_LAYER_DEFS, defaultParams, simulate,
   type LoopConfig, type LoopEvent, type LoopParams, type LoopResult, type SeriesPoint,
@@ -193,6 +198,7 @@ function LoopChart({ series, thresh, onSelect }: { series: SeriesPoint[]; thresh
 
 export function LoopLab() {
   const t = useTranslations("loopLab");
+  const controlsId = useId();
   const [params, setParams] = useState<LoopParams>(defaultParams);
   const [config, setConfig] = useState<LoopConfig>(PRESETS[0]!.cfg);
   const [presetId, setPresetId] = useState<string>(PRESETS[0]!.id);
@@ -245,15 +251,18 @@ export function LoopLab() {
     <section className="loop-lab">
       <div className="loop-presets">
         {PRESETS.map(p => (
-          <button
+          <Button
+            type="button"
+            variant="outline"
             key={p.id}
-            className={`loop-preset ${p.legacy ? "legacy" : ""} ${(activePreset?.id ?? presetId) === p.id ? "active" : ""}`}
+            aria-pressed={(activePreset?.id ?? presetId) === p.id}
+            className={`loop-preset h-auto max-w-[220px] flex-col items-start gap-0.5 whitespace-normal px-3.5 py-2 text-left ${p.legacy ? "legacy border-dashed" : ""} ${(activePreset?.id ?? presetId) === p.id ? "active border-primary bg-primary/10 dark:bg-primary/10" : ""}`}
             onClick={() => applyPreset(p.id)}
           >
             <b>{p.name}</b>
             {p.legacy && <i>{t("presets.legacyTag")}</i>}
             <span>{p.desc}</span>
-          </button>
+          </Button>
         ))}
       </div>
 
@@ -262,31 +271,35 @@ export function LoopLab() {
           <div className="loop-card">
             <h3>{t("cards.rsa")}</h3>
             {RSA_LAYER_DEFS.map(layer => (
-              <label key={layer.key} className={`loop-layer rsa ${layer.key === "ch2" ? "legacy-layer" : ""}`}>
-                <input
-                  type="checkbox"
+              <Label key={layer.key} htmlFor={`${controlsId}-rsa-${layer.key}`} className={`loop-layer items-start font-normal rsa ${layer.key === "ch2" ? "legacy-layer" : ""}`}>
+                <Checkbox
+                  id={`${controlsId}-rsa-${layer.key}`}
+                  className="mt-1"
                   checked={config.rsa[layer.key]}
-                  onChange={e => toggle("rsa", layer.key, e.target.checked)}
+                  onCheckedChange={checked => toggle("rsa", layer.key, checked === true)}
                 />
                 <span><b>{layer.name}</b><small>{layer.desc}</small></span>
-              </label>
+              </Label>
             ))}
           </div>
           <div className="loop-card">
             <h3>{t("cards.omp")}</h3>
             {OMP_LAYER_DEFS.map(layer => (
-              <label key={layer.key} className="loop-layer">
-                <input
-                  type="checkbox"
+              <Label key={layer.key} htmlFor={`${controlsId}-omp-${layer.key}`} className="loop-layer items-start font-normal">
+                <Checkbox
+                  id={`${controlsId}-omp-${layer.key}`}
+                  className="mt-1"
                   checked={config.omp[layer.key]}
-                  onChange={e => toggle("omp", layer.key, e.target.checked)}
+                  onCheckedChange={checked => toggle("omp", layer.key, checked === true)}
                 />
                 <span><b>{layer.name}</b><small>{layer.desc}</small></span>
-              </label>
+              </Label>
             ))}
-            <label className="loop-param">
+            <Label htmlFor={`${controlsId}-imgCap`} className="loop-param font-normal">
               <span>{t("cards.imgCap")}</span>
-              <input
+              <Input
+                id={`${controlsId}-imgCap`}
+                className="h-8 w-[76px] px-2 text-right font-mono text-xs"
                 type="number"
                 min={1}
                 max={200}
@@ -295,15 +308,17 @@ export function LoopLab() {
                 onChange={e => setParam("imgCap", Number(e.target.value))}
               />
               <small>{t("units.imgCap")}</small>
-            </label>
+            </Label>
           </div>
           {PARAM_GROUPS.map(group => (
             <div key={group.title} className="loop-card">
               <h3>{t(`groups.${group.title}`)}</h3>
               {group.items.map(item => (
-                <label key={item.key} className="loop-param">
+                <Label key={item.key} htmlFor={`${controlsId}-${item.key}`} className="loop-param font-normal">
                   <span>{t(`params.${item.key}`)}</span>
-                  <input
+                  <Input
+                    id={`${controlsId}-${item.key}`}
+                    className="h-8 w-[76px] px-2 text-right font-mono text-xs"
                     type="number"
                     min={item.min}
                     max={item.max}
@@ -312,7 +327,7 @@ export function LoopLab() {
                     onChange={e => setParam(item.key, Number(e.target.value))}
                   />
                   <small>{t(`units.${item.key}`)}</small>
-                </label>
+                </Label>
               ))}
             </div>
           ))}
@@ -345,28 +360,34 @@ export function LoopLab() {
             </div>
             <div className="loop-compare">
               {results.all.map(({ preset, result }) => (
-                <button
+                <Button
+                  type="button"
+                  variant="outline"
                   key={preset.id}
-                  className={`loop-cmp ${preset.legacy ? "legacy" : ""} ${(activePreset?.id ?? presetId) === preset.id ? "active" : ""}`}
+                  aria-pressed={(activePreset?.id ?? presetId) === preset.id}
+                  className={`loop-cmp h-auto min-w-0 flex-col items-stretch gap-0.5 whitespace-normal px-2.5 py-2 text-left ${preset.legacy ? "legacy border-dashed" : ""} ${(activePreset?.id ?? presetId) === preset.id ? "active border-primary bg-primary/10 dark:bg-primary/10" : ""}`}
                   onClick={() => applyPreset(preset.id)}
                 >
                   <b>{preset.name}</b>
                   <span>{t("compare.frames")} {result.frames} · <strong>{fmt(result.frameTok)} tok</strong></span>
                   <span>{t("compare.peak")} {fmt(result.peak)} · {t("compare.compactions")} {result.compactions} {t("stats.times")}</span>
                   <span className="bar"><i style={{ width: `${Math.round((result.frameTok / maxFrame) * 100)}%` }} /></span>
-                </button>
+                </Button>
               ))}
             </div>
           </div>
           <div className="loop-card">
             <div className="loop-insp-head">
               <h3>{t("cards.inspector")}</h3>
-              <input
-                type="range"
+              <Slider
+                className="min-w-12 flex-1"
+                aria-label={t("inspector.request")}
                 min={1}
-                max={Math.max(1, main.series.length)}
-                value={Math.min(selected, Math.max(1, main.series.length))}
-                onChange={e => setSelected(Number(e.target.value))}
+                max={Math.max(2, main.series.length)}
+                step={1}
+                disabled={main.series.length <= 1}
+                value={[Math.min(selected, Math.max(1, main.series.length))]}
+                onValueChange={values => setSelected(values[0] ?? 1)}
               />
               <b>{t("inspector.request")} #{selectedPoint ? selectedPoint.request : "—"}</b>
             </div>

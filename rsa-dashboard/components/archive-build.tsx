@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { readArchiveJson, type ArchiveBuildState } from "../lib/archive-client";
 import { useTranslations } from "@/lib/locale";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 
 const stages: Record<string, string> = { queued: "stageQueued", snapshot: "stageSnapshot", events: "stageEvents",
   projections: "stageProjections", operations: "stageOperations", write: "stageWrite", ready: "stageReady" };
@@ -57,7 +59,7 @@ export function ArchiveBuild({ project, run, onReady }: { project: string; run: 
     finally { if (!abort.signal.aborted && currentScope.current === scope) setBusy(false); }
   }
 
-  if (!state || state.state === "ready") return error ? <p className="error-banner" role="alert">{t("statusPrefix")}{error}</p> : null;
+  if (!state || state.state === "ready") return error ? <Alert variant="destructive"><AlertDescription>{t("statusPrefix")}{error}</AlertDescription></Alert> : null;
   const working = state.state === "queued" || state.state === "building";
   const stageKey = stages[state.stage ?? ""];
   return <div className="archive-build" role="status">
@@ -65,10 +67,10 @@ export function ArchiveBuild({ project, run, onReady }: { project: string; run: 
       : state.state === "cancelled" ? t("cancelledTitle") : t("failedTitle")}</strong>
       <p>{working ? `${stageKey ? t(stageKey) : t("stageFallback")}${state.totalBytes ? ` · ${mib(state.bytes ?? 0)} / ${mib(state.totalBytes)}` : ""}${state.eventPosition ? ` · ${state.eventPosition.toLocaleString()}${t("eventsSuffix")}` : ""}`
         : state.error ?? t("retryHint")}</p>
-      {error && <p role="alert">{error}</p>}
+      {error && <Alert variant="destructive" className="mt-3"><AlertDescription>{error}</AlertDescription></Alert>}
     </div>
-    <button type="button" className="text-button" disabled={busy} onClick={() => void control(working ? "cancel" : "retry")}>
+    <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => void control(working ? "cancel" : "retry")}>
       {busy ? t("processing") : working ? t("cancel") : t("retry")}
-    </button>
+    </Button>
   </div>;
 }

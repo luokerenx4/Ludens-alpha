@@ -1,6 +1,9 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
 import { useLocale, useTranslations } from "@/lib/locale";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useBufferedMedia } from "./use-buffered-media";
 import type { Call, Observation, PerceptionSnapshot, RunData, TraceSpan } from "@/lib/types";
 import type { TimelineRecordDetail } from "@/lib/timeline-record";
@@ -334,8 +337,9 @@ export function ObservationPanel({
     <div className="sample-strip">
       {items.map((o) => (
         <button
+          type="button"
           key={o.id}
-          className={"sample" + (o.id === observation?.id ? " selected" : "")}
+          className={"sample focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" + (o.id === observation?.id ? " selected" : "")}
           onClick={() => onImage(o.id)}
           aria-pressed={o.id === observation?.id}
           title={[o.controller, timestamp(o)].filter(Boolean).join(" · ")}
@@ -432,9 +436,9 @@ export function ObservationPanel({
         )}
         {observation?.timeline?.video && <span>{t("meta.videoRestore")}</span>}
         {!showingInput && (
-          <button className="text-button" onClick={() => onImage("")}>
+          <Button type="button" variant="ghost" size="xs" onClick={() => onImage("")}>
             {t("meta.backToInput")}
-          </button>
+          </Button>
         )}
       </div>
       {!!inputs.length && samples(inputs, t("panel.modelInput"))}
@@ -665,15 +669,16 @@ export function RequestDetails({
     ? sseFallbackReason(call, Date.parse(data.updatedAt))
     : null;
   const wait = call ? requestWait(call) : null;
+  const activePanel = ["trace", "tools", "skills", "events"].includes(panel) ? panel : "events";
   return (
     <section className="surface request-details">
       <div className="surface-heading">
         <h2>
           {call ? t("panel.request") + " #" + String(call.index).padStart(3, "0") : t("request.runEvidence")}
         </h2>
-        <button className="text-button" onClick={onInspect}>
+        <Button type="button" variant="ghost" size="xs" onClick={onInspect}>
           {t("request.viewImage")}
-        </button>
+        </Button>
       </div>
       {call && (
         <>
@@ -720,116 +725,117 @@ export function RequestDetails({
           </p>
         </>
       )}
-      <div className="detail-tabs" role="tablist" aria-label={t("request.evidenceLabel")}>
-        {[
-          ["trace", t("tabs.trace")],
-          ["tools", t("tabs.tools")],
-          ["skills", t("tabs.skills")],
-          ["events", t("tabs.events")],
-        ].map(([id, text]) => (
-          <button
-            role="tab"
-            aria-selected={panel === id}
-            className={panel === id ? "active" : ""}
-            key={id}
-            onClick={() => onPanel(id)}
-          >
-            {text}
-            {id === "events" && <small>{data.notices.length}</small>}
-          </button>
-        ))}
-      </div>
-      <div className="detail-body" role="tabpanel">
-        {panel === "trace" ? (
+      <Tabs value={activePanel} onValueChange={onPanel} className="gap-0">
+        <div className="overflow-x-auto border-y pb-1">
+          <TabsList variant="line" className="w-max min-w-full justify-start rounded-none px-4" aria-label={t("request.evidenceLabel")}>
+            {[
+              ["trace", t("tabs.trace")],
+              ["tools", t("tabs.tools")],
+              ["skills", t("tabs.skills")],
+              ["events", t("tabs.events")],
+            ].map(([id, text]) => (
+              <TabsTrigger
+                type="button"
+                value={id}
+                className="flex-none px-3 text-xs"
+                onFocus={event => event.currentTarget.scrollIntoView({ block: "nearest", inline: "nearest" })}
+                key={id}
+              >
+                {text}
+                {id === "events" && <Badge variant="secondary" className="px-1.5 py-0 text-[10px] tabular-nums">{data.notices.length}</Badge>}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </div>
+        <TabsContent value="trace" className="detail-body">
           <TraceList data={data} call={call} />
-        ) : panel === "tools" ? (
-          <>
-            {call?.tools.map((tool) => (
-              <article className="tool-evidence" key={tool.id}>
-                <div className="evidence-heading">
-                  <b>{tool.name}</b>
-                  <span className={tool.ok === false ? "error-text" : "muted"}>
-                    {tool.ok == null ? t("tools.running") : tool.ok ? t("outcome.success") : t("outcome.error")}
-                  </span>
-                </div>
-                {tool.intent && <p>{tool.intent}</p>}
-                <pre>{tool.args.command ?? JSON.stringify(tool.args, null, 2)}</pre>
-                <p className="help-text">
-                  {tool.name === "exec" &&
-                    t("tools.execPrefix") + " " + seconds(tool.commandMs) + " · "}
-                  {t("tools.wholeTool")} {seconds(tool.durationMs)}
-                  {tool.name === "bash"
-                    ? t("tools.bashNote")
-                    : t("tools.genericNote")}
-                </p>
-              </article>
-            ))}
-            {!call?.tools.length && (
-              <p className="empty-state">{t("tools.empty")}</p>
-            )}
-            <p className="help-text">
-              {t("tools.waitNote")}
-            </p>
-          </>
-        ) : panel === "skills" ? (
-          <>
-            <p className="help-text">{t("skills.help")}</p>
-            {[...data.skills].reverse().map((e) => (
-              <button
-                className="evidence-row"
-                key={e.seq}
-                onClick={() => e.modelCallId && onSelect(e.modelCallId)}
-              >
-                <span className="badge">{e.action}</span>
-                <span>
-                  <b>{e.path}</b>
-                  <small>
-                    {clockTime(e.at)} ·{" "}
-                    {e.ok == null ? t("tools.running") : e.ok ? t("outcome.success") : t("outcome.error")}
-                    {e.hash ? " · " + e.hash.slice(0, 12) : ""}
-                  </small>
-                </span>
-                <span>↗</span>
-              </button>
-            ))}
-            {!data.skills.length && (
-              <p className="empty-state">{t("skills.empty")}</p>
-            )}
-            <p className="help-text">{t("skills.hint")}</p>
-          </>
-        ) : (
-          <>
-            <p className="help-text">{t("events.help")}</p>
-            {[...data.notices].reverse().map((n) => (
-              <button
-                className="evidence-row"
-                key={n.seq}
-                onClick={() => n.modelCallId && onSelect(n.modelCallId)}
-              >
-                <span className={"notice-dot" + (n.failed ? " failed" : "")} />
-                <span>
-                  <b>{n.type}</b>
-                  <p>{n.text}</p>
-                  {n.details && (
-                    <dl className="fact-grid">
-                      {n.details.map((d) => (
-                        <div key={d.label}>
-                          <dt>{d.label}</dt>
-                          <dd>{d.value}</dd>
-                        </div>
-                      ))}
-                    </dl>
-                  )}
-                  <small>{clockTime(n.at)}</small>
-                </span>
-              </button>
-            ))}
-            {!data.notices.length && (
-              <p className="empty-state">{t("events.empty")}</p>
-            )}
-          </>
-        )}
-      </div>
+        </TabsContent>
+        <TabsContent value="tools" className="detail-body">
+          {call?.tools.map((tool) => (
+            <article className="tool-evidence" key={tool.id}>
+              <div className="evidence-heading">
+                <b>{tool.name}</b>
+                <Badge variant={tool.ok === false ? "destructive" : "outline"} className="px-1.5 py-0 text-[10px]">
+                  {tool.ok == null ? t("tools.running") : tool.ok ? t("outcome.success") : t("outcome.error")}
+                </Badge>
+              </div>
+              {tool.intent && <p>{tool.intent}</p>}
+              <pre>{tool.args.command ?? JSON.stringify(tool.args, null, 2)}</pre>
+              <p className="help-text">
+                {tool.name === "exec" &&
+                  t("tools.execPrefix") + " " + seconds(tool.commandMs) + " · "}
+                {t("tools.wholeTool")} {seconds(tool.durationMs)}
+                {tool.name === "bash"
+                  ? t("tools.bashNote")
+                  : t("tools.genericNote")}
+              </p>
+            </article>
+          ))}
+          {!call?.tools.length && (
+            <p className="empty-state">{t("tools.empty")}</p>
+          )}
+          <p className="help-text">
+            {t("tools.waitNote")}
+          </p>
+        </TabsContent>
+        <TabsContent value="skills" className="detail-body">
+          <p className="help-text">{t("skills.help")}</p>
+          {[...data.skills].reverse().map((e) => (
+            <button
+              type="button"
+              className="evidence-row focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              key={e.seq}
+              onClick={() => e.modelCallId && onSelect(e.modelCallId)}
+            >
+              <Badge variant="outline" className="rounded px-1.5 py-0.5 font-mono text-[10px]">{e.action}</Badge>
+              <span>
+                <b>{e.path}</b>
+                <small>
+                  {clockTime(e.at)} ·{" "}
+                  {e.ok == null ? t("tools.running") : e.ok ? t("outcome.success") : t("outcome.error")}
+                  {e.hash ? " · " + e.hash.slice(0, 12) : ""}
+                </small>
+              </span>
+              <span>↗</span>
+            </button>
+          ))}
+          {!data.skills.length && (
+            <p className="empty-state">{t("skills.empty")}</p>
+          )}
+          <p className="help-text">{t("skills.hint")}</p>
+        </TabsContent>
+        <TabsContent value="events" className="detail-body">
+          <p className="help-text">{t("events.help")}</p>
+          {[...data.notices].reverse().map((n) => (
+            <button
+              type="button"
+              className="evidence-row focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              key={n.seq}
+              onClick={() => n.modelCallId && onSelect(n.modelCallId)}
+            >
+              <span className={"notice-dot" + (n.failed ? " failed" : "")} />
+              <span>
+                <b>{n.type}</b>
+                <p>{n.text}</p>
+                {n.details && (
+                  <dl className="fact-grid">
+                    {n.details.map((d) => (
+                      <div key={d.label}>
+                        <dt>{d.label}</dt>
+                        <dd>{d.value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                )}
+                <small>{clockTime(n.at)}</small>
+              </span>
+            </button>
+          ))}
+          {!data.notices.length && (
+            <p className="empty-state">{t("events.empty")}</p>
+          )}
+        </TabsContent>
+      </Tabs>
     </section>
   );
 }

@@ -1,6 +1,9 @@
 "use client";
 import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { useTranslations } from "@/lib/locale";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 
 interface DocItem { id: string; title: string }
 interface DocGroup { id: string; title: string; blurb: string; docs: DocItem[] }
@@ -67,31 +70,31 @@ export function DocsView({ search, navigate }: {
     <aside className="surface docs-nav" aria-label={t("navLabel")}>
       {groups.map(group => <div key={group.id} className="docs-group">
         <div className="bench-list-heading"><span>{group.title}</span><small>{group.blurb}</small></div>
-        {group.docs.map(item => <button key={item.id}
-          className={`bench-case-item${docId === item.id ? " selected" : ""}`}
+        {group.docs.map(item => <Button key={item.id} type="button" variant="ghost"
+          className="mb-1 block h-auto w-full whitespace-normal border border-transparent px-3 py-3 text-left aria-pressed:border-primary/50 aria-pressed:bg-primary/10"
           aria-pressed={docId === item.id}
-          onClick={() => navigate({ doc: item.id, docAnchor: null })}>{item.title}</button>)}
+          onClick={() => navigate({ doc: item.id, docAnchor: null })}>{item.title}</Button>)}
       </div>)}
     </aside>
     <article ref={article} className="surface docs-article" onClick={followDoc}>
       {!docId && <><div className="surface-heading"><h2>{t("overviewTitle")}</h2><span>docs/</span></div>
         <div className="docs-body">
-          <p className="muted">{t("overviewBlurb")}</p>
+          <p className="text-muted-foreground">{t("overviewBlurb")}</p>
           <div className="docs-overview-grid">
-            {groups.map(group => <section key={group.id} className="docs-overview-card">
-              <h3>{group.title}</h3>
-              <p>{group.blurb}</p>
+            {groups.map(group => <Card key={group.id} className="gap-2 p-4">
+              <h3 className="m-0 text-sm">{group.title}</h3>
+              <p className="mb-1 text-xs text-muted-foreground">{group.blurb}</p>
               <div className="docs-overview-links">
-                {group.docs.map(item => <button key={item.id} type="button" className="text-button"
-                  onClick={() => navigate({ doc: item.id, docAnchor: null })}>{item.title} →</button>)}
+                {group.docs.map(item => <Button key={item.id} type="button" variant="link" size="sm" className="h-auto justify-start whitespace-normal px-0 text-left"
+                  onClick={() => navigate({ doc: item.id, docAnchor: null })}>{item.title} →</Button>)}
               </div>
-            </section>)}
+            </Card>)}
           </div>
         </div></>}
-      {docId && docLoad.error && <div className="error-banner" role="alert">{docLoad.error}</div>}
+      {docId && docLoad.error && <Alert variant="destructive"><AlertDescription>{docLoad.error}</AlertDescription></Alert>}
       {docId && !doc && !docLoad.error && <div className="docs-body"><p role="status">{t("loadingArticle")}</p></div>}
-      {doc && <><div className="surface-heading"><h2>{doc.title}</h2><span>{doc.id} · {doc.lang === "zh" ? t("chinese") : "EN"}<button type="button" className="text-button" onClick={() => navigate({ docLang: docLang === "zh" ? "en" : "zh" })}>{docLang === "zh" ? "English" : t("chinese")}</button></span></div>
-        {doc.fallback && <div className="error-banner" role="status">No English translation yet — showing the Chinese original.</div>}
+      {doc && <><div className="surface-heading"><h2>{doc.title}</h2><span>{doc.id} · {doc.lang === "zh" ? t("chinese") : "EN"}<Button type="button" variant="link" size="xs" onClick={() => navigate({ docLang: docLang === "zh" ? "en" : "zh" })}>{docLang === "zh" ? "English" : t("chinese")}</Button></span></div>
+        {doc.fallback && <Alert role="status"><AlertDescription>No English translation yet — showing the Chinese original.</AlertDescription></Alert>}
         <div className="docs-body" dangerouslySetInnerHTML={{ __html: doc.html }} /></>}
     </article>
   </div>;

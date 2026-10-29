@@ -77,7 +77,7 @@ export function PetFollowCard({
   const target = follow.state?.target;
   const selected = !!project?.workspace && target?.project === project.id;
   return <div className="pet-follow-card">
-    <Button variant="ghost" className="pet-follow-heading h-auto w-full justify-start gap-2.5 rounded-none border-0 bg-transparent p-0 text-left whitespace-normal hover:bg-transparent" onClick={onSettings} aria-label={t("manageFollow")}>
+    <Button type="button" variant="ghost" className="pet-follow-heading h-auto w-full justify-start gap-2.5 rounded-none border-0 bg-transparent p-0 text-left whitespace-normal hover:bg-transparent" onClick={onSettings} aria-label={t("manageFollow")}>
       <span className="pet-follow-avatar" aria-hidden="true">L</span>
       <span><strong>Ludens Pet</strong><small>
         <i className={"status-dot " + (follow.state?.connected ? "online" : "")} />
@@ -86,11 +86,11 @@ export function PetFollowCard({
       <span aria-hidden="true">↗</span>
     </Button>
     <p title={target?.workspace}>{target ? workspaceLabel({ id: target.project, workspace: target.workspace }, t) : t("noFollowTarget")}</p>
-    {project?.workspace ? <Button variant="outline" size="sm" className="pet-follow-action h-auto px-1.5 py-2 text-[11px] whitespace-normal max-[680px]:px-3"
+    {project?.workspace ? <Button type="button" variant="outline" size="sm" className="pet-follow-action h-auto px-1.5 py-2 text-[11px] whitespace-normal max-[680px]:px-3"
       disabled={follow.pending || !follow.state || selected}
       onClick={() => void follow.follow(project.id)}>
       {follow.pending ? t("updating") : selected ? t("followingThis") : t("followThis")}
-    </Button> : <Button variant="outline" size="sm" className="pet-follow-action h-auto px-1.5 py-2 text-[11px] whitespace-normal max-[680px]:px-3" onClick={onSettings}>{t("chooseWorkspace")}</Button>}
+    </Button> : <Button type="button" variant="outline" size="sm" className="pet-follow-action h-auto px-1.5 py-2 text-[11px] whitespace-normal max-[680px]:px-3" onClick={onSettings}>{t("chooseWorkspace")}</Button>}
     {follow.error && <small className="mt-2 block text-xs leading-relaxed text-destructive" role="alert">{t("updateFailedRetry")}</small>}
   </div>;
 }
@@ -115,13 +115,13 @@ export function PetFollowSettings({ follow, projects }: { follow: PetFollow; pro
           {target ? workspaceLabel({ id: target.project, workspace: target.workspace }, t) : t("followingNone")}
         </span>
       </div>
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-3">
         <div className="space-y-1">
           <Label htmlFor="pet-follow-workspace">{t("followLabel")}</Label>
           <p id="pet-follow-help" className="text-xs leading-relaxed text-muted-foreground">{t("followHelp")}</p>
         </div>
         <NativeSelect id="pet-follow-workspace" aria-label={t("followSelectLabel")} aria-describedby="pet-follow-help"
-          wrapperClassName="w-full sm:max-w-80" className="w-full" value={target?.project ?? ""}
+          wrapperClassName="w-full" className="w-full" value={target?.project ?? ""}
           disabled={pending || !state} onChange={(event) => void follow.follow(event.target.value || null)}>
           <NativeSelectOption value="">{t("stopFollow")}</NativeSelectOption>
           {target && !options.some((project) => project.id === target.project) &&
