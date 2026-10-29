@@ -24,7 +24,23 @@ from rsa_tools._observation_history import ObservationHistory
 SAMPLING = {"clock": "test", "startedAtMs": 0, "finishedAtMs": 1}
 
 class HistoryTests(unittest.TestCase):
-    def test_derived_media_keeps_exact_record_provenance_and_cold_source(self):
+    def test_workspace_settings_override_environment_defaults(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+                "RSA_PERCEPTION_HOT_SECONDS": "300", "RSA_VIDEO_SEGMENT_SECONDS": "60"}):
+            (Path(directory) / ".rsa").mkdir(parents=True, exist_ok=True)
+            (Path(directory) / ".rsa" / "settings.json").write_text(json.dumps(
+                {"hotSeconds": 120, "videoSegmentSeconds": 450, "videoIdleSeconds": 5}))
+            history = ObservationHistory(directory)
+            # File values win; unset keys fall back to the environment.
+            self.assertEqual(history.policy()["hotSeconds"], 120)
+            self.assertEqual(history.policy()["videoSegmentSeconds"], 450)
+            self.assertEqual(history.policy()["videoIdleSeconds"], 5)
+            history.close()
+            # Invalid values fail loudly instead of silently using defaults.
+            (Path(directory) / ".rsa" / "settings.json").write_text('{"hotSeconds": -1}')
+            with self.assertRaisesRegex(ValueError, "hotSeconds"):
+                ObservationHistory(directory)
+
         with tempfile.TemporaryDirectory() as directory:
             history = ObservationHistory(directory)
             raw = base64.b64encode(b"original").decode()
@@ -147,7 +163,8 @@ class HistoryTests(unittest.TestCase):
             legacy.write_bytes(original)
             history = ObservationHistory(root)
             self.assertEqual(history.policy(), {"persistent": True, "hotSeconds": 600,
-                             "hotBytes": 67108864, "segmentSeconds": 3600, "segmentBytes": 268435456})
+                             "hotBytes": 1073741824, "segmentSeconds": 3600, "segmentBytes": 268435456,
+                             "videoSegmentSeconds": 300, "videoIdleSeconds": 10, "budgetEvictions": 0})
             self.assertEqual(len(history._hot), 0)
             history.append({"text": "new"}, "new", SAMPLING, "2026-10-22T00:00:03Z")
             history.close()
@@ -187,6 +204,47 @@ class HistoryTests(unittest.TestCase):
                 self.assertEqual(result, list(range(45, 151, 15)))
                 self.assertEqual(reloaded.observe()["records"][0]["text"], "165")
                 self.assertFalse(page["availability"]["expired"])
+
+    def test_budget_pressure_shrinks_the_largest_channel_not_the_smallest(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+                "RSA_PERCEPTION_HOT_SECONDS": "600", "RSA_PERCEPTION_HOT_BYTES": "8192"}):
+            clock = [0.0]
+            with patch("rsa_tools._observation_history.time.monotonic", side_effect=lambda: clock[0]):
+                history = ObservationHistory(directory)
+                loud, quiet = {"id": "cap/loud"}, {"id": "cap/quiet"}
+                # The quiet channel samples first; the loud one floods afterwards.
+                clock[0] += 1
+                kept = history.append({"text": "keep"}, "quiet", SAMPLING,
+                                      "2026-10-22T00:00:00Z", identity=quiet)
+                for index in range(6):
+                    clock[0] += 1
+                    history.append({"text": "x" * 1400}, "loud", SAMPLING,
+                                   f"2026-10-22T00:00:0{index + 1}Z", identity=loud)
+                # Global FIFO eviction would drop the quiet record first (it is
+                # the oldest). Fair per-channel shrinking keeps it: pressure
+                # lands on the flooding channel instead.
+                self.assertGreater(history.budget_evictions, 0)
+                self.assertIn(kept["sequence"], history._hot)
+                self.assertLessEqual(history.hot_bytes, 8192)
+                history.close()
+
+    def test_window_expiry_keeps_the_highest_evicted_cursor_across_channels(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+                "RSA_PERCEPTION_PERSIST": "0", "RSA_PERCEPTION_HOT_BYTES": "3500"}):
+            history = ObservationHistory(directory)
+            try:
+                for second, (channel, size) in enumerate((("A", 1500), ("B", 3000), ("A", 1500))):
+                    history.append({"text": "x" * size}, "g", SAMPLING,
+                                   f"2026-10-22T00:00:0{second}Z", identity={"id": channel})
+                # B's second record is evicted before A's older first record.
+                # A later eviction must not hide the missing seq2 from after=1.
+                page = history.observe({"capability": "*", "after": 1})
+                self.assertEqual([record["sequence"] for record in page["records"]], [3])
+                self.assertTrue(page["availability"]["expired"])
+                self.assertFalse(history.observe({"capability": "*", "after": 2})["availability"]["expired"])
+                self.assertEqual(history.policy()["budgetEvictions"], 2)
+            finally:
+                history.close()
 
     def test_window_only_expiry_inline_delivery_and_source_media_ownership(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {

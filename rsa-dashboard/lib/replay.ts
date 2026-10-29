@@ -15,7 +15,7 @@ import type { FileMedia } from "./file-response";
 
 const PAGE = 500, MAX_WINDOW = 60_000, INDEX_BATCH = 4 * 1024 * 1024;
 export interface ReplayQuery { mode: "overview" | "frames" | "events" | "detail" | "media" | "segment"; epoch?: string;
-  start?: number; end?: number; cursor?: string; id?: string; record?: string; sequence?: number; media?: number; asset?: string }
+  start?: number; end?: number; cursor?: string; id?: string; record?: string; sequence?: number; media?: number; asset?: string; bytes?: number }
 type Scope = ReplayOverview & { index: LogIndex; signal?: AbortSignal };
 function fail(message: string, status = 400): never { throw Object.assign(new Error(message), { status }); }
 function expired(): never { return fail("记录已过期、未持久化或已移除", 410); }
@@ -80,17 +80,25 @@ function ready(value: Scope | ReplayPreparing): Scope {
   return value;
 }
 
-interface VideoState { status: "pending" | "ready" | "error"; durationSeconds: number; error?: string }
+interface VideoState { status: "pending" | "ready" | "error"; format?: string; durationSeconds: number; error?: string;
+  readableBytes?: number; lastReadablePts?: number | null }
 async function videoState(root: string, asset: string, signal?: AbortSignal): Promise<VideoState> {
   try {
     const state = JSON.parse(await readFile(await timelinePath(root, asset + ".json"), { encoding: "utf8", signal }));
     if (!["pending", "ready", "error"].includes(state.status) || !Number.isFinite(state.durationSeconds) || state.durationSeconds < 0)
       throw new Error("无效的视频片段状态");
+    if (state.format === "fmp4" && (state.readableBytes !== undefined && (!Number.isSafeInteger(state.readableBytes) || state.readableBytes < 0)
+      || state.lastReadablePts !== undefined && state.lastReadablePts !== null && (!Number.isSafeInteger(state.lastReadablePts) || state.lastReadablePts < 0)))
+      throw new Error("无效的视频片段读取进度");
     return state;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return { status: "error", durationSeconds: 0, error: "视频片段已移除或未完成" };
     throw error;
   }
+}
+function readableFrame(state: VideoState, video: VideoFrameReference): boolean {
+  return state.format === "fmp4" && (state.readableBytes ?? 0) > 0 && typeof state.lastReadablePts === "number"
+    && video.pts * video.timeBase[0] / video.timeBase[1] <= state.lastReadablePts / 1_000_000;
 }
 async function frame(record: StoredTimelineRecord, scope: Scope, states: Map<string, Promise<VideoState>>): Promise<ReplayFrame> {
   const time = Date.parse(record.recordedAt);
@@ -107,10 +115,17 @@ async function frame(record: StoredTimelineRecord, scope: Scope, states: Map<str
         if (!pending) { pending = videoState(join(scope.index.archiveWorkspace, ".rsa/timeline"), reference.asset, scope.signal); states.set(reference.asset, pending); }
         state = await pending;
       }
-      return { ...base, video: { assetId: reference.asset, url: url(scope, { mode: "segment", ...proof }),
-        originAt: time - video.pts * video.timeBase[0] / video.timeBase[1] * 1000,
+      const originAt = time - video.pts * video.timeBase[0] / video.timeBase[1] * 1000;
+      const readableBytes = state.format === "fmp4" ? state.readableBytes ?? 0 : 0;
+      return { ...base, video: { assetId: reference.asset,
+        revision: state.status === "pending" ? `pending:${readableBytes}` : state.status,
+        url: url(scope, { mode: "segment", ...proof, ...(readableBytes > 0 ? { bytes: readableBytes } : {}) }),
+        originAt,
+        ...(typeof state.lastReadablePts === "number" ? { readableUntil: originAt + state.lastReadablePts / 1000 } : {}),
         width: video.width, height: video.height, durationSeconds: state.durationSeconds,
-        status: video.status === "gap" ? "gap" as const : state.status, ...(state.error ? { reason: state.error } : {}) } };
+        status: video.status === "gap" ? "gap" as const : state.status,
+        streaming: state.status === "pending" && readableFrame(state, video),
+        ...(state.error ? { reason: state.error } : {}) } };
     })) };
 }
 interface Cursor { scope: [string, string, string | null, number, number, string]; generation: string;
@@ -283,16 +298,22 @@ async function modelMedia(scope: Scope, id: string) {
 }
 async function segmentMedia(scope: Scope, query: ReplayQuery): Promise<FileMedia> {
   if (query.asset !== undefined && !/^video\/[a-zA-Z0-9_-]+\.mp4$/.test(query.asset)) fail("无效的视频片段引用");
+  if (query.bytes !== undefined && (!Number.isSafeInteger(query.bytes) || query.bytes <= 0)) fail("无效的视频片段字节快照");
   const { root, record } = await storedRecord(scope, query.record, query.sequence);
   if (!Number.isSafeInteger(query.media) || query.media! < 0) fail("无效的媒体序号");
   const reference = record.media?.[query.media!]?.timeline, asset = reference?.asset;
   if (!asset || !/^video\/[a-zA-Z0-9_-]+\.mp4$/.test(asset) || !reference.video) fail("无效的视频片段引用");
   if (query.asset !== undefined && query.asset !== asset) fail("视频片段不属于所选记录", 404);
   if (reference.recordId !== record.id || reference.sequence !== record.sequence) fail("媒体与记录引用不匹配");
+  if (reference.video.status === "gap") fail(reference.video.reason ?? "此帧未被录制", 410);
   const state = await videoState(root, asset, scope.signal);
-  if (state.status === "pending") fail("视频片段正在写入，请稍后刷新", 409);
-  if (state.status !== "ready") fail(state.error ?? "视频片段未完成", 410);
-  return { file: await timelinePath(root, asset), mediaType: "video/mp4", cacheControl: "private, max-age=31536000, immutable" };
+  if (state.status === "error") fail(state.error ?? "视频片段未完成", 410);
+  if (state.status === "pending" && !readableFrame(state, reference.video)) fail("视频片段正在写入，请稍后刷新", 409);
+  if (state.format === "fmp4" && !readableFrame(state, reference.video)) fail("此帧没有已完成的视频片段", 410);
+  if (query.bytes !== undefined && (state.format !== "fmp4" || query.bytes > (state.readableBytes ?? 0))) fail("视频片段字节快照超出已发布范围");
+  const size = state.format === "fmp4" ? query.bytes ?? state.readableBytes : undefined;
+  return { file: await timelinePath(root, asset), mediaType: "video/mp4", ...(size !== undefined ? { size } : {}),
+    cacheControl: state.status === "pending" && query.bytes === undefined ? "no-store" : "private, max-age=31536000, immutable" };
 }
 
 /** Read archived facts only. Video and frame requests never wait for event presentation work. */

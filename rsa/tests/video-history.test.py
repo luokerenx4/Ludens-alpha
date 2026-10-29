@@ -37,11 +37,105 @@ def sample(*images):
 
 
 class VideoHistoryTests(unittest.TestCase):
+    def drain(self, recorder):
+        deadline = time.monotonic() + 5
+        while recorder.metrics()["queuedFrames"] and time.monotonic() < deadline:
+            time.sleep(0.001)
+        self.assertEqual(recorder.metrics()["queuedFrames"], 0)
+
     def assert_picture(self, raw, color, size=(31, 25)):
         image = Image.open(BytesIO(raw)).convert("RGB")
         self.assertEqual(image.size, size)
         actual = image.getpixel((size[0] // 2, size[1] // 2))
         self.assertLess(max(abs(left - right) for left, right in zip(actual, color)), 8)
+
+    def test_unsealed_segment_is_readable_while_recording(self):
+        with tempfile.TemporaryDirectory() as directory:
+            history = ObservationHistory(directory, sample_hz=30)
+            rows = []
+
+            def append_until(count):
+                for index in range(len(rows), count):
+                    at = f"2026-10-27T00:00:{index / 30:06.3f}Z"
+                    rows.append(history.append(sample(png()), "one", SAMPLING, at))
+                    self.drain(history._video)
+
+            try:
+                append_until(45)
+                first = rows[0]["media"][0]["timeline"]
+                path = history.directory / first["asset"]
+                metadata = lambda: json.loads(path.with_suffix(".mp4.json").read_text())
+                initial = metadata()
+                self.assertEqual(initial["readableBytes"], 0)
+                self.assertEqual(initial["frames"], 0)
+                self.assertEqual(initial["durationSeconds"], 0)
+                self.assertIsNone(initial["lastReadablePts"])
+                with self.assertRaisesRegex(ValueError, "not yet readable"):
+                    decode_frame(history.directory, first["asset"], first["video"])
+
+                # Muxing keyframe 60 flushes only the preceding 60-frame fragment.
+                append_until(75)
+                progress = metadata()
+                self.assertEqual(progress["status"], "pending")
+                self.assertEqual(progress["frames"], 60)
+                self.assertEqual(progress["durationSeconds"], 2)
+                self.assertEqual(progress["lastReadablePts"], rows[59]["media"][0]["timeline"]["video"]["pts"])
+                self.assertGreater(progress["readableBytes"], 0)
+                prefix = path.read_bytes()[:progress["readableBytes"]]
+                with av.open(BytesIO(prefix)) as container:
+                    frames = list(container.decode(container.streams.video[0]))
+                    self.assertEqual(len(frames), 60)
+                    self.assertEqual(frames[-1].pts, progress["lastReadablePts"])
+                mid = rows[30]["media"][0]["timeline"]
+                self.assert_picture(decode_frame(history.directory, mid["asset"], mid["video"]), (200, 40, 60))
+                late = rows[70]["media"][0]["timeline"]
+                with self.assertRaisesRegex(ValueError, "not yet readable"):
+                    decode_frame(history.directory, late["asset"], late["video"])
+
+                append_until(135)
+                next_progress = metadata()
+                self.assertEqual(next_progress["frames"], 120)
+                self.assertEqual(next_progress["durationSeconds"], 4)
+                self.assertGreater(next_progress["readableBytes"], progress["readableBytes"])
+                self.assertEqual(path.read_bytes()[:progress["readableBytes"]], prefix)
+                self.assert_picture(decode_frame(history.directory, late["asset"], late["video"]), (200, 40, 60))
+            finally:
+                history.close()
+            finished = metadata()
+            self.assertEqual(finished["status"], "ready")
+            self.assertEqual(finished["readableBytes"], path.stat().st_size)
+            self.assertEqual(finished["frames"], 135)
+            self.assertEqual(finished["lastReadablePts"], rows[-1]["media"][0]["timeline"]["video"]["pts"])
+            self.assertEqual(path.read_bytes()[:progress["readableBytes"]], prefix)
+            for index in (0, 30, 70, 134):
+                reference = rows[index]["media"][0]["timeline"]
+                self.assert_picture(decode_frame(history.directory, reference["asset"], reference["video"]), (200, 40, 60))
+
+    def test_pending_duration_uses_flushed_fragment_pts_with_irregular_sampling(self):
+        for times in ((0, 0.137, 0.401), (0, 3, 8)):
+            with self.subTest(times=times), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                recorder = VideoRecorder(root, root / "video")
+                try:
+                    refs = []
+                    for at in times:
+                        refs.append(recorder.submit(png(), "one", at, sample_hz=1))
+                        self.drain(recorder)
+                    path = root / refs[0]["asset"]
+                    progress = json.loads(path.with_suffix(".mp4.json").read_text())
+                    self.assertEqual(progress["frames"], 2)
+                    self.assertEqual(progress["lastReadablePts"], round(times[1] * 1_000_000))
+                    self.assertAlmostEqual(progress["durationSeconds"], times[2])
+                    with av.open(BytesIO(path.read_bytes()[:progress["readableBytes"]])) as container:
+                        stream = container.streams.video[0]
+                        self.assertAlmostEqual(float(stream.duration * stream.time_base), progress["durationSeconds"])
+                        self.assertEqual([frame.pts for frame in container.decode(stream)], [round(at * 1_000_000) for at in times[:2]])
+                finally:
+                    recorder.close()
+                finished = json.loads(path.with_suffix(".mp4.json").read_text())
+                self.assertEqual(finished["frames"], 3)
+                self.assertEqual(finished["readableBytes"], path.stat().st_size)
+                self.assertAlmostEqual(finished["durationSeconds"], times[2] + 1)
 
     def test_sample_hz_preserves_actual_frame_times_and_cold_queries(self):
         colors = [(200, 40, 60), (40, 160, 90), (70, 80, 190)]
@@ -182,19 +276,17 @@ class VideoHistoryTests(unittest.TestCase):
             finally:
                 cold.close()
 
-    def test_rotation_dimensions_generation_backward_time_and_pending(self):
+    def test_rotation_dimensions_generation_and_backward_time(self):
         with tempfile.TemporaryDirectory() as directory:
             history = ObservationHistory(directory)
             rows = []
-            for at, generation, size in (("00:00:00", "one", (31, 25)), ("00:00:11", "one", (31, 25)),
-                                         ("00:00:12", "one", (33, 25)), ("00:00:13", "two", (33, 25)),
-                                         ("00:00:12", "two", (33, 25))):
+            for at, generation, size in (("00:00:00", "one", (31, 25)), ("00:05:01", "one", (31, 25)),
+                                         ("00:05:02", "one", (33, 25)), ("00:05:03", "two", (33, 25)),
+                                         ("00:05:02", "two", (33, 25))):
                 rows.append(history.append(sample(png(size=size)), generation, SAMPLING, "2026-10-27T" + at + "Z"))
             assets = [row["media"][0]["timeline"]["asset"] for row in rows]
             self.assertEqual(len(set(assets)), 5)
             latest = rows[-1]["media"][0]["timeline"]
-            with self.assertRaisesRegex(ValueError, "pending"):
-                decode_frame(history.directory, latest["asset"], latest["video"])
             history.close()
             self.assert_picture(decode_frame(history.directory, latest["asset"], latest["video"]), (200, 40, 60), (33, 25))
 

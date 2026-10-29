@@ -174,15 +174,20 @@ CLI `rsa observe`、Python `Client().observe(query)` 与 OMP 原生 `observe` �
 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `RSA_PERCEPTION_PERSIST` | `1` | 设为 `0`（或 `false`）时仅保留内存/临时热窗口，进程停止或 `reload` 即清空。 |
-| `RSA_PERCEPTION_HOT_SECONDS` | `600` | 热窗口保留秒数（10 分钟），窗口内原图可直接内存交付。 |
-| `RSA_PERCEPTION_HOT_BYTES` | `67108864` | 热窗口字节预算（64 MiB）。 |
+| `RSA_PERCEPTION_HOT_SECONDS` | `600` | 每通道热窗口保留秒数（10 分钟），窗口内原图可直接内存交付；可被工作区设置覆盖。 |
+| `RSA_PERCEPTION_HOT_BYTES` | `1073741824` | 热窗口全局字节预算（1 GiB），压力下优先收缩占用最大的通道。 |
 | `RSA_PERCEPTION_SEGMENT_SECONDS` | `3600` | 时空轴元数据 JSONL 与索引文件的切段时长（1 小时）。 |
 | `RSA_PERCEPTION_SEGMENT_BYTES` | `268435456` | 单段元数据与非视频媒体字节上限（256 MiB）。 |
-| `RSA_VIDEO_SEGMENT_SECONDS` | `10` | MP4 视频分段时长（10 秒）；停采或更改 `sample_hz` 时立即收尾当前段。 |
+| `RSA_VIDEO_SEGMENT_SECONDS` | `300` | MP4 视频分段时长（5 分钟）；可被工作区设置覆盖。 |
+| `RSA_VIDEO_IDLE_SECONDS` | `10` | 停采后空闲收尾秒数；可被工作区设置覆盖，更改 `sample_hz` 或停止进程时也会收尾。 |
 | `RSA_VIDEO_QUEUE_BYTES` | `33554432` | 后台视频编码队列内存上限（32 MiB，含压缩输入与 RGB 缓冲）。 |
 | `RSA_VIDEO_QUEUE_FRAMES` | `64` | 后台视频编码队列最大待编码帧数。 |
 | `RSA_VIDEO_STREAMS` | `16` | 同时活跃的图像编码流数量上限（超出时最久未用流先收尾）。 |
 | `RSA_VIDEO_QUERY_BYTES` | `33554432` | 单次历史冷查询解码输出字节上限（32 MiB）。 |
+
+工作区 `.rsa/settings.json` 可覆盖 `hotSeconds`、`videoSegmentSeconds`、`videoIdleSeconds`，优先级为设置文件 > 宿主环境变量 > 内置默认。Dashboard「感知」页编辑草稿后点击“保存设置”，再执行 `rsa perception reload` 生效；“恢复继承”清除对应覆盖值，继续使用宿主环境变量或内置默认值。无运行记录的已登记工作区也可配置。设置页接受范围内的整数秒；手写文件中的有效正数秒可读取并保留，调整相应滑条后才覆盖。字节预算仍由环境变量控制。
+
+视频使用 fragmented MP4（`+frag_keyframe+empty_moov`），约每两秒采样量形成一个关键帧间隔。未收尾段中已完整落盘的片段可供读取，最新尚未落盘的帧明确返回不可读，不用邻帧替代。每段 `.mp4.json` 用 `readableBytes`、`lastReadablePts`（微秒 PTS）、`durationSeconds` 与 `frames` 发布完整片段的可读进度，收尾后更新为最终值。Dashboard 回放按固定字节范围读取，播放超出当前范围后加载新增片段；暂无可读帧时等待进度更新，错误状态不当作成功片段。热窗口按时间过期，字节超限时从占用最大的通道收缩；非持久模式的查询会报告被淘汰的历史缺口，`rsa perception status` 的 `history.budgetEvictions` 随当前进程实时更新。
 
 ## 常驻动作
 

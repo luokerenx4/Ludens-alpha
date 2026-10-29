@@ -1,6 +1,37 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { videoPosition, videoNeedsSeek, videoSyncState } from "../components/replay-video-model";
+import { replayVideoReady, selectVideoSource, videoResourceKey, videoPosition, videoNeedsSeek, videoSyncState, type VideoSource } from "../components/replay-video-model";
+
+test("pending playback retains a readable snapshot, then switches at its boundary or after a failed load", () => {
+  const first: VideoSource = { assetId: "segment", url: "/video?bytes=100", originAt: 1000,
+    width: 400, height: 240, durationSeconds: 2, status: "pending", streaming: true,
+    revision: "pending:100", readableUntil: 2900 };
+  const appended: VideoSource = { ...first, url: "/video?bytes=200", revision: "pending:200", durationSeconds: 4, readableUntil: 4900 };
+  assert.equal(selectVideoSource(first, appended, 2000, 1900, false), first);
+  assert.equal(selectVideoSource(first, appended, 3000, 3000, false), appended);
+  assert.equal(selectVideoSource(first, appended, 2000, 1900, true), appended);
+  const otherProof = { ...appended, url: "/video?bytes=200&record=next" };
+  assert.equal(selectVideoSource(appended, otherProof, 3100, 3100, false).url, appended.url);
+  const finished: VideoSource = { ...appended, status: "ready", revision: "ready", streaming: false };
+  assert.equal(selectVideoSource(appended, finished, 3100, 3100, true), finished);
+  assert.notEqual(videoResourceKey(appended), videoResourceKey(finished));
+  const another = { ...first, assetId: "next-segment", url: "/next" };
+  assert.equal(selectVideoSource(first, another, 2000, 1900, false), another);
+});
+
+test("readable pending frames can advance the common clock; unflushed or failed frames wait", () => {
+  const source: VideoSource = { assetId: "segment", url: "/video", originAt: 0, width: 400, height: 240,
+    durationSeconds: 2, status: "pending", streaming: true, revision: "pending:100", readableUntil: 1900 };
+  const ready = { url: source.assetId, ready: true };
+  assert.equal(replayVideoReady(source, ready), true);
+  assert.equal(replayVideoReady({ ...source, streaming: false }, ready), false);
+  assert.equal(replayVideoReady(source, { ...ready, ready: false }), false);
+  assert.equal(replayVideoReady(source, { ...ready, url: "other" }), false);
+  assert.equal(replayVideoReady(source), false);
+  assert.equal(replayVideoReady({ ...source, status: "error" }), true);
+  assert.equal(videoSyncState({ at: 500, originAt: 0, sampledAt: 500, duration: source.durationSeconds,
+    currentTime: 0.5, readyState: 4, seeking: false, ended: false, playing: true, clockReady: true }).play, true);
+});
 
 test("video time follows the common axis and sparse segment tails hold the final frame", () => {
   assert.equal(videoPosition(1500, 1000), 0.5);

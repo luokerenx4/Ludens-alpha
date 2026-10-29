@@ -29,12 +29,15 @@ export interface ReplayFrame {
   media: { index: number; mediaType: string; url: string; video?: {
     /** Resource identity is stable even when a different recorded frame authorizes its URL. */
     assetId: string;
+    revision: string;
     url: string;
     originAt: number;
+    readableUntil?: number;
     width: number;
     height: number;
     durationSeconds: number;
     status: "pending" | "ready" | "error" | "gap";
+    streaming?: boolean;
     reason?: string;
   } }[];
 }
@@ -69,5 +72,5 @@ export interface ReplayDetail {
 // frames/events have independent cursors and return only their own track in ReplayWindow.
 // detail: id = ReplayItem.id, or record=ReplayFrame.id&sequence=.
 // media: record=&sequence=&media=<index>; image bytes, no caller-supplied file path.
-// segment: record=&sequence=&media=; one original record authorizes the streamed video.
+// segment: record=&sequence=&media=; optional bytes= bounds an immutable published fMP4 snapshot.
 // Errors: { error: string }. All responses and controls are read-only.

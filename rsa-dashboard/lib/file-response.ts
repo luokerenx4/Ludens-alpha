@@ -1,7 +1,7 @@
 import { open } from "node:fs/promises";
 import { Readable } from "node:stream";
 
-export interface FileMedia { file: string; mediaType: string; cacheControl?: string }
+export interface FileMedia { file: string; mediaType: string; cacheControl?: string; size?: number }
 
 /** Single byte ranges keep video seeking bounded, even for very large recordings. */
 export function byteRange(value: string | null, size: number): { start: number; end: number } | null {
@@ -24,18 +24,21 @@ export async function fileResponse(request: Request, media: FileMedia): Promise<
   try {
     const stat = await handle.stat();
     if (!stat.isFile() || !Number.isSafeInteger(stat.size)) throw new Error("Invalid media file");
+    // A growing recording is served only through its published complete prefix.
+    const size = media.size ?? stat.size;
+    if (!Number.isSafeInteger(size) || size < 0 || size > stat.size) throw new Error("Invalid media snapshot size");
     const headers = new Headers({ "Content-Type": media.mediaType, "Accept-Ranges": "bytes",
       "Cache-Control": media.cacheControl ?? "no-store", "X-Content-Type-Options": "nosniff" });
     let range: ReturnType<typeof byteRange>;
-    try { range = byteRange(request.headers.get("range"), stat.size); }
+    try { range = byteRange(request.headers.get("range"), size); }
     catch {
-      headers.set("Content-Range", `bytes */${stat.size}`);
+      headers.set("Content-Range", `bytes */${size}`);
       return new Response(null, { status: 416, headers });
     }
-    const start = range?.start ?? 0, end = range?.end ?? stat.size - 1;
+    const start = range?.start ?? 0, end = range?.end ?? size - 1;
     headers.set("Content-Length", String(Math.max(0, end - start + 1)));
-    if (range) headers.set("Content-Range", `bytes ${start}-${end}/${stat.size}`);
-    if (request.method === "HEAD" || !stat.size) return new Response(null, { status: range ? 206 : 200, headers });
+    if (range) headers.set("Content-Range", `bytes ${start}-${end}/${size}`);
+    if (request.method === "HEAD" || !size) return new Response(null, { status: range ? 206 : 200, headers });
     request.signal.throwIfAborted();
     const stream = handle.createReadStream({ start, end, autoClose: true, highWaterMark: 64 * 1024 });
     ownsHandle = false;

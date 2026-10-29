@@ -5,6 +5,7 @@ import type { ReplayOverviewResult } from "@/lib/replay-types";
 import { initialSelection, latestGameRun } from "@/lib/initial-selection";
 import { ActivityFeed } from "@/components/activity-feed";
 import { useActivityFeed } from "@/components/use-activity-feed";
+import { PerceptionSettingsPanel } from "@/components/perception-settings";
 import { PetSettings } from "@/components/pet-settings";
 import { PetFollowCard, usePetFollow } from "@/components/pet-follow";
 import { DesktopBridge } from "@/components/desktop-bridge";
@@ -38,6 +39,7 @@ const views = {
   replay: ["回放", "经历回放", "在同一条时间轴上对齐感知画面、设备动作与模型调用。"],
   benchmark: ["Benchmark", "运行性能", "追踪单次请求的传输等待、缓存命中与显式调用链。"],
   caps: ["能力", "能力与评测", "查看当前工作区的设备接口快照、Python @capability 与评测任务。"],
+  perception: ["感知", "感知录制设置", "调整当前工作区的录像分段与内存加速窗口。"],
   pet: ["Ludens Pet", "Ludens Pet 陪伴", "配置桌宠关注的工作区、气泡通知与声音偏好。"],
   docs: ["文档", "项目文档", "教程、架构契约与设计洞见（从仓库 docs/ 实时读取）。"],
 } as const;
@@ -125,9 +127,11 @@ export default function Dashboard() {
           ? "caps"
           : query.get("view") === "pet"
             ? "pet"
-            : "live";
+            : query.get("view") === "perception"
+              ? "perception"
+              : "live";
   const benchmarkCases = view === "benchmark" && query.get("bench") === "cases";
-  const includeEmptyProjects = view === "caps";
+  const includeEmptyProjects = view === "caps" || view === "perception";
   const [projects, setProjects] = useState<Project[]>([]);
   const [catalogReady, setCatalogReady] = useState(false);
   const [catalogError, setCatalogError] = useState("");
@@ -214,7 +218,7 @@ export default function Dashboard() {
     };
   }, [includeEmptyProjects]);
   useEffect(() => {
-    if (benchmarkCases || view === "replay" || view === "docs" || view === "caps" || !selection.project || !run) return;
+    if (benchmarkCases || view === "replay" || view === "docs" || view === "caps" || view === "perception" || !selection.project || !run) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     const params = new URLSearchParams({
@@ -408,7 +412,7 @@ export default function Dashboard() {
             <strong>{views[view][0]}</strong>
           </div>
           <div className="context-controls">
-            {!benchmarkCases && view !== "docs" && view !== "caps" && view !== "pet" && (
+            {!benchmarkCases && view !== "docs" && view !== "caps" && view !== "perception" && view !== "pet" && (
               <>
                 <select
                   aria-label="运行记录"
@@ -469,7 +473,7 @@ export default function Dashboard() {
                 </select>
               </>
             )}
-            {view !== "replay" && view !== "docs" && view !== "caps" && view !== "pet" && <button
+            {view !== "replay" && view !== "docs" && view !== "caps" && view !== "perception" && view !== "pet" && <button
               className={"refresh-toggle" + (refresh ? " active" : "")}
               aria-pressed={refresh}
               title="只控制界面刷新，不影响 Agent"
@@ -488,7 +492,7 @@ export default function Dashboard() {
                 {benchmarkCases ? "重复评测能力，查看指标、条件与原始证据。" : views[view][2]}
               </p>
             </div>
-            {view !== "pet" && view !== "replay" && view !== "docs" && view !== "caps" && !benchmarkCases && (
+            {view !== "pet" && view !== "replay" && view !== "docs" && view !== "caps" && view !== "perception" && !benchmarkCases && (
               <button
                 className="control-button handback"
                 disabled={!data?.controlAllowed || !auto || stopping}
@@ -520,9 +524,9 @@ export default function Dashboard() {
               ))}
             </nav>
           )}
-          {!benchmarkCases && view !== "pet" && view !== "docs" && view !== "caps" && <ArchiveBuild key={selection.project + "/" + run}
+          {!benchmarkCases && view !== "pet" && view !== "docs" && view !== "caps" && view !== "perception" && <ArchiveBuild key={selection.project + "/" + run}
             project={selection.project} run={run} onReady={archiveReady} />}
-          {!benchmarkCases && view !== "docs" && view !== "caps" && (catalogError || (view !== "replay" && error)) && (
+          {!benchmarkCases && view !== "docs" && view !== "caps" && view !== "perception" && (catalogError || (view !== "replay" && error)) && (
             <div className="error-banner" role="alert">
               {catalogError || error}
               {data && (
@@ -532,6 +536,8 @@ export default function Dashboard() {
           )}
           {view === "pet" ? (
             <PetSettings follow={pet} projects={projects} />
+          ) : view === "perception" ? (
+            <PerceptionSettingsPanel key={selection.project} project={selection.project} projects={projects} />
           ) : view === "docs" ? (
             <DocsView search={search} navigate={navigate} />
           ) : view === "caps" ? (

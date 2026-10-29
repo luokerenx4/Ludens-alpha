@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReplayFrame } from "../lib/replay-types";
-import { videoSyncState } from "./replay-video-model";
+import { selectVideoSource, videoResourceKey, videoSyncState } from "./replay-video-model";
 
 type Source = NonNullable<ReplayFrame["media"][number]["video"]>;
 type Ready = (slot: string, url: string, ready: boolean) => void;
@@ -52,12 +52,11 @@ export function ReplayVideo({ source, at, sampledAt, playing, clockReady, speed,
   source: Source; at: number; sampledAt: number; playing: boolean; clockReady: boolean; speed: number; slot: string; onReady: Ready; label: string;
 }) {
   const resource = useRef(source);
-  // A proof may come from a newer frame of the same MP4. Keep the authorized URL
-  // already feeding this decoder; its bytes and resource identity have not changed.
-  if (resource.current.assetId !== source.assetId) resource.current = source;
-  source = { ...source, url: resource.current.url };
   const [shown, setShown] = useState<Source | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
+  resource.current = selectVideoSource(resource.current, source, at, sampledAt,
+    failure === videoResourceKey(resource.current));
+  source = resource.current;
   const target = useRef(source);
   target.current = source;
   const report = useCallback((url: string, ready: boolean) => {
@@ -66,19 +65,27 @@ export function ReplayVideo({ source, at, sampledAt, playing, clockReady, speed,
     onReady(slot, target.current.assetId, ready);
   }, [slot, onReady]);
   const failed = useCallback((url: string) => {
-    if (target.current.url === url) { setFailure(url); onReady(slot, target.current.assetId, true); }
+    if (target.current.url === url) {
+      setFailure(videoResourceKey(target.current));
+      onReady(slot, target.current.assetId, target.current.status !== "pending");
+    }
   }, [slot, onReady]);
-  const error = source.status === "gap" || source.status === "error" || failure === source.url;
-  const pending = source.status === "pending";
+  const failedResource = failure === videoResourceKey(source);
+  const error = source.status === "gap" || source.status === "error" || failedResource && source.status !== "pending";
+  // Fragmented segments stream while pending; legacy ones stay paused until ready.
+  const pending = source.status === "pending" && (!source.streaming || failedResource);
+  useEffect(() => {
+    if (pending) onReady(slot, source.assetId, false);
+  }, [pending, slot, source.assetId, onReady]);
   const playable = !error && !pending;
   // At most two decoders per channel, including a segment transition.
-  const sources = [...(shown && shown.url !== source.url && !error ? [shown] : []), ...(playable ? [source] : [])];
+  const sources = [...(shown && (shown.url !== source.url || !playable) && !error ? [shown] : []), ...(playable ? [source] : [])];
   return <div className="replay-video-stack">
     {sources.map(value => <Surface key={value.url} source={value} at={at} sampledAt={sampledAt} playing={playing} clockReady={clockReady}
-      speed={speed} current={value.url === source.url} visible={shown?.url === value.url}
+      speed={speed} current={playable && value.url === source.url} visible={shown?.url === value.url}
       onReady={report} onError={failed} label={label} />)}
     {error ? <div className="replay-media-missing" role="status">{source.reason ?? "视频不可用"}<small>保留此处的录制缺口。</small></div>
-      : pending ? <span className="replay-video-status" role="status">片段正在写入…{shown && " · 保留上一画面"}</span>
+      : pending ? <span className="replay-video-status" role="status">{failedResource ? "暂时无法读取，等待片段更新…" : "片段正在写入…"}{shown && " · 保留上一画面"}</span>
       : shown?.url !== source.url ? <span className="replay-video-status" role="status">正在缓冲视频…</span> : null}
   </div>;
 }

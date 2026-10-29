@@ -42,6 +42,30 @@ def _number(name, default, integer=False):
         raise ValueError(f"{name} must be a positive {'integer' if integer else 'number'}") from None
 
 
+def _workspace_settings(root):
+    """Workspace settings override environment defaults; both are optional."""
+    path = Path(root) / ".rsa" / "settings.json"
+    try:
+        value = json.loads(path.read_text())
+    except FileNotFoundError:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("Workspace settings must be a JSON object")
+    return value
+
+
+def _configured(settings, name, env, default, integer=False):
+    """File setting wins over the environment; both must be positive."""
+    value = settings.get(name)
+    if value is None:
+        return _number(env, default, integer)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+        raise ValueError(f"Setting {name} must be a positive {'integer' if integer else 'number'}")
+    if integer and int(value) != value:
+        raise ValueError(f"Setting {name} must be a positive integer")
+    return int(value) if integer else float(value)
+
+
 def _iso(at):
     return datetime.fromtimestamp(at, timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
@@ -131,9 +155,12 @@ class ObservationHistory:
         self.objects = self.directory / "objects"
         self.segment_dir = self.directory / "segments"
         self.segment_dir.mkdir(parents=True, exist_ok=True)
-        self.hot_seconds = _number("RSA_PERCEPTION_HOT_SECONDS", 600)
-        self.hot_limit = _number("RSA_PERCEPTION_HOT_BYTES", 64 * 1024 * 1024, True)
+        settings = _workspace_settings(self.root)
+        self.hot_seconds = _configured(settings, "hotSeconds", "RSA_PERCEPTION_HOT_SECONDS", 600)
+        self.hot_limit = _number("RSA_PERCEPTION_HOT_BYTES", 1024 * 1024 * 1024, True)
         self.segment_seconds = _number("RSA_PERCEPTION_SEGMENT_SECONDS", 3600)
+        self.video_segment_seconds = _configured(settings, "videoSegmentSeconds", "RSA_VIDEO_SEGMENT_SECONDS", 300)
+        self.video_idle_seconds = _configured(settings, "videoIdleSeconds", "RSA_VIDEO_IDLE_SECONDS", 10)
         self.segment_limit = _number("RSA_PERCEPTION_SEGMENT_BYTES", 256 * 1024 * 1024, True)
         persist = os.environ.get("RSA_PERCEPTION_PERSIST", "1").strip().lower()
         if persist not in {"1", "0", "true", "false"}:
@@ -142,10 +169,13 @@ class ObservationHistory:
         self.lock = threading.Lock()
         self._hot = OrderedDict()
         self._hot_media = {}
+        self._channel_order = {}  # capability key -> ordered sequences for fair eviction
+        self._channel_bytes = Counter()
+        self.budget_evictions = 0
         self._video = None
         self.hot_bytes = 0
         self._references = Counter()
-        self._expired = None  # min/max wall time and last evicted sequence, not old records.
+        self._expired = None  # min/max wall time and greatest evicted sequence, not old records.
         self._temporary = None
         self._active = None
         self._segments = []
@@ -196,7 +226,9 @@ class ObservationHistory:
     def policy(self):
         return {"persistent": self.persistent, "hotSeconds": self.hot_seconds,
                 "hotBytes": self.hot_limit, "segmentSeconds": self.segment_seconds,
-                "segmentBytes": self.segment_limit}
+                "segmentBytes": self.segment_limit,
+                "videoSegmentSeconds": self.video_segment_seconds, "videoIdleSeconds": self.video_idle_seconds,
+                "budgetEvictions": self.budget_evictions}
 
     def _save_meta(self, segment):
         path = Path(segment["path"] + ".meta.json")
@@ -298,7 +330,8 @@ class ObservationHistory:
                     if self._video is None:
                         from rsa_tools._video import VideoRecorder
                         video_dir = (self.directory if self.persistent else self._temporary) / "video"
-                        self._video = VideoRecorder(self.directory, video_dir)
+                        self._video = VideoRecorder(self.directory, video_dir,
+                            segment_seconds=self.video_segment_seconds, idle_seconds=self.video_idle_seconds)
                     channel = json.dumps([identity["id"], identity.get("codeSHA"), index, generation, item["mediaType"]])
                     location = self._video.submit(raw, channel, at, size, sample_hz=self.sample_hz)
                     archived.append({"mediaType": item["mediaType"], "sha256": hashlib.sha256(raw).hexdigest(),
@@ -336,8 +369,11 @@ class ObservationHistory:
             temporary.replace(self.directory / "sequence.json")
             paths = tuple(item.get("path") or str(self.directory / item["timeline"]["asset"]) for item in archived)
             cost = len(encoded) + media_bytes
-            self._hot[self.sequence] = (time.monotonic(), at, encoded, paths, cost, _key(record["capability"]), _key(record["id"]))
+            channel = _key(record["capability"])
+            self._hot[self.sequence] = (time.monotonic(), at, encoded, paths, cost, channel, _key(record["id"]))
             self._hot_media[self.sequence] = originals
+            self._channel_order.setdefault(channel, OrderedDict())[self.sequence] = None
+            self._channel_bytes[channel] += cost
             self.hot_bytes += cost
             self._references.update(paths)
             # Window media may expire as soon as this call releases the lock.
@@ -433,6 +469,7 @@ class ObservationHistory:
                     cost = destination.stat().st_size
                     self._hot[source["sequence"]] = (*entry[:3], (*entry[3], path_text), entry[4] + cost, *entry[5:])
                     self._references[path_text] += 1
+                    self._channel_bytes[entry[5]] += cost
                     self.hot_bytes += cost
                 # A large derivative may itself exhaust the window. Its caller
                 # still holds the delivered bytes; a later reader sees expiry.
@@ -492,24 +529,43 @@ class ObservationHistory:
             else:
                 Path(path).unlink(missing_ok=True)
 
+    def _evict(self, sequence, entry):
+        at, _encoded, paths, cost, channel = entry[1:6]
+        self._hot.pop(sequence, None)
+        self._hot_media.pop(sequence, None)
+        self.hot_bytes -= cost
+        order = self._channel_order.get(channel)
+        if order is not None:
+            order.pop(sequence, None)
+            if not order:
+                del self._channel_order[channel]
+            self._channel_bytes[channel] -= cost
+            if not self._channel_bytes[channel]:
+                del self._channel_bytes[channel]
+        if not self.persistent:
+            previous = self._expired or (at, at, 0)
+            self._expired = (min(at, previous[0]), max(at, previous[1]), max(sequence, previous[2]))
+        for path in paths:
+            self._references[path] -= 1
+            if not self._references[path]:
+                del self._references[path]
+            self._delete_unused(path)
+
     def _prune(self):
         cutoff = time.monotonic() - self.hot_seconds
+        # Time expiry first: old frames leave regardless of the byte budget.
         while self._hot:
             sequence, entry = next(iter(self._hot.items()))
-            created, at, _encoded, paths, cost = entry[:5]
-            if created > cutoff and self.hot_bytes <= self.hot_limit:
+            if entry[0] > cutoff:
                 break
-            self._hot.pop(sequence)
-            self._hot_media.pop(sequence, None)
-            self.hot_bytes -= cost
-            if not self.persistent:
-                previous = self._expired or (at, at, 0)
-                self._expired = (min(at, previous[0]), max(at, previous[1]), sequence)
-            for path in paths:
-                self._references[path] -= 1
-                if not self._references[path]:
-                    del self._references[path]
-                self._delete_unused(path)
+            self._evict(sequence, entry)
+        # Byte-budget pressure shrinks the largest channel first, so one
+        # flooding channel cannot starve another channel's recent frames.
+        while self._hot and self.hot_bytes > self.hot_limit:
+            channel = max(self._channel_bytes, key=self._channel_bytes.get)
+            sequence = next(iter(self._channel_order[channel]))
+            self.budget_evictions += 1
+            self._evict(sequence, self._hot[sequence])
 
     def prune(self):
         with self.lock:
@@ -524,6 +580,8 @@ class ObservationHistory:
                     self._video.close()
                 self._hot.clear()
                 self._hot_media.clear()
+                self._channel_order.clear()
+                self._channel_bytes.clear()
                 self._references.clear()
                 self.hot_bytes = 0
                 if self._temporary is not None:

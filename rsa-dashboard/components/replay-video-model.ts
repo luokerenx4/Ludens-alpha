@@ -1,3 +1,24 @@
+import type { ReplayFrame } from "../lib/replay-types";
+
+export type VideoSource = NonNullable<ReplayFrame["media"][number]["video"]>;
+export const videoResourceKey = (source: VideoSource) => `${source.assetId}:${source.revision}`;
+
+/** Keep one decoder while its snapshot still contains the requested sample.
+ * New proof URLs for unchanged bytes must not restart playback. */
+export function selectVideoSource(previous: VideoSource, next: VideoSource, at: number, sampledAt: number, failed: boolean): VideoSource {
+  if (videoResourceKey(previous) === videoResourceKey(next)) return { ...next, url: previous.url };
+  if (!failed && previous.assetId === next.assetId && previous.status === "pending" && next.status === "pending"
+      && previous.streaming && previous.readableUntil !== undefined
+      && Math.min(at, sampledAt) <= previous.readableUntil && at < previous.originAt + previous.durationSeconds * 1000)
+    return previous;
+  return next;
+}
+
+export function replayVideoReady(source: VideoSource, state?: { url: string; ready: boolean }) {
+  return source.status === "gap" || source.status === "error"
+    || !!((source.status === "ready" || source.streaming === true) && state?.url === source.assetId && state.ready);
+}
+
 export function videoPosition(at: number, originAt: number) {
   return Math.max(0, (at - originAt) / 1000);
 }

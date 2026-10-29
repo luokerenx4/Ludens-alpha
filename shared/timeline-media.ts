@@ -28,7 +28,7 @@ function command(root: string, ref: TimelineAssetReference) {
   if (canonical !== root)
     throw new Error("Timeline media must remain inside its canonical workspace");
   const statusPath = join(root, ref.asset + ".json");
-  let state: { status: string; error?: string };
+  let state: { status: string; format?: string; error?: string; readableBytes?: number; lastReadablePts?: number | null };
   try {
     if (realpathSync(statusPath) !== statusPath || statSync(statusPath).size > 64 * 1024)
       throw new Error("Invalid timeline video status file");
@@ -38,9 +38,15 @@ function command(root: string, ref: TimelineAssetReference) {
       throw Object.assign(new Error("Recorded video is unavailable: status is missing"), { status: 410 });
     throw error;
   }
-  if (state.status !== "ready") throw Object.assign(new Error(state.status === "pending"
-    ? "Recorded video is pending: encoding has not finished"
-    : `Recorded video is unavailable: ${state.error ?? state.status}`), { status: state.status === "pending" ? 409 : 410 });
+  // Fragmented segments are decodable while pending: fragments are already on disk.
+  if (state.status !== "ready" && !(state.status === "pending" && state.format === "fmp4"))
+    throw Object.assign(new Error(state.status === "pending"
+      ? "Recorded video is pending: encoding has not finished"
+      : `Recorded video is unavailable: ${state.error ?? state.status}`), { status: state.status === "pending" ? 409 : 410 });
+  if (state.status === "pending" && (!Number.isSafeInteger(state.readableBytes) || state.readableBytes! <= 0
+      || !Number.isSafeInteger(state.lastReadablePts) || state.lastReadablePts! < 0
+      || ref.video.pts * ref.video.timeBase[0] / ref.video.timeBase[1] > state.lastReadablePts! / 1_000_000))
+    throw Object.assign(new Error("Recorded video is pending: exact frame has not been flushed"), { status: 409 });
   try {
     if (realpathSync(join(root, ref.asset)) !== join(root, ref.asset))
       throw new Error("Timeline media must remain inside its canonical workspace");
