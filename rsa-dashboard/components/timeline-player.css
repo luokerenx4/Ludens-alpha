@@ -95,14 +95,18 @@
 .replay-event-search { min-width: 0; padding: 8px 2px 2px; }
 .replay-event-search input { min-width: 0; max-width: 100%; }
 .replay-search-empty { margin: 0; padding: 14px; border: 1px dashed var(--border); border-radius: 8px; color: var(--muted-foreground); font-size: 12px; line-height: 1.7; }
-.replay-search-results { display: grid; gap: 8px; min-width: 0; max-height: min(46dvh, 34rem); margin: 0; padding: 3px; overflow-y: auto; overscroll-behavior: contain; list-style: none; scrollbar-gutter: stable; }
+.replay-search-results { display: grid; gap: 6px; min-width: 0; max-height: min(46dvh, 34rem); margin: 0; padding: 3px; overflow-y: auto; overscroll-behavior: contain; list-style: none; scrollbar-gutter: stable; }
 .replay-search-results:empty { display: none; }
 .replay-search-results li { min-width: 0; }
-.replay-search-results a { display: block; min-width: 0; border: 1px solid var(--border); border-radius: 8px; padding: 11px; color: var(--foreground); text-decoration: none; overflow-wrap: anywhere; transition: background-color 120ms, border-color 120ms; }
+.replay-search-results a { display: block; min-width: 0; min-height: 44px; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; color: var(--foreground); text-decoration: none; overflow-wrap: anywhere; transition: background-color 120ms, border-color 120ms; }
 .replay-search-results a:hover { background: var(--accent); border-color: color-mix(in srgb, var(--primary) 40%, var(--border)); }
 .replay-search-results a[aria-current="true"] { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 10%, var(--card)); }
 .replay-search-results a:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
 .replay-search-results time { color: var(--muted-foreground); }
+.replay-search-result-meta { display: flex; min-width: 0; align-items: center; flex-wrap: wrap; gap: 4px 8px; font-size: 12px; line-height: 1.5; }
+.replay-search-result-meta > * { min-width: 0; max-width: 100%; }
+.replay-search-result-status { color: var(--muted-foreground); overflow-wrap: anywhere; }
+.replay-search-result-label { margin: 4px 0 0; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
 .replay-evidence-panel { display: flex; flex-direction: column; min-height: 0; overflow: hidden; overflow-wrap: anywhere; }
 .replay-evidence-header { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border-bottom: 1px solid var(--border); background: var(--card); }
 .replay-evidence-header h2 { margin: 0; }

@@ -1712,6 +1712,7 @@
     "clampedTime": "Moved to the end: {time}.",
     "timeFormat": "Elapsed time · hh:mm:ss",
     "eventSearchTitle": "Find a recorded event",
+    "findEvent": "Find event",
     "eventSearchHint": "Search this run and cycle by label, status, or source ID.",
     "searchLabel": "Search recorded events",
     "searchPlaceholder": "Search events…",

@@ -1712,6 +1712,7 @@
     "clampedTime": "已跳到录像末尾：{time}。",
     "timeFormat": "相对时长 · 时:分:秒",
     "eventSearchTitle": "查找已记录的事件",
+    "findEvent": "查找事件",
     "eventSearchHint": "在当前运行和周期内，按标题、状态或来源标识搜索。",
     "searchLabel": "搜索已记录的事件",
     "searchPlaceholder": "搜索事件…",
