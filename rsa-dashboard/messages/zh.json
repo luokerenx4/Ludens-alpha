@@ -559,7 +559,26 @@
     "emptyReadFailed": "活动日志读取失败。",
     "scopeMismatch": "日志属于另一个周期。",
     "retryLatestHint": "点击“回到最新”，同时读取同一范围的观测和日志。",
-    "scopeChangedError": "读取期间日志范围或索引发生变化，请点击“回到最新”重新读取一致的快照。"
+    "scopeChangedError": "读取期间日志范围或索引发生变化，请点击“回到最新”重新读取一致的快照。",
+    "copyPending": "正在复制…",
+    "fullContentLabel": "完整记录内容",
+    "provenance": {
+      "id": "记录 ID",
+      "at": "记录时间",
+      "updatedAt": "更新时间",
+      "sourceComponent": "组件",
+      "sourceImplementation": "实现",
+      "sourceVersion": "实现版本",
+      "modelCallId": "模型请求",
+      "toolCallId": "工具调用",
+      "actionId": "动作",
+      "traceId": "Trace",
+      "spanId": "Span",
+      "parentSpanId": "父 Span",
+      "epoch": "周期",
+      "eventId": "事件",
+      "seq": "事件序号"
+    }
   },
   "workspacesView": {
     "operationFailed": "工作区操作失败",
@@ -1750,6 +1769,9 @@
       "toolCallId": "工具调用",
       "actionId": "动作",
       "traceId": "追踪"
-    }
+    },
+    "panelTitle": "录制证据",
+    "close": "关闭",
+    "contentLabel": "证据内容"
   }
 }
