@@ -20,6 +20,7 @@ import { PerceptionSettingsPanel } from "@/components/perception-settings";
 import { usePetFollow } from "@/components/pet-follow";
 import { ConsoleSidebar, consoleViewIds as viewIds, type ConsoleView as View } from "@/components/console-sidebar";
 import { WorkspacePicker, workspaceName } from "@/components/workspace-picker";
+import { RunPicker } from "@/components/run-picker";
 import { DesktopBridge } from "@/components/desktop-bridge";
 import { BenchmarkCases } from "@/components/benchmark-cases";
 import { DocsView } from "@/components/docs-view";
@@ -48,21 +49,6 @@ const subscribeLocation = (listener: () => void) => {
 };
 const getLocation = () => window.location.search;
 const serverLocation = () => "";
-const runDate = (id: string) => {
-  const match = id.match(/^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})/);
-  return match
-    ? new Date(
-        match[1] + "T" + match[2] + ":" + match[3] + ":" + match[4] + "Z",
-      ).toLocaleString("zh-CN", {
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-        hour12: false,
-        timeZone: "Asia/Shanghai",
-      })
-    : id;
-};
 export default function Dashboard() {
   const { t } = useLocale();
   const dt = useTranslations("dashboard");
@@ -441,14 +427,11 @@ export default function Dashboard() {
           <div className="context-controls">
             {runControls && (
               <>
-                <NativeSelect
-                  aria-label={dt("runHistoryLabel")}
-                  className="max-w-60 text-xs"
-                  disabled={!project?.runs.length}
+                <RunPicker runs={project?.runs ?? []} latest={latest}
                   value={!refresh && !selection.run ? run : selection.run}
-                  onChange={(e) =>
-                    !e.target.value && view === "live" ? returnToLatest() : navigate({
-                      run: e.target.value,
+                  onChange={value =>
+                    !value && view === "live" ? returnToLatest() : navigate({
+                      run: value,
                       epoch: null,
                       beforeCall: null,
                       call: null,
@@ -457,20 +440,7 @@ export default function Dashboard() {
                       at: null, ...replayEvidencePatch(null),
                     })
                   }
-                >
-                  <NativeSelectOption value="">
-                    {latest ? dt("latestRun") : t("workspaceRunEmpty.noGameRuns")}
-                    {latest
-                      ? " · " + runDate(latest.id)
-                      : ""}
-                  </NativeSelectOption>
-                  {project?.runs.map((r) => (
-                    <NativeSelectOption key={r.id} value={r.id}>
-                      {runDate(r.id)}
-                      {r.kind === "benchmark" ? dt("benchSuffix") : ""}
-                    </NativeSelectOption>
-                  ))}
-                </NativeSelect>
+                />
                 <NativeSelect
                   aria-label={dt("epochLabel")}
                   className="max-w-48 text-xs"

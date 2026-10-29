@@ -2,7 +2,7 @@
 @import "tw-animate-css";
 @import "../components/capabilities-tasks.css";
 @import "../components/capabilities-declarations.css";
-@import "../components/workspace-picker.css";
+@import "../components/context-picker.css";
 
 @custom-variant dark (&:is(.dark *));
 
