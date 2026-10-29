@@ -1708,6 +1708,7 @@ pre {
 .docs-menu-trigger, .docs-headings-trigger { display: none; }
 .docs-nav { position: sticky; top: 72px; max-height: calc(100dvh - 92px); overflow-y: auto; overscroll-behavior: contain; padding-right: 4px; }
 .docs-menu-content { display: flex; flex-direction: column; gap: 12px; }
+.docs-navigation-body { scroll-padding-block: 16px; }
 .docs-group { margin-bottom: 22px; }
 .docs-group h3 { margin: 0 0 8px; padding: 0 10px; font-size: 12px; font-weight: 600; color: var(--muted-foreground); }
 .docs-nav-link { width: 100%; padding: 9px 10px; margin-bottom: 3px; border-left: 2px solid transparent; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }

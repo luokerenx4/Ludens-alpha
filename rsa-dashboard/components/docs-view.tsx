@@ -258,7 +258,7 @@ export function DocsView({ search, navigate }: {
     <span className={kind === "docs" ? "docs-menu-trigger" : "docs-headings-trigger"}><DialogTrigger asChild><Button ref={kind === "docs" ? docsTrigger : headingsTrigger} type="button" variant="outline" size="sm">
       {kind === "docs" ? <BookOpen aria-hidden="true" /> : <List aria-hidden="true" />}{t(kind === "docs" ? "docsMenu" : "onThisPage")}
     </Button></DialogTrigger></span>
-    <DialogContent ref={menuContent} showCloseButton={false} className="docs-navigation-dialog max-h-[85dvh] overflow-y-auto" onOpenAutoFocus={event => {
+    <DialogContent ref={menuContent} showCloseButton={false} className="docs-navigation-dialog max-h-[85dvh] grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden p-0" onOpenAutoFocus={event => {
       const target = menuContent.current?.querySelector<HTMLElement>(kind === "docs" ? 'input[type="search"]' : '.docs-heading-links a');
       if (target) { event.preventDefault(); target.focus(); }
     }} onCloseAutoFocus={event => {
@@ -277,11 +277,14 @@ export function DocsView({ search, navigate }: {
         focusNavigation(kind, anchor ?? docAnchor);
       });
     }}>
-      <DialogHeader className="pr-9 text-left"><DialogTitle>{t(kind === "docs" ? "docsMenu" : "onThisPage")}</DialogTitle>
-        <DialogDescription>{kind === "docs" ? t("menuDescription") : doc?.title}</DialogDescription>
-      </DialogHeader>
-      <DialogClose asChild><Button type="button" variant="ghost" size="icon-sm" aria-label={t("closeMenu")} className="absolute right-3 top-3"><X aria-hidden="true" /></Button></DialogClose>
-      {kind === "docs" ? documentMenu : headingMenu}
+      <div className="docs-navigation-header flex min-w-0 items-center justify-between gap-3 border-b px-5 py-3">
+        <DialogHeader className="min-w-0 text-left"><DialogTitle>{t(kind === "docs" ? "docsMenu" : "onThisPage")}</DialogTitle></DialogHeader>
+        <DialogClose asChild><Button type="button" variant="ghost" size="icon-sm" aria-label={t("closeMenu")} className="shrink-0"><X aria-hidden="true" /></Button></DialogClose>
+      </div>
+      <div className="docs-navigation-body min-h-0 min-w-0 overflow-y-auto overscroll-contain px-5 py-4">
+        <DialogDescription className="mb-4 break-words">{kind === "docs" ? t("menuDescription") : doc?.title}</DialogDescription>
+        {kind === "docs" ? documentMenu : headingMenu}
+      </div>
     </DialogContent>
   </Dialog>;
 
