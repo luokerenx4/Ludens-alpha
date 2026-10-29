@@ -69,7 +69,7 @@ TS/Python API 与 CLI 统一返回完整的 `ExecutionResult` 信封，而 MCP �
 ## 控制权独立于能力描述
 
 - **`requiresControl` 与 `readOnlyHint` 正交**：`requiresControl` 是 Baseware 的执行门禁，而非工具 schema 的业务参数。一项能力可以既是只读查询（`readOnlyHint: true`，例如读取当前手柄合成状态 `pad.state`），同时又要求调用方持有有效控制 `epoch`（`requiresControl: true`）。未显式声明只读的 CUA 工具默认要求控制权。
-- **租约持有与释放保护**：控制权由 RSA Host 的持久连接申请并持有，单次 CLI / API / MCP 调用仅通过环境变量 `BASEWARE_EPOCH` 继承租约，绝不会因调用工具而自动夺取控制权。当租约到期、人工执行 `revoke` / `auto off` 或持有者断线时，Baseware 立即触发 Driver `release()`。只有当底层清理成功返回后，状态才切回 `manual`；若底层释放失败，Baseware 会将状态标记为 `connected: false` 并拒绝后续接管，防止在未知残留输入下继续运行。
+- **租约持有与释放保护**：控制权由 RSA Host 的持久连接申请并持有，单次 CLI / API / MCP 调用仅通过环境变量 `BASEWARE_EPOCH` 继承租约，绝不会因调用工具而自动夺取控制权。当租约到期、人工执行 `revoke` / `auto off` 或持有者断线时，Baseware 立即触发 Driver `release()`，包括仍在获取控制权的 Controller。获取和清理都有超时；若获取超时或清理失败，撤权后虽回到 `manual`，但会保持 `connected: false` 并拒绝后续接管。迟到的获取仅触发原 `epoch` 的补偿释放，不会恢复自动控制。
 - **连接级幂等**：同一 Driver 下的多项 Controller 共享同一设备连接，`acquire(epoch)` 与 `release(epoch)` 在 Driver 层保持幂等，不会因能力拆分为多个工具而重复握手。
 
 ## 媒体、时间与日志
@@ -100,10 +100,12 @@ Baseware 支持通过 `--driver <id> --driver-package <spec>` 加载外部驱动
 `<spec>` 支持三类格式：
 
 1. **npm 包**：如 `@scope/pkg@1.2.0`，由 Bun 安装至仓库外的缓存目录（默认 `~/.local/state/ludens/baseware/drivers/`；设置 `XDG_STATE_HOME` 时使用其下的 `ludens/baseware/drivers/`）；
-2. **GitHub 仓库**：如 `github:org/repo#commit-sha` 或完整 GitHub URL，按仓库与 revision 独立缓存，完成检出与依赖安装后按 `package.json` 的 `exports` 解析入口；
+2. **GitHub 仓库**：如 `github:org/repo#commit-sha`、完整 GitHub HTTPS URL 或 `git@github.com:org/repo.git#rev`。SSH 地址保留 SSH 传输；缓存按传输方式、仓库与 revision 区分。完成检出与依赖安装后按 `package.json` 的 `exports` 解析入口；
 3. **本地目录或入口文件**：`file:/absolute/path` 或 `file:relative/path`；Baseware CLI 的相对路径从当前目录解析，RSA 工作区配置中的相对路径从工作区根目录解析。
 
 为保证实验可重现，生产与评测中应固定精确的 npm 版本号或 Git commit SHA。
+
+加载器记录实际解析的包来源，供 catalog 的 `drivers[].source`、Baseware `service_start.driverSource` 与 RSA `manifest.drivers[].source` 使用：GitHub 记录 `requestedRevision`、`transport` 与实际检出的 `resolvedCommit`；npm 记录 `packageName` 与实际安装的 `resolvedVersion`；本地 `file:` 记录入口路径与 `entrySha256`。文件哈希仅覆盖导入的入口文件，不覆盖其依赖。来源信息由加载器生成，外部包不能自行覆盖；`provider.version` 仍表示设备或协议版本，不作为包版本。
 
 ### 2. `DriverRegistration` 与 `DriverManifest` 契约
 
@@ -127,7 +129,7 @@ Baseware 支持通过 `--driver <id> --driver-package <spec>` 加载外部驱动
 仓库不维护中心化的第三方驱动白名单。用户可通过以下命令检验任意驱动包的静态注册声明是否合规：
 
 ```sh
-baseware driver discover --package github:org/repo#rev
+baseware driver discover --package 'github:org/repo#rev'
 ```
 
 - **验证范围**：`discover` 会下载并安装依赖、导入包入口模块、校验 `DriverRegistration` 字段合法性并输出 JSON 格式的 `DriverManifest`；若字段缺失或类型非法则以非零状态码退出。

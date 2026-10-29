@@ -114,8 +114,26 @@ class FakeServices implements LaunchIO {
   }
 }
 
-const plan = () => launchPlan(parseConfig({ driver: "bridge-fixture", game: "games/A game; $(touch BAD).nsp" }, manifestFor("bridge-fixture")),
+const plan = () => launchPlan(parseConfig({ driver: "bridge-fixture", game: "games/A game; $(touch BAD).nsp", pet: true }, manifestFor("bridge-fixture")),
   "/tmp/Workspace with spaces", "/tmp/Source with spaces", "/tmp/baseware-test.sock", manifestFor("bridge-fixture"));
+
+test("default web startup starts the Dashboard without launching or waiting for Electron", async () => {
+  const config = parseConfig({ driver: "cua" }, manifestFor("cua"));
+  expect(config).toMatchObject({ dashboard: true, pet: false });
+  const value = await launchPlan(config, "/tmp/Web workspace", "/tmp/Source", "/tmp/web-baseware.sock", manifestFor("cua"));
+  expect(value.commands.pet).toBeUndefined();
+  const io = new FakeServices(value);
+  io.petReadyAfter = Infinity;
+  const launcher = new WorkspaceLauncher(value, io);
+  await launcher.up();
+  expect(io.starts).toEqual(["baseware", "host", "dashboard"]);
+  expect(io.clock).toBe(0);
+  // Disabling startup must also leave a Pet opened by another workspace alone.
+  io.seed("pet");
+  await launcher.up();
+  expect(io.jobs.has(io.target("pet"))).toBe(true);
+  expect(io.calls.some(argv => argv[1] === "bootout")).toBe(false);
+});
 
 test("system Pet readiness uses the Dashboard pet endpoint", async () => {
   const paths: string[] = [];
@@ -276,7 +294,12 @@ test("init and dry-run preserve existing workspace files and never invoke servic
     const configBefore = await readFile(join(workspace, "rsa.json"), "utf8");
     const preview = await run("up", "--dry-run");
     expect(preview.code).toBe(0);
-    expect(JSON.parse(preview.stdout)).toMatchObject({ workspace: await realpath(workspace), config: { seconds: 600 } });
+    expect(JSON.parse(preview.stdout)).toMatchObject({ workspace: await realpath(workspace), config: { seconds: 600, pet: false } });
+    expect(JSON.parse(preview.stdout).commands.pet).toBeUndefined();
+    const withPet = await run("up", "--pet", "--dry-run");
+    expect(withPet.code).toBe(0);
+    expect(JSON.parse(withPet.stdout).commands.pet).toBeDefined();
+    expect((await run("up", "--pet", "--no-pet", "--dry-run")).stderr).toContain("Choose either --pet or --no-pet");
     const repeated = await run("init", "--driver", "cua");
     expect(repeated.code).not.toBe(0);
     expect(repeated.stderr).toContain("EEXIST");
@@ -286,11 +309,16 @@ test("init and dry-run preserve existing workspace files and never invoke servic
     expect(await readFile(join(workspace, "perception.py"), "utf8")).toContain("NotImplementedError");
     expect(await readFile(join(workspace, "action.py"), "utf8")).toContain("NotImplementedError");
     const desktop = join(directory, "Desktop workspace");
-    expect((await run("--workspace", desktop, "init", "--driver", "cua", "--cua-command", "./tools/cua-driver")).code).toBe(0);
+    expect((await run("--workspace", desktop, "init", "--driver", "cua", "--cua-command", "./tools/cua-driver", "--pet")).code).toBe(0);
     const desktopPreview = await run("--workspace", desktop, "up", "--dry-run");
     expect(desktopPreview.code).toBe(0);
-    expect(JSON.parse(desktopPreview.stdout)).toMatchObject({ config: { driver: "cua", cuaCommand: "./tools/cua-driver" } });
+    expect(JSON.parse(desktopPreview.stdout)).toMatchObject({ config: { driver: "cua", cuaCommand: "./tools/cua-driver", pet: true } });
     expect(JSON.parse(desktopPreview.stdout).commands.emulator).toBeUndefined();
+    expect(JSON.parse(desktopPreview.stdout).commands.pet).toBeDefined();
+    const webOnly = await run("--workspace", desktop, "up", "--no-pet", "--dry-run");
+    expect(webOnly.code).toBe(0);
+    expect(JSON.parse(webOnly.stdout).commands.pet).toBeUndefined();
+    expect(JSON.parse(await readFile(join(desktop, "rsa.json"), "utf8")).pet).toBe(true);
     expect(await Bun.file(marker).exists()).toBe(false);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
@@ -389,8 +417,8 @@ test("down waits for takeover cleanup, stops only owned jobs, and keeps the shar
 });
 
 test("two workspaces reuse one Ludens Pet process and either workspace can explicitly stop it", async () => {
-  const first = await launchPlan(parseConfig({ driver: "cua" }, manifestFor("cua")), "/tmp/First workspace", "/tmp/Source", "/tmp/first-baseware.sock", manifestFor("cua"));
-  const second = await launchPlan(parseConfig({ driver: "cua" }, manifestFor("cua")), "/tmp/Second workspace", "/tmp/Source", "/tmp/second-baseware.sock", manifestFor("cua"));
+  const first = await launchPlan(parseConfig({ driver: "cua", pet: true }, manifestFor("cua")), "/tmp/First workspace", "/tmp/Source", "/tmp/first-baseware.sock", manifestFor("cua"));
+  const second = await launchPlan(parseConfig({ driver: "cua", pet: true }, manifestFor("cua")), "/tmp/Second workspace", "/tmp/Source", "/tmp/second-baseware.sock", manifestFor("cua"));
   const firstIO = new FakeServices(first);
   const firstStatus = await new WorkspaceLauncher(first, firstIO).up();
   const firstPet = firstStatus.jobs.find(job => job.name === "pet")!;
@@ -436,13 +464,14 @@ test("managed Ludens Pet startup waits for its activity connection after the pro
   expect(io.starts.filter(name => name === "pet")).toEqual(["pet"]);
 });
 
-test("shared launchd options preserve the working directory and external driver cache environment", async () => {
+test("shared launchd options preserve the working directory, Python override and driver cache environment", async () => {
   const directory = await mkdtemp(join(tmpdir(), "rsa-shared-launch-"));
   try {
     const bin = join(directory, "bin");
     const stableCwd = join(directory, "source");
     const logs = join(directory, "shared", "alice", "background");
     const driverState = join(directory, "isolated driver state");
+    const python = join(directory, "custom Python", "bin", "python3");
     await mkdir(bin);
     await mkdir(stableCwd);
     const launchctl = join(bin, "launchctl");
@@ -451,7 +480,7 @@ test("shared launchd options preserve the working directory and external driver 
     const script = resolve(import.meta.dir, "../scripts/launch-background.py");
     const child = Bun.spawn(["/usr/bin/python3", script, "--label", "dev.ludens.pet", "--log-dir", logs, "pet", "/bin/echo", "--workspace", "/tmp/seed workspace"], {
       cwd: stableCwd, env: { ...process.env, PATH: bin, RSA_WORKSPACE: "/tmp/stale",
-        XDG_STATE_HOME: driverState,
+        XDG_STATE_HOME: driverState, RSA_PYTHON: python,
         RSA_PERCEPTION_PERSIST: "0", RSA_PERCEPTION_HOT_SECONDS: "600" }, stdout: "pipe", stderr: "pipe",
     });
     const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
@@ -469,6 +498,7 @@ test("shared launchd options preserve the working directory and external driver 
     expect(plist).toContain(`<string>${join(canonicalLogs, "pet.log")}</string>`);
     expect(plist).not.toContain("RSA_WORKSPACE");
     expect(plist).toContain(`<key>XDG_STATE_HOME</key>\n\t\t<string>${driverState}</string>`);
+    expect(plist).toContain(`<key>RSA_PYTHON</key>\n\t\t<string>${python}</string>`);
     expect(plist).toContain("<key>RSA_PERCEPTION_PERSIST</key>\n\t\t<string>0</string>");
     expect(plist).toContain("<key>RSA_PERCEPTION_HOT_SECONDS</key>\n\t\t<string>600</string>");
     expect(await readdir(stableCwd)).toEqual([]);

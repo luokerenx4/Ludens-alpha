@@ -9,21 +9,20 @@
 ### 1. 环境前提与凭据
 
 - **操作系统**：完整后台服务编排（`rsa up` / `rsa down` / `rsa services`）依赖 **macOS launchd**。
-- **工具链**：准备 **Bun 1.4**、**Python 3.12+**、**Node.js 22+**、**pnpm 11** 与 **uv**。
+- **工具链**：准备 **Bun 1.4**、**Python 3.12+**、**Node.js 22.x（22.13 起）或 24+** 与 **uv**。可选桌宠另需 **pnpm 11**。
 - **模型凭据**：启动 Agent 前需在本机完成 **OMP 模型登录**。RSA 固定使用 **OMP 18.9.1** 并直接复用其凭据存储，默认模型为 `openai-codex/gpt-6.1-sol`。
 
-### 2. 安装各组件依赖
+### 2. 安装核心组件
 
-五个子目录各自维护独立锁文件。安装 `rsa` 时，Bun 会按 `package.json` 自动应用 [rsa/patches/](../../rsa/patches/) 下的 OMP 依赖补丁：
+默认安装 Baseware、RSA 与网页 Dashboard，各组件及 RSA Python 运行时分别维护独立锁文件。安装 `rsa` 时，Bun 会按 `package.json` 自动应用 [rsa/patches/](../../rsa/patches/) 下的 OMP 依赖补丁：
 
 ```sh
 (cd baseware && bun install --frozen-lockfile)
 (cd rsa && bun install --frozen-lockfile)
 uv sync --project rsa/python --frozen
 (cd rsa-dashboard && npm ci && npm run build)
-(cd rsa-companion && pnpm install --frozen-lockfile && pnpm build)
 
-export PATH="$PWD/baseware/bin:$PWD/rsa/bin:$PWD/rsa-companion/bin:$PATH"
+export PATH="$PWD/baseware/bin:$PWD/rsa/bin:$PATH"
 ```
 
 `export PATH` 仅对当前终端生效；新开终端请同步配置 shell profile 或使用 `baseware/bin/baseware`、`rsa/bin/rsa` 绝对路径。
@@ -39,6 +38,22 @@ export PATH="$PWD/baseware/bin:$PWD/rsa/bin:$PWD/rsa-companion/bin:$PATH"
 3. 系统 `PATH` 中的 `python3`。
 
 OMP 原生 shell 会自动注入 `RSA_PYTHON`。在工作区脚本中若需复用 `rsa_tools` 及框架依赖，应调用 `"$RSA_PYTHON" script.py`；直接运行裸 `python3` 仍遵循用户 login shell，不等同于框架虚拟环境。若将 `RSA_PYTHON` 指向外部训练环境（如包含 PyTorch 的 conda/venv），需在该环境中预先安装 `rsa/python` 包及其依赖。
+
+`rsa up` 新建后台服务时会保留当前环境中的 `RSA_PYTHON`。若服务已经运行，修改终端环境不会更新它；需停止并重新启动相关服务后才会使用新解释器。
+
+## 可选桌宠
+
+默认通过浏览器访问 Dashboard，运行游戏与查看控制台无需安装 Electron。需要 Ludens Pet 时，准备 **pnpm 11**，在仓库根目录执行：
+
+```sh
+(cd rsa-companion && pnpm install --frozen-lockfile && pnpm build)
+```
+
+新建工作区时，在所选 `rsa init --driver ...` 命令中追加 `--pet`，显式启用桌宠。已有工作区可在 `rsa.json` 设置 `"pet": true`，下次 `rsa up` 时按需启动；已有文件中的显式 `pet: true` 保持启用。设为 `"pet": false` 可在后续启动时仅使用网页控制台。
+
+也可用 `rsa up --pet` 或 `rsa up --no-pet` 仅覆盖本次启动，不修改 `rsa.json`；这两个选项不能同时使用。`pet: false` 和 `--no-pet` 都不会关闭已经运行的共享桌宠，需从桌宠托盘菜单选择 Quit 退出。
+
+桌宠需要可用的 Dashboard，与浏览器使用同一份控制台和日志。默认 `dashboard: true` 会按需启动 Dashboard；设为 `false` 时需自行启动。需要单独启动或调试时，见 [Ludens Pet 桌面伴侣](debugging-and-verification.md#3-ludens-pet-桌面伴侣)。
 
 ## 工作区启动与停止
 
@@ -66,15 +81,15 @@ rsa auto on
 
 | 命令 | 行为与边界 |
 | --- | --- |
-| `rsa init` | 生成 `rsa.json` 及缺失的 `AGENTS.md`、`perception.py`、`action.py` 模板，绝不覆盖已有文件。 |
+| `rsa init` | 生成 `rsa.json` 及缺失的 `AGENTS.md`、`perception.py`、`action.py` 模板，绝不覆盖已有文件。默认使用网页控制台；加 `--pet` 显式启用已安装的桌宠。 |
 | `rsa up --dry-run` | 校验配置并打印完整进程启动计划，不实际拉起服务；需要新启动 Dashboard 时，实际 `rsa up` 才执行其构建检查。 |
-| `rsa up` | 按需启动或复用模拟器、Baseware、Host、Dashboard 与 Ludens Pet。新启动的 Host 处于 `manual` 模式；若复用已在 `auto` 运行的 Host 则继续原控制周期。重复 `up` 不会热加载修改后的 `rsa.json`。 |
+| `rsa up [--pet / --no-pet]` | 按需启动或复用模拟器、Baseware、Host 与 Dashboard；按 `pet` 设置启用桌宠，也可用互斥的 `--pet` / `--no-pet` 仅覆盖本次启动，不写回配置。新启动的 Host 处于 `manual` 模式；若复用已在 `auto` 运行的 Host 则继续原控制周期。重复 `up` 不会热加载修改后的 `rsa.json`，复用现有 Dashboard 也不会热更新其构建。 |
 | `rsa services` | 查询当前工作区关联的 launchd 任务 PID、状态与最近退出码。 |
 | `rsa auto on [--message '文本']` | 开启新控制周期（生成新 `epoch`，重置时间与请求预算）并向模型发起推理。`--message` 仅在该次接管的首轮附加一次，后续续轮不重复注入。 |
 | `rsa auto off` | 立即撤销设备操作权并取消 RSA 管理的在途调用，模拟器保持运行；需等待当前周期清理完毕后方可再次 `auto on`。 |
 | `rsa action status / reload / stop` | 管理工作区 `action.py` 常驻动作进程。`manual` 下 `reload` 仅标记就绪；`auto` 下 `stop` 或 `reload` 会清空本工作区全部当前设备输入（含并发 CLI 输入），释放成功后保留当前 `epoch`、OMP 会话与剩余预算。详见 [常驻感知与动作循环](perception-and-action.md#常驻动作)。 |
 | `rsa down --keep-emulator` | 交还控制权并停止 Host 与 Baseware，保留模拟器窗口与游戏现场；适合修改 `rsa.json`（如预算或模型）后重新 `rsa up`。 |
-| `rsa down [--dashboard] [--pet]` | 停止本工作区受管的 Host、Baseware 与模拟器（**执行前请先在游戏内保存进度**）。默认保留共享的 Dashboard 与 Ludens Pet；附加 `--dashboard`（仅限启动它的工作区）或 `--pet` 可一并关闭对应共享服务。 |
+| `rsa down [--dashboard] [--pet]` | 停止本工作区受管的 Host、Baseware 与模拟器（**执行前请先在游戏内保存进度**）。默认保留共享的 Dashboard 与已运行的 Ludens Pet；附加 `--dashboard`（仅限启动它的工作区）或 `--pet` 可一并关闭对应共享服务。 |
 
 跨目录操作工作区时，可在任意命令前传入 `rsa --workspace /absolute/path/to/workspace <subcommand>` 或设置环境变量 `RSA_WORKSPACE`。
 
@@ -94,7 +109,7 @@ rsa auto on
 | `requests` | `1000` | 单次 `auto on` 控制周期的模型请求次数上限，与 `seconds` 先到即交还控制。 |
 | `compactionThreshold` | 不设 | OMP 上下文压缩触发阈值（token 数）；省略时跟随所选模型的 OMP 原生阈值（`contextWindow - reserve`）。 |
 | `dashboard` | `true` | `rsa up` 时是否确保本地 Dashboard 服务运行。 |
-| `pet` | `true` | `rsa up` 时是否拉起共享 Ludens Pet 桌宠（依赖 `dashboard: true`）。 |
+| `pet` | `false` | 是否在 `rsa up` 时拉起共享 Ludens Pet；需先安装可选组件并确保 Dashboard 可用。`rsa init --pet` 会写入 `true`，已有显式 `true` 不变；`rsa up --pet` / `--no-pet` 仅覆盖当次启动。 |
 | `logging.diagnostics` | `"normal"` | 日志详细度，可选 `"normal"` 或 `"full"`；详见 [记录模式](../reference/logging.md#记录模式)。 |
 
 ### 3. 会话续接与后台服务目录

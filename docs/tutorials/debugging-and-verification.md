@@ -2,6 +2,8 @@
 
 本篇介绍各组件包脚本命名约定、如何在不依赖 `launchd` 的情况下前台单步调试 Baseware / Host / Dashboard / Ludens Pet，以及如何运行全仓离线检查与模拟器实机测试。常规整套启停见 [安装与工作区启停](quickstart.md)。
 
+除显式 `cd` 的命令块外，以下命令均在**仓库根目录**执行。切换到工作区进行前台调试后，运行后续组件命令前请回到仓库根目录。默认使用浏览器控制台；桌宠相关命令需先完成 [可选桌宠安装](quickstart.md#可选桌宠)。
+
 ## 脚本命名与命令目录
 
 各包的 `package.json` 脚本遵循同一套命名规则，包管理器与锁文件保持各组件现有选择：
@@ -11,7 +13,7 @@
 - 默认 `test` 包含集成测试，不得将其命名为 `unit`。检查已有构建产物使用 `build:check`，该命令只检查，不执行构建。
 - 命令改名时同步调用方与文档，不保留旧别名。
 
-以下命令均在对应组件目录执行。Bun 包使用 `bun run <命令>`，Dashboard 使用 `npm run <命令>`，Companion 使用 `pnpm <命令>`：
+命令目录中的脚本在对应组件目录执行。Bun 包使用 `bun run <命令>`，Dashboard 使用 `npm run <命令>`，可选 Companion 使用 `pnpm <命令>`：
 
 | 组件目录 | 包级命令 | 专用命令与入口 |
 | --- | --- | --- |
@@ -54,7 +56,7 @@ rsa run --model openai-codex/gpt-6.1-sol --seconds 300 --requests 50
 (cd rsa-dashboard && npm run build && npm run start)
 ```
 
-`rsa up` 在拉起设备前会调用 `npm run build:check` 校验 `rsa-dashboard` 的构建产物与当前源码指纹；若未构建或源码已更新，会明确提示先执行 `npm run build`，绝不静默运行过期界面。停止或重启 Dashboard 不会影响正在运行的 Host、Baseware 与模拟器。
+`rsa up` 需要新启动 Dashboard 时，会在拉起设备前调用 `npm run build:check` 校验构建产物与当前源码指纹；若未构建或源码已更新，会提示先执行 `npm run build`。如果已有 Dashboard API 可用，`rsa up` 会直接复用，不检查或热更新该进程的构建。更新生产控制台时需重新构建并重启 Dashboard；仅停止或重启 Dashboard 不会停止正在运行的 Host、Baseware 与模拟器。
 
 打开浏览器访问 `http://127.0.0.1:3015` 即可使用控制台：
 
@@ -66,7 +68,7 @@ rsa run --model openai-codex/gpt-6.1-sol --seconds 300 --requests 50
 
 ### 3. Ludens Pet 桌面伴侣
 
-在终端运行 `rsa-companion/bin/rsa-companion --show-window` 可启动 Electron 桌面端，其主窗口加载同一份 Dashboard 控制台，桌宠角色（卢登斯）与气泡消费同一套增量活动日志。
+这是可选组件，网页控制台不依赖 Electron。完成 [可选桌宠安装](quickstart.md#可选桌宠) 并启动 Dashboard 后，在仓库根目录运行 `rsa-companion/bin/rsa-companion --show-window` 可单独启动桌面端；其主窗口加载同一份 Dashboard 控制台，桌宠角色（卢登斯）与气泡消费同一套增量活动日志。通过 `rsa up` 管理桌宠时，在新工作区的 `rsa init` 命令中追加 `--pet`，或在已有 `rsa.json` 设置 `pet: true`。`rsa up --pet` / `--no-pet` 可临时覆盖配置，两者互斥且不写回文件；`--no-pet` 不会关闭已运行的共享桌宠。
 
 - **工作区跟随**：在 Dashboard 界面点击“让 Ludens Pet 跟随此工作区”即可实时热切换关注目标（状态保存在 `../artifacts/rsa/.pet-target.json`）；浏览历史回放不会改变桌宠当前跟随的活跃工作区。
 - **启动参数**：`--workspace PATH`（或 `RSA_WORKSPACE`）指定首次默认工作区，`--dashboard URL` 指定控制台地址，`--profile PATH` 指定独立偏好目录（默认位于 Electron `appData` 下的 `RSA Ludens Pet`），`LUDENS_DISABLE_COMPANION=1` 可禁用桌宠挂件。关闭主窗口仅隐藏到托盘，双击桌宠或通过系统托盘菜单可重新唤出，选择 Quit 才彻底退出进程。
@@ -76,13 +78,18 @@ rsa run --model openai-codex/gpt-6.1-sol --seconds 300 --requests 50
 
 ### 1. 离线全量检查
 
-默认自动化检查完全离线，不连接外部模型或真实模拟器：
+以下核心组件检查完全离线，不连接外部模型或真实模拟器：
 
 ```sh
 (cd baseware && bun run typecheck && bun test)
 python3 baseware/scripts/sync-cua-contract.py --check
 (cd rsa && bun run typecheck && bun run test)
 (cd rsa-dashboard && npm test && npm run typecheck && npm run build)
+```
+
+已安装可选桌宠组件时，再执行其现有检查：
+
+```sh
 (cd rsa-companion && pnpm typecheck && pnpm test)
 ```
 

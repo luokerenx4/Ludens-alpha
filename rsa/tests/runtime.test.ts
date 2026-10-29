@@ -3,7 +3,7 @@ import { rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { Capabilities, Controller } from "@ludens/baseware/contracts";
 import { captureResult, createTestRuntime, createTestDeviceSession, readTestController } from "./runtime-fixture.ts";
-import { Runtime } from "../src/harness/runtime.ts";
+import { Runtime, type DeviceSession } from "../src/harness/runtime.ts";
 import { WorkspaceController } from "../src/harness/controller.ts";
 import { dispatch, listen, send } from "../src/harness/transport.ts";
 
@@ -290,4 +290,47 @@ test("off during acquisition revokes ownership as soon as the provider grants it
   expect(runtime.status().mode).toBe("manual");
   expect(owner()).toBeUndefined();
   await runtime.close();
+});
+
+test("off cancels acquisition, bounds an uncooperative session, and releases its late grant", async () => {
+  const gate = Promise.withResolvers<void>();
+  let nativeOwner: string | undefined, acquisitionSignal: AbortSignal | undefined, releases = 0;
+  const devices: DeviceSession = {
+    catalog: { drivers: [], controllers: [] },
+    async acquire(epoch, signal) { acquisitionSignal = signal; await gate.promise; nativeOwner = epoch; },
+    async release(epoch) { releases++; if (nativeOwner === epoch) nativeOwner = undefined; },
+    async execute() { throw new Error("unused"); },
+  };
+  const runtime = new Runtime(devices, () => {}, 30, "fixture", "normal", undefined, 20);
+  const start = runtime.start().catch(error => error);
+  try {
+    const stop = runtime.stop();
+    expect(acquisitionSignal?.aborted).toBe(true);
+    expect(releases).toBe(1); // Handback is requested before acquisition completes.
+    expect(await Promise.race([stop.then(() => true), Bun.sleep(500).then(() => false)])).toBe(true);
+    expect(String(await start)).toContain("acquisition timed out");
+    expect(runtime.status()).toMatchObject({ mode: "manual", connected: false, epoch: null });
+    await expect(runtime.start()).rejects.toThrow("disconnected");
+    gate.resolve();
+    await Bun.sleep(0);
+    expect(releases).toBe(2);
+    expect(nativeOwner).toBeUndefined();
+    expect(runtime.status()).toMatchObject({ mode: "manual", connected: false, epoch: null });
+  } finally { gate.resolve(); await runtime.close(); }
+});
+
+test("a stuck device release completes stop as disconnected instead of admitting another takeover", async () => {
+  const gate = Promise.withResolvers<void>();
+  const devices: DeviceSession = {
+    catalog: { drivers: [], controllers: [] },
+    async acquire() {}, async release() { await gate.promise; },
+    async execute() { throw new Error("unused"); },
+  };
+  const runtime = new Runtime(devices, () => {}, 30, "fixture", "normal", undefined, 20);
+  try {
+    await runtime.start();
+    expect(await Promise.race([runtime.stop().then(() => true), Bun.sleep(500).then(() => false)])).toBe(true);
+    expect(runtime.status()).toMatchObject({ mode: "manual", connected: false, epoch: null });
+    await expect(runtime.start()).rejects.toThrow("disconnected");
+  } finally { gate.resolve(); await runtime.close(); }
 });

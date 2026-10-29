@@ -85,10 +85,14 @@ export async function connectBaseware(options: { socket: string; seconds: number
     if (initial.source) eventSources.push({ ...initial.source, recordingId,
       windows: [{ afterSeq: initial.seq ?? 0, throughSeq: initial.seq ?? 0 }] });
     const watermark = setInterval(persistSources, 5000); watermark.unref();
-    async function acquire(epoch: string) {
+    async function acquire(epoch: string, signal?: AbortSignal) {
+      signal?.throwIfAborted();
+      if (disconnected) throw disconnected;
+      if (owner || pendingOwner) throw new Error("Baseware control is already owned or changing");
       pendingOwner = epoch;
       try {
-        const state = await client.request({ kind: "acquire", epoch, seconds: options.seconds, trace: { recordingId } }) as ControlStatus;
+        const state = await client.request({ kind: "acquire", epoch, seconds: options.seconds, trace: { recordingId } }, signal) as ControlStatus;
+        signal?.throwIfAborted();
         if (pendingOwner !== epoch || state.mode !== "auto" || state.epoch !== epoch || !state.connected
           || state.remainingSeconds === null || state.remainingSeconds <= 0) {
           throw new Error("Baseware control acquisition was revoked before completion");
@@ -97,9 +101,15 @@ export async function connectBaseware(options: { socket: string; seconds: number
       } finally { if (pendingOwner === epoch) pendingOwner = undefined; }
     }
     async function release(epoch: string) {
-      if (owner !== epoch) return;
+      if (owner !== epoch && pendingOwner !== epoch) return;
       owner = undefined;
-      await client.request({ kind: "release", epoch, trace: { recordingId } });
+      pendingOwner = undefined;
+      const state = await client.request({ kind: "release", epoch, trace: { recordingId } }) as ControlStatus;
+      if (!state.connected) {
+        const error = new Error("Baseware driver disconnected during control release");
+        disconnect(error);
+        throw error;
+      }
     }
     const session: DeviceSession = {
       catalog, acquire, release, diagnostics: initial.diagnostics ?? "normal",

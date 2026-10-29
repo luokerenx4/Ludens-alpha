@@ -38,7 +38,7 @@ Drivers expose device capabilities, not game strategies. Screen processing, coor
 ### 1. Prepare the prerequisites
 
 - **macOS** for `rsa up`, `rsa down`, and `rsa services`, which use launchd.
-- **Bun 1.4**, **Python 3.12+**, **Node.js 22+**, **pnpm 11**, and **uv**.
+- **Bun 1.4**, **Python 3.12+**, **Node.js 22.x (22.13 or later) or 24+**, and **uv**. The optional desktop pet also requires **pnpm 11**.
 - Local **OMP model credentials** configured before starting the agent. RSA reuses OMP authentication; the default model is `openai-codex/gpt-6.1-sol`.
 - One prepared environment from the table above. ROMs, firmware, keys, and saves are not included.
 
@@ -46,7 +46,7 @@ For device preparation and model configuration, see [Devices & Drivers](docs/tut
 
 ### 2. Install the components
 
-Each component has its own dependency lockfile. RSA includes a TypeScript host and a packaged Python runtime; `uv sync` installs the latter into `rsa/python/.venv`.
+The default setup uses Baseware, RSA and the browser Dashboard. Each component has its own dependency lockfile. RSA includes a TypeScript host and a packaged Python runtime; `uv sync` installs the latter into `rsa/python/.venv`.
 
 ```sh
 git clone https://github.com/luokerenx4/Ludens-alpha.git
@@ -55,10 +55,9 @@ cd Ludens-alpha
 (cd baseware && bun install --frozen-lockfile)
 (cd rsa && bun install --frozen-lockfile)
 uv sync --project rsa/python --frozen
-(cd rsa-dashboard && npm ci)
-(cd rsa-companion && pnpm install --frozen-lockfile && pnpm build)
+(cd rsa-dashboard && npm ci && npm run build)
 
-export PATH="$PWD/baseware/bin:$PWD/rsa/bin:$PWD/rsa-companion/bin:$PATH"
+export PATH="$PWD/baseware/bin:$PWD/rsa/bin:$PATH"
 ```
 
 The PATH setting applies to the current shell. Keep using that shell for the commands below, or add the absolute bin paths to your shell configuration.
@@ -79,7 +78,7 @@ rsa up
 rsa services
 ```
 
-`rsa init` creates `rsa.json` and starter workspace files. `rsa up --dry-run` prints the launch plan without starting services. `rsa up` starts or reuses Baseware, the agent host, the Dashboard, and Ludens Pet. A newly started host remains in manual mode.
+`rsa init` creates `rsa.json` and starter workspace files. `rsa up --dry-run` prints the launch plan without starting services. `rsa up` starts or reuses Baseware, the agent host and the Dashboard. A newly started host remains in manual mode. New workspaces use the browser console by default; Ludens Pet is optional.
 
 To choose another environment, replace the `rsa init` command above with exactly one of:
 
@@ -112,7 +111,19 @@ rsa down --keep-emulator  # Stop the host and Baseware; keep the game open
 rsa down                  # Also stop the workspace-managed emulator
 ```
 
-Save your game before closing its emulator. Shared Dashboard and Ludens Pet processes remain running by default; see the [lifecycle guide](docs/tutorials/quickstart.md#工作区启动与停止) for shutdown options and configuration changes.
+Save your game before closing its emulator. The shared Dashboard and any running Ludens Pet remain open by default; see the [lifecycle guide](docs/tutorials/quickstart.md#工作区启动与停止) for shutdown options and configuration changes.
+
+### 5. Optional desktop pet
+
+The browser Dashboard works without Electron. To add Ludens Pet, install **pnpm 11** and run the following from the repository root:
+
+```sh
+(cd rsa-companion && pnpm install --frozen-lockfile && pnpm build)
+```
+
+For a new workspace, append `--pet` to the selected `rsa init` command above. For an existing workspace, set `"pet": true` in `rsa.json` before `rsa up`; existing explicit `pet: true` settings remain enabled. Set `"pet": false` to use the browser without starting the pet on subsequent launches.
+
+For a single launch, `rsa up --pet` or `rsa up --no-pet` overrides that setting without changing `rsa.json`; the two flags cannot be combined. Neither `pet: false` nor `--no-pet` quits an already running shared pet; use its tray menu to quit. See [optional pet setup](docs/tutorials/quickstart.md#可选桌宠).
 
 ## How it works
 
@@ -123,7 +134,7 @@ Ludens separates the device, the agent runtime, and the code the agent develops.
 | [Baseware](baseware/README.md) | Device drivers, observations, control leases, and CLI / API / MCP access. |
 | [RSA](rsa/README.md) | Agent lifecycle, persistent sessions, workspace capabilities, perception, benchmarks, and logging. |
 | [Dashboard](rsa-dashboard/README.md) | A local web console for live runs, timeline replay, run analysis, benchmarks, and Ludens Pet settings. |
-| [Ludens Pet companion](rsa-companion/README.md) | An Electron shell loading the same console, plus the native desktop pet, tray, and audio. |
+| [Ludens Pet companion](rsa-companion/README.md) | Optional Electron shell loading the same console, plus the native desktop pet, tray, and audio. |
 
 RSA uses **Shiori** as its sole runner. Agent execution uses **OMP 18.9.1**; ordinary benchmark programs, verifiers and metrics use the same budget and cancellation lifecycle without model calls. The agent uses OMP's native coding and process-management tools. Device and workspace capabilities are discovered through the CLI rather than automatically added to the model's tool list.
 

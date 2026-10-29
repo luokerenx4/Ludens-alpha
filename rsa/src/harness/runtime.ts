@@ -18,7 +18,9 @@ export type ObservationOrigin = "cli" | "explicit" | "prompt_start" | "tool_batc
 export interface DeviceSession {
   readonly catalog: Catalog;
   readonly diagnostics?: DiagnosticsMode;
-  acquire(epoch: string): Promise<void>;
+  /** Cancellation must revoke a pending acquisition as well as an active lease. */
+  acquire(epoch: string, signal?: AbortSignal): Promise<void>;
+  /** Must also accept an epoch whose acquisition has not completed yet. */
   release(epoch: string): Promise<void>;
   setInputGeneration?(epoch: string, generation: string | null): Promise<void>;
   execute(id: string, args: ToolArguments, epoch: string | undefined, signal: AbortSignal, trace: EventTrace, origin?: ObservationOrigin): Promise<ExecutionResult>;
@@ -54,7 +56,7 @@ export class Runtime {
   perception?: PerceptionRuntime;
   action?: ActionRuntime;
 
-  constructor(private devices: DeviceSession | undefined, readonly record: RecordEvent, private maxSeconds = 300, private runId: string = crypto.randomUUID(), readonly diagnostics: DiagnosticsMode = "normal", private budget?: SharedBudget) {
+  constructor(private devices: DeviceSession | undefined, readonly record: RecordEvent, private maxSeconds = 300, private runId: string = crypto.randomUUID(), readonly diagnostics: DiagnosticsMode = "normal", private budget?: SharedBudget, private controlTimeoutMs = 30_000) {
     if (!Number.isFinite(maxSeconds) || maxSeconds <= 0 || maxSeconds * 1000 > 2_147_483_647) throw new Error("Invalid Shiori time budget");
     if (budget && !Number.isFinite(budget.deadlineMs)) throw new Error("Invalid shared Shiori deadline");
   }
@@ -108,14 +110,26 @@ export class Runtime {
     this.ownsDevice = !program;
     if (this.ownsDevice && !this.devices) throw new Error("Agent control requires a device session");
     this.mode = "acquiring";
-    this.opening = this.ownsDevice ? this.devices!.acquire(epoch) : Promise.resolve();
+    this.opening = this.ownsDevice ? this.withControlTimeout(
+      this.devices!.acquire(epoch, control.signal).then(async () => {
+        // A non-cooperative session may complete after stop or its timeout.
+        // Compensate using the captured epoch; never revive a stopped cycle.
+        if (control.signal.aborted) {
+          try { await this.withControlTimeout(this.devices!.release(epoch), "Late control release"); }
+          catch (error) {
+            this.connected = false;
+            this.record("error", String(error), { epoch });
+            throw error;
+          }
+        }
+      }), "Control acquisition") : Promise.resolve();
     if (this.budget) {
       this.budget.signal.addEventListener("abort", this.budgetEnded, { once: true });
       if (this.budget.signal.aborted) this.budgetEnded();
     }
     try { await this.opening; }
-    catch (error) { await this.stop(String(error)); throw error; }
-    if (control.signal.aborted) return this.status();
+    catch (error) { if (this.control === control) await this.stop(String(error)); throw error; }
+    if (control.signal.aborted || this.control !== control) return this.status();
     this.takeoverDeadlineMs = performance.now() + (this.budget ? this.budget.deadlineMs - Date.now() : this.maxSeconds * 1000);
     this.mode = "auto";
     this.reason = "enabled";
@@ -190,6 +204,18 @@ export class Runtime {
     this.aborting = this.agent?.abort().catch((e) => this.record("error", String(e)));
   }
 
+  private withControlTimeout<T>(pending: Promise<T>, operation: string): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const error = new Error(`${operation} timed out; device state is uncertain`);
+        this.connected = false;
+        this.record("error", String(error));
+        reject(error);
+      }, this.controlTimeoutMs);
+      pending.then(value => { clearTimeout(timer); resolve(value); }, error => { clearTimeout(timer); reject(error); });
+    });
+  }
+
   async stop(reason = "human") {
     if (this.stopping) return this.stopping;
     if (this.mode === "manual") {
@@ -211,14 +237,18 @@ export class Runtime {
     const actionStopped = this.action?.deactivate();
     void actionStopped?.catch(error => this.record("error", String(error), { epoch: this.epoch }));
     this.stopping = (async () => {
-      await this.opening?.catch(() => {});
-      try { if (this.ownsDevice) await this.devices!.release(this.epoch); }
-      catch (error) {
-        this.connected = false;
-        this.record("error", String(error));
-      }
-      // The device is already released; let cancelled workspace calls finish
-      // before another epoch can start. Nested calls need no global queue.
+      // Release also covers a pending acquisition. Send it immediately after
+      // cancellation instead of waiting for the acquisition RPC to return.
+      const release = (async () => {
+        try { if (this.ownsDevice) await this.withControlTimeout(this.devices!.release(this.epoch), "Control release"); }
+        catch (error) {
+          this.connected = false;
+          this.record("error", String(error));
+        }
+      })();
+      await Promise.all([this.opening?.catch(() => {}), release]);
+      // Handback is confirmed or the connection has failed closed. Drain
+      // cancelled workspace calls before another epoch can start.
       await Promise.allSettled(this.calls);
       await actionStopped?.catch(() => {});
       this.mode = "manual";

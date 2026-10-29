@@ -13,7 +13,7 @@ import type { DriverManifest } from "./drivers/registry.ts";
 
 /** Serializable service discovery; driver implementation objects never cross this boundary. */
 export interface Catalog {
-  drivers: (Pick<DriverManifest, "id" | "transport" | "defaultPort" | "needsGame" | "launchHint" | "launchCommand" | "launchEnv"> & { version: string })[];
+  drivers: (Pick<DriverManifest, "id" | "transport" | "defaultPort" | "needsGame" | "launchHint" | "launchCommand" | "launchEnv" | "source"> & { version: string })[];
   controllers: (ToolDefinition & { requiresControl: boolean; mediaTypes?: readonly string[] })[];
 }
 export interface Request {

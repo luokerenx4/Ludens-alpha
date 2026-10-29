@@ -20,7 +20,7 @@ async function until(check: () => boolean) {
   }
 }
 
-async function fixture(seconds = 60, acquisition?: Promise<void>, releaseFailure = false, controllerCount = 1) {
+async function fixture(seconds = 60, acquisition?: Promise<void>, releaseFailure = false, controllerCount = 1, controlTimeoutMs?: number) {
   const directory = await mkdtemp(join(tmpdir(), "rsa-baseware-"));
   const socket = join(directory, "baseware.sock");
   const runDir = join(directory, "logs/run-1");
@@ -63,7 +63,7 @@ async function fixture(seconds = 60, acquisition?: Promise<void>, releaseFailure
     ...Array.from({ length: controllerCount }, (_, index) => ({ ...capabilities.controllers[0]!, tool: { ...capabilities.controllers[0]!.tool, name: index ? `motor-${index}` : "motor" } })),
     capabilities.controllers[1]!,
   ];
-  const core = new BasewareCore({ capabilities, drivers: [{ id: "fake", version: "1" }],
+  const core = new BasewareCore({ capabilities, drivers: [{ id: "fake", version: "1" }], inputResetTimeoutMs: controlTimeoutMs,
     record: (type, data, trace, metadata) => deviceEvents.push({ type, data, trace, ...metadata }) });
   const closeServer = await listen(socket, core);
   const adapter = await connectBaseware({ socket, seconds, runDir, record: (type, data, trace, metadata) => events.push({ type, data, trace, ...metadata }) });
@@ -100,13 +100,34 @@ test("human revoke during remote acquisition never starts the RSA agent", async 
     const revoking = f.external.request({ kind: "revoke" });
     await until(() => f.core.status().mode === "releasing");
     gate.resolve();
-    await expect(starting).rejects.toThrow("revoked before completion");
+    await expect(starting).rejects.toMatchObject({ name: "AbortError" });
     await revoking;
     expect(f.runtime.status().mode).toBe("manual");
     expect(f.core.status().mode).toBe("manual");
     expect(f.owner()).toBeUndefined();
     expect(f.agentCalls()).toBe(0);
   } finally { gate.resolve(); await f.close(); }
+});
+
+test("RSA off cancels a pending acquire RPC and waits for bounded remote cleanup", async () => {
+  const gate = Promise.withResolvers<void>();
+  const f = await fixture(60, gate.promise, false, 1, 20);
+  const release = spyOn(f.core, "release");
+  const starting = f.runtime.start().catch(error => error);
+  try {
+    await f.acquiring;
+    expect(await Promise.race([f.runtime.stop().then(() => true), Bun.sleep(500).then(() => false)])).toBe(true);
+    expect(release.mock.calls.some(([, reason]) => reason === "acquire cancelled")).toBe(true);
+    expect(await starting).toBeInstanceOf(Error);
+    expect(f.core.status()).toMatchObject({ mode: "manual", connected: false });
+    expect(f.runtime.status()).toMatchObject({ mode: "manual", connected: false, thinking: false });
+    expect(f.agentCalls()).toBe(0);
+    await expect(f.runtime.start()).rejects.toThrow("disconnected");
+    gate.resolve();
+    await Bun.sleep(0);
+    expect(f.owner()).toBeUndefined();
+    expect(f.core.status()).toMatchObject({ mode: "manual", connected: false, epoch: null });
+  } finally { gate.resolve(); release.mockRestore(); await f.close(); }
 });
 
 test("remote lease matches the configured budget and human revoke cancels a separate caller", async () => {
