@@ -10,7 +10,7 @@ export async function GET(request: Request) {
     const lang = params.get("lang") === "zh" ? "zh" : "en";
     return Response.json(id
       ? await dashboardWorker().call("readDoc", [id, undefined, lang], request.signal)
-      : await dashboardWorker().call("docGroups", [], request.signal));
+      : await dashboardWorker().call("docGroups", [undefined, lang], request.signal));
   } catch (error) {
     return errorResponse(error);
   }

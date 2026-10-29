@@ -460,7 +460,7 @@ export default function Dashboard() {
           </div>
         </header>
         <main className="page-content">
-          {view !== "workspaces" && <div className="page-heading">
+          {view !== "workspaces" && view !== "docs" && <div className="page-heading">
             <div>
               <h1>{benchmarkCases ? t("benchmark.casesTitle") : t(`views.${view}.title`)}</h1>
               <p>
@@ -539,11 +539,13 @@ export default function Dashboard() {
           ) : view === "dev" ? (
             <DevPanel navigate={navigate} />
           ) : view === "perception" ? (
-            <PerceptionSettingsPanel key={selection.project} project={selection.project} projects={projects} />
+            <PerceptionSettingsPanel project={selection.project} projects={projects}
+              ready={catalogReady} catalogError={catalogError} catalogLoading={catalogLoading} onRetryCatalog={refreshCatalog} />
           ) : view === "docs" ? (
             <DocsView search={search} navigate={navigate} />
           ) : view === "caps" ? (
-            <CapabilitiesView project={selection.project} ready={catalogReady} catalogError={catalogError} />
+            <CapabilitiesView project={selection.project} ready={catalogReady} catalogError={catalogError}
+              catalogLoading={catalogLoading} onRetryCatalog={refreshCatalog} />
           ) : runControls && entry !== "ready" ? (
             <WorkspaceRunEmpty state={entry} project={project?.id} workspaceName={workspaceName(project)}
               benchmarkRun={project?.runs.find(r => r.kind === "benchmark" || r.benchmark)?.id}

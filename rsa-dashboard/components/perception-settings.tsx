@@ -9,6 +9,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Slider } from "@/components/ui/slider";
 import { useTranslations } from "@/lib/locale";
+import { useReadResource } from "./use-read-resource";
+import { useRetryFocus } from "./use-retry-focus";
 
 const LIMITS = {
   hotSeconds: { min: 10, max: 3600, fallback: 600 },
@@ -23,43 +25,40 @@ function formatSeconds(value: number, t: (key: string) => string): string {
 }
 
 /** A new workspace gets its own draft and request lifetime. */
-export function PerceptionSettingsPanel({ project, projects }: { project: string; projects: Project[] }) {
+export function PerceptionSettingsPanel({ project, projects, ready, catalogError, catalogLoading, onRetryCatalog }: {
+  project: string; projects: Project[]; ready: boolean; catalogError?: string; catalogLoading?: boolean; onRetryCatalog(): void;
+}) {
   const t = useTranslations("perceptionSettings");
   const target = projects.find((item) => item.id === project);
-  if (!target?.workspace) return <Card>
-    <CardHeader>
-      <CardTitle role="heading" aria-level={2}>{t("selectWorkspace")}</CardTitle>
-      <CardDescription>{t("selectWorkspaceDescription")}</CardDescription>
-    </CardHeader>
-  </Card>;
-  return <WorkspacePerceptionSettings key={`${target.id}:${target.workspace}`} project={target.id} />;
+  const catalogFocus = useRetryFocus(!!catalogLoading, catalogError);
+  return <div ref={catalogFocus.target} className="grid max-w-4xl gap-4" tabIndex={-1} role="region" aria-label={t("title")}>
+    {catalogError && <Alert variant="destructive"><AlertDescription className="flex flex-wrap items-center justify-between gap-3">
+      <div className="min-w-0 flex-1"><p>{t("catalogFailed")}</p><details className="mt-1 text-xs">
+        <summary className="cursor-pointer">{t("errorDetails")}</summary><pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all">{catalogError}</pre>
+      </details></div>
+      <Button type="button" variant="outline" size="sm" aria-disabled={catalogLoading} className="aria-disabled:opacity-50"
+        onClick={event => { if (!catalogLoading) { catalogFocus.remember(event.currentTarget); onRetryCatalog(); } }}>{t(catalogLoading ? "retrying" : "retryCatalog")}</Button>
+    </AlertDescription></Alert>}
+    {target?.workspace ? <WorkspacePerceptionSettings key={`${target.id}:${target.workspace}`} project={target.id} />
+      : !ready ? <Card><CardContent role="status" className="text-sm text-muted-foreground">{t("loadingWorkspaces")}</CardContent></Card>
+        : !catalogError ? <Card><CardHeader>
+          <CardTitle role="heading" aria-level={2}>{t("selectWorkspace")}</CardTitle>
+          <CardDescription>{t("selectWorkspaceDescription")}</CardDescription>
+        </CardHeader></Card> : null}
+  </div>;
 }
 
 function WorkspacePerceptionSettings({ project }: { project: string }) {
   const t = useTranslations("perceptionSettings");
-  const [settings, setSettings] = useState<Partial<PerceptionSettings> | null>(null);
+  const read = useReadResource<Partial<PerceptionSettings>>(`/api/perception-config?project=${encodeURIComponent(project)}`, t("loadFailed"));
+  const settings = read.value;
   const [draft, setDraft] = useState<PerceptionSettingsPatch>({});
-  const [error, setError] = useState("");
+  const [writeError, setWriteError] = useState("");
   const [pending, setPending] = useState(false);
   const [saved, setSaved] = useState(false);
   const saving = useRef<AbortController | null>(null);
 
-  useEffect(() => {
-    const controller = new AbortController();
-    const load = async () => {
-      try {
-        const response = await fetch(`/api/perception-config?project=${encodeURIComponent(project)}`,
-          { cache: "no-store", signal: controller.signal });
-        const value = await response.json();
-        if (!response.ok) throw new Error(value.error ?? t("loadFailed"));
-        if (!controller.signal.aborted) setSettings(value);
-      } catch (cause) {
-        if (!controller.signal.aborted) setError(String((cause as Error).message ?? cause));
-      }
-    };
-    void load();
-    return () => { controller.abort(); saving.current?.abort(); };
-  }, [project]);
+  useEffect(() => () => saving.current?.abort(), [project]);
 
   const change = (key: keyof PerceptionSettings, value: number | null) => {
     setDraft(previous => {
@@ -72,24 +71,25 @@ function WorkspacePerceptionSettings({ project }: { project: string }) {
   };
 
   const save = async () => {
-    if (saving.current) return;
+    if (saving.current || !settings || !Object.keys(draft).length) return;
     const controller = new AbortController();
     saving.current = controller;
     setPending(true);
     setSaved(false);
-    setError("");
+    setWriteError("");
+    read.cancel();
     try {
       const response = await fetch(`/api/perception-config?project=${encodeURIComponent(project)}`, {
         method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(draft), signal: controller.signal });
       const value = await response.json();
       if (!response.ok) throw new Error(value.error ?? t("saveFailed"));
       if (!controller.signal.aborted) {
-        setSettings(value);
+        read.replace(value);
         setDraft({});
         setSaved(true);
       }
     } catch (cause) {
-      if (!controller.signal.aborted) setError(t("saveFailedPrefix") + String((cause as Error).message ?? cause));
+      if (!controller.signal.aborted) setWriteError(String((cause as Error).message ?? cause));
     } finally {
       if (!controller.signal.aborted) setPending(false);
       if (saving.current === controller) saving.current = null;
@@ -97,7 +97,7 @@ function WorkspacePerceptionSettings({ project }: { project: string }) {
   };
   const changed = Object.keys(draft).length > 0;
 
-  return <Card className="max-w-4xl" aria-busy={pending}>
+  return <Card className="max-w-4xl" aria-busy={pending || read.loading}>
     <CardHeader>
       <CardTitle role="heading" aria-level={2}>{t("title")}</CardTitle>
       <CardDescription>
@@ -105,8 +105,22 @@ function WorkspacePerceptionSettings({ project }: { project: string }) {
       </CardDescription>
     </CardHeader>
     <CardContent className="space-y-5">
-      {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
-      {!settings ? !error && <p className="text-sm text-muted-foreground" role="status">{t("loading")}</p> : KEYS.map(key => {
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-xs text-muted-foreground">{t("readOnlyRefreshHint")}</p>
+        <Button type="button" variant="outline" size="sm" aria-disabled={pending || read.loading} className="aria-disabled:opacity-50"
+          onClick={() => { if (!saving.current && !read.loading) read.retry(); }}>
+          {t(read.loading ? "retrying" : read.error ? "retryRead" : "refresh")}
+        </Button>
+      </div>
+      {read.error && <Alert variant="destructive"><AlertDescription>
+        <p>{t("loadFailed")}</p><details className="mt-1 text-xs">
+          <summary className="cursor-pointer">{t("errorDetails")}</summary><pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all">{read.error}</pre>
+        </details>{settings && <p className="mt-1">{t("showingCached")}</p>}
+      </AlertDescription></Alert>}
+      {writeError && <Alert variant="destructive"><AlertDescription><p>{t("saveFailed")}</p><details className="mt-1 text-xs">
+        <summary className="cursor-pointer">{t("errorDetails")}</summary><pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all">{writeError}</pre>
+      </details></AlertDescription></Alert>}
+      {!settings ? read.loading && <p className="text-sm text-muted-foreground" role="status">{t("loading")}</p> : KEYS.map(key => {
         const limit = LIMITS[key];
         const value = Object.hasOwn(draft, key) ? draft[key] ?? undefined : settings[key];
         const current = value ?? limit.fallback;

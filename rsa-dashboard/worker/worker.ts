@@ -34,7 +34,7 @@ const handlers: { [K in DashboardMethod]: (args: DashboardMethods[K]["args"], si
   benchmarkAttachment: ([project, run, index, verification], signal) => benchmarkAttachment(project, run, index, verification, undefined, signal),
   capabilities: ([project], signal) => capabilities(project, undefined, signal),
   discoverDriver: ([spec], signal) => discoverDriver(spec, signal),
-  docGroups: () => docGroups(),
+  docGroups: ([root, lang]) => docGroups(root, lang),
   readDoc: ([id, root, lang]) => readDoc(id, root, lang),
   stop: ([project, run, epoch]) => stopRun(project, run, epoch),
   perceptionSettings: ([project]) => perceptionSettings(project),

@@ -1650,12 +1650,38 @@ pre {
 .archive-build p { margin: .35rem 0 0; color: var(--muted-foreground, #9ca596); font-size: .875rem; }
 .archive-build button { flex-shrink: 0; }
 /* Docs: two-column reader, markdown body. */
-.docs-layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 16px; align-items: start; }
-.docs-nav { padding: 12px; display: flex; flex-direction: column; gap: 16px; }
-.docs-group .bench-list-heading { display: flex; flex-direction: column; gap: 2px; padding: 4px 8px 8px; }
-.docs-article { min-width: 0; }
-.docs-body { padding: 4px 20px 28px; max-width: 860px; }
+.docs-layout { --docs-scroll-offset: 88px; display: grid; grid-template-columns: 216px minmax(0, 1fr) 168px; gap: 20px; align-items: start; }
+.docs-toolbar { grid-column: 1 / -1; position: sticky; top: 0; z-index: 20; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; background: var(--bg); border-bottom: 1px solid var(--line); }
+.docs-home-link { display: inline-flex; align-items: center; gap: 8px; color: var(--text); font-size: 13px; font-weight: 600; }
+.docs-nav { position: sticky; top: 72px; max-height: calc(100dvh - 92px); overflow-y: auto; overscroll-behavior: contain; padding-right: 4px; }
+.docs-menu-content { display: flex; flex-direction: column; gap: 12px; }
+.docs-group { margin-bottom: 22px; }
+.docs-group h3 { margin: 0 0 8px; padding: 0 10px; font-size: 12px; font-weight: 600; color: var(--muted-foreground); }
+.docs-nav-link { width: 100%; padding: 9px 10px; margin-bottom: 3px; border-left: 2px solid transparent; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.docs-nav-link[aria-current="page"] { color: var(--gold); border-left-color: var(--gold); background: color-mix(in srgb, var(--gold) 10%, transparent); }
+.docs-nav-link small { margin-left: auto; flex-shrink: 0; font-size: 10px; color: var(--muted-foreground); }
+.docs-article { min-width: 0; scroll-margin-top: var(--docs-scroll-offset); }
+.docs-layout[data-has-toc="false"] .docs-article { grid-column: 2 / -1; }
+.docs-article-header { padding: 24px 24px 16px; }
+.docs-article-header h1 { margin: 8px 0 12px; font-size: clamp(22px, 2vw, 30px); letter-spacing: -0.025em; line-height: 1.3; overflow-wrap: anywhere; }
+.docs-breadcrumb { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 12px; color: var(--muted-foreground); }
+.docs-body { padding: 0 24px 28px; max-width: 860px; overflow-wrap: anywhere; line-height: 1.75; }
 .docs-body > h1:first-child { display: none; }
+.docs-body :is(h1,h2,h3,h4,h5,h6) { scroll-margin-top: var(--docs-scroll-offset); }
+.docs-body :is(h1,h2,h3,h4,h5,h6):focus { outline: 2px solid var(--gold); outline-offset: 5px; }
+.docs-read-notice { width: auto; margin: 16px 24px; }
+.docs-nav .docs-read-notice, .docs-navigation-dialog .docs-read-notice { margin: 0; }
+.docs-toc { position: sticky; top: 82px; max-height: calc(100dvh - 102px); overflow-y: auto; overscroll-behavior: contain; }
+.docs-toc h2 { font-size: 12px; margin: 0 0 12px; font-weight: 600; }
+.docs-heading-links { display: flex; flex-direction: column; border-left: 1px solid var(--line); }
+.docs-heading-links a { display: block; padding: 6px 12px; border-left: 2px solid transparent; margin-left: -1px; font-size: 12px; line-height: 1.5; color: var(--muted-foreground); overflow-wrap: anywhere; }
+.docs-heading-links a[data-level="3"] { padding-left: 20px; }
+.docs-heading-links a:hover { color: var(--text); }
+.docs-heading-links a[aria-current] { color: var(--gold); border-left-color: var(--gold); }
+.doc-code-block { margin: 0 0 18px; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: var(--surface-inset); }
+.doc-code-block [data-doc-code-toolbar] { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 12px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.docs-body .doc-code-block pre { border: 0; border-radius: 0; margin: 0; }
+.docs-body .doc-diagram .doc-code-block { margin: 0; border: 0; border-radius: 0; }
 .docs-body h1 { font-size: 24px; margin: 20px 0 10px; }
 .docs-body h2 { font-size: 17px; margin: 22px 0 8px; }
 .docs-body h3 { font-size: 15px; margin: 18px 0 6px; }
@@ -1695,7 +1721,21 @@ pre {
 .bench-verification-list { display: flex; flex-direction: column; gap: 8px; margin: 10px 0 14px; }
 .bench-verification-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 8px 12px; border: 1px solid var(--line); border-radius: 6px; background: #191d1a; font-size: 12px; }
 .bench-verification-row small { color: var(--muted-foreground); margin-right: auto; }
-@media (max-width: 900px) { .docs-layout { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 1300px) {
+  .docs-layout { grid-template-columns: 200px minmax(0, 1fr); gap: 16px; }
+  .docs-toc { display: none; }
+}
+@media (max-width: 900px) {
+  .docs-layout { --docs-scroll-offset: 124px; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .docs-nav { display: none; }
+  .docs-layout .docs-article { grid-column: 1 / -1; }
+  .docs-toolbar { flex-wrap: wrap; }
+  .docs-home-link { display: none; }
+  .docs-article-header { padding: 20px 18px 12px; }
+  .docs-body { padding: 0 18px 24px; }
+  .docs-read-notice { margin: 14px 18px; }
+  .docs-heading-links a { padding-top: 10px; padding-bottom: 10px; font-size: 14px; }
+}
 /* ── Loop 注入实验台 ─────────────────────────────────────────── */
 :root {
   --loop-sys: #8b949e;

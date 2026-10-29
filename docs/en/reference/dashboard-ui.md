@@ -45,6 +45,10 @@ The Benchmark catalog uses that same workspace context. Changing workspaces clea
 
 Live distinguishes the selected evidence, automatic page refresh, and the last observed host state. The global **Return to latest** action clears historical context and activity filters, then reads observations and logs together. **Latest logs** only updates the current log scope and filter. Pausing automatic refresh preserves the viewed workspace/run; intentional navigation and explicit refresh actions still read a snapshot without resuming polling.
 
+Documentation follows the interface language unless `docLang=en` or `docLang=zh` explicitly selects one. The document index and article use the same language preference, with a visible fallback notice when a translation is missing. Native document links preserve workspace context and explicit language in ordinary clicks and new tabs. Search filters titles and paths; article heading links store their destination in `docAnchor` for deep links and browser history. Desktop reading uses separate document and heading navigation; narrow screens disclose both through the sticky document toolbar. Code copying uses the renderer's source text, preserving indentation and internal blank lines.
+
+Docs, Capabilities, and Perception expose explicit retries for failed reads. A failed refresh keeps the last loaded content; driver verification and unsaved perception edits stay separate from GET state. Workspace catalog failures are shown as errors, never as an empty workspace list. Retrying a read never replays a write, and a successful perception save supersedes any earlier read.
+
 ## Interaction Conventions
 
 - Associate form controls with a `Label`, and help text via `aria-describedby`. Icon buttons must have an accessible name.
