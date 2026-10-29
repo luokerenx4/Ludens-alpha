@@ -7,7 +7,7 @@ import { compareResults } from "../src/benchmark/contract.ts";
 import { history } from "../src/benchmark/store.ts";
 test("offline handoff uses Shiori and one event writer; repeat isolates fixtures without online model", async () => {
   const root = await mkdtemp(join(tmpdir(), "shiori-native-"));
-  const options = { workspace: join(root, "workspace"), artifactRoot: join(root, "index"), seconds: 20 };
+  const options = { workspace: join(root, "workspace"), globalHome: join(root, "index"), seconds: 20 };
   await mkdir(options.workspace);
   try {
     const first = await runTask("ludens/control-handoff", options), second = await runTask("ludens/control-handoff", options);

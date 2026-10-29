@@ -12,8 +12,14 @@ import { closeLogIndexes, indexCacheStats } from "../lib/log-index";
 import { workerFailure, type DashboardMethods, type DashboardMethod, type WorkerRequest, type WorkerResponse } from "../lib/dashboard-protocol";
 import { perceptionSettings, updatePerceptionSettings } from "../lib/perception-config";
 import { closeArchiveBuilds } from "../lib/cold-build";
+import { workspaceSettings, updateWorkspaceRoot, openWorkspace, removeWorkspace, createWorkspace } from "../lib/workspaces";
 const port = parentPort!;
 const handlers: { [K in DashboardMethod]: (args: DashboardMethods[K]["args"], signal: AbortSignal) => unknown } = {
+  workspaceSettings: () => workspaceSettings(),
+  updateWorkspaceRoot: ([path]) => updateWorkspaceRoot(path),
+  openWorkspace: ([path]) => openWorkspace(path),
+  removeWorkspace: ([id]) => removeWorkspace(id),
+  createWorkspace: ([input], signal) => createWorkspace(input, signal),
   diagnosticEvents: ([project, run, query], signal) => diagnosticEvents(project, run, query, signal),
   diagnostics: () => ({ memory: process.memoryUsage(), index: indexCacheStats(), activeRequests: requests.size - 1 }),
   catalog: ([includeEmpty]) => catalog(undefined, includeEmpty),

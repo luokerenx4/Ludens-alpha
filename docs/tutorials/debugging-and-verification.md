@@ -42,7 +42,7 @@ cd /absolute/path/to/workspace
 rsa run --model openai-codex/gpt-6.1-sol --seconds 300 --requests 50
 ```
 
-看到终端 2 输出 `"ready": true` 后，即可在第三个终端进入该工作区执行 `rsa auto on`。若仅测试设备与工作区能力而不启动 OMP 模型会话，可传入 `rsa run --device-only`。默认情况下双方通过工作区路径派生 Unix socket 地址，也可通过 `BASEWARE_SOCKET` / `--baseware-socket` 与 `RSA_SOCKET` 显式覆盖。
+先用 `rsa workspace open <path>` 登记当前布局的工作区；旧工作区需按 [导入说明](quickstart.md#已有工作区登记与迁移) 处理。看到终端 2 输出 `"ready": true` 后，即可在第三个终端进入该工作区执行 `rsa auto on`。若仅测试设备与工作区能力而不启动 OMP 模型会话，可传入 `rsa run --device-only`。默认 socket 仍按当前工作区路径派生，也可通过 `BASEWARE_SOCKET` / `--baseware-socket` 与 `RSA_SOCKET` 显式覆盖。移动目录前应停止对应服务；这一进程地址与 `.rsa/workspace.json` 中保留不变的身份无关。
 
 ### 2. Dashboard 网页控制台
 
@@ -60,6 +60,7 @@ rsa run --model openai-codex/gpt-6.1-sol --seconds 300 --requests 50
 
 打开浏览器访问 `http://127.0.0.1:3015` 即可使用控制台：
 
+- **工作区管理（`?view=workspaces`）**：创建新工作区（名称与可选目录）、登记已有目录、只移除索引，以及设置默认父目录；读取同一 `LUDENS_HOME` 下的配置与 `registry/<id>.json`。
 - **运行与回放（`?view=live` / `?view=replay`）**：实时查看模型推理流、工具调用、设备输入与感知画面，或在历史时间轴上同步回放采样帧与事件。归档 worker、冷索引构建子进程与内存预算详见 [消费与指标解释](../reference/logging.md#消费与指标解释)。
 - **性能与评测（`?view=benchmark`）**：查看单次请求的耗时、缓存与调用链剖析，或在“评测目录”（`?view=benchmark&bench=cases`）中查看跨工作区的 Harbor 任务执行历史与评分对比。
 - **能力目录与驱动校验（`?view=caps`）**：静态展示当前选中工作区的设备目录快照（`baseware.json`）、Python `@capability` 声明及 Harbor 评测任务，并提供外部驱动包的在线校验与 `rsa init` 命令生成。
@@ -70,8 +71,8 @@ rsa run --model openai-codex/gpt-6.1-sol --seconds 300 --requests 50
 
 这是可选组件，网页控制台不依赖 Electron。完成 [可选桌宠安装](quickstart.md#可选桌宠) 并启动 Dashboard 后，在仓库根目录运行 `rsa-companion/bin/rsa-companion --show-window` 可单独启动桌面端；其主窗口加载同一份 Dashboard 控制台，桌宠角色（卢登斯）与气泡消费同一套增量活动日志。通过 `rsa up` 管理桌宠时，在新工作区的 `rsa init` 命令中追加 `--pet`，或在已有 `rsa.json` 设置 `pet: true`。`rsa up --pet` / `--no-pet` 可临时覆盖配置，两者互斥且不写回文件；`--no-pet` 不会关闭已运行的共享桌宠。
 
-- **工作区跟随**：在 Dashboard 界面点击“让 Ludens Pet 跟随此工作区”即可实时热切换关注目标（状态保存在 `../artifacts/rsa/.pet-target.json`）；浏览历史回放不会改变桌宠当前跟随的活跃工作区。
-- **启动参数**：`--workspace PATH`（或 `RSA_WORKSPACE`）指定首次默认工作区，`--dashboard URL` 指定控制台地址，`--profile PATH` 指定独立偏好目录（默认位于 Electron `appData` 下的 `RSA Ludens Pet`），`LUDENS_DISABLE_COMPANION=1` 可禁用桌宠挂件。关闭主窗口仅隐藏到托盘，双击桌宠或通过系统托盘菜单可重新唤出，选择 Quit 才彻底退出进程。
+- **工作区跟随**：在 Dashboard 界面点击“让 Ludens Pet 跟随此工作区”即可实时热切换关注目标（状态保存在 `$LUDENS_HOME/pet/target.json`，心跳在 `pet/consumer.json`）。桌宠读取 `.rsa/workspace.json` 的稳定 ID；工作区移动并重新登记后继续跟随同一身份。浏览历史回放不会改变当前跟随目标。
+- **启动参数**：`--workspace PATH`（或 `RSA_WORKSPACE`）指定首次默认工作区，`--dashboard URL` 指定控制台地址，`--profile PATH` 指定独立偏好目录（默认 `$LUDENS_HOME/pet/profile/`），`LUDENS_DISABLE_COMPANION=1` 可禁用桌宠挂件。未设置 `LUDENS_HOME` 时使用 `~/.ludens`，所有组件需使用同一 home。关闭主窗口仅隐藏到托盘，双击桌宠或通过系统托盘菜单可重新唤出，选择 Quit 才彻底退出进程。
 - **构建同步**：当修改了 Dashboard 供桌宠消费的共享日志客户端代码时，需重新执行 `(cd rsa-companion && pnpm build)` 并重启 Electron 主进程。
 
 ## 验证

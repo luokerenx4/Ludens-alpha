@@ -6,11 +6,11 @@ import { join, resolve } from "node:path";
 import { BasewareClient } from "@ludens/baseware/client";
 import { readRunEvents } from "../../shared/event-sources.ts";
 import { send } from "../src/harness/transport.ts";
-import { resolveWorkspaceState } from "../src/harness/workspace-state.ts";
+import { initializeWorkspaceState } from "../src/harness/workspace-state.ts";
 
 test("SIGTERM waits for runtime cleanup before recording run_end with OMP's real signal handler", async () => {
   const directory = await mkdtemp(join(tmpdir(), "rsa-shutdown-"));
-  const state = await resolveWorkspaceState(join(directory, "workspace"), resolve(import.meta.dir, "../../../artifacts/rsa"));
+  const state = await initializeWorkspaceState(join(directory, "workspace"), join(directory, "global"));
   const socketPath = join(directory, "host.sock");
   const basewareSocket = join(directory, "baseware.sock");
   const operations: string[] = [];
@@ -73,7 +73,7 @@ mock.module(${JSON.stringify(resolve(import.meta.dir, "../src/harness/omp/sessio
     const host = Bun.spawn([process.execPath, "--preload", preload, resolve(import.meta.dir, "../src/app/main.ts"),
       "run", "--baseware-socket", basewareSocket, "--workspace", join(directory, "workspace")], {
       cwd: resolve(import.meta.dir, ".."),
-      env: { ...process.env, RSA_SOCKET: socketPath, PI_CODING_AGENT_DIR: join(directory, "omp") },
+      env: { ...process.env, LUDENS_HOME: state.globalHome, RSA_SOCKET: socketPath, PI_CODING_AGENT_DIR: join(directory, "omp") },
       stdout: "pipe", stderr: "pipe",
     });
     child = host;

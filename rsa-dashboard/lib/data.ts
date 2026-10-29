@@ -1,5 +1,5 @@
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
-import { join, resolve, basename, dirname } from "node:path";
+import { join, basename, relative } from "node:path";
 import { connect } from "node:net";
 import { selectCycle } from "./aggregate";
 import { getLogIndex, type LogIndex } from "./log-index";
@@ -10,32 +10,19 @@ import { latestGameRun } from "./initial-selection";
 import { readTimelineRecord, timelinePath, type TimelineRecordDetail } from "./timeline-record";
 import type { Event, Manifest, Project, RunData, LiveStatus } from "./types";
 import { decodeTimelineFrame } from "../../shared/timeline-media";
-// Runtime state lives in artifacts beside the monorepo, outside its Git tree.
-export const artifactRoot = resolve(process.env.RSA_DASHBOARD_ARTIFACT_ROOT ?? resolve(process.cwd(), "../../artifacts/rsa"));
+import { ludensHome, listRegisteredWorkspaces, registeredWorkspace, readWorkspaceIdentity } from "../../shared/ludens";
+export const globalHome = ludensHome();
 const safePart = (value: string) =>
   /^[a-zA-Z0-9._-]+$/.test(value) && value !== "." && value !== "..";
-async function projectState(project: string, root: string) {
-  if (!safePart(project)) throw new Error("无效的项目 ID");
-  const base = await realpath(/* turbopackIgnore: true */ root);
-  const state = join(base, project);
-  if ((await realpath(state)) !== state)
-    throw new Error("工作区索引必须位于 artifacts/rsa 内");
-  return state;
+
+export async function workspaceForProject(project: string, home = globalHome) {
+  const entry = await registeredWorkspace(project, home);
+  const workspace = await realpath(entry.workspace);
+  if ((await readWorkspaceIdentity(workspace)).id !== project) throw new Error("工作区身份与登记不一致");
+  return workspace;
 }
-async function registeredWorkspace(state: string) {
-  const { workspace } = JSON.parse(await readFile(join(state, "workspace.json"), "utf8"));
-  return realpath(workspace);
-}
-async function runRoots(project: string, root: string) {
-  const state = await projectState(project, root);
-  const roots = [join(state, "runs")];
-  try {
-    // The host records its canonical workspace here, including workspaces outside this repo.
-    roots.unshift(join(await registeredWorkspace(state), "logs"));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
-  return roots;
+async function runRoots(project: string, home: string) {
+  return [join(await workspaceForProject(project, home), "logs")];
 }
 async function resolveInRoots(run: string, roots: string[]) {
   if (!safePart(run)) throw new Error("无效的运行 ID");
@@ -43,7 +30,7 @@ async function resolveInRoots(run: string, roots: string[]) {
     const path = join(root, run);
     try {
       if ((await realpath(path)) !== path)
-        throw new Error("运行目录必须位于工作区 logs 或原运行目录内");
+        throw new Error("运行目录必须位于工作区 logs 内");
       return path;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -54,13 +41,13 @@ async function resolveInRoots(run: string, roots: string[]) {
 export async function resolveRun(
   project: string,
   run: string,
-  root = artifactRoot,
+  root = globalHome,
 ) {
   return resolveInRoots(run, await runRoots(project, root));
 }
 const catalogCache = new Map<string, { expires: number; value?: Project[]; pending?: Promise<Project[]> }>();
 export function clearCatalogCache() { catalogCache.clear(); }
-export async function catalog(root = artifactRoot, includeEmpty = false): Promise<Project[]> {
+export async function catalog(root = globalHome, includeEmpty = false): Promise<Project[]> {
   const key = JSON.stringify([root, includeEmpty]);
   const cached = catalogCache.get(key);
   if (cached?.pending) return cached.pending;
@@ -73,76 +60,49 @@ export async function catalog(root = artifactRoot, includeEmpty = false): Promis
   catalogCache.set(key, entry);
   return entry.pending;
 }
-async function scanCatalog(root: string, includeEmpty: boolean): Promise<Project[]> {
-  const directories = await readdir(/* turbopackIgnore: true */ root, {
-    withFileTypes: true,
-  }).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") return [];
-    throw error;
-  });
-  const projects = await Promise.all(
-    directories
-      .filter((d) => d.isDirectory())
-      .map(async (d) => {
-        const roots = await runRoots(d.name, root);
-        const entries = await Promise.all(roots.map(async (path) => {
-          try {
-            return (await readdir(/* turbopackIgnore: true */ path, { withFileTypes: true }))
-              .filter((r) => r.isDirectory())
-              .map((r) => r.name);
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-            throw error;
-          }
-        }));
-        const names = [...new Set(entries.flat())].sort().reverse();
-        const runs = await Promise.all(
-          names.map(async (id) => {
-            try {
-              const path = await resolveInRoots(id, roots);
-              const m: Manifest = JSON.parse(
-                await readFile(join(path, "manifest.json"), "utf8"),
-              );
-              return {
-                id,
-                ...(m.kind ? { kind: m.kind } : {}),
-                model: m.model,
-                seconds: m.seconds,
-                drivers: m.drivers,
-                ...(m.benchmark ? { benchmark: m.benchmark } : {}),
-              };
-            } catch (error) {
-              if ((error as NodeJS.ErrnoException).code === "ENOENT")
-                return null;
-              throw error;
-            }
-          }),
-        );
-        return { id: d.name, ...(roots.length > 1 ? { workspace: dirname(roots[0]) } : {}),
-          runs: runs.filter((r) => r !== null) };
-      }),
-  );
-  return projects
-    .filter((p): p is Project => !!p && (includeEmpty || p.runs.length > 0))
+async function scanCatalog(home: string, includeEmpty: boolean): Promise<Project[]> {
+  const registered = await listRegisteredWorkspaces(home);
+  const projects = await Promise.all(registered.map(async entry => {
+    const project: Project = { id: entry.id, name: entry.name, available: entry.available, runs: [] };
+    if (!entry.available) return project;
+    const workspace = await workspaceForProject(entry.id, home);
+    const identity = await readWorkspaceIdentity(workspace);
+    const archiveIds = new Set([identity.id, ...(identity.historyIds ?? [])]);
+    project.workspace = workspace;
+    const roots = [join(workspace, "logs")];
+    let names: string[];
+    try { names = (await readdir(roots[0], { withFileTypes: true })).filter(item => item.isDirectory()).map(item => item.name); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; names = []; }
+    const runs = await Promise.all(names.sort().reverse().map(async id => {
+      try {
+        const path = await resolveInRoots(id, roots);
+        const manifest: Manifest = JSON.parse(await readFile(join(path, "manifest.json"), "utf8"));
+        if (manifest.workspaceId && !archiveIds.has(manifest.workspaceId)) throw new Error("运行记录与工作区身份不一致");
+        return { id, ...(manifest.kind ? { kind: manifest.kind } : {}), model: manifest.model,
+          seconds: manifest.seconds, drivers: manifest.drivers, ...(manifest.benchmark ? { benchmark: manifest.benchmark } : {}) };
+      } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
+    }));
+    project.runs = runs.filter(item => item !== null);
+    return project;
+  }));
+  return projects.filter(project => includeEmpty || project.runs.length > 0)
     .sort((a, b) => (latestGameRun(b)?.id ?? b.runs[0]?.id ?? "")
       .localeCompare(latestGameRun(a)?.id ?? a.runs[0]?.id ?? ""));
 }
-export async function openRun(project: string, run: string, root = artifactRoot) {
-  const path = await resolveRun(project, run, root);
+export async function openRun(project: string, run: string, home = globalHome) {
+  const workspace = await workspaceForProject(project, home);
+  const path = await resolveInRoots(run, [join(workspace, "logs")]);
   const manifest = JSON.parse(await readFile(join(path, "manifest.json"), "utf8")) as Manifest;
-  let workspace: string | null = null;
-  try {
-    workspace = await registeredWorkspace(await projectState(project, root));
-    // Old run/media readers use the registry independently of a retained manifest.
-    // A mismatch only denies new workspace archive resolution.
-    if (manifest.workspace && await realpath(manifest.workspace) !== workspace) workspace = null;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    workspace = null;
-  }
+  const identity = await readWorkspaceIdentity(workspace);
+  const ownsArchive = typeof manifest.workspaceId === "string" && [identity.id, ...(identity.historyIds ?? [])].includes(manifest.workspaceId);
+  if (manifest.workspaceId && !ownsArchive) throw new Error("运行记录与工作区身份不一致");
+  // Stable identity permits a moved workspace to read its own archive. A record
+  // without identity must still match the current path before reading its timeline.
+  const archiveWorkspace = ownsArchive ? workspace
+    : typeof manifest.workspace === "string" && await realpath(manifest.workspace).catch(() => null) === workspace ? workspace : null;
   const index = getLogIndex(path), release = index.retain();
-  index.archiveWorkspace = workspace;
-  return { path, manifest, index, release, archiveWorkspace: workspace };
+  index.archiveWorkspace = archiveWorkspace;
+  return { path, manifest, index, release, archiveWorkspace };
 }
 export async function archiveBuild(project: string, run: string, action?: "cancel" | "retry", buildId?: string) {
   const { index, release } = await openRun(project, run);
@@ -227,7 +187,7 @@ export async function getRun(
   const latest = latestGameRun(projects.find((p) => p.id === project))?.id;
   let live: LiveStatus | null = null;
   // Only the newest manifest may designate a live socket. Archived runs never contact hosts.
-  if (latest === run && manifest.kind !== "benchmark")
+  if (latest === run && manifest.kind !== "benchmark" && manifest.workspaceId === project)
     live = await hostRequest(manifest.socket, {
       kind: "status",
       argv: [],
@@ -262,12 +222,12 @@ export async function getRun(
   };
   } finally { release(); }
 }
-export async function controlState(project: string, run: string, epoch: string, root = artifactRoot) {
+export async function controlState(project: string, run: string, epoch: string, root = globalHome) {
   // Human takeover cannot wait for a cold/obsolete archive index to rebuild.
   const path = await resolveRun(project, run, root);
   const manifest = JSON.parse(await readFile(join(path, "manifest.json"), "utf8")) as Manifest;
   const latest = latestGameRun((await catalog(root)).find(item => item.id === project))?.id;
-  const live = latest === run && manifest.kind !== "benchmark"
+  const live = latest === run && manifest.kind !== "benchmark" && manifest.workspaceId === project
     ? await hostRequest(manifest.socket, { kind: "status", argv: [] }).catch(() => null) : null;
   return { manifest, live, selectedEpoch: epoch,
     controlAllowed: !!latest && !!canControl(latest, run, live, epoch) };
@@ -296,8 +256,8 @@ export async function stopRun(
     expectedEpoch,
   });
 }
-export async function mediaFile(project: string, run: string, id: string, root = artifactRoot, signal?: AbortSignal) {
-  const { path, index, release } = await openRun(project, run, root);
+export async function mediaFile(project: string, run: string, id: string, root = globalHome, signal?: AbortSignal) {
+  const { path, manifest, archiveWorkspace, index, release } = await openRun(project, run, root);
   try {
   await prepareRun(index, signal);
   const observation = await indexedObservation(index, id, signal);
@@ -316,7 +276,8 @@ export async function mediaFile(project: string, run: string, id: string, root =
       || (reference.sequence !== undefined && (!Number.isSafeInteger(reference.sequence) || reference.sequence < 1))
       || typeof reference.asset !== "string" || !reference.asset.split("/").every(safePart))
       throw new Error("无效的时空轴媒体引用");
-    const workspace = await registeredWorkspace(await projectState(project, root));
+    if (!archiveWorkspace) throw new Error("运行记录与工作区身份不一致");
+    const workspace = archiveWorkspace;
     const timeline = join(workspace, ".rsa", "timeline");
     if (reference.video) return {
       bytes: await decodeTimelineFrame(timeline, { asset: reference.asset, video: reference.video }, { signal }),
@@ -332,7 +293,11 @@ export async function mediaFile(project: string, run: string, id: string, root =
   } else {
     if (typeof observation.path !== "string")
       throw Object.assign(new Error("此观测未录制，仅保留交付记录"), { status: 404, code: "OBSERVATION_UNRECORDED" });
-    file = await realpath(observation.path);
+    const originalDirectory = typeof manifest.workspace === "string" ? join(manifest.workspace, "logs", run, "observations") : undefined;
+    const originalName = originalDirectory ? relative(originalDirectory, observation.path) : undefined;
+    const relocated = archiveWorkspace && originalName && safePart(originalName)
+      ? join(path, "observations", originalName) : observation.path;
+    file = await realpath(relocated);
     if (file !== join(path, "observations", basename(file)))
       throw new Error("观测文件必须位于当前运行目录");
   }
@@ -352,13 +317,14 @@ export async function mediaFile(project: string, run: string, id: string, root =
 }
 
 export async function timelineRecord(project: string, run: string, recordId: string, sequence: number,
-  source: { call?: string; observation?: string }, root = artifactRoot, signal?: AbortSignal): Promise<TimelineRecordDetail> {
+  source: { call?: string; observation?: string }, root = globalHome, signal?: AbortSignal): Promise<TimelineRecordDetail> {
   if (!recordId || !Number.isSafeInteger(sequence) || sequence < 1) throw new Error("无效的时空轴记录引用");
-  const { index, release } = await openRun(project, run, root);
+  const { index, archiveWorkspace, release } = await openRun(project, run, root);
   try {
     await prepareRun(index, signal);
     if (!await hasTimelineReference(index, recordId, sequence, source, signal)) throw new Error("此运行没有引用指定观测");
-    const workspace = await registeredWorkspace(await projectState(project, root));
+    if (!archiveWorkspace) throw new Error("运行记录与工作区身份不一致");
+    const workspace = archiveWorkspace;
     const stored = await readTimelineRecord(join(workspace, ".rsa", "timeline"), recordId, sequence, signal)
       .catch(error => { if (error.code === "ENOENT") return undefined; throw error; });
     if (stored) return stored;
@@ -369,7 +335,7 @@ export async function timelineRecord(project: string, run: string, recordId: str
     if (latest) {
       const path = await resolveRun(project, latest.id, root);
       const manifest = JSON.parse(await readFile(join(path, "manifest.json"), "utf8")) as Manifest;
-      if (typeof manifest.workspace === "string" && await realpath(manifest.workspace) === workspace) {
+      if (manifest.workspaceId === project) {
         const live = await hostRequest(manifest.socket, { kind: "status", argv: [] }).catch(() => null);
         if (live?.runId === latest.id) {
           const response = await hostRequest<{ records?: Array<{ id: string; sequence: number; data?: unknown; space?: unknown }> }>(

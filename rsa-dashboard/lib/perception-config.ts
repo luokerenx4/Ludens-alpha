@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { catalog, artifactRoot } from "./data";
+import { catalog, globalHome } from "./data";
 
 /** Workspace overrides only; absent values inherit the perception process environment. */
 export interface PerceptionSettings {
@@ -88,7 +88,7 @@ function overrides(value: Record<string, unknown>): Partial<PerceptionSettings> 
   return result;
 }
 
-export async function perceptionSettings(project: string, root = artifactRoot): Promise<Partial<PerceptionSettings>> {
+export async function perceptionSettings(project: string, root = globalHome): Promise<Partial<PerceptionSettings>> {
   return overrides(await readSettings(await workspaceOf(project, root)));
 }
 
@@ -97,7 +97,7 @@ const writes = new Map<string, Promise<Partial<PerceptionSettings>>>();
 export async function updatePerceptionSettings(
   project: string,
   input: unknown,
-  root = artifactRoot,
+  root = globalHome,
 ): Promise<Partial<PerceptionSettings>> {
   const patch = parsePerceptionPatch(input), workspace = await workspaceOf(project, root);
   const work = (writes.get(workspace) ?? Promise.resolve()).catch(() => {}).then(async () => {

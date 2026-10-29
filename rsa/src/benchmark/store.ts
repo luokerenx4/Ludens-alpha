@@ -6,7 +6,8 @@ import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import { readRunEvents } from "../../../shared/event-sources.ts";
 import { validateVideoReference } from "../../../shared/timeline-media.ts";
-import { resolveWorkspaceState } from "../harness/workspace-state.ts";
+import { initializeWorkspaceState } from "../harness/workspace-state.ts";
+import { ludensHome, readWorkspaceIdentity, registerWorkspace } from "../../../shared/ludens.ts";
 import { isObject, trialSummary, validId, validateTrial, validateVerification, verificationSummary,
   type BenchmarkResult, type EvidenceReference, type Failure, type HistoryQuery, type PageQuery,
   type Trial, type TrialPage, type TrialSummary, type Verification, type VerificationPage } from "./contract.ts";
@@ -18,10 +19,10 @@ export async function atomicJson(path: string, value: unknown) {
   try { await writeFile(temporary, JSON.stringify(value, null, 2) + "\n"); await rename(temporary, path); }
   finally { await rm(temporary, { force: true }); }
 }
-export async function indexWorkspace(workspace: string, artifactRoot: string) {
-  const state = await resolveWorkspaceState(workspace, artifactRoot);
+export async function indexWorkspace(workspace: string, globalHome = ludensHome()) {
+  const state = await initializeWorkspaceState(workspace, globalHome);
   await mkdir(join(state.workspace, "logs"), { recursive: true });
-  await atomicJson(join(state.dir, "workspace.json"), { workspace: state.workspace });
+  await registerWorkspace(state.workspace, state.globalHome);
   return state;
 }
 const ensureId = (id: string) => { if (!validId(id)) throw new Error("Invalid benchmark ID"); return id; };
@@ -67,8 +68,12 @@ export async function readTrial(workspace: string, runId: string): Promise<Trial
   const directory = await trustedRun(workspace, runId);
   const trial = await readJson(await containedPath(directory, "trial.json")) as Trial;
   validateTrial(trial);
-  if (trial.id !== runId || trial.workspace !== await realpath(workspace)) throw new Error("Trial identity mismatch");
-  return trial;
+  const root = await realpath(workspace);
+  const owner = await readWorkspaceIdentity(root).catch(error => { if (error.code !== "ENOENT") throw error; return undefined; });
+  if (trial.id !== runId || trial.workspace !== root && trial.project !== owner?.id && !owner?.historyIds?.includes(trial.project)) throw new Error("Trial identity mismatch");
+  // Stable ownership lets local evidence move with its workspace. Keep the
+  // historical path on disk; all subsequent reads use this canonical root.
+  return { ...trial, workspace: root };
 }
 export type TrialFinish = Pick<Trial, "status" | "endedAt" | "durationMs"> & Partial<Pick<Trial, "conditions" | "subjects" | "evidence" | "limitations" | "error">>;
 /** CAS only. The sole Shiori EventLog owner emits a terminal event iff changed is true. */
@@ -137,6 +142,7 @@ function pageLimit(query: PageQuery) {
 /** Reads compact summaries only; no rewards, verification history, events, or media. */
 export async function history(workspace: string, query: HistoryQuery = {}): Promise<TrialPage> {
   const limit = pageLimit(query), root = await realpath(workspace), logs = join(root, "logs");
+  const identity = await readWorkspaceIdentity(root).catch(error => { if (error.code !== "ENOENT") throw error; return undefined; });
   const entries = await readdir(logs, { withFileTypes: true }).catch(error => { if (error.code === "ENOENT") return []; throw error; });
   const ids = entries.filter(entry => entry.isDirectory() && validId(entry.name)).map(entry => entry.name).sort().reverse();
   const trials: TrialSummary[] = [], issues: TrialPage["issues"] = [];
@@ -145,11 +151,11 @@ export async function history(workspace: string, query: HistoryQuery = {}): Prom
     try {
       const run = await trustedRun(root, id);
       const summary = await readJson(await containedPath(run, "trial-summary.json")) as TrialSummary;
-      if (summary.id !== id || summary.runId !== id || summary.workspace !== root || typeof summary.project !== "string" || !summary.project ||
+      if (summary.id !== id || summary.runId !== id || summary.workspace !== root && summary.project !== identity?.id && !identity?.historyIds?.includes(summary.project) || typeof summary.project !== "string" || !summary.project ||
           !["running", "completed", "error", "cancelled"].includes(summary.status) || typeof summary.startedAt !== "string" || !Number.isFinite(Date.parse(summary.startedAt)) ||
           !isObject(summary.task) || typeof summary.task.name !== "string" || !/^sha256:[0-9a-f]{64}$/.test(summary.task.digest)) throw new Error("Trial summary identity mismatch");
       if (query.taskName && summary.task.name !== query.taskName) continue;
-      trials.push(summary);
+      trials.push({ ...summary, workspace: root });
       if (trials.length > limit) break;
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") issues.push({ runId: id, error: String(error) }); }
   }

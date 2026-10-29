@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { artifactRoot, catalog } from "./data";
+import { globalHome, catalog } from "./data";
+import { listRegisteredWorkspaces } from "../../shared/ludens";
 import type { PetConsumer, PetState, PetTarget } from "./pet";
 
-const targetFile = ".pet-target.json";
-const consumerFile = ".pet-consumer.json";
+const targetFile = "pet/target.json";
+const consumerFile = "pet/consumer.json";
 export const PET_HEARTBEAT_TTL_MS = 15_000;
 const validPid = (pid: unknown): pid is number =>
   typeof pid === "number" && Number.isSafeInteger(pid) && pid > 0;
@@ -29,13 +30,21 @@ function read<T>(root: string, name: string): T | undefined {
   }
 }
 function write(root: string, name: string, value: unknown) {
-  mkdirSync(root, { recursive: true });
+  mkdirSync(join(root, "pet"), { recursive: true });
   const temporary = join(root, `${name}.${randomUUID()}.tmp`);
   writeFileSync(temporary, JSON.stringify(value) + "\n");
   renameSync(temporary, join(root, name));
 }
-export function petState(root = artifactRoot, now = Date.now()): PetState {
-  const target = read<PetTarget | null>(root, targetFile) ?? null;
+export async function petState(root = globalHome, now = Date.now()): Promise<PetState> {
+  let target = read<PetTarget | null>(root, targetFile) ?? null;
+  if (target) {
+    const entry = (await listRegisteredWorkspaces(root)).find(entry => entry.id === target!.project);
+    if (!entry?.available) target = null;
+    else if (entry.workspace !== target.workspace) {
+      target = { ...target, workspace: entry.workspace, revision: randomUUID(), updatedAt: new Date(now).toISOString() };
+      write(root, targetFile, target);
+    }
+  }
   const consumer = read<PetConsumer>(root, consumerFile) ?? null;
   return {
     target,
@@ -47,7 +56,7 @@ export function petState(root = artifactRoot, now = Date.now()): PetState {
 export async function setPetTarget(
   project: unknown,
   ifUnset = false,
-  root = artifactRoot,
+  root = globalHome,
 ): Promise<PetState> {
   if (project !== null && typeof project !== "string")
     throw new Error("请选择已登记的工作区");
@@ -67,7 +76,7 @@ export async function setPetTarget(
   } satisfies PetTarget : null);
   return petState(root);
 }
-export function recordPetConsumer(input: unknown, root = artifactRoot): PetState {
+export async function recordPetConsumer(input: unknown, root = globalHome): Promise<PetState> {
   const value = input as Partial<PetConsumer> | null;
   if (!value || typeof value.instanceId !== "string" || !value.instanceId || !validPid(value.pid) ||
       !["idle", "switching", "following", "error"].includes(value.phase ?? "") ||

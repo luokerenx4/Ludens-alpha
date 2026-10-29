@@ -1,3 +1,4 @@
+import { registerFixture } from "./fixtures/registry";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -18,10 +19,10 @@ function event(seq: number, ms: number, type: string, data: Record<string, unkno
 async function fixture() {
   const root = await realpath(await mkdtemp(join(tmpdir(), "rsa-replay-")));
   const workspace = join(root, "workspace"), run = join(workspace, "logs/run"), timeline = join(workspace, ".rsa/timeline");
-  await mkdir(join(root, "project")); await mkdir(run, { recursive: true });
+  await mkdir(run, { recursive: true });
   await mkdir(join(timeline, "segments"), { recursive: true }); await mkdir(join(timeline, "objects"));
-  await writeFile(join(root, "project/workspace.json"), JSON.stringify({ workspace }));
-  await writeFile(join(run, "manifest.json"), JSON.stringify({ workspace, runId: "run", socket: "/no-host.sock" }));
+  await registerFixture(root, "project", workspace);
+  await writeFile(join(run, "manifest.json"), JSON.stringify({ workspace, workspaceId: "project", runId: "run", socket: "/no-host.sock" }));
   const events = [
     event(1, 0, "control", { mode: "auto" }),
     event(2, 1000, "action_start", { actionId: "a", controllerId: "pad.play" }, { traceId: "t", spanId: "s" }),
@@ -347,7 +348,7 @@ test("record media and details are offline, scoped, canonical and do not copy so
     assert.equal(image.bytes.toString(), "image:5:1");
     await assert.rejects(f.query({ mode: "media", epoch: "one", record: "record-8", sequence: 8, media: 0 }), /不属于/);
     await assert.rejects(f.query({ mode: "detail", record: "wrong", sequence: 5 }), /不属于/);
-    await assert.rejects(getReplay("../project", "run", { mode: "overview" }, f.root), /项目 ID/);
+    await assert.rejects(getReplay("../project", "run", { mode: "overview" }, f.root), /Invalid workspace ID/);
     const asset = join(f.timeline, "objects", hash("image:5:1").toString("hex") + ".bin");
     await rm(asset); await symlink(join(f.run, "events.jsonl"), asset);
     await assert.rejects(f.query({ mode: "media", record: "record-5", sequence: 5, media: 1 }), /必须位于/);

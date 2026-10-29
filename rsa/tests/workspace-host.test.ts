@@ -4,16 +4,16 @@ import { createServer, type AddressInfo, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { send } from "../src/harness/transport.ts";
-import { resolveWorkspaceState, writeCurrentSession, type WorkspaceState } from "../src/harness/workspace-state.ts";
+import { initializeWorkspaceState, writeCurrentSession, type WorkspaceState } from "../src/harness/workspace-state.ts";
 
 const rsaDirectory = resolve(import.meta.dir, "..");
 const entry = join(rsaDirectory, "src/app/main.ts");
-const artifactRoot = resolve(rsaDirectory, "../../artifacts/rsa");
 type Ready = { ready: true; runId: string; runDir: string; stateDir: string; workspace: string; socket: string };
 type Host = { child: Bun.Subprocess<"ignore", "pipe", "pipe">; stderr: Promise<string> };
 
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), "rsa-workspace-host-"));
+  const globalHome = join(directory, "global");
   const operations: string[] = [];
   const sockets = new Set<Socket>();
   const states: WorkspaceState[] = [];
@@ -61,7 +61,7 @@ mock.module(${JSON.stringify(join(rsaDirectory, "src/harness/omp/session.ts"))},
     delete env.BASEWARE_SOCKET;
     delete env.BASEWARE_EPOCH;
     delete env.BASEWARE_TRACE;
-    return { ...env, PI_CODING_AGENT_DIR: join(directory, "omp"), RSA_TEST_DRIVER_CALLS: driverCalls, ...extra };
+    return { ...env, LUDENS_HOME: globalHome, PI_CODING_AGENT_DIR: join(directory, "omp"), RSA_TEST_DRIVER_CALLS: driverCalls, ...extra };
   }
   function launch(workspace: string, options: string[] = [], extra: Record<string, string> = {}, fromCwd = false): Host {
     const child = Bun.spawn([process.execPath, "--preload", preload, entry, "run", ...(fromCwd ? [] : ["--workspace", workspace]),
@@ -74,7 +74,7 @@ mock.module(${JSON.stringify(join(rsaDirectory, "src/harness/omp/session.ts"))},
   }
   return { directory, operations, driverCalls, launch,
     async state(name: string) {
-      const state = await resolveWorkspaceState(join(directory, "workspaces", name), artifactRoot);
+      const state = await initializeWorkspaceState(join(directory, "workspaces", name), globalHome);
       states.push(state);
       const socket = join(directory, `baseware-${name}.sock`);
       basewareSockets.set(state.workspace, socket);
@@ -130,7 +130,7 @@ test("hosts route by workspace, resume only its selected session, and can start 
     const second = await testbed.state("two");
     for (const state of [first, second]) {
       const sessionFile = join(state.sessionsDir, "selected.jsonl");
-      await writeFile(sessionFile, JSON.stringify({ type: "session", cwd: state.workspace }) + "\n");
+      await writeFile(sessionFile, JSON.stringify({ type: "session", id: crypto.randomUUID(), cwd: state.workspace }) + "\n" + JSON.stringify({ type: "custom", customType: "ludens.workspace", data: { version: 1, workspaceId: state.id } }) + "\n");
       await writeCurrentSession(state, sessionFile);
     }
     await writeFile(join(first.workspace, "notes.txt"), "Keep this learned material.\n");
@@ -145,7 +145,8 @@ test("hosts route by workspace, resume only its selected session, and can start 
     for (const [state, result] of [[first, one], [second, two]] as const) {
       expect(result.stateDir).toBe(state.dir);
       expect(result.runDir).toBe(join(state.workspace, "logs", result.runId));
-      expect(JSON.parse(await readFile(join(state.dir, "workspace.json"), "utf8"))).toEqual({ workspace: state.workspace });
+      expect(JSON.parse(await readFile(join(state.dir, "workspace.json"), "utf8"))).toEqual({ version: 1, id: state.id });
+      expect(JSON.parse(await readFile(join(state.globalHome, "registry", `${state.id}.json`), "utf8"))).toMatchObject({ id: state.id, workspace: state.workspace });
       expect(await Bun.file(join(result.runDir, "events.jsonl")).exists()).toBe(true);
       const manifest = JSON.parse(await readFile(join(result.runDir, "manifest.json"), "utf8"));
       expect(manifest.provenance.workspaceInstructionsSHA256).toBe(state === first

@@ -12,7 +12,7 @@ import { createHostRuntime } from "../../harness/host.ts";
 import { PythonCapabilities } from "../../harness/python-capabilities.ts";
 import { Runtime } from "../../harness/runtime.ts";
 import { listen as listenRsa } from "../../harness/transport.ts";
-import { resolveWorkspaceState } from "../../harness/workspace-state.ts";
+import { initializeWorkspaceState } from "../../harness/workspace-state.ts";
 import type { RecordEvent } from "../../harness/events.ts";
 import type { BenchmarkContext } from "../types.ts";
 import { ReuseEnvironment } from "../fixtures/reuse-environment.ts";
@@ -41,7 +41,7 @@ export async function run(ctx: BenchmarkContext): Promise<Record<string, unknown
   const baseline = await workspaceBaseline(ctx.workspace);
   const recordBenchmark = ctx.log.recorder({ component: "benchmark", implementation: "assembly-bench", implementationVersion: "1" });
   const environment = new ReuseEnvironment(ctx.seed, join(ctx.runDir, "bench-frames"), recordBenchmark);
-  const state = await resolveWorkspaceState(ctx.workspace, join(ctx.runDir, "session-state"));
+  const state = await initializeWorkspaceState(ctx.workspace);
   const prefix = `/tmp/rsa-bench-${crypto.randomUUID()}`;
   const basewareSocket = `${prefix}-b.sock`, rsaSocket = `${prefix}-r.sock`;
   let runtime: Runtime | undefined;

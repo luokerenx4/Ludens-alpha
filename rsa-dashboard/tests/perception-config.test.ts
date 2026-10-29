@@ -1,3 +1,4 @@
+import { registerFixture } from "./fixtures/registry";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { access, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
@@ -10,20 +11,19 @@ import * as route from "../app/api/perception-config/route";
 
 async function fixture() {
   const base = await realpath(await mkdtemp(join(tmpdir(), "perception-config-")));
-  const root = join(base, "artifacts"), workspace = join(base, "workspace");
-  await mkdir(join(root, "registered"), { recursive: true });
+  const root = join(base, "home"), workspace = join(base, "workspace");
   await mkdir(workspace);
-  await writeFile(join(root, "registered/workspace.json"), JSON.stringify({ workspace }));
+  await registerFixture(root, "registered", workspace);
   return { base, root, workspace, path: join(workspace, ".rsa/settings.json"),
     cleanup: async () => { clearCatalogCache(); await rm(base, { recursive: true, force: true }); } };
 }
 
 test("new registered workspaces read inherited settings and the worker saves and explicitly resets overrides", async () => {
   const f = await fixture();
-  const worker = new DashboardWorker({ env: { ...process.env, RSA_DASHBOARD_ARTIFACT_ROOT: f.root } });
+  const worker = new DashboardWorker({ env: { ...process.env, LUDENS_HOME: f.root } });
   try {
     assert.deepEqual(await worker.call("perceptionSettings", ["registered"]), {});
-    await assert.rejects(access(join(f.workspace, ".rsa")));
+    await assert.rejects(access(f.path));
     assert.deepEqual(await worker.call("updatePerceptionSettings", ["registered", { hotSeconds: 120, videoIdleSeconds: 20 }]),
       { hotSeconds: 120, videoIdleSeconds: 20 });
     const reset = JSON.parse(JSON.stringify({ hotSeconds: null }));
@@ -44,7 +44,7 @@ test("concurrent saves retain every field and leave one complete JSON file", asy
     const expected = { hotSeconds: 120, videoSegmentSeconds: 240, videoIdleSeconds: 30 };
     assert.deepEqual(await perceptionSettings("registered", f.root), expected);
     assert.deepEqual(JSON.parse(await readFile(f.path, "utf8")), expected);
-    assert.deepEqual(await readdir(join(f.workspace, ".rsa")), ["settings.json"]);
+    assert.deepEqual((await readdir(join(f.workspace, ".rsa"))).sort(), ["settings.json", "workspace.json"]);
     await writeFile(f.path, "broken JSON");
     await assert.rejects(updatePerceptionSettings("registered", { hotSeconds: 180 }, f.root), /JSON|Unexpected/);
     await writeFile(f.path, JSON.stringify(expected));
@@ -55,7 +55,6 @@ test("concurrent saves retain every field and leave one complete JSON file", asy
 test("custom positive seconds remain readable and unrelated file settings survive UI patches", async () => {
   const f = await fixture();
   try {
-    await mkdir(join(f.workspace, ".rsa"));
     const custom = { hotSeconds: 0.5, videoSegmentSeconds: 7200, videoIdleSeconds: null, userSetting: { value: true } };
     await writeFile(f.path, JSON.stringify(custom));
     assert.deepEqual(await perceptionSettings("registered", f.root), { hotSeconds: 0.5, videoSegmentSeconds: 7200 });
@@ -76,11 +75,15 @@ test("settings paths reject symlinks and saves do not follow a predictable tempo
     await mkdir(outside);
     const externalFile = join(outside, "settings.json"), original = '{"hotSeconds": 90}\n';
     await writeFile(externalFile, original);
+    const identity = await readFile(join(directory, "workspace.json"));
+    await writeFile(join(outside, "workspace.json"), identity);
+    await rm(directory, { recursive: true });
     await symlink(outside, directory);
     await assert.rejects(perceptionSettings("registered", f.root), /真实目录/);
     await assert.rejects(updatePerceptionSettings("registered", { hotSeconds: 120 }, f.root), /真实目录/);
     await rm(directory);
     await mkdir(directory);
+    await writeFile(join(directory, "workspace.json"), identity);
     await symlink(externalFile, f.path);
     await assert.rejects(perceptionSettings("registered", f.root), /普通文件/);
     await assert.rejects(updatePerceptionSettings("registered", { hotSeconds: 120 }, f.root), /普通文件/);

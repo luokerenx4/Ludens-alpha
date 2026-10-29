@@ -1,4 +1,5 @@
 import { clearCatalogCache } from "../lib/data";
+import { registerFixture } from "./fixtures/registry";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { writeFile, readFile, realpath, mkdtemp, mkdir, symlink, rm } from "node:fs/promises";
@@ -297,47 +298,51 @@ test("empty/in-flight log has no fabricated completed requests", () => {
 });
 
 test("run resolution rejects traversal and symlink escape", async () => {
-  const root = await mkdtemp(join(tmpdir(), "rsa-dashboard-test-"));
+  const root = await realpath(await mkdtemp(join(tmpdir(), "rsa-dashboard-test-")));
+  const workspace = join(root, "workspace");
   try {
-    await mkdir(join(root, "game/runs/valid"), { recursive: true });
+    await registerFixture(root, "game", workspace);
+    await mkdir(join(workspace, "logs/valid"), { recursive: true });
     assert.equal(
       await resolveRun("game", "valid", root),
       await import("node:fs/promises").then((f) =>
-        f.realpath(join(root, "game/runs/valid")),
+        f.realpath(join(workspace, "logs/valid")),
       ),
     );
     await assert.rejects(resolveRun("../game", "valid", root));
     await assert.rejects(resolveRun("game", "..", root));
-    await symlink(tmpdir(), join(root, "game/runs/escape"));
+    await symlink(tmpdir(), join(workspace, "logs/escape"));
     await assert.rejects(resolveRun("game", "escape", root));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("workspace index discovers external workspace logs alongside retained historical runs", async () => {
+test("workspace registry reads only local logs and never falls back to old artifact state", async () => {
   const temp = await mkdtemp(join(tmpdir(), "rsa-dashboard-workspace-"));
   const base = await realpath(temp);
-  const root = join(base, "artifacts");
+  const root = join(base, "home");
   const workspace = join(base, "workspace-a");
   const state = join(root, "ws-workspace-a");
   try {
     await mkdir(join(state, "runs/old"), { recursive: true });
     await mkdir(join(workspace, "logs/new"), { recursive: true });
     await writeFile(join(state, "workspace.json"), JSON.stringify({ workspace }));
+    await registerFixture(root, "ws-workspace-a", workspace);
     const manifest = JSON.stringify({ model: "test", seconds: 600, drivers: [{ id: "test", version: "1" }] });
     await writeFile(join(state, "runs/old/manifest.json"), manifest);
     await writeFile(join(workspace, "logs/new/manifest.json"), manifest);
     assert.equal(await resolveRun("ws-workspace-a", "new", root), join(workspace, "logs/new"));
-    assert.equal(await resolveRun("ws-workspace-a", "old", root), join(state, "runs/old"));
+    await assert.rejects(resolveRun("ws-workspace-a", "old", root), { code: "ENOENT" });
     const projects = await catalog(root);
-    assert.deepEqual(projects[0].runs.map((run) => run.id).sort(), ["new", "old"]);
+    assert.deepEqual(projects[0].runs.map((run) => run.id), ["new"]);
     assert.equal(projects[0].workspace, workspace);
     await symlink(join(state, "runs/old"), join(workspace, "logs/escape"));
     await assert.rejects(resolveRun("ws-workspace-a", "escape", root));
     await rm(join(workspace, "logs"), { recursive: true });
     clearCatalogCache();
-    assert.deepEqual((await catalog(root))[0].runs.map((run) => run.id), ["old"]);
+    assert.deepEqual(await catalog(root), []);
+    assert.deepEqual((await catalog(root, true))[0].runs, []);
   } finally {
     await rm(temp, { recursive: true, force: true });
   }
@@ -419,7 +424,7 @@ test("catalog is empty before the first run but does not hide invalid roots", as
     const file = join(root, "not-a-directory");
     await writeFile(file, "");
     await assert.rejects(catalog(file), { code: "ENOTDIR" });
-    await assert.rejects(mediaFile("../game", "run", "frame"), /无效的项目 ID/);
+    await assert.rejects(mediaFile("../game", "run", "frame", root), /Invalid workspace ID/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -710,7 +715,8 @@ test("WS frame metadata stays separate from HTTP body, attempts and header timin
 test("control identity reads never create or migrate a cold archive index", async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), "rsa-control-index-")));
   try {
-    const run = join(root, "game", "runs", "run"), index = join(run, ".dashboard-index");
+    const workspace = join(root, "workspace"), run = join(workspace, "logs", "run"), index = join(run, ".dashboard-index");
+    await registerFixture(root, "game", workspace);
     await mkdir(index, { recursive: true });
     await writeFile(join(run, "manifest.json"), JSON.stringify({ runId: "run", kind: "benchmark", drivers: [] }));
     await writeFile(join(index, ".writing"), "old interrupted cache");

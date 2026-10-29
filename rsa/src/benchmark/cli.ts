@@ -36,7 +36,7 @@ Offline reads never start Shiori or import an evaluator. There is no universal p
 schema returns a contract guide, not the complete official JSON Schema. validate performs static native-profile checks.
 Use --workspace globally to select another workspace. No implicit batch or retry.`;
 
-export async function benchmarkCommand(args: string[], artifactRoot: string, workspacePath: string) {
+export async function benchmarkCommand(args: string[], globalHome: string, workspacePath: string) {
   if (!args.length || args[0] === "--help") { console.log(BENCH_HELP); return; }
   const command = args[0];
   const { values, positionals } = parseArgs({ args: args.slice(1), allowPositionals: true, options: {
@@ -85,7 +85,7 @@ export async function benchmarkCommand(args: string[], artifactRoot: string, wor
       if (!Number.isSafeInteger(repeat) || repeat < 1) throw new Error("--repeat must be a positive integer");
       const results = [];
       for (let index = 0; index < repeat; index++) {
-        const value = await runTask(requireValue(), { workspace, artifactRoot, configPath: values.config,
+        const value = await runTask(requireValue(), { workspace, globalHome, configPath: values.config,
           parameters, digest: values.digest, seconds: values.seconds ? Number(values.seconds) : undefined, verify: !values["no-verify"] });
         results.push(value);
         const code = value.trial.status !== "completed" ? 1 : values["no-verify"] || value.verification?.status === "completed" ? 0 : 2;
@@ -94,7 +94,7 @@ export async function benchmarkCommand(args: string[], artifactRoot: string, wor
       output = repeat === 1 ? results[0] : results; break;
     }
     case "verify": {
-      const value = await verifyTask(workspace, requireValue(), { taskPath: values.task ? resolve(values.task) : undefined, reason: values.reason });
+      const value = await verifyTask(workspace, requireValue(), { taskPath: values.task ? resolve(values.task) : undefined, reason: values.reason, globalHome });
       output = value; if (value.verification?.status !== "completed") process.exitCode = 2; break;
     }
     case "get": output = await result(requireValue()); break;
@@ -104,7 +104,7 @@ export async function benchmarkCommand(args: string[], artifactRoot: string, wor
     case "aggregate": {
       if (positionals.length < 2) throw new Error("aggregate requires explicitly selected trials");
       if (values.policy && values.policy !== "all" && values.policy !== "graded") throw new Error("--policy must be all|graded");
-      output = await aggregateTasks(workspace, resolve(requireValue()), positionals.slice(1), { policy: values.policy as "all" | "graded" | undefined }); break;
+      output = await aggregateTasks(workspace, resolve(requireValue()), positionals.slice(1), { policy: values.policy as "all" | "graded" | undefined, globalHome }); break;
     }
     case "import-legacy": {
       const { importLegacyTrial, importLegacyHistory } = await import("./legacy-import.ts");
