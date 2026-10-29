@@ -47,8 +47,8 @@
       "description": "此控制台的偏好设置，以及可选的桌面陪伴控制。工作区选项在各自页面中设置。"
     },
     "dev": {
-      "title": "原理展示",
-      "description": "讲解循环与注入原理的实验工具不影响任何真实运行。"
+      "title": "Loop 实验室",
+      "description": "比较交付策略对上下文用量的影响。本地估算，不影响真实运行。"
     }
   },
   "benchmark": {
@@ -626,7 +626,8 @@
       "asst": "助手消息均值",
       "thresh": "compaction 阈值",
       "keep": "保留近期",
-      "seed": "随机种子"
+      "seed": "随机种子",
+      "imgCap": "原生图片上限"
     },
     "units": {
       "batches": "批",
@@ -678,30 +679,36 @@
     "chart": {
       "empty": "无模型请求(时间/请求预算耗尽前没有触发)",
       "requests": "模型请求",
-      "clickHint": "次 · 点选"
+      "clickHint": "次 · 点选",
+      "title": "每次请求的 token 估算",
+      "keyboardHint": "使用下方请求编号和上一条、下一条按钮查看具体数值。",
+      "threshold": "历史上下文压实阈值",
+      "noRequests": "没有请求",
+      "compactedBefore": "在此请求前压实",
+      "thresholdContext": "按保留历史计算，可能与请求总量不同。"
     },
     "stats": {
-      "requests": "模型请求 / 预算",
-      "rounds": "接管轮数",
+      "requests": "请求数 / 预算",
+      "rounds": "轮数",
       "frames": "注入帧数",
-      "frameTok": "帧 token(交付)",
-      "peak": "峰值 wire",
-      "frameShare": "帧占峰值",
-      "compactions": "compaction",
-      "decoPerReq": "装饰/请求",
+      "frameTok": "累计交付帧 token",
+      "peak": "单次请求峰值 token",
+      "frameShare": "感知占峰值",
+      "compactions": "压实次数",
+      "decoPerReq": "每次请求装饰",
       "times": "次"
     },
     "presets": {
-      "legacyTag": "已删 · 鞭尸用"
+      "legacyTag": "已移除 · 仅供对照"
     },
     "cards": {
       "rsa": "RSA 注入层 ①②",
       "omp": "OMP 原生层",
       "imgCap": "原生图片上限",
-      "anatomy": "循环解剖(紫=OMP 原生 · 琥珀=RSA 注入 · 划掉=当前已关)",
-      "wire": "Wire 构成 · 每次模型请求实际发送的 token(点图可选请求)",
-      "inspector": "Wire 检查器",
-      "history": "持久消息历史(最新 250 条 · 装饰层不进历史,只在 wire 里)"
+      "anatomy": "循环结构",
+      "wire": "每次请求的 token 估算",
+      "inspector": "请求构成",
+      "history": "模拟消息历史"
     },
     "legend": {
       "sys": "系统(模板+AGENTS)",
@@ -709,12 +716,18 @@
       "tools": "工具结果",
       "ptext": "感知 JSON",
       "pimg": "感知图片(wire)",
-      "deco": "─ 每请求装饰(不入历史)"
+      "deco": "─ 每请求装饰(不入历史)",
+      "total": "请求总量（含临时附加层）"
     },
     "compare": {
-      "frames": "帧",
-      "peak": "峰值",
-      "compactions": "压实"
+      "frames": "交付帧数",
+      "peak": "峰值 token",
+      "compactions": "压实次数",
+      "scenario": "方案",
+      "requests": "请求数",
+      "delivered": "交付帧 token",
+      "retained": "保留的感知 token",
+      "select": "使用方案"
     },
     "inspector": {
       "request": "请求"
@@ -743,14 +756,131 @@
       "toolBatch": "🖼 感知注入②批次末(已删)",
       "changed": "屏幕有变化",
       "unchanged": "屏幕没变",
-      "hiddenSuffix": "条更早的消息已滑出视图"
+      "hiddenSuffix": "条更早的消息已滑出视图",
+      "continuation": "Continuation 续接"
     },
     "foot": {
       "prefix": "估算模型,供策略对照。机制依据:",
       "outer": "外层循环 ·",
       "roundStart": "轮首注入 ·",
       "ch2removed": "通道②(批次末注入)已于 2026-10-29 删除,见"
-    }
+    },
+    "presetNames": {
+      "now": {
+        "name": "当前交付方式",
+        "desc": "每轮开始自动交付；轮内通过 observe 显式获取。"
+      },
+      "legacy": {
+        "name": "批次末交付",
+        "desc": "已移除的行为：每个工具批次结束后追加帧。"
+      },
+      "gate": {
+        "name": "语义门控",
+        "desc": "假想方案：交付帧时跳过未变化的画面。"
+      },
+      "pull": {
+        "name": "显式 observe",
+        "desc": "不自动交付帧，由模型主动请求观测。"
+      },
+      "bare": {
+        "name": "原生 OMP",
+        "desc": "仅运行一轮，关闭 RSA 自动交付与 continuation。"
+      }
+    },
+    "rsaLayers": {
+      "ch1": {
+        "name": "轮首帧交付",
+        "desc": "在 before_agent_start 交付最新帧。"
+      },
+      "ch2": {
+        "name": "批次末帧交付",
+        "desc": "仅模拟已移除的行为：把帧追加到最后一个工具结果。"
+      },
+      "gate": {
+        "name": "语义门控",
+        "desc": "仅是假想方案；实际 agent 尚未实现跳过未变化的画面。"
+      },
+      "state": {
+        "name": "感知状态通知",
+        "desc": "简短的采样器状态消息，按 120 token 估算。"
+      },
+      "cont": {
+        "name": "外层 continuation",
+        "desc": "final 后开始下一轮；关闭后仅运行一轮 OMP。"
+      }
+    },
+    "ompLayers": {
+      "agents": {
+        "name": "AGENTS.md 上下文",
+        "desc": "将项目上下文加入系统提示。"
+      },
+      "dateCwd": {
+        "name": "日期与目录提醒",
+        "desc": "每次请求临时加入，不写入历史。"
+      },
+      "schemas": {
+        "name": "工具定义",
+        "desc": "每次请求发送 6 个工具定义，包含 i 字段。"
+      },
+      "pruning": {
+        "name": "工具结果裁剪",
+        "desc": "替换旧的读取结果，裁剪已经消费的内容。"
+      },
+      "compaction": {
+        "name": "上下文压实",
+        "desc": "超过阈值时生成摘要，并保留近期上下文。"
+      },
+      "imgInf": {
+        "name": "不限图片预算",
+        "desc": "RSA 覆盖项；关闭后模拟原生图片上限。"
+      }
+    },
+    "localOnly": "本地模拟",
+    "scenario": "模拟方案",
+    "custom": "自定义层配置",
+    "customDescription": "当前层配置与预设不同，结果按当前选择计算。",
+    "controlsTitle": "调整模拟",
+    "controlsDescription": "编辑参数并应用，再比较结果。",
+    "apply": "应用参数",
+    "resetParams": "重置参数",
+    "unapplied": "有未应用的修改。结果仍使用上次应用的参数。",
+    "appliedStatus": "参数已应用，结果已更新。",
+    "resetStatus": "已恢复默认参数，层配置保持不变。",
+    "errorSummary": "请修正以下参数后再应用。当前保留之前的结果。",
+    "resultsTitle": "结果概览",
+    "estimate": "估算",
+    "layersImmediate": "层配置修改会立即更新结果，使用已应用的参数。",
+    "rsaTitle": "RSA 注入层",
+    "ompTitle": "OMP 原生层",
+    "rangeHint": "{min}–{max} · 步长 {step}",
+    "validation": {
+      "required": "请输入数值。",
+      "finite": "请输入有限数值。",
+      "range": "请输入 {min} 至 {max} 之间的数值。",
+      "integer": "请输入整数。",
+      "step": "请从 {min} 起以 {step} 为步长输入。",
+      "number": "请输入十进制数值。"
+    },
+    "imageCapInactive": "关闭无限图片预算时使用。",
+    "chartTitle": "每次请求的 token 估算",
+    "chartDescription": "选择一个请求，查看本次模拟的数值明细。",
+    "previousRequest": "上一个请求",
+    "nextRequest": "下一个请求",
+    "goRequest": "跳转",
+    "requestRange": "共 {count} 个",
+    "requestInvalid": "请输入 1 至 {count} 之间的整数请求编号。",
+    "inspectorTitle": "所选请求明细",
+    "comparisonTitle": "对比方案",
+    "comparisonHint": "五个方案使用相同的已应用参数。选择一行可使用该方案的层配置。",
+    "anatomyTitle": "循环结构",
+    "anatomyHint": "当前层配置的结构示意。",
+    "historyTitle": "模拟消息历史",
+    "historyHint": "最近 250 条事件；单次请求的装饰内容不进入历史。",
+    "moreMetrics": "更多估算",
+    "simulationFoot": "此确定性模型用于估算方案差异，不代表真实运行测量。",
+    "mechanismDocs": "阅读注入机制设计",
+    "presetKindRemoved": "已移除",
+    "presetKindHypothetical": "假想"
   },
   "workspaceRunEmpty": {
     "loading-catalog": {
