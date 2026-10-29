@@ -6,3 +6,4 @@
 - [日志、观测与调用链](../docs/reference/logging.md)
 - [Benchmark 用例、报告与比较](../docs/reference/benchmark.md)
 - [架构与组件边界](../docs/reference/architecture.md)
+- [文档与能力页](../docs/tutorials/development.md#独立组件与控制台)：站内文档浏览（`?view=docs`），以及工作区能力、外部驱动验证和评测任务目录（`?view=caps`）。
