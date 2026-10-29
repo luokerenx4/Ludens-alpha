@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useRef, useState, type MouseEvent } from "react";
+import { useEffect, useRef, useState, type MouseEvent, type Ref } from "react";
 import { Search } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -22,12 +22,12 @@ interface SearchState {
 }
 
 /** Automatically scan bounded server pages, stopping at one readable result batch. */
-export function ReplayEventSearch({ scope, startAt, itemUrl, onSelect, selectedId }: {
+export function ReplayEventSearch({ scope, startAt, itemUrl, onSelect, selectedId, inputId, inputRef }: {
   scope: string; startAt: number; itemUrl(item: ReplayItem): string;
   onSelect(item: ReplayItem, trigger: HTMLElement): void; selectedId?: string;
+  inputId: string; inputRef: Ref<HTMLInputElement>;
 }) {
   const t = useTranslations("replayNavigation"), timeline = useTranslations("timelinePlayer");
-  const id = useId();
   const [query, setQuery] = useState("");
   const [track, setTrack] = useState<Track>("all");
   const [state, setState] = useState<SearchState | null>(null);
@@ -81,9 +81,9 @@ export function ReplayEventSearch({ scope, startAt, itemUrl, onSelect, selectedI
   return <section className="replay-event-search space-y-4" aria-label={t("eventSearchTitle")}>
     <div><h2 className="text-sm font-semibold">{t("eventSearchTitle")}</h2><p className="mt-1 text-xs text-muted-foreground">{t("eventSearchHint")}</p></div>
     <form className="space-y-3" onSubmit={event => { event.preventDefault(); run(); }}>
-      <Label htmlFor={`${id}-query`} className="sr-only">{t("searchLabel")}</Label>
+      <Label htmlFor={inputId} className="sr-only">{t("searchLabel")}</Label>
       <div className="relative"><Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground" aria-hidden="true" />
-        <Input id={`${id}-query`} value={query} maxLength={200} className="pl-9" placeholder={t("searchPlaceholder")} onChange={event => changeQuery(event.target.value)} />
+        <Input id={inputId} ref={inputRef} value={query} maxLength={200} className="pl-9" placeholder={t("searchPlaceholder")} onChange={event => changeQuery(event.target.value)} />
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <NativeSelect size="sm" aria-label={t("trackFilter")} value={track} onChange={event => { if (request.current) stop(); setTrack(event.target.value as Track); }}>
@@ -110,11 +110,12 @@ export function ReplayEventSearch({ scope, startAt, itemUrl, onSelect, selectedI
       <ol className="replay-search-results">
         {state.items.map(item => <li key={item.id}><a href={itemUrl(item)} onClick={event => follow(event, item)}
           aria-current={item.id === selectedId ? "true" : undefined} data-replay-item={item.id}>
-          <div className="flex flex-wrap items-center justify-between gap-2"><time className="font-mono text-xs tabular-nums">{replayElapsedInput(item.startAt - startAt)}</time>
-            <Badge variant="outline" className="text-[10px]">{timeline(`track.${item.track}`)}</Badge></div>
-          <p className="mt-1 break-words text-sm">{item.label}</p>
-          {item.status && <p className="mt-1 text-xs text-muted-foreground">{["completed","failed","cancelled","running","success","error","pending"].includes(item.status)
-            ? timeline(`status.${({success:"completed",error:"failed",pending:"pending"} as Record<string,string>)[item.status] ?? item.status}`) : item.status}</p>}
+          <div className="replay-search-result-meta"><time className="font-mono tabular-nums">{replayElapsedInput(item.startAt - startAt)}</time>
+            <Badge variant="outline" className="whitespace-normal text-xs">{timeline(`track.${item.track}`)}</Badge>
+            {item.status && <span className="replay-search-result-status">{["completed","failed","cancelled","running","success","error","pending"].includes(item.status)
+              ? timeline(`status.${({success:"completed",error:"failed",pending:"pending"} as Record<string,string>)[item.status] ?? item.status}`) : item.status}</span>}
+          </div>
+          <p className="replay-search-result-label">{item.label}</p>
         </a></li>)}
       </ol>
       {!changed && (state.stopped || state.error) && <div className="flex flex-wrap gap-2"><Button type="button" variant="outline" size="sm" onClick={event => { focus.remember(event.currentTarget); void scan(state); }}>{t("continueSearch")}</Button>

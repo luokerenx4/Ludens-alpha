@@ -16,7 +16,7 @@ import { replayVideoReady } from "./replay-video-model";
 import { readArchiveJson } from "../lib/archive-client";
 import "./timeline-player.css";
 import { useTranslations } from "@/lib/locale";
-import { ChevronLeft, ChevronRight, RotateCcw, RotateCw } from "lucide-react";
+import { ChevronLeft, ChevronRight, RotateCcw, RotateCw, Search } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ReplayTimeJump } from "./replay-time-jump";
@@ -126,6 +126,8 @@ export function TimelinePlayer({ project, run, epoch, position, evidence = null,
   const evidencePanel = useRef<HTMLElement>(null);
   const evidenceOpener = useRef<HTMLElement | null>(null);
   const eventsTab = useRef<HTMLButtonElement>(null);
+  const eventSearchInput = useRef<HTMLInputElement>(null);
+  const searchFocusIntent = useRef<{ scope: string; trigger: HTMLButtonElement } | null>(null);
   const player = useRef<HTMLDivElement>(null);
   const evidencePresentation = useRef({ wide, evidenceKey, inspectorTab });
   evidencePresentation.current = { wide, evidenceKey, inspectorTab };
@@ -138,8 +140,14 @@ export function TimelinePlayer({ project, run, epoch, position, evidence = null,
   };
   useEffect(() => {
     if (evidenceKey) {
-      setInspectorTab("details");
-      if (wide) requestAnimationFrame(() => { evidencePanel.current?.focus({ preventScroll: true }); evidencePanel.current?.scrollIntoView({ block: "nearest" }); });
+      const newEvidence = evidenceKey !== lastEvidence.current;
+      if (newEvidence) setInspectorTab("details");
+      // A retained evidence URL does not override an explicit return to Events on resize.
+      if (wide && (newEvidence || evidencePresentation.current.inspectorTab === "details")) requestAnimationFrame(() => {
+        const current = evidencePresentation.current;
+        if (!current.wide || current.evidenceKey !== evidenceKey || current.inspectorTab !== "details") return;
+        evidencePanel.current?.focus({ preventScroll: true }); evidencePanel.current?.scrollIntoView({ block: "nearest" });
+      });
     } else {
       setInspectorTab("events");
       if (lastEvidence.current && wide && document.activeElement === document.body) requestAnimationFrame(restoreEvidenceFocus);
@@ -150,6 +158,23 @@ export function TimelinePlayer({ project, run, epoch, position, evidence = null,
   const [overview, setOverview] = useState<ReplayOverview | null>(null);
   const resolvedEpoch = overview ? overview.epoch : epoch;
   const scope = new URLSearchParams({ project, run, ...(resolvedEpoch ? { epoch: resolvedEpoch } : {}) }).toString();
+  const revealEventSearch = useCallback(() => {
+    const input = eventSearchInput.current;
+    if (!input?.getClientRects().length) return;
+    input.focus({ preventScroll: true }); input.scrollIntoView({ block: "nearest" });
+  }, []);
+  useEffect(() => {
+    const intent = searchFocusIntent.current;
+    searchFocusIntent.current = null;
+    if (intent && intent.scope === scope && inspectorTab === "events" && document.activeElement === intent.trigger) revealEventSearch();
+  }, [inspectorTab, scope, revealEventSearch]);
+  const findEvent = (trigger: HTMLButtonElement) => {
+    // Explicit focus also establishes the intent in browsers that do not focus clicked buttons.
+    trigger.focus({ preventScroll: true });
+    if (inspectorTab === "events") { searchFocusIntent.current = null; revealEventSearch(); return; }
+    searchFocusIntent.current = { scope, trigger };
+    setInspectorTab("events");
+  };
   const [coverage, setCoverage] = useState<ReplayCoverage | null>(null);
   const [eventWindow, setEventWindow] = useState<ReplayWindow | null>(null);
   const [eventError, setEventError] = useState("");
@@ -422,7 +447,8 @@ export function TimelinePlayer({ project, run, epoch, position, evidence = null,
   return <div ref={player} tabIndex={-1} className="replay-player outline-none">
     <div className="replay-toolbar">
       <div className="replay-title"><h1>{nt("title")}</h1><span className="replay-readonly"><i /> {t("readonlyNotice")}</span></div>
-      <div><Button type="button" variant="ghost" size="xs" disabled={refreshing} onClick={() => { cached.current = []; setWindows([]); setRefresh(value => value + 1); setRetry(value => value + 1); }}>
+      <div><Button type="button" variant="outline" size="sm" className="replay-find-event" aria-controls={`${controlsId}-event-query`} onClick={event => findEvent(event.currentTarget)}><Search aria-hidden="true" />{nt("findEvent")}</Button>
+        <Button type="button" variant="ghost" size="xs" disabled={refreshing} onClick={() => { cached.current = []; setWindows([]); setRefresh(value => value + 1); setRetry(value => value + 1); }}>
         {refreshing ? t("refreshing") : t("refreshRecords")}</Button>
         <Button type="button" variant="ghost" size="xs" onClick={share}>{t("shareMoment")}</Button></div>
     </div>
@@ -510,7 +536,8 @@ export function TimelinePlayer({ project, run, epoch, position, evidence = null,
           <TabsTrigger value="details" disabled={!evidence} onClick={() => { if (evidence && !wide) setInspectorTab("details"); }}>{nt("evidenceTab")}</TabsTrigger>
         </TabsList>
         <TabsContent value="events" forceMount className="data-[state=inactive]:hidden">
-          <ReplayEventSearch key={scope} scope={scope} startAt={overview.startAt} itemUrl={evidenceUrl} onSelect={selectItem} selectedId={evidence?.kind === "item" ? evidence.id : undefined} />
+          <ReplayEventSearch key={scope} scope={scope} startAt={overview.startAt} itemUrl={evidenceUrl} onSelect={selectItem} selectedId={evidence?.kind === "item" ? evidence.id : undefined}
+            inputId={`${controlsId}-event-query`} inputRef={eventSearchInput} />
         </TabsContent>
         <TabsContent value="details">{wide ? evidenceView : evidence && <Button type="button" variant="outline" onClick={() => setInspectorTab("details")}>{nt("evidenceTab")}</Button>}</TabsContent>
       </Tabs>
