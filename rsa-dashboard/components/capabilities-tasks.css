@@ -1,0 +1,20 @@
+@layer components {
+  .capability-tasks { margin:0; padding:0; list-style:none; border-top:1px solid var(--border); }
+  .capability-task { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,2fr) minmax(0,1fr); align-items:start; gap:20px; padding:18px 0; border-bottom:1px solid var(--border); }
+  .capability-task-name,.capability-task-description,.capability-task-details { min-width:0; margin:0; overflow-wrap:anywhere; }
+  .capability-task-name { font-size:12px; font-weight:600; line-height:1.6; }
+  .capability-task-description { font-size:12px; line-height:1.7; }
+  .capability-task-details { display:grid; gap:12px; font-size:12px; line-height:1.6; }
+  .capability-task-digest { min-width:0; }
+  .capability-task-digest>summary { width:fit-content; max-width:100%; cursor:pointer; color:var(--muted-foreground); }
+  .capability-task-digest>code { display:block; margin-top:10px; padding:10px; border:1px solid var(--border); border-radius:var(--radius); background:var(--muted); font-size:11px; line-height:1.6; overflow-wrap:anywhere; }
+  .capability-task-link { display:inline-flex; align-items:center; justify-self:start; max-width:100%; gap:6px; color:var(--primary); text-decoration:underline; text-underline-offset:3px; }
+  .capability-task-link>svg { width:14px; height:14px; flex-shrink:0; }
+  .capability-task-link:focus-visible,.capability-task-digest>summary:focus-visible { outline:2px solid var(--primary); outline-offset:4px; border-radius:3px; }
+
+  @media (max-width:900px) {
+    .capability-task { grid-template-columns:minmax(0,1fr); gap:12px; padding:20px 0; }
+    .capability-task-name,.capability-task-description { font-size:13px; }
+    .capability-task-details { gap:14px; }
+  }
+}

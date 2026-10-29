@@ -116,6 +116,27 @@ function CapabilityTable({ items }: { items: CapabilityEntry[] }) {
   </Table>;
 }
 
+function EvalTasks({ tasks, project, onNavigate }: {
+  tasks: CapabilitiesResult["tasks"]; project: string; onNavigate(href: string): void;
+}) {
+  const t = useTranslations("capabilitiesView");
+  return <ul className="capability-tasks" role="list" aria-label={t("groupTitles.tasks")}>
+    {tasks.map(task => {
+      const href = "/?" + new URLSearchParams({ view: "benchmark", bench: "cases", project, case: task.name, caseDigest: task.digest });
+      return <li key={`${task.name}@${task.digest}`} className="capability-task" data-capability-task={`${task.name}@${task.digest}`}>
+        <h4 className="capability-task-name"><code>{task.name}</code></h4>
+        <p className="capability-task-description">{task.title !== task.name ? task.title : <span className="text-muted-foreground">{t("noDescription")}</span>}</p>
+        <div className="capability-task-details">
+          <details className="capability-task-digest"><summary>{t("taskDigest")}<span className="sr-only"> · {task.name}</span></summary><code>{task.digest}</code></details>
+          <a href={href} className="capability-task-link" data-capability-task-link={`${task.name}@${task.digest}`} onClick={event => {
+            if (isPlainNavigationClick(event)) { event.preventDefault(); onNavigate(href); }
+          }}>{t("openTask")}<span className="sr-only"> · {task.name}</span><ArrowUpRight aria-hidden="true" /></a>
+        </div>
+      </li>;
+    })}
+  </ul>;
+}
+
 function ConnectionCheck({ project, workspace }: { project: string; workspace: string }) {
   const t = useTranslations("capabilitiesView");
   const [value, setValue] = useState<CapabilityRuntime | null>(null), [error, setError] = useState("");
@@ -176,8 +197,7 @@ function WorkspaceCapabilities({ project, workspace, ready, catalogError, catalo
             <p>{caps.deviceSnapshot.generatedAt ? <>{t("snapshotAt")} <time dateTime={caps.deviceSnapshot.generatedAt}>{new Date(caps.deviceSnapshot.generatedAt).toLocaleString()}</time></> : t("snapshotTimeUnknown")}</p>
             {caps.deviceSnapshot.drivers.length > 0 && <p className="break-words">{t("recordedDrivers")}: {caps.deviceSnapshot.drivers.map(driver => `${driver.id}${driver.version ? ` (${driver.version})` : ""}`).join(", ")}</p>}</div>}
           {source.status === "error" ? <p className="text-sm text-destructive">{t("sourceFailure")}</p> : count === 0 ? <p className="text-sm text-muted-foreground">{t(`sourceEmpty.${id}`)}</p>
-            : id !== "tasks" ? <CapabilityTable items={items} /> : <Table className="text-xs [&_th]:px-3 [&_td]:px-3 [&_td]:py-3 [&_td]:align-top"><TableHeader className="bg-muted/40"><TableRow><TableHead>{t("taskCol")}</TableHead><TableHead>{t("descriptionCol")}</TableHead><TableHead>{t("versionCol")}</TableHead></TableRow></TableHeader>
-              <TableBody>{caps.tasks.map(task => <TableRow key={`${task.name}@${task.digest}`}><TableCell className="min-w-40"><code>{task.name}</code></TableCell><TableCell className="min-w-64 whitespace-normal">{task.title !== task.name ? task.title : t("noDescription")}</TableCell><TableCell><code>{task.digest.slice(0, 20)}…</code></TableCell></TableRow>)}</TableBody></Table>}
+            : id !== "tasks" ? <CapabilityTable items={items} /> : <EvalTasks tasks={caps.tasks} project={project} onNavigate={onNavigate} />}
           {source.issueCount > 0 && <p className="text-xs text-muted-foreground">{t("diagnosticsTitle")}: {source.issueCount}</p>}
           {id === "tasks" && <NavigationLink href={"/?" + new URLSearchParams({ view: "benchmark", bench: "cases", project })} onNavigate={onNavigate}>{t("viewBenchmark")}<ArrowUpRight /></NavigationLink>}
         </CardContent></Card>;

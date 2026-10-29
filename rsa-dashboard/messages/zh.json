@@ -362,6 +362,8 @@
     "noDescription": "无描述",
     "taskCol": "任务",
     "versionCol": "版本摘要",
+    "taskDigest": "内容摘要",
+    "openTask": "在 Benchmark 中查看任务",
     "catalogFailed": "无法刷新工作区列表。",
     "retryCatalog": "重试工作区列表",
     "retryRead": "重试读取",
