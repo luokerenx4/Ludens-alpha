@@ -1383,7 +1383,12 @@
       "ariaCache": "缓存命中百分比",
       "ariaBody": "请求体大小，MB",
       "noData": "无数据",
-      "noRequests": "暂无请求"
+      "noRequests": "暂无请求",
+      "empty": {
+        "latency": "本页未记录请求耗时或传输等待时间。",
+        "cache": "本页未记录缓存命中率。",
+        "body": "本页未记录请求体或 WebSocket 帧大小。"
+      }
     },
     "textObservation": {
       "loading": "载入文字观测…"
@@ -1773,5 +1778,29 @@
     "panelTitle": "录制证据",
     "close": "关闭",
     "contentLabel": "证据内容"
+  },
+  "runAnalysis": {
+    "requests": "请求",
+    "chooseRequest": "选择请求",
+    "selectedRequest": "选中的请求",
+    "noRequests": "本页没有请求",
+    "outsidePage": "不在本页",
+    "olderRequest": "上一条请求",
+    "newerRequest": "下一条请求",
+    "retry": "重新读取",
+    "reading": "正在读取…",
+    "readFailed": "无法读取这条请求。",
+    "refreshFailed": "无法刷新请求详情。",
+    "showingCached": "保留当前选择上次成功读取的内容。",
+    "technicalDetails": "技术详情",
+    "loadingRequest": "正在读取选中的请求…",
+    "chooseOrRetry": "请重新读取，或选择另一条请求。",
+    "requestUnavailable": "选中的请求不可用",
+    "requestUnavailableHint": "本次读取未包含选中的请求。请选择另一条请求，或重新读取。",
+    "performanceOverview": "性能概览",
+    "overviewCount": "当前范围共 {count} 条请求",
+    "overviewHint": "当前范围汇总与本页请求已记录的指标。仅在记录了对应指标时显示图表。",
+    "requestCharts": "已记录的请求指标",
+    "pageRange": "本页 #{first}–#{last} · 共 {total} 个请求"
   }
 }

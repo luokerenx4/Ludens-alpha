@@ -11,6 +11,8 @@ import { initialSelection, latestGameRun } from "@/lib/initial-selection";
 import { workspaceRunEntry } from "@/lib/workspace-run-entry";
 import { hasSelectedEvidence, latestLiveUrl, liveContext, resolveLiveSelection, type PausedLiveSelection } from "@/lib/live-follow";
 import { ReadPoller } from "@/lib/read-poller";
+import { analysisRequest, runAnalysisSnapshot, type RunReadSnapshot } from "@/lib/run-analysis-selection";
+import { RunAnalysis } from "@/components/run-analysis";
 import { WorkspaceRunEmpty } from "@/components/workspace-run-empty";
 import { ActivityFeed } from "@/components/activity-feed";
 import { useActivityFeed } from "@/components/use-activity-feed";
@@ -33,14 +35,10 @@ import { driverCreationHref } from "@/lib/driver-onboarding";
 import {
   Metric,
   ObservationPanel,
-  RequestChart,
-  RequestDetails,
   seconds,
   percent,
   bytes,
   clockTime,
-  requestBytes,
-  transport,
 } from "@/components/run-visuals";
 
 import { readArchiveJson as json, type ArchiveProgress } from "@/lib/archive-client";
@@ -90,7 +88,7 @@ export default function Dashboard() {
   useEffect(() => {
     if (view !== "workspaces") setVerifiedCreationDriver(null);
   }, [view]);
-  const [loaded, setLoaded] = useState<{ key: string; revision: number; data: RunData } | null>(
+  const [loaded, setLoaded] = useState<(RunReadSnapshot & { revision: number }) | null>(
     null,
   );
   const [replayCycles, setReplayCycles] = useState<{ key: string; cycles: RunData["cycles"] } | null>(null);
@@ -134,16 +132,19 @@ export default function Dashboard() {
   const beforeCall = query.get("beforeCall") ?? "";
   const requestedCall = query.get("call") ?? "";
   const selectedImage = query.get("image") ?? undefined;
-  const key = JSON.stringify([scopeKey, beforeCall, requestedCall, selectedImage]);
+  const readScope = { project: selection.project, workspace: project?.workspace ?? "", run, epoch: selection.epoch, beforeCall };
+  const key = JSON.stringify([scopeKey, readScope.workspace, beforeCall, requestedCall, selectedImage]);
   const error = runFailure?.key === key ? runFailure.message : "";
-  const data = loaded?.key === key ? loaded.data : null;
+  const analysis = runAnalysisSnapshot(loaded, key, readScope);
+  const analysingRun = view === "benchmark" && !benchmarkCases;
+  const data = analysingRun ? analysis.overview : loaded?.key === key ? loaded.data : null;
   const cycles = view === "replay"
     ? replayCycles?.key === JSON.stringify([selection.project, run]) ? replayCycles.cycles : []
     : data?.cycles ?? [];
   const activity = useActivityFeed({ project: selection.project, run, epoch: selection.epoch || undefined,
     enabled: view === "live", refresh, archiveRevision, resetRevision: snapshotRevision, selectedBlock: query.get("block") ?? undefined });
-  const call =
-    data?.selectedCall ?? data?.calls.find((c) => c.id === requestedCall) ?? data?.calls.at(-1);
+  const call = analysingRun ? analysisRequest(analysis.detail, requestedCall)
+    : data?.selectedCall ?? data?.calls.find((c) => c.id === requestedCall) ?? data?.calls.at(-1);
   const navigateUrl = useCallback((target: string) => {
     const url = new URL(target, window.location.href);
     if (url.origin !== window.location.origin) return;
@@ -243,7 +244,7 @@ export default function Dashboard() {
           progress => setPreparing({ key, progress }),
         );
         if (signal.aborted) return 2500;
-        setLoaded({ key, revision: snapshotRevision, data: next });
+        setLoaded({ key, scope: readScope, revision: snapshotRevision, data: next });
         setPreparing(null);
         setRunFailure(null);
       } catch (e) {
@@ -277,7 +278,7 @@ export default function Dashboard() {
   const retryRun = (control: HTMLButtonElement) => {
     const pending = runPoller.current;
     if (!pending || pending.key !== key || retryingRun) return;
-    runRetryFocus.current = document.activeElement === control ? { control, key } : null;
+    runRetryFocus.current = (view === "live" || (analysingRun && !data)) && document.activeElement === control ? { control, key } : null;
     void pending.reader.readOnce();
   };
   useEffect(() => {
@@ -291,12 +292,12 @@ export default function Dashboard() {
   useEffect(() => {
     const pending = runRetryFocus.current;
     if (!pending) return;
-    if (view !== "live" || pending.key !== key) { runRetryFocus.current = null; return; }
+    if ((view !== "live" && !analysingRun) || pending.key !== key) { runRetryFocus.current = null; return; }
     if (retryingRun) return;
     runRetryFocus.current = null;
     if (!error && !pending.control.isConnected && document.activeElement === document.body)
       runContent.current?.focus({ preventScroll: true });
-  }, [view, key, error, retryingRun]);
+  }, [view, analysingRun, key, error, retryingRun]);
   const live = data?.live;
   const isCurrent =
     !!data && live?.runId === data.run && data.selectedEpoch === live?.epoch;
@@ -392,7 +393,7 @@ export default function Dashboard() {
             ...(selectedImage ? { image: selectedImage } : {}),
           }),
       );
-      setLoaded({ key, revision: snapshotRevision, data: next });
+      setLoaded({ key, scope: readScope, revision: snapshotRevision, data: next });
       setRunFailure(null);
     } catch (e) {
       setRunFailure({ key, message: String(e) });
@@ -405,7 +406,9 @@ export default function Dashboard() {
     s?.medianHttpHeadersMs != null ? dt("waitHttp") + " " + seconds(s.medianHttpHeadersMs) : "",
     s?.medianWsWaitMs != null ? dt("waitWs") + " " + seconds(s.medianWsWaitMs) : "",
   ].filter(Boolean).join(" · ");
-  const pageRange = data?.calls.length ? `Page #${data.paging.firstIndex}–#${data.paging.lastIndex} · ${data.paging.totalCalls} ${dt("requestsUnit")}` : dt("pageEmpty");
+  const pageRange = data?.calls.length ? t("runAnalysis.pageRange")
+    .replace("{first}", String(data.paging.firstIndex)).replace("{last}", String(data.paging.lastIndex))
+    .replace("{total}", String(data.paging.totalCalls)) : dt("pageEmpty");
   const hasTelemetry = data?.telemetry.sources.some(
     (source) => source.component !== "unlabelled",
   );
@@ -517,7 +520,7 @@ export default function Dashboard() {
             </Button>}
           </div>
         </header>
-        <main ref={runContent} tabIndex={view === "live" ? -1 : undefined} className={"page-content" + (view === "live" ? " live-page" : "")}>
+        <main ref={runContent} tabIndex={view === "live" || analysingRun ? -1 : undefined} className={"page-content" + (view === "live" ? " live-page" : "")}>
           {view !== "workspaces" && view !== "docs" && view !== "perception" && view !== "caps" && (view !== "replay" || entry !== "ready") && <div className={"page-heading" + (view === "live" ? " live-page-heading" : view === "settings" ? " mx-auto w-full max-w-5xl" : "")}>
             <div>
               <h1>{benchmarkCases ? t("benchmark.casesTitle") : t(`views.${view}.title`)}</h1>
@@ -560,7 +563,7 @@ export default function Dashboard() {
           )}
           {runControls && run && <ArchiveBuild key={selection.project + "/" + run}
             project={selection.project} run={run} onReady={archiveReady} />}
-          {runControls && entry !== "catalog-error" && (catalogError || (view !== "replay" && error)) && (
+          {runControls && entry !== "catalog-error" && (catalogError || (view !== "replay" && error && !(analysingRun && data))) && (
             <Alert variant="destructive" className="mb-5"><AlertDescription className="flex flex-wrap items-center justify-between gap-3">
               <span className="min-w-0 break-words">{catalogError || error}
               {data && (
@@ -570,7 +573,7 @@ export default function Dashboard() {
                 {catalogError && <Button type="button" size="sm" variant="outline" disabled={catalogLoading} onClick={refreshCatalog}>
                   {t(catalogLoading ? "workspaceRunEmpty.retrying" : "workspaceRunEmpty.retry")}
                 </Button>}
-                {view === "live" && error && <Button type="button" size="sm" variant="outline" aria-disabled={retryingRun}
+                {(view === "live" || analysingRun) && error && <Button type="button" size="sm" variant="outline" aria-disabled={retryingRun}
                   className="aria-disabled:opacity-50" onClick={event => retryRun(event.currentTarget)}>
                   {lt(retryingRun ? "readingRun" : "retryRun")}
                 </Button>}
@@ -669,7 +672,6 @@ export default function Dashboard() {
                   {Math.floor(data.manifest.seconds / 60)}{dt("minLong")}
                 </span></>}
               </div>
-              {view !== "live" && metrics}
               {view === "live" ? (
                 <>
                 <div className="live-grid">
@@ -717,125 +719,24 @@ export default function Dashboard() {
                 </>
               ) : (
                 <>
-                  <section className="charts">
-                    {(["latency", "cache", "body"] as const).map((type) => (
-                      <div className="surface chart-card" key={type}>
-                        <div className="surface-heading">
-                          <h2>
-                            {type === "latency"
-                              ? dt("chart.latency")
-                              : type === "cache"
-                                ? dt("chart.cache")
-                                : dt("chart.body")}
-                          </h2>
-                          <span>
-                            {type === "latency"
-                              ? dt("chart.latencyHint")
-                              : type === "cache"
-                                ? "%"
-                                : dt("chart.bodyHint")}
-                          </span>
-                        </div>
-                        <RequestChart
-                          type={type}
-                          calls={data.calls}
-                          selected={call?.id}
-                          onSelect={selectCall}
-                        />
-                      </div>
-                    ))}
-                  </section>
-                  <div className="benchmark-grid">
-                    <section className="surface request-timeline">
-                      <div className="surface-heading">
-                        <h2>{dt("timeline")}</h2>
-                        <Button type="button" variant="ghost" size="xs"
-                          className="h-auto justify-start whitespace-normal text-left text-xs text-muted-foreground hover:text-foreground"
-                          onClick={() =>
-                            navigate({ beforeCall: null, call: null, image: null, block: null })
-                          }
-                        >
-                          {dt("followLatest")} ↓
-                        </Button>
-                      </div>
-                      <p className="feed-notice">{pageRange}</p>
-                      <div className="timeline-list">
-                        {[...data.calls]
-                          .reverse()
-                          .map((c) => (
-                            <button type="button"
-                              key={c.id}
-                              className={
-                                "request-row" +
-                                (c.id === call?.id ? " selected" : "")
-                              }
-                              aria-pressed={c.id === call?.id}
-                              onClick={() => selectCall(c.id)}
-                            >
-                              <div>
-                                <b>#{String(c.index).padStart(3, "0")}</b>
-                                <span className={"request-state " + c.status}>
-                                  {c.status === "pending"
-                                    ? dt("req.pending")
-                                    : c.status === "error"
-                                      ? dt("req.failed")
-                                      : c.status === "aborted"
-                                        ? dt("req.aborted")
-                                        : seconds(c.durationMs)}
-                                </span>
-                              </div>
-                              <p>
-                                {c.tools[0]?.intent ||
-                                  c.tools.map((t) => t.name).join(" · ") ||
-                                  (c.status === "pending"
-                                    ? dt("req.waiting")
-                                    : dt("req.textReply"))}
-                              </p>
-                              <small>
-                                {clockTime(c.at)} <span>{transport(c, (key) => t(`runVisuals.${key}`))}</span>
-                              </small>
-                              <small>
-                                {bytes(requestBytes(c))}
-                                <span>{percent(c.cacheHit)}</span>
-                              </small>
-                            </button>
-                          ))}
-                        {data.paging.hasMore && data.paging.beforeCall !== null && (
-                          <Button type="button" variant="ghost" size="xs" className="load-more text-muted-foreground"
-                            onClick={() => navigate({ ...pinned, beforeCall: String(data.paging.beforeCall), call: null, image: null, block: null })}>
-                            {dt("loadMore")}
-                          </Button>
-                        )}
-                        {!data.calls.length && (
-                          <div className="empty-state">
-                            <p>
-                              {data.activeCompaction
-                                ? dt("callsEmpty.compacting")
-                                : data.selectedEpoch
-                                  ? dt("callsEmpty.noEpochCalls")
-                                  : data.manifest.benchmark
-                                    ? dt("callsEmpty.noBenchCalls")
-                                    : dt("callsEmpty.noTakeover")}
-                            </p>
-                          </div>
-                        )}
-                      </div>
-                    </section>
-                    <RequestDetails
-                      data={data}
-                      call={call}
-                      panel={panel}
-                      onPanel={setPanel}
-                      onSelect={selectCall}
-                      onInspect={() =>
-                        navigate({
-                          ...pinned,
-                          view: "live",
-                          call: call?.id ?? null,
-                        })
-                      }
-                    />
-                  </div>
+                  <RunAnalysis
+                    data={data}
+                    detailData={analysis.detail}
+                    call={call}
+                    requestedCall={requestedCall}
+                    pending={!analysis.detail}
+                    error={error}
+                    retrying={retryingRun}
+                    metrics={metrics}
+                    pageRange={pageRange}
+                    panel={panel}
+                    onPanel={setPanel}
+                    onSelect={selectCall}
+                    onInspect={() => navigate({ ...pinned, view: "live", call: call?.id ?? null })}
+                    onRetry={retryRun}
+                    onFollowLatest={() => navigate({ beforeCall: null, call: null, image: null, block: null })}
+                    onLoadMore={() => navigate({ ...pinned, beforeCall: String(data.paging.beforeCall), call: null, image: null, block: null })}
+                  />
                   <section className="surface telemetry-summary">
                     <div>
                       <h2>{dt("telemetry.title")}</h2>

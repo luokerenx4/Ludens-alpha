@@ -8,6 +8,7 @@ import { ObservationMedia } from "./observation-media";
 import type { Call, Observation, PerceptionSnapshot, RunData, TraceSpan } from "@/lib/types";
 import type { TimelineRecordDetail } from "@/lib/timeline-record";
 import { requestWait, sseFallbackReason } from "@/lib/transport";
+import { requestChartSeries, type RequestChartType } from "@/lib/request-chart";
 import { mediaFailureMessage, observationTime, perceptionAgeMs, perceptionStateLabel, samplingDurationMs, selectObservations } from "./observation-model";
 
 export const seconds = (ms: number | null | undefined) =>
@@ -68,37 +69,22 @@ export function RequestChart({
   onSelect,
 }: {
   calls: Call[];
-  type: "latency" | "cache" | "body";
+  type: RequestChartType;
   selected?: string;
   onSelect(id: string): void;
 }) {
   const t = useTranslations("runVisuals");
   const { t: rootT } = useLocale();
   const waits = calls.map(requestWait);
-  const values = calls.map((c) =>
-    type === "latency"
-      ? c.durationMs == null
-        ? null
-        : c.durationMs / 1000
-      : type === "cache"
-        ? c.cacheHit == null
-          ? null
-          : c.cacheHit * 100
-        : requestBytes(c) == null
-          ? null
-          : requestBytes(c)! / 1e6,
-  );
+  const { values, waitValues, hasData } = requestChartSeries(calls, type);
+  if (!hasData) return <p className="request-chart-empty" data-chart-empty={type}>{t(`chart.empty.${type}`)}</p>;
   const maximum =
     type === "cache"
       ? 100
       : Math.max(
           1,
           ...values.filter((v): v is number => v !== null),
-          ...(type === "latency"
-            ? waits.flatMap((wait) =>
-                wait.ms === null ? [] : [wait.ms / 1000],
-              )
-            : []),
+          ...waitValues.filter((value): value is number => value !== null),
         ) * 1.15;
   const x = (i: number) => 38 + ((i + 0.5) * 310) / Math.max(1, calls.length);
   const y = (v: number) => 133 - (v / maximum) * 108;
@@ -146,13 +132,13 @@ export function RequestChart({
       ))}
       {type === "latency" &&
         calls.map((c, i) =>
-          waits[i].ms === null ? null : (
+          waitValues[i] === null ? null : (
             <rect
               key={c.id}
               x={x(i) - Math.max(1, 70 / calls.length)}
-              y={y(waits[i].ms! / 1000)}
+              y={y(waitValues[i]!)}
               width={Math.max(2, 140 / calls.length)}
-              height={Math.max(0, 133 - y(waits[i].ms! / 1000))}
+              height={Math.max(0, 133 - y(waitValues[i]!))}
               fill="var(--wait)"
             />
           ),
