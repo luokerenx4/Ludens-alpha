@@ -9,8 +9,9 @@ import { Slider } from "@/components/ui/slider";
 import { useTranslations } from "@/lib/locale";
 import { parsePerceptionDraft, PERCEPTION_FIELDS, type PerceptionKey, type PerceptionFieldDraft } from "./perception-draft";
 
-export function PerceptionField({ name, saved, draft, pending, onEdit }: {
+export function PerceptionField({ name, saved, draft, pending, inheritanceNoteId, onEdit }: {
   name: PerceptionKey; saved?: number; draft?: PerceptionFieldDraft; pending: boolean;
+  inheritanceNoteId: string;
   onEdit(mode: PerceptionFieldDraft["mode"], raw: string): void;
 }) {
   const t = useTranslations("perceptionSettings"), id = useId(), limit = PERCEPTION_FIELDS[name];
@@ -21,7 +22,7 @@ export function PerceptionField({ name, saved, draft, pending, onEdit }: {
   const custom = !draft && saved !== undefined && parsed === undefined;
   const conflict = !!draft && draft.base !== saved;
   return <Card data-perception-field={name} className="gap-0">
-    <CardContent className="grid gap-5 min-[1000px]:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)] min-[1000px]:gap-10">
+    <CardContent className="grid gap-3 min-[1000px]:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)] min-[1000px]:gap-8">
       <div className="space-y-2">
         <div className="flex flex-wrap items-center gap-2"><h3 className="text-sm font-semibold">{label}</h3>
           {draft && <Badge variant="outline">{t("draftBadge")}</Badge>}</div>
@@ -29,6 +30,7 @@ export function PerceptionField({ name, saved, draft, pending, onEdit }: {
       </div>
       <div className="min-w-0 space-y-3">
         <NativeSelect value={mode} aria-label={`${label} · ${t("sourceLabel")}`} aria-disabled={pending}
+          aria-describedby={`${id}-help ${inheritanceNoteId}${mode === "inherit" ? ` ${id}-default` : ""}`}
           wrapperClassName="w-full sm:w-64" className="w-full aria-disabled:opacity-50"
           onKeyDown={event => { if (pending && event.key !== "Tab") event.preventDefault(); }}
           onPointerDown={event => { if (pending) event.preventDefault(); }}
@@ -55,10 +57,9 @@ export function PerceptionField({ name, saved, draft, pending, onEdit }: {
           <p id={`${id}-range`} className="text-xs text-muted-foreground">{t("rangePrefix")} {limit.min}–{limit.max} {t("wholeSeconds")}</p>
           {invalid && <p id={`${id}-error`} className="text-xs text-destructive" role="alert">{t("invalidValue")}</p>}
           {custom && <p id={`${id}-custom`} className="rounded-md border border-dashed p-3 text-xs leading-relaxed text-muted-foreground">{t("customPreserved")}</p>}
-        </> : <div className="rounded-lg border border-dashed p-3 text-xs leading-relaxed text-muted-foreground">
-          <p className="font-medium text-foreground">{t("inheritEnvironment")}</p><p className="mt-1">{t("inheritExplanation")}</p>
-          <p className="mt-1">{t("builtinDefaultLabel")} {limit.fallback} {t("seconds")}. {t("runtimeMayDiffer")}</p>
-        </div>}
+        </> : <p id={`${id}-default`} data-perception-default className="text-xs leading-relaxed text-muted-foreground">
+          {t("builtinDefaultLabel")} {limit.fallback} {t("seconds")}
+        </p>}
         {conflict && <p className="text-xs leading-relaxed text-warning" role="status">{t("savedValueChanged")}</p>}
       </div>
     </CardContent>

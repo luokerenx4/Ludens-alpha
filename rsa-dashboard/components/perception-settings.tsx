@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Check, Copy } from "lucide-react";
 import type { Project } from "../lib/types";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -35,6 +35,7 @@ export function PerceptionSettingsPanel({ project, projects, ready, catalogError
 
 function WorkspacePerceptionSettings({ project, workspace }: { project: string; workspace: string }) {
   const t = useTranslations("perceptionSettings"), { state, session } = usePerceptionSession(project, workspace);
+  const inheritanceNoteId = useId();
   const [copied, setCopied] = useState<"idle" | "done" | "failed">("idle");
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
@@ -50,28 +51,31 @@ function WorkspacePerceptionSettings({ project, workspace }: { project: string; 
   const saveStatus = state.writeState === "unconfirmed" ? "writeUnconfirmed" : state.writeState === "saving" ? "saving"
     : state.writeState === "matched" ? "savedValuesMatched" : state.writeState === "review" ? "reviewAfterRead"
       : state.writeState === "saved" ? "savedToWorkspace" : !state.settings ? "savedUnknown" : state.reading ? "readingCached" : "savedValuesLoaded";
-  return <div className="grid min-w-0 gap-5" data-perception-editor>
-    <Card><CardContent className="space-y-5">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="min-w-0 space-y-2"><h2 className="text-sm font-semibold">{t("savedSettingsTitle")}</h2>
-          <p role="status" className="text-xs leading-relaxed text-muted-foreground">{t(saveStatus)}</p>
-          <p className="break-all font-mono text-xs text-muted-foreground">{workspace}</p>
+  return <div className="grid min-w-0 gap-4" data-perception-editor>
+    <Card><CardContent data-perception-summary className="grid gap-4 min-[1200px]:grid-cols-2 min-[1200px]:gap-6">
+      <div className="min-w-0 space-y-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0 flex-1 space-y-1"><h2 className="text-sm font-semibold">{t("savedSettingsTitle")}</h2>
+            <p role="status" className="text-xs leading-relaxed text-muted-foreground">{t(saveStatus)}</p>
+          </div>
+          <Button type="button" variant="outline" size="sm" aria-disabled={!session || pending || state.reading} className="aria-disabled:opacity-50"
+            onClick={() => { if (!pending && !state.reading) void session?.refresh(); }}>{t(state.reading ? "retrying" : state.readError || state.writeState === "unconfirmed" ? "retryRead" : "refresh")}</Button>
         </div>
-        <Button type="button" variant="outline" size="sm" aria-disabled={!session || pending || state.reading} className="aria-disabled:opacity-50"
-          onClick={() => { if (!pending && !state.reading) void session?.refresh(); }}>{t(state.reading ? "retrying" : state.readError || state.writeState === "unconfirmed" ? "retryRead" : "refresh")}</Button>
+        <p className="break-all font-mono text-xs text-muted-foreground">{workspace}</p>
+        <p className="text-xs leading-relaxed text-muted-foreground">{t("readOnlyRefreshHint")}</p>
+        {state.readError && <Alert variant="destructive"><AlertDescription><p>{t("loadFailed")}</p>{state.settings && <p>{t("showingCached")}</p>}
+          <details className="mt-2 text-xs"><summary>{t("errorDetails")}</summary><pre className="mt-2 whitespace-pre-wrap break-all">{state.readError}</pre></details></AlertDescription></Alert>}
+        {state.writeState === "unconfirmed" && <Alert><AlertDescription><p>{t("unconfirmedRecovery")}</p>
+          {state.writeError && <details className="mt-2 text-xs"><summary>{t("errorDetails")}</summary><pre className="mt-2 whitespace-pre-wrap break-all">{state.writeError}</pre></details>}</AlertDescription></Alert>}
       </div>
-      <p className="text-xs leading-relaxed text-muted-foreground">{t("readOnlyRefreshHint")}</p>
-      {state.readError && <Alert variant="destructive"><AlertDescription><p>{t("loadFailed")}</p>{state.settings && <p>{t("showingCached")}</p>}
-        <details className="mt-2 text-xs"><summary>{t("errorDetails")}</summary><pre className="mt-2 whitespace-pre-wrap break-all">{state.readError}</pre></details></AlertDescription></Alert>}
-      {state.writeState === "unconfirmed" && <Alert><AlertDescription><p>{t("unconfirmedRecovery")}</p>
-        {state.writeError && <details className="mt-2 text-xs"><summary>{t("errorDetails")}</summary><pre className="mt-2 whitespace-pre-wrap break-all">{state.writeError}</pre></details>}</AlertDescription></Alert>}
-      <div className="border-t pt-5"><PerceptionRuntimeStatus project={project} workspace={workspace}
+      <div className="min-w-0 border-t pt-4 min-[1200px]:border-t-0 min-[1200px]:border-l min-[1200px]:pt-0 min-[1200px]:pl-6"><PerceptionRuntimeStatus project={project} workspace={workspace}
         settings={pending || state.reading || state.readError || state.writeState === "unconfirmed" ? null : state.settings}
         revision={state.settingsRevision} saving={pending} /></div>
     </CardContent></Card>
     {!state.settings ? <Card><CardContent role="status" className="text-sm text-muted-foreground">{t(state.readError ? "loadFailed" : "loading")}</CardContent></Card>
-      : PERCEPTION_KEYS.map(name => <PerceptionField key={name} name={name} saved={state.settings![name]} draft={state.draft[name]} pending={pending}
-        onEdit={(mode, raw) => session?.edit(name, mode, raw)} />)}
+      : <><p id={inheritanceNoteId} data-perception-inheritance-note className="rounded-lg border bg-muted/30 px-4 py-3 text-xs leading-relaxed text-muted-foreground">{t("inheritanceRule")}</p>
+        {PERCEPTION_KEYS.map(name => <PerceptionField key={name} name={name} saved={state.settings![name]} draft={state.draft[name]} pending={pending}
+          inheritanceNoteId={inheritanceNoteId} onEdit={(mode, raw) => session?.edit(name, mode, raw)} />)}</>}
     <Card className="gap-0" data-perception-draft-bar><CardContent className="space-y-5">
       <div className="flex flex-col items-stretch justify-between gap-4 sm:flex-row sm:items-center">
         <div className="min-w-0 flex-1 space-y-2"><div className="flex flex-wrap items-center gap-2"><h2 className="text-sm font-semibold">{t(dirty ? "unsavedChanges" : "noDraft")}</h2>
