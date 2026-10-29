@@ -64,31 +64,31 @@ The PATH setting applies to the current shell. Keep using that shell for the com
 
 ### 3. Create a workspace
 
-The example below uses a prepared Ryubing installation and a local game file.
+The example below uses a prepared Ryubing installation and a local game file. Global settings live in `~/.ludens` (override with `LUDENS_HOME`), independently of the source checkout.
 
 ```sh
-mkdir -p ../workspaces/my-task
-cd ../workspaces/my-task
-
-rsa init --driver ryubing \
+rsa init --name my-task --workspace "$HOME/Ludens Workspaces/my-task" --driver ryubing \
   --driver-package github:luokerenx4/ludens-switch-driver#070edf662ba724e1a31c5b477f414d4da61bbd6f \
   --game /absolute/path/to/game.nsp --seconds 1800
+cd "$HOME/Ludens Workspaces/my-task"
 rsa up --dry-run
 rsa up
 rsa services
 ```
 
-`rsa init` creates `rsa.json` and starter workspace files. `rsa up --dry-run` prints the launch plan without starting services. `rsa up` starts or reuses Baseware, the agent host and the Dashboard. A newly started host remains in manual mode. New workspaces use the browser console by default; Ludens Pet is optional.
+`rsa init` creates `rsa.json`, a persistent `.rsa/workspace.json` identity, and starter workspace files, then registers the workspace. Omit `--workspace` to create `--name` under the configured `workspaceRoot` (initially `$LUDENS_HOME/workspaces`). `rsa up --dry-run` prints the launch plan without starting services. `rsa up` starts or reuses Baseware, the agent host and the Dashboard. A newly started host remains in manual mode. New workspaces use the browser console by default; Ludens Pet is optional.
 
 To choose another environment, replace the `rsa init` command above with exactly one of:
 
 ```sh
-rsa init --driver mgba --driver-package github:luokerenx4/ludens-gba-driver#9c1a014be3d87fe6846fef8ad7eba1c13439e8a5
-rsa init --driver azahar --driver-package github:luokerenx4/ludens-3ds-driver#5b9b1f4032a5973a8882aa23957c3c34da50af9e --game /absolute/path/to/game.3ds
-rsa init --driver cua
+rsa init --name my-task --workspace "$HOME/Ludens Workspaces/my-task" --driver mgba --driver-package github:luokerenx4/ludens-gba-driver#9c1a014be3d87fe6846fef8ad7eba1c13439e8a5
+rsa init --name my-task --workspace "$HOME/Ludens Workspaces/my-task" --driver azahar --driver-package github:luokerenx4/ludens-3ds-driver#5b9b1f4032a5973a8882aa23957c3c34da50af9e --game /absolute/path/to/game.3ds
+rsa init --name my-task --workspace "$HOME/Ludens Workspaces/my-task" --driver cua
 ```
 
 Use a new workspace. mGBA needs its ROM and Lua bridge loaded first. Cua does not use a game path; use `--cua-command /absolute/path/to/cua-driver` if the executable is not on PATH. Detailed setup is linked in [Supported environments](#supported-environments).
+
+Use `rsa config show` to inspect global creation defaults and `rsa config set workspaceRoot /absolute/path` to change the parent for future workspaces. Reopen an existing workspace with `rsa workspace open /absolute/path`; list registered workspaces with `rsa workspace list`. `rsa workspace forget <id>` only removes the registry entry. Workspaces retain their identity and history when moved; copied experiments require `rsa workspace open /path/to/copy --new-id`. Older workspaces use the explicit [import command](docs/tutorials/quickstart.md#已有工作区登记与迁移).
 
 ### 4. Inspect and start
 
@@ -140,7 +140,7 @@ RSA uses **Shiori** as its sole runner. Agent execution uses **OMP 18.9.1**; ord
 
 ### The workspace is ordinary code
 
-A workspace lives outside the source checkout:
+A workspace lives outside the source checkout. `~/.ludens/config.json` holds application defaults; `~/.ludens/registry/<id>.json` is a rebuildable index pointing to each workspace. Sessions, recordings and history travel with the workspace:
 
 ```text
 my-task/
@@ -151,6 +151,7 @@ my-task/
 ├── action.py         # Persistent control program while auto is active
 ├── skills/           # Reusable methods and supporting scripts
 ├── memory/           # Current goals, state, and next steps
+├── .rsa/             # Stable identity, sessions, skill snapshots, timeline and archive
 └── logs/             # Run records, model inputs, and diagnostics
 ```
 

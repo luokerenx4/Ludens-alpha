@@ -1,105 +1,91 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, mkdir, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile, copyFile, appendFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 import { AuthStorage, ModelRegistry, SessionManager, Settings } from "@oh-my-pi/pi-coding-agent";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { createOmpSession } from "../src/harness/omp/session.ts";
-import { migrateWorkspaceSessions, openWorkspaceSession, selectWorkspaceSession, validateSessionWorkspace } from "../src/harness/omp/workspace-session.ts";
-import { readCurrentSession, resolveWorkspaceState } from "../src/harness/workspace-state.ts";
+import { importLegacyWorkspaceState, openWorkspaceSession, selectWorkspaceSession, validateSessionWorkspace } from "../src/harness/omp/workspace-session.ts";
+import { readCurrentSession, initializeWorkspaceState } from "../src/harness/workspace-state.ts";
 
-test("legacy sessions move with artifacts, retain history and old links, and resume at their canonical workspace path", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "rsa-session-move-"));
-  const state = await resolveWorkspaceState(join(directory, "workspace"), join(directory, "state"));
-  const oldDir = join(state.dir, "sessions");
+test("explicit legacy import copies history, tool output and skill versions without retaining source dependencies", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "rsa-session-import-"));
+  const home = join(directory, "home"), state = await initializeWorkspaceState(join(directory, "workspace"), home);
+  const source = join(directory, "legacy"), oldDir = join(source, "sessions");
   const legacy = SessionManager.create(state.workspace, oldDir);
   legacy.appendMessage({ role: "user", content: "Keep the full original context.", timestamp: Date.now() });
-  await legacy.ensureOnDisk();
-  await legacy.close();
-  const oldFile = legacy.getSessionFile()!;
-  const file = join(state.sessionsDir, basename(oldFile));
-  const bytes = await readFile(oldFile);
-  const artifact = join(oldFile.replace(/\.jsonl$/, ""), "0.bash.log");
-  await mkdir(oldFile.replace(/\.jsonl$/, ""), { recursive: true });
-  await writeFile(artifact, "Full tool output");
-  await writeFile(join(state.dir, "current-session.json"), JSON.stringify({ sessionFile: oldFile }));
-  // A second historical session must move too, not just the selected transcript.
-  await writeFile(join(oldDir, "older.jsonl"), bytes);
+  await legacy.ensureOnDisk(); await legacy.close();
+  const oldFile = legacy.getSessionFile()!, original = await readFile(oldFile);
+  const artifact = oldFile.replace(/\.jsonl$/, "");
+  await mkdir(artifact); await writeFile(join(artifact, "0.bash.log"), "Full tool output");
+  await mkdir(join(source, "skill-versions")); await writeFile(join(source, "skill-versions", "revision.json"), "snapshot");
+  await writeFile(join(source, "workspace.json"), JSON.stringify({ workspace: state.workspace }));
+  await writeFile(join(source, "current-session.json"), JSON.stringify({ sessionFile: oldFile }));
   let manager: SessionManager | undefined;
   try {
-    await migrateWorkspaceSessions(state);
+    await expect(openWorkspaceSession(state, oldFile)).rejects.toThrow("explicit workspace import");
+    const result = await importLegacyWorkspaceState(state.workspace, { legacyStateDir: source, globalHome: home });
+    const file = join(state.sessionsDir, basename(oldFile));
     expect(await readCurrentSession(state)).toBe(file);
-    expect(await realpath(oldDir)).toBe(state.sessionsDir);
-    expect(await readFile(file)).toEqual(bytes);
-    expect(await readFile(join(state.sessionsDir, "older.jsonl"))).toEqual(bytes);
-    expect(await readFile(artifact, "utf8")).toBe("Full tool output");
-    expect(await Bun.file(join(state.dir, "current-session.json")).exists()).toBe(false);
-    await migrateWorkspaceSessions(state);
-    manager = await openWorkspaceSession(state, oldFile);
-    expect(manager.getSessionFile()).toBe(file);
+    expect(await readFile(oldFile)).toEqual(original);
+    expect(await readFile(join(state.sessionsDir, basename(artifact), "0.bash.log"), "utf8")).toBe("Full tool output");
+    expect(await readFile(join(state.versionsDir, "revision.json"), "utf8")).toBe("snapshot");
+    expect(await importLegacyWorkspaceState(state.workspace, { legacyStateDir: source, globalHome: home })).toEqual(result);
+    await rm(source, { recursive: true });
+    manager = await openWorkspaceSession(state, file);
     expect(manager.getSessionId()).toBe(legacy.getSessionId());
-    expect(manager.buildSessionContext().messages).toHaveLength(1);
     expect(JSON.stringify(manager.buildSessionContext().messages)).toContain("Keep the full original context.");
-    await selectWorkspaceSession(state, manager);
-    expect(await readCurrentSession(state)).toBe(file);
-  } finally {
-    await manager?.close();
-    await rm(directory, { recursive: true, force: true });
-  }
+    expect(await readFile(file, "utf8")).toContain(state.id);
+  } finally { await manager?.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
-test("migration refuses conflicting histories and recovers a move interrupted before writing its index", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "rsa-session-move-recovery-"));
-  const state = await resolveWorkspaceState(join(directory, "workspace"), join(directory, "state"));
-  const oldDir = join(state.dir, "sessions");
-  const oldFile = join(oldDir, "original.jsonl");
-  const newFile = join(state.sessionsDir, "new.jsonl");
-  const header = JSON.stringify({ type: "session", cwd: state.workspace }) + "\n";
+test("legacy import rejects conflicts and foreign source ownership before copying", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "rsa-session-conflict-"));
+  const home = join(directory, "home"), state = await initializeWorkspaceState(join(directory, "workspace"), home);
+  const source = join(directory, "legacy");
+  const legacy = SessionManager.create(state.workspace, join(source, "sessions"));
+  await legacy.ensureOnDisk(); await legacy.close();
+  await writeFile(join(source, "workspace.json"), JSON.stringify({ workspace: state.workspace }));
+  const target = join(state.sessionsDir, basename(legacy.getSessionFile()!));
   try {
-    await mkdir(oldDir);
-    await writeFile(oldFile, header);
-    await writeFile(newFile, "Do not overwrite");
-    await writeFile(join(state.dir, "current-session.json"), JSON.stringify({ sessionFile: oldFile }));
-    await expect(migrateWorkspaceSessions(state)).rejects.toThrow("non-empty");
-    expect(await readFile(oldFile, "utf8")).toBe(header);
-    expect(await readFile(newFile, "utf8")).toBe("Do not overwrite");
-    await rm(state.sessionsDir, { recursive: true });
-    await writeFile(join(state.dir, ".sessions-migrating"), "");
-    await rename(oldDir, state.sessionsDir); // Crash between rename and alias/index writes.
-    await migrateWorkspaceSessions(state);
-    expect(await realpath(oldFile)).toBe(join(state.sessionsDir, "original.jsonl"));
-    expect(await readCurrentSession(state)).toBe(join(state.sessionsDir, "original.jsonl"));
-    await migrateWorkspaceSessions(state);
+    await writeFile(target, "Do not overwrite");
+    await expect(importLegacyWorkspaceState(state.workspace, { legacyStateDir: source, globalHome: home })).rejects.toThrow("Conflicting");
+    expect(await readFile(target, "utf8")).toBe("Do not overwrite");
+    await rm(target);
+    await writeFile(join(source, "workspace.json"), JSON.stringify({ workspace: join(directory, "foreign") }));
+    await expect(importLegacyWorkspaceState(state.workspace, { legacyStateDir: source, globalHome: home })).rejects.toThrow("different workspace");
+    expect(await Bun.file(target).exists()).toBe(false);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
-test("a stale selection does not block explicit recovery; an interrupted directory move needs no selection", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "rsa-session-move-stale-"));
-  const state = await resolveWorkspaceState(join(directory, "workspace"), join(directory, "state"));
-  const oldDir = join(state.dir, "sessions");
-  let manager: SessionManager | undefined;
+test("a moved legacy workspace needs explicit previous ownership before adopting its absolute selection", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "rsa-session-relocate-"));
+  const home = join(directory, "home"), old = await initializeWorkspaceState(join(directory, "old"), home);
+  const manager = SessionManager.create(old.workspace, old.sessionsDir);
+  manager.appendMessage({ role: "user", content: "Legacy context", timestamp: Date.now() });
+  await manager.ensureOnDisk(); await manager.close();
+  const oldFile = manager.getSessionFile()!;
+  await writeFile(join(old.shioriDir, "current-session.json"), JSON.stringify({ sessionFile: oldFile }));
+  await rename(old.workspace, join(directory, "moved"));
+  const moved = await initializeWorkspaceState(join(directory, "moved"), home);
   try {
-    await writeFile(join(state.sessionsDir, "tool-output.log"), "History without a current selection");
-    await writeFile(join(state.dir, ".sessions-migrating"), "");
-    await migrateWorkspaceSessions(state);
-    expect(await readFile(join(oldDir, "tool-output.log"), "utf8")).toBe("History without a current selection");
-    await writeFile(join(state.dir, "current-session.json"), JSON.stringify({ sessionFile: join(oldDir, "missing.jsonl") }));
-    await migrateWorkspaceSessions(state);
-    manager = await openWorkspaceSession(state); // --new-session bypasses the stale default.
-    const fresh = await selectWorkspaceSession(state, manager);
-    await writeFile(join(state.dir, "current-session.json"), JSON.stringify({ sessionFile: join(oldDir, "missing.jsonl") }));
-    await migrateWorkspaceSessions(state);
-    expect(await readCurrentSession(state)).toBe(fresh);
-  } finally {
-    await manager?.close();
-    await rm(directory, { recursive: true, force: true });
-  }
+    await expect(readCurrentSession(moved)).rejects.toThrow("Legacy");
+    await expect(importLegacyWorkspaceState(moved.workspace, { globalHome: home })).rejects.toThrow("different workspace");
+    await importLegacyWorkspaceState(moved.workspace, { previousWorkspace: old.workspace, globalHome: home });
+    expect(moved.id).toBe(old.id);
+    const file = await readCurrentSession(moved);
+    expect(file).toBe(join(moved.sessionsDir, basename(oldFile)));
+    const resumed = await openWorkspaceSession(moved, file);
+    expect(resumed.getCwd()).toBe(moved.workspace);
+    expect(JSON.stringify(resumed.buildSessionContext().messages)).toContain("Legacy context");
+    await resumed.close();
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 test("a new workspace session survives idle shutdown, resumes, and can start fresh without deleting learned files", async () => {
   const directory = await mkdtemp(join(tmpdir(), "rsa-workspace-session-"));
-  const state = await resolveWorkspaceState(join(directory, "workspace"), join(directory, "state"));
+  const state = await initializeWorkspaceState(join(directory, "workspace"), join(directory, "state"));
   await mkdir(join(state.workspace, "skills"));
   await mkdir(join(state.workspace, "memory"));
   await writeFile(join(state.workspace, "skills", "learned.md"), "Keep this method.");
@@ -179,36 +165,35 @@ test("a new workspace session survives idle shutdown, resumes, and can start fre
   }
 }, 30_000);
 
-test("explicit old sessions stay in place; foreign workspace resumes are rejected before touching history or selection", async () => {
+test("moving preserves identity and context; same-named foreign sessions and renewed identities stay isolated", async () => {
   const directory = await mkdtemp(join(tmpdir(), "rsa-workspace-owner-"));
-  const first = await resolveWorkspaceState(join(directory, "first"), join(directory, "state"));
-  const second = await resolveWorkspaceState(join(directory, "second"), join(directory, "state"));
-  const legacy = SessionManager.create(first.workspace, join(directory, "old-runs"));
-  legacy.appendMessage({ role: "user", content: "Existing workspace history.", timestamp: Date.now() });
-  await legacy.ensureOnDisk();
-  await legacy.close();
-  const file = legacy.getSessionFile()!;
-  const original = await readFile(file, "utf8");
-  let selected = await openWorkspaceSession(second);
+  const home = join(directory, "home"), first = await initializeWorkspaceState(join(directory, "first"), home);
+  let manager = await openWorkspaceSession(first);
+  manager.appendMessage({ role: "user", content: "Stable workspace context", timestamp: Date.now() });
+  const file = await selectWorkspaceSession(first, manager), sessionId = manager.getSessionId();
+  await manager.close();
+  await rename(first.workspace, join(directory, "moved"));
+  const moved = await initializeWorkspaceState(join(directory, "moved"), home);
+  const second = await initializeWorkspaceState(join(directory, "second"), home);
   try {
-    const previous = await selectWorkspaceSession(second, selected);
-    await selected.close();
-    await expect(openWorkspaceSession(second, file)).rejects.toThrow("different workspace");
-    expect(await readCurrentSession(second)).toBe(previous);
-    expect(await readFile(file, "utf8")).toBe(original);
-
-    const alias = join(directory, "first-alias");
-    await symlink(first.workspace, alias);
-    await validateSessionWorkspace(file, alias);
-    selected = await openWorkspaceSession(first, file);
-    expect(selected.getSessionFile()).toBe(await realpath(file));
-    expect(selected.getSessionDir()).toBe(first.sessionsDir);
-    await selectWorkspaceSession(first, selected);
-    expect(await readCurrentSession(first)).toBe(await realpath(file));
-    expect(await readCurrentSession(second)).toBe(previous);
-    expect(await readFile(file, "utf8")).toBe(original);
-  } finally {
-    await selected.close();
-    await rm(directory, { recursive: true, force: true });
-  }
+    expect(moved.id).toBe(first.id); expect(moved.socket).not.toBe(first.socket);
+    const selected = (await readCurrentSession(moved))!;
+    await appendFile(selected, '{"type":'); // Interrupted append: ownership is already durably recorded.
+    manager = await openWorkspaceSession(moved, selected);
+    expect(manager.getSessionId()).toBe(sessionId);
+    expect(manager.getCwd()).toBe(moved.workspace);
+    expect(JSON.stringify(manager.buildSessionContext().messages)).toContain("Stable workspace context");
+    await manager.close();
+    const copied = join(second.sessionsDir, basename(file));
+    await copyFile(selected, copied);
+    await expect(openWorkspaceSession(second, copied)).rejects.toThrow("different workspace");
+    expect(await readCurrentSession(second)).toBeUndefined();
+    const alias = join(directory, "alias"); await symlink(moved.workspace, alias);
+    await validateSessionWorkspace(selected, alias);
+    const { renewWorkspaceIdentity } = await import("../../shared/ludens.ts");
+    await renewWorkspaceIdentity(moved.workspace, home);
+    const renewed = await initializeWorkspaceState(moved.workspace, home);
+    expect(await readCurrentSession(renewed)).toBeUndefined();
+    await expect(openWorkspaceSession(renewed, selected)).rejects.toThrow("different workspace");
+  } finally { await manager.close(); await rm(directory, { recursive: true, force: true }); }
 });

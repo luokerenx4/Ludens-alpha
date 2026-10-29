@@ -2,32 +2,35 @@ import { open, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { discoverTasks } from "../../rsa/src/benchmark/catalog";
 import { get, history, inspectEvidence, verifications } from "../../rsa/src/benchmark/store";
-import { artifactRoot, catalog, resolveRun } from "./data";
+import { readWorkspaceIdentity } from "../../shared/ludens";
+import { globalHome, catalog, resolveRun } from "./data";
 import type { Event, Manifest } from "./types";
 import type { BenchmarkAttachment, BenchmarkCatalog, BenchmarkDetailQuery, BenchmarkEvidence, BenchmarkQuery, BenchmarkResult } from "./benchmarks";
 
 /** Directory discovery is read-only; no Python import, Shiori run, or model call. */
-export async function benchmarkCatalog(query: BenchmarkQuery = {}, root = artifactRoot, repositoryTasksRoot?: string): Promise<BenchmarkCatalog> {
+export async function benchmarkCatalog(query: BenchmarkQuery = {}, root = globalHome, repositoryTasksRoot?: string): Promise<BenchmarkCatalog> {
   const scopes = await catalog(root, true);
   const projects = scopes.filter((item): item is typeof item & { workspace: string } => !!item.workspace)
     .map(({ id, workspace }) => ({ id, workspace }));
   const project = query.project ? projects.find(item => item.id === query.project) : projects[0];
   if (query.project && !project) throw new Error("未找到评测工作区");
   if (!project) return { projects, project: null, tasks: [], history: { trials: [], issues: [] }, issues: [] };
-  const [tasks, page] = await Promise.all([
+  const [tasks, page, owner] = await Promise.all([
     discoverTasks(project.workspace, repositoryTasksRoot),
     history(project.workspace, { taskName: query.taskName, cursor: query.cursor, limit: query.limit ?? 25 }),
+    readWorkspaceIdentity(project.workspace),
   ]);
+  const historyOwners = new Set([owner.id, ...(owner.historyIds ?? [])]);
   const issues = tasks.diagnostics.map(item => ({ project: project.id, error: `${item.path}: ${item.message}` }));
   const runs = new Map(scopes.find(item => item.id === project.id)!.runs.map(run => [run.id, run]));
   const trials = page.trials.filter(trial => {
     const manifest = runs.get(trial.runId);
     const identity = manifest?.benchmark;
-    const matches = trial.project === project.id && manifest?.kind === "benchmark" &&
+    const matches = owner.id === project.id && historyOwners.has(trial.project) && manifest?.kind === "benchmark" &&
       (trial.legacy || identity && "name" in identity && identity.name === trial.task.name && identity.digest === trial.task.digest);
     if (!matches) page.issues.push({ runId: trial.runId, error: "评测摘要与工作区或 manifest 身份不一致" });
     return !!matches;
-  });
+  }).map(trial => ({ ...trial, project: project.id }));
   return { projects, project: project.id, tasks: tasks.tasks, history: { ...page, trials }, issues };
 }
 
@@ -42,18 +45,22 @@ async function selectedResult(project: string, run: string, verification: string
   const directory = await resolveRun(project, run, root);
   // Trust the registered workspace, not paths claimed by a result file.
   const workspace = dirname(dirname(directory));
+  const owner = await readWorkspaceIdentity(workspace);
   const result = await get(workspace, run, verification);
   const manifest = JSON.parse(await readFile(join(directory, "manifest.json"), "utf8")) as Manifest;
   const identity = manifest.benchmark;
-  if (result.trial.project !== project || result.trial.runId !== run || manifest.kind !== "benchmark" ||
+  const historyOwners = new Set([owner.id, ...(owner.historyIds ?? [])]);
+  if (owner.id !== project || !historyOwners.has(result.trial.project) ||
+    (manifest.workspaceId !== undefined && !historyOwners.has(manifest.workspaceId)) || result.trial.runId !== run || manifest.kind !== "benchmark" ||
     !(result.trial.legacy || identity && "name" in identity && identity.name === result.trial.task.name && identity.digest === result.trial.task.digest))
     throw new Error("评测结果与工作区或 manifest 身份不一致");
-  return { workspace, result };
+  // Links address the currently registered copy; stored execution identity stays untouched.
+  return { workspace, result: { ...result, trial: { ...result.trial, project } } };
 }
 const evidenceReferences = (result: BenchmarkResult) => [...new Map([...result.trial.evidence, ...(result.verification?.evidence ?? [])]
   .map(reference => [JSON.stringify(reference), reference])).values()];
 
-export async function benchmarkEvidence(project: string, run: string, query: BenchmarkDetailQuery = {}, root = artifactRoot, signal?: AbortSignal): Promise<BenchmarkEvidence> {
+export async function benchmarkEvidence(project: string, run: string, query: BenchmarkDetailQuery = {}, root = globalHome, signal?: AbortSignal): Promise<BenchmarkEvidence> {
   signal?.throwIfAborted();
   const { workspace, result } = await selectedResult(project, run, query.verification, root);
   const page = await verifications(workspace, run, { cursor: query.verificationCursor, limit: 10 });
@@ -73,7 +80,7 @@ export async function benchmarkEvidence(project: string, run: string, query: Ben
 }
 
 /** Explicit expansion of one registered diagnostic. Never accept a client-supplied path. */
-export async function benchmarkAttachment(project: string, run: string, index: number, verification?: string, root = artifactRoot, signal?: AbortSignal): Promise<BenchmarkAttachment> {
+export async function benchmarkAttachment(project: string, run: string, index: number, verification?: string, root = globalHome, signal?: AbortSignal): Promise<BenchmarkAttachment> {
   signal?.throwIfAborted();
   if (!Number.isSafeInteger(index) || index < 0) throw new Error("无效的附件序号");
   const { workspace, result } = await selectedResult(project, run, verification, root);

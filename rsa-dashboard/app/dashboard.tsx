@@ -14,6 +14,7 @@ import { DocsView } from "@/components/docs-view";
 import { CapabilitiesView } from "@/components/capabilities-view";
 import { TimelinePlayer } from "@/components/timeline-player";
 import { ArchiveBuild } from "@/components/archive-build";
+import { WorkspacesView } from "@/components/workspaces-view";
 import {
   Metric,
   ObservationPanel,
@@ -35,6 +36,7 @@ const subscribeLocation = (listener: () => void) => {
 const getLocation = () => window.location.search;
 const serverLocation = () => "";
 const views = {
+  workspaces: ["工作区", "工作区管理", "设置新建目录、登记已有工作区，并管理本机工作区列表。"],
   live: ["运行", "运行现场", "实时观察模型输入画面、活动日志与控制状态。"],
   replay: ["回放", "经历回放", "在同一条时间轴上对齐感知画面、设备动作与模型调用。"],
   benchmark: ["Benchmark", "运行性能", "追踪单次请求的传输等待、缓存命中与显式调用链。"],
@@ -46,6 +48,7 @@ const views = {
 type View = keyof typeof views;
 function workspaceName(project?: Project) {
   if (!project) return "选择工作区";
+  if (project.name) return project.name;
   if (project.workspace) {
     const parts = project.workspace.split("/").filter(Boolean);
     return (
@@ -89,6 +92,8 @@ function NavIcon({ kind }: { kind: View | "logo" }) {
         <path d="m8 5 11 7-11 7Z" fill="currentColor" stroke="none" />
       ) : kind === "replay" ? (
         <><path d="M3 10a9 9 0 1 1 1 7M3 4v6h6" /><path d="m10 8 6 4-6 4Z" /></>
+      ) : kind === "workspaces" ? (
+        <><path d="M3 7h7l2-3h9v16H3Z" /><path d="M8 13h8M12 9v8" /></>
       ) : kind === "docs" ? (
         <>
           <path d="M5 3h11l3 3v15H5Z" /><path d="M9 9h7M9 13h7M9 17h4" />
@@ -118,20 +123,12 @@ export default function Dashboard() {
     serverLocation,
   );
   const query = new URLSearchParams(search);
-  const view: View =
-    query.get("view") === "replay" ? "replay" : query.get("view") === "benchmark"
-      ? "benchmark"
-      : query.get("view") === "docs"
-        ? "docs"
-        : query.get("view") === "caps"
-          ? "caps"
-          : query.get("view") === "pet"
-            ? "pet"
-            : query.get("view") === "perception"
-              ? "perception"
-              : "live";
+  const requestedView = query.get("view");
+  const view: View = requestedView && Object.hasOwn(views, requestedView) ? requestedView as View : "live";
   const benchmarkCases = view === "benchmark" && query.get("bench") === "cases";
-  const includeEmptyProjects = view === "caps" || view === "perception";
+  const includeEmptyProjects = ["caps", "perception", "pet", "workspaces"].includes(view);
+  const [catalogRevision, setCatalogRevision] = useState(0);
+  const refreshCatalog = useCallback(() => setCatalogRevision(value => value + 1), []);
   const [projects, setProjects] = useState<Project[]>([]);
   const [catalogReady, setCatalogReady] = useState(false);
   const [catalogError, setCatalogError] = useState("");
@@ -216,9 +213,9 @@ export default function Dashboard() {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [includeEmptyProjects]);
+  }, [includeEmptyProjects, catalogRevision]);
   useEffect(() => {
-    if (benchmarkCases || view === "replay" || view === "docs" || view === "caps" || view === "perception" || !selection.project || !run) return;
+    if (view === "workspaces" || benchmarkCases || view === "replay" || view === "docs" || view === "caps" || view === "perception" || !selection.project || !run) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     const params = new URLSearchParams({
@@ -347,9 +344,11 @@ export default function Dashboard() {
         </a>
         <div className="workspace-picker">
           <label htmlFor="workspace">
-            {benchmarkCases ? "评测目录 · 跨工作区" : view === "docs" ? "文档来源" : view === "pet" ? "伴侣设置" : "工作区"}
+            {benchmarkCases ? "评测目录 · 跨工作区" : view === "docs" ? "文档来源" : view === "pet" ? "伴侣设置" : view === "workspaces" ? "全局设置" : "工作区"}
           </label>
-          {benchmarkCases ? (
+          {view === "workspaces" ? (
+            <div className="bench-global-workspace">本机工作区</div>
+          ) : benchmarkCases ? (
             <div className="bench-global-workspace">所有工作区</div>
           ) : view === "docs" ? (
             <div className="bench-global-workspace">仓库 docs/</div>
@@ -376,7 +375,7 @@ export default function Dashboard() {
               {!projects.length && <option value="">暂无工作区</option>}
               {projects.map((p) => (
                 <option key={p.id} value={p.id}>
-                  {workspaceName(p)}
+                  {workspaceName(p)}{p.available === false ? " · 不可用" : ""}
                 </option>
               ))}
             </select>
@@ -399,20 +398,20 @@ export default function Dashboard() {
             </a>
           ))}
         </nav>
-        <PetFollowCard follow={pet} project={benchmarkCases || view === "docs" || view === "pet" ? undefined : project}
+        <PetFollowCard follow={pet} project={benchmarkCases || view === "docs" || view === "pet" || view === "workspaces" ? undefined : project}
           onSettings={() => navigate({ view: "pet" })} />
       </aside>
       <div className="console-main">
         <header className="context-bar">
           <div className="breadcrumb">
             <span>
-              {benchmarkCases ? "所有工作区" : view === "docs" || view === "pet" ? "Ludens" : workspaceName(project)}
+              {benchmarkCases ? "所有工作区" : view === "docs" || view === "pet" || view === "workspaces" ? "Ludens" : workspaceName(project)}
             </span>
             <i>/</i>
             <strong>{views[view][0]}</strong>
           </div>
           <div className="context-controls">
-            {!benchmarkCases && view !== "docs" && view !== "caps" && view !== "perception" && view !== "pet" && (
+            {!benchmarkCases && view !== "workspaces" && view !== "docs" && view !== "caps" && view !== "perception" && view !== "pet" && (
               <>
                 <select
                   aria-label="运行记录"
@@ -473,7 +472,7 @@ export default function Dashboard() {
                 </select>
               </>
             )}
-            {view !== "replay" && view !== "docs" && view !== "caps" && view !== "perception" && view !== "pet" && <button
+            {view !== "replay" && view !== "workspaces" && view !== "docs" && view !== "caps" && view !== "perception" && view !== "pet" && <button
               className={"refresh-toggle" + (refresh ? " active" : "")}
               aria-pressed={refresh}
               title="只控制界面刷新，不影响 Agent"
@@ -492,7 +491,7 @@ export default function Dashboard() {
                 {benchmarkCases ? "重复评测能力，查看指标、条件与原始证据。" : views[view][2]}
               </p>
             </div>
-            {view !== "pet" && view !== "replay" && view !== "docs" && view !== "caps" && view !== "perception" && !benchmarkCases && (
+            {view !== "pet" && view !== "replay" && view !== "workspaces" && view !== "docs" && view !== "caps" && view !== "perception" && !benchmarkCases && (
               <button
                 className="control-button handback"
                 disabled={!data?.controlAllowed || !auto || stopping}
@@ -524,9 +523,9 @@ export default function Dashboard() {
               ))}
             </nav>
           )}
-          {!benchmarkCases && view !== "pet" && view !== "docs" && view !== "caps" && view !== "perception" && <ArchiveBuild key={selection.project + "/" + run}
+          {!benchmarkCases && view !== "pet" && view !== "workspaces" && view !== "docs" && view !== "caps" && view !== "perception" && <ArchiveBuild key={selection.project + "/" + run}
             project={selection.project} run={run} onReady={archiveReady} />}
-          {!benchmarkCases && view !== "docs" && view !== "caps" && view !== "perception" && (catalogError || (view !== "replay" && error)) && (
+          {!benchmarkCases && view !== "workspaces" && view !== "docs" && view !== "caps" && view !== "perception" && (catalogError || (view !== "replay" && error)) && (
             <div className="error-banner" role="alert">
               {catalogError || error}
               {data && (
@@ -534,7 +533,9 @@ export default function Dashboard() {
               )}
             </div>
           )}
-          {view === "pet" ? (
+          {view === "workspaces" ? (
+            <WorkspacesView onChanged={refreshCatalog} onOpen={id => navigate({ view: "caps", project: id, workspace: null, run: null, epoch: null, call: null, block: null, image: null })} />
+          ) : view === "pet" ? (
             <PetSettings follow={pet} projects={projects} />
           ) : view === "perception" ? (
             <PerceptionSettingsPanel key={selection.project} project={selection.project} projects={projects} />
@@ -576,6 +577,7 @@ export default function Dashboard() {
                         ? `已读取 ${bytes(preparing.progress.bytes)} / ${bytes(preparing.progress.totalBytes)}${preparing.progress.projection ? `，已整理 ${preparing.progress.projection.position.toLocaleString()} / ${preparing.progress.projection.total.toLocaleString()} 条已知事件` : ""}。录像可在回放页直接播放。`
                         : "正在加载当前工作区的观察与行动记录…"}
               </p>
+              {!projects.length && <button className="control-button" onClick={() => navigate({ view: "workspaces" })}>管理工作区</button>}
             </section>
           ) : (
             <>

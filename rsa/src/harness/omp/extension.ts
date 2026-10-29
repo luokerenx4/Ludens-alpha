@@ -11,6 +11,7 @@ import type { Runtime } from "../runtime.ts";
 import { Workspace } from "../workspace.ts";
 import { childTrace, type EventTrace, type RecordEvent } from "../events.ts";
 import { pythonEnvironment } from "../../../../shared/python.ts";
+import { ludensHome } from "../../../../shared/ludens.ts";
 import { observationBytes, perceptionInput, type DeriveMedia, type TimelineMedia, type ObservationQuery, type PerceptionRead, type PerceptionRecord, type PerceptionStatus } from "../perception.ts";
 
 export async function media(observations: Observation[], record?: RecordEvent, trace?: EventTrace, derive?: DeriveMedia) {
@@ -92,7 +93,7 @@ export function createRsaExtension(options: {
     PYTHONPATH: python.PYTHONPATH,
     RSA_SOCKET: options.rsaSocket ?? "",
     RSA_WORKSPACE: workspace.path, RSA_RUN_ID: runtime.status().runId, RSA_LOG_DIAGNOSTICS: runtime.diagnostics,
-    RSA_ARTIFACT_ROOT: process.env.RSA_ARTIFACT_ROOT ?? resolve(import.meta.dir, "../../../../../artifacts/rsa"),
+    LUDENS_HOME: ludensHome(),
     BASEWARE_SOCKET: options.basewareSocket, BASEWARE_EPOCH: "", BASEWARE_TRACE: "{}",
     RSA_EPOCH: "", RSA_TRACE: "",
   };

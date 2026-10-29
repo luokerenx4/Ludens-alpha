@@ -1,3 +1,4 @@
+import { registerFixture } from "./fixtures/registry";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -16,11 +17,10 @@ async function fixture() {
   const root = await realpath(await mkdtemp(join(tmpdir(), "rsa-record-")));
   const workspace = join(root, "workspace"), run = join(workspace, "logs/run");
   const timeline = join(workspace, ".rsa/timeline"), segments = join(timeline, "segments");
-  await mkdir(join(root, "project"));
   await mkdir(run, { recursive: true });
   await mkdir(segments, { recursive: true });
-  await writeFile(join(root, "project/workspace.json"), JSON.stringify({ workspace }));
-  await writeFile(join(run, "manifest.json"), "{}");
+  await registerFixture(root, "project", workspace);
+  await writeFile(join(run, "manifest.json"), JSON.stringify({ workspace, workspaceId: "project" }));
   const snapshot = { id: reference.recordId, sequence: 2, timeline: reference, generation: null,
     recordedAt: "2026-10-27T00:00:00.000Z", sampling: { clock: "sensor", startedAtMs: 1, finishedAtMs: 2 } };
   const events = [
@@ -91,7 +91,7 @@ test("window-only records query the matched current host once, never restart or 
   });
   try {
     await new Promise<void>(resolve => server.listen(socket, resolve));
-    await writeFile(join(f.run, "manifest.json"), JSON.stringify({ runId: "run", workspace: f.workspace, socket }));
+    await writeFile(join(f.run, "manifest.json"), JSON.stringify({ runId: "run", workspace: f.workspace, workspaceId: "project", socket }));
     assert.deepEqual(await timelineRecord("project", "run", "temperature", 2, { call: "model" }, f.root), details);
     assert.deepEqual(requests, [{ kind: "status", argv: [] }, { kind: "perception", argv: ["observe"], query: { id: "temperature" } }]);
     currentRun = "unrelated";

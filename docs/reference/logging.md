@@ -26,6 +26,8 @@
 
 单次运行目录 `workspace/logs/<run-id>/` 的文件组成：
 
+工作区目录由全局 `$LUDENS_HOME/registry/<id>.json` 定位，稳定身份来自 `.rsa/workspace.json`；registry 只索引路径，运行事实不保存在源码仓库旁。目录搬动后重新 `rsa workspace open <path>` 即可登记；历史 `manifest.json` 中的原始运行信息仍保留。
+
 | 文件 / 目录 | 内容与归属 |
 | --- | --- |
 | `manifest.json` | 工作区路径、模型、Driver 列表、预算、生效日志模式、Shiori 实现版本、Git/提示词哈希及 `eventSources` 外部事实源声明。 |
@@ -39,6 +41,8 @@
 1. **Baseware 设备事实源（`logs/baseware/`）**：每个 Baseware 实例独立维护 `source.json`、`events/` 与 `diagnostics/`（按 1 小时或 256 MiB 切段），事件以 `origin.eventId = "<serviceId>:<seq>"` 唯一标识。RSA 在 `manifest.json` 的 `eventSources` 中记录 `{sourceId, root, format, recordingId, windows}`；读取端通过 [shared/event-sources.ts](../../shared/event-sources.ts) 按需归并。动作启动时冻结 `recordingId`，即便动作在窗口关闭后晚到结束，仍精确归属原运行。
 2. **工作区时空轴（`.rsa/timeline/`）**：存放跨 run 共享的感知与能力留档——`video/<id>.mp4` 及配套状态文件 `.mp4.json`（区分 `pending / ready / error`）、非视频去重媒体 `objects/<sha256>.bin`、以及分段记录 `segments/`（含 JSONL、定长 `.idx` 索引与 `.meta.json`）。关闭持久化（`RSA_PERCEPTION_PERSIST=0`）时仅使用 `window-<pid>-.../` 临时窗口。
 3. **内容寻址结构化归档（`.rsa/archive/`）**：由 [shared/log-archive.ts](../../shared/log-archive.ts) 统一读写。模型消息、工具定义与大参数/结果存为 `objects/<sha256>.json.gz`（使用 `encoding: "rsa-json-v1"` 与 tagged JSON 区分内部引用与用户 `$ref` 字段）。日志中的图像/音频数据不重复存盘，而是引用 `.rsa/timeline/` 资产，并在 `.rsa/archive/media/<sha256>.json` 维护轻量级哈希到视频帧的映射索引（内存 LRU 上限 4096 项）。
+
+上述 Baseware 路径由工作区编排显式指定。独立 `baseware serve` 省略 `--data-dir` 时使用 `$LUDENS_HOME/logs/baseware/<socket-name>/`；显式目录始终优先。共享桌宠的偏好与后台日志在 `$LUDENS_HOME/pet/`，其针对工作区的消费事件仍写入 `<workspace>/logs/consumers/`。
 
 ### 2. 事件通用信封结构
 

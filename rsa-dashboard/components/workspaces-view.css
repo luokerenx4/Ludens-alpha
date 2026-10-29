@@ -1,0 +1,21 @@
+.workspace-management { display: grid; gap: 20px; max-width: 1000px; }
+.workspace-management .surface { padding: 24px; }
+.workspace-management form { display: grid; gap: 12px; }
+.workspace-management label { display: grid; gap: 8px; font-size: 13px; }
+.workspace-management input { width: 100%; min-width: 0; padding: 11px 12px; border: 1px solid var(--line); border-radius: 7px; color: var(--text); background: var(--bg); font: inherit; }
+.workspace-management input:focus-visible { outline: 2px solid var(--sage); outline-offset: 2px; }
+.workspace-management button { padding: 10px 15px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--text); cursor: pointer; white-space: nowrap; justify-self: start; }
+.workspace-management button:disabled { cursor: default; opacity: .5; }
+.workspace-form-row { display: flex; gap: 10px; }
+.workspace-management .muted { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.workspace-notice { color: var(--sage); font-size: 13px; }
+.workspace-list { list-style: none; padding: 0; margin: 0 0 24px; }
+.workspace-list li { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 16px 0; border-bottom: 1px solid var(--line); }
+.workspace-list li:first-child { padding-top: 0; }
+.workspace-list p { margin: 7px 0 0; color: var(--muted); overflow-wrap: anywhere; font: 12px ui-monospace, monospace; }
+.workspace-list span { margin-left: 12px; font-size: 12px; }
+.workspace-available { color: var(--sage); }
+.workspace-actions { display: flex; gap: 8px; }
+.workspace-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; padding: 0; margin: 0; border: 0; }
+.workspace-wide { grid-column: 1 / -1; }
+@media (max-width: 760px) { .workspace-list li { align-items: start; flex-direction: column; } .workspace-fields { grid-template-columns: 1fr; } .workspace-form-row { flex-direction: column; } }

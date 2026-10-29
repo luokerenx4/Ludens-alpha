@@ -101,7 +101,9 @@ RSA 由 TypeScript 宿主（`rsa/src/`）与 Python 工具包（`rsa/python/rsa_
 
 ## 能力持久化边界
 
-工作区内的四类状态存储各司其职，互不冗余复制：
+全局 `LUDENS_HOME`（默认 `~/.ludens`）保存应用配置、`registry/<id>.json` 工作区索引、驱动缓存与共享桌宠状态。注册项只包含 `{id, workspace, name, updatedAt}`；工作区的 `.rsa/workspace.json` 持有稳定身份，目录移动后通过 `rsa workspace open` 更新索引。会话和历史均保存在工作区，registry 可重建。详见 [两层目录结构](../tutorials/workspace.md#1-工作区目录结构)。
+
+工作区内的状态存储各司其职，互不冗余复制：
 
 | 存储位置 | 归属与内容 |
 | --- | --- |
@@ -109,6 +111,7 @@ RSA 由 TypeScript 宿主（`rsa/src/`）与 Python 工具包（`rsa/python/rsa_
 | `.rsa/archive/` | **模型与工具结构化文本归档**：跨请求、跨 run 按内容哈希去重存储 `objects/<sha256>.json.gz` 与流式载荷，内含媒体一律通过引用指向 `.rsa/timeline/`。 |
 | `logs/<run-id>/` | **单次运行事件流**：存放 `manifest.json`、`events.jsonl`、`streams/` 与 Benchmark `trial.json` / `verifier/`，通过 `eventSources` 与内容引用关联 Baseware、Archive 与 Timeline。 |
 | `.rsa/shiori/` | **OMP 原生会话存储**：存放 `sessions/*.jsonl` 与当前续接指针，由 OMP SessionManager 管理。 |
+| `.rsa/skill-versions/` | **技能与记忆快照**：运行中记录的内容版本留在工作区内，随目录一起移动。 |
 
 ## 统一时空轴与回放
 

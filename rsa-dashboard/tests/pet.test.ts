@@ -8,23 +8,23 @@ import { once } from "node:events";
 import { petState, recordPetConsumer, setPetTarget, PET_HEARTBEAT_TTL_MS } from "../lib/pet-state";
 import { petStatus } from "../lib/pet";
 import { catalog } from "../lib/data";
+import { registerFixture } from "./fixtures/registry";
 
 test("Pet follows registered workspaces without a device; choice persists without polluting the catalog", async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), "pet-target-")));
   try {
     const workspace = join(root, "work");
     await mkdir(workspace);
-    await mkdir(join(root, "registered"));
-    await writeFile(join(root, "registered/workspace.json"), JSON.stringify({ workspace }));
-    assert.deepEqual(petState(root), { target: null, consumer: null, connected: false });
+    await registerFixture(root, "registered", workspace);
+    assert.deepEqual(await petState(root), { target: null, consumer: null, connected: false });
     await assert.rejects(setPetTarget(workspace, false, root), /未找到/);
     await assert.rejects(setPetTarget("../registered", false, root), /未找到/);
     const first = await setPetTarget("registered", false, root);
     assert.equal(first.target?.workspace, workspace);
     assert.equal(first.connected, false);
-    assert.deepEqual(petState(root), first);
+    assert.deepEqual(await petState(root), first);
     assert.equal((await setPetTarget("registered", false, root)).target?.revision, first.target?.revision);
-    assert.deepEqual((await catalog(root, true)).map((project) => project.id).sort(), ["registered", "work"]);
+    assert.deepEqual((await catalog(root, true)).map((project) => project.id), ["registered"]);
     await setPetTarget(null, false, root);
     assert.equal((await setPetTarget("registered", true, root)).target, null);
   } finally {
@@ -35,7 +35,7 @@ test("Pet follows registered workspaces without a device; choice persists withou
 test("Pet heartbeat reports connection independently from target application and expires", async () => {
   const root = await mkdtemp(join(tmpdir(), "pet-heartbeat-"));
   try {
-    const state = recordPetConsumer({
+    const state = await recordPetConsumer({
       instanceId: "desktop", pid: process.pid, revision: null, workspace: null,
       runId: null, phase: "idle", error: null,
     }, root);
@@ -50,12 +50,12 @@ test("Pet heartbeat reports connection independently from target application and
     assert.equal(petStatus({ ...selected, consumer: {
       ...state.consumer!, workspace: "/workspace", phase: "error", error: "Cannot open workspace",
     } }), "跟随遇到问题");
-    assert.equal(petState(root, Date.parse(state.consumer!.seenAt) + PET_HEARTBEAT_TTL_MS).connected, false);
-    assert.throws(() => recordPetConsumer({ phase: "following" }, root), /无效/);
-    assert.throws(() => recordPetConsumer({ ...state.consumer, pid: 0 }, root), /无效/);
+    assert.equal((await petState(root, Date.parse(state.consumer!.seenAt) + PET_HEARTBEAT_TTL_MS)).connected, false);
+    await assert.rejects(recordPetConsumer({ phase: "following" }, root), /无效/);
+    await assert.rejects(recordPetConsumer({ ...state.consumer, pid: 0 }, root), /无效/);
     const exited = spawn(process.execPath, ["-e", ""]);
     await once(exited, "close");
-    const disconnected = recordPetConsumer({ ...state.consumer, pid: exited.pid }, root);
+    const disconnected = await recordPetConsumer({ ...state.consumer, pid: exited.pid }, root);
     assert.equal(disconnected.connected, false); // Fresh heartbeat cannot keep a closed desktop alive.
   } finally {
     await rm(root, { recursive: true, force: true });

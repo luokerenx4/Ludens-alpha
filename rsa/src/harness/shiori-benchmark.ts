@@ -19,7 +19,7 @@ const rsa = resolve(import.meta.dir, "../..");
 const identity = (task: TaskDefinition) => ({ name: task.name, digest: task.digest, ...(task.version ? { version: task.version } : {}) });
 const errorInfo = (code: string, error: unknown) => ({ code, message: error instanceof Error ? error.message : String(error) });
 export interface RunOptions {
-  workspace: string; artifactRoot: string; config?: RunConfiguration; configPath?: string;
+  workspace: string; globalHome?: string; config?: RunConfiguration; configPath?: string;
   seconds?: number; parameters?: Record<string, unknown>; digest?: string; signal?: AbortSignal; verify?: boolean;
 }
 function budget(value: unknown, fallback: number): number {
@@ -115,7 +115,7 @@ export async function runTask(name: string, options: RunOptions) {
   if (configuration.task !== name) throw new Error("Run configuration names another Task");
   const parameters = { ...configuration.parameters, ...options.parameters };
   const seconds = budget(options.seconds ?? configuration.seconds ?? task.config.agent?.timeout_sec, 180);
-  const state = await indexWorkspace(options.workspace, options.artifactRoot);
+  const state = await indexWorkspace(options.workspace, options.globalHome);
   const pinned = await pinTask(state.workspace, task);
   const runId = `${new Date().toISOString().replaceAll(":", "-")}-${randomUUID().slice(0, 8)}`;
   const runDir = join(state.workspace, "logs", runId), artifacts = join(runDir, "artifacts");
@@ -145,6 +145,7 @@ export async function runTask(name: string, options: RunOptions) {
   const input = join(runDir, "input.json");
   await atomicJson(input, { trialId: runId, task: identity(task), parameters, budgetSeconds: seconds, argv, cwd });
   const env = { ...benchmarkEnvironment(configuration.onlineModel), ...environment,
+    LUDENS_HOME: state.globalHome,
     RSA_WORKSPACE: executionWorkspace, RSA_BENCH_WORKSPACE: state.workspace, RSA_BENCH_TRIAL_ID: runId,
     RSA_BENCH_RUN_DIR: runDir, RSA_BENCH_ARTIFACTS: artifacts, RSA_BENCH_TASK_DIR: pinned.path, RSA_BENCH_INPUT: input };
   const runtime = new Shiori(undefined, log.record, seconds, runId), cancellation = signals(options.signal);
@@ -166,12 +167,12 @@ export async function runTask(name: string, options: RunOptions) {
       subjects: [...trial.subjects, ...(Array.isArray(facts?.context.subjects) ? facts.context.subjects as Trial["subjects"] : [])],
       limitations: Array.isArray(facts?.context.limitations) ? facts.context.limitations as string[] : [] });
     if (terminal.changed) log.record("benchmark_end", benchmarkEventSummary(terminal.trial));
-    if (status === "completed" && options.verify !== false && !cancellation.signal.aborted) await verifyTask(state.workspace, runId, { signal: cancellation.signal, log });
+    if (status === "completed" && options.verify !== false && !cancellation.signal.aborted) await verifyTask(state.workspace, runId, { signal: cancellation.signal, log, globalHome: state.globalHome });
     return await get(state.workspace, runId);
   } finally { cancellation.dispose(); }
 }
 
-export async function verifyTask(workspace: string, runId: string, options: { taskPath?: string; reason?: string; signal?: AbortSignal; log?: EventLog } = {}) {
+export async function verifyTask(workspace: string, runId: string, options: { taskPath?: string; reason?: string; signal?: AbortSignal; log?: EventLog; globalHome?: string } = {}) {
   const trial = await readTrial(workspace, runId), runDir = join(trial.workspace, "logs", runId);
   if (trial.status === "running") throw new Error("Trial is still running");
   const original = join(trial.workspace, ".rsa/benchmarks/tasks", trial.task.digest.slice(7));
@@ -181,6 +182,7 @@ export async function verifyTask(workspace: string, runId: string, options: { ta
   const pinned = await pinTask(trial.workspace, task);
   const seconds = budget(task.config.verifier?.timeout_sec, 600);
   const verifierEnv = declaredEnv(task, "verifier");
+  const state = await indexWorkspace(workspace, options.globalHome);
   const id = `${new Date().toISOString().replaceAll(":", "-")}-${randomUUID().slice(0, 8)}`;
   const verification: Verification = { schemaVersion: 1, id, trialId: runId, task: identity(task), status: "running",
     startedAt: new Date().toISOString(), reason: options.reason ?? "verify", evidence: [] };
@@ -194,6 +196,7 @@ export async function verifyTask(workspace: string, runId: string, options: { ta
     await atomicJson(input, { trial, verificationId: id, artifacts: join(runDir, "artifacts") });
     await runtime.runProgram({ argv: ["/bin/sh", join(pinned.path, "tests/test.sh")], cwd: pinned.path,
       env: { ...benchmarkEnvironment(), ...verifierEnv,
+        LUDENS_HOME: state.globalHome,
         RSA_BENCH_WORKSPACE: trial.workspace, RSA_BENCH_TRIAL_ID: runId, RSA_BENCH_RUN_DIR: runDir,
         RSA_BENCH_ARTIFACTS: join(runDir, "artifacts"), RSA_BENCH_TASK_DIR: pinned.path, RSA_BENCH_INPUT: input,
         RSA_BENCH_VERIFIER_DIR: directory }, stdout: join(directory, "stdout.log"), stderr: join(directory, "stderr.log") }, cancellation.signal);
@@ -208,7 +211,7 @@ export async function verifyTask(workspace: string, runId: string, options: { ta
   return get(trial.workspace, runId, id);
 }
 
-export async function aggregateTasks(workspace: string, datasetPath: string, references: string[], options: { policy?: "all" | "graded"; signal?: AbortSignal } = {}) {
+export async function aggregateTasks(workspace: string, datasetPath: string, references: string[], options: { policy?: "all" | "graded"; signal?: AbortSignal; globalHome?: string } = {}) {
   const dataset = await readDataset(datasetPath);
   const results = await Promise.all(references.map(reference => {
     const parts = reference.split("@");
@@ -216,6 +219,7 @@ export async function aggregateTasks(workspace: string, datasetPath: string, ref
     return get(workspace, parts[0]!, parts[1]);
   }));
   const prepared = prepareMetricInput(dataset, results, options.policy);
+  const state = await indexWorkspace(workspace, options.globalHome);
   const id = `${new Date().toISOString().replaceAll(":", "-")}-${randomUUID().slice(0, 8)}`;
   const directory = join(workspace, ".rsa/benchmarks/aggregates", id);
   await mkdir(directory, { recursive: true });
@@ -237,7 +241,7 @@ export async function aggregateTasks(workspace: string, datasetPath: string, ref
     const runtime = new Shiori(undefined, log.record, 120, id), cancellation = signals(options.signal);
     try {
       await runtime.runProgram({ argv: [pythonExecutable(), metric, "-i", input, "-o", output], cwd: directory,
-        env: benchmarkEnvironment(), stdout: join(directory, "stdout.log"), stderr: join(directory, "stderr.log") }, cancellation.signal);
+        env: { ...benchmarkEnvironment(), LUDENS_HOME: state.globalHome }, stdout: join(directory, "stdout.log"), stderr: join(directory, "stderr.log") }, cancellation.signal);
       validateRewards(await smallJson(output));
     } finally { try { await runtime.close(); } finally { cancellation.dispose(); } }
   } else {

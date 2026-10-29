@@ -2,7 +2,7 @@
 
 本篇介绍如何安装 Ludens 各组件、配置 Python 运行时，以及使用 `rsa init / up / auto / down` 管理工作区的日常生命周期。模拟器与桌面驱动的具体准备步骤见 [设备与驱动准备](devices.md)，单组件前台调试、包脚本约定与测试见 [控制台调试与验证](debugging-and-verification.md)。
 
-除显式 `cd` 到目标工作区外，文内命令均在仓库根目录执行。`../artifacts/` 为仓库外的本地构建与运行状态目录；工作区、ROM、固件、密钥与游戏存档均保存在仓库外，不进入源码树。
+除显式 `cd` 到目标工作区外，文内命令均在仓库根目录执行。应用全局目录默认为 `~/.ludens`，可通过 `LUDENS_HOME` 指定绝对路径；工作区可以放在任意目录，配置、会话、录制与历史均随工作区保存。源码仓库不承载运行状态；ROM、固件、密钥与游戏存档也应保存在仓库外。
 
 ## 安装
 
@@ -49,7 +49,7 @@ OMP 原生 shell 会自动注入 `RSA_PYTHON`。在工作区脚本中若需复�
 (cd rsa-companion && pnpm install --frozen-lockfile && pnpm build)
 ```
 
-新建工作区时，在所选 `rsa init --driver ...` 命令中追加 `--pet`，显式启用桌宠。已有工作区可在 `rsa.json` 设置 `"pet": true`，下次 `rsa up` 时按需启动；已有文件中的显式 `pet: true` 保持启用。设为 `"pet": false` 可在后续启动时仅使用网页控制台。
+新建工作区时，在所选 `rsa init --name <name> --driver ...` 命令中追加 `--pet`，显式启用桌宠。已有工作区可在 `rsa.json` 设置 `"pet": true`，下次 `rsa up` 时按需启动；已有文件中的显式 `pet: true` 保持启用。设为 `"pet": false` 可在后续启动时仅使用网页控制台。
 
 也可用 `rsa up --pet` 或 `rsa up --no-pet` 仅覆盖本次启动，不修改 `rsa.json`；这两个选项不能同时使用。`pet: false` 和 `--no-pet` 都不会关闭已经运行的共享桌宠，需从桌宠托盘菜单选择 Quit 退出。
 
@@ -59,15 +59,13 @@ OMP 原生 shell 会自动注入 `RSA_PYTHON`。在工作区脚本中若需复�
 
 ### 1. 初始化与生命周期命令
 
-先按 [设备与驱动准备](devices.md) 准备好目标环境，再在仓库外新建目录作为工作区。以下以 Azahar 为例，显式选择固定提交的外部驱动包；mGBA、Ryubing 使用各自的 [可选包](devices.md#外部驱动包发现与接入)，内置桌面驱动使用 `--driver cua`：
+先按 [设备与驱动准备](devices.md) 准备好目标环境。以下以 Azahar 为例，在显式目录创建工作区并选择固定提交的外部驱动包；mGBA、Ryubing 使用各自的 [可选包](devices.md#外部驱动包发现与接入)，内置桌面驱动使用 `--driver cua`：
 
 ```sh
-mkdir -p /absolute/path/to/workspace
-cd /absolute/path/to/workspace
-
-rsa init --driver azahar \
+rsa init --name my-task --workspace /absolute/path/to/workspace --driver azahar \
   --driver-package github:luokerenx4/ludens-3ds-driver#5b9b1f4032a5973a8882aa23957c3c34da50af9e \
   --game /absolute/path/to/game.3ds --seconds 1800
+cd /absolute/path/to/workspace
 rsa up --dry-run
 rsa up
 rsa services
@@ -75,13 +73,18 @@ rsa controller list
 rsa auto on
 ```
 
-已有模拟器工作区请按 [外部驱动迁移说明](devices.md#外部驱动包发现与接入) 添加 `driverPackage`，不要重新执行 `rsa init`。默认启动路径来自各驱动的构建缓存；沿用已安装应用时，每次 `up`（含 `--dry-run`）需传入 `RSA_AZAHAR_APP` 或 `RSA_RYUBING_APP`。
+省略 `--workspace` 时，`rsa init --name my-task --driver ...` 使用全局配置的 `workspaceRoot/my-task`；初始父目录为 `$LUDENS_HOME/workspaces`。显式相对路径以当前 shell 目录解析；要初始化当前目录，请使用 `rsa init --workspace . --driver ...`，也支持前置 `rsa --workspace . init --driver ...`。已有工作区使用下文的 `open` 或 `import`，不要重新初始化。
+
+已有模拟器工作区还需按 [外部驱动迁移说明](devices.md#外部驱动包发现与接入) 添加 `driverPackage`。默认启动路径来自各驱动的构建缓存；沿用已安装应用时，每次 `up`（含 `--dry-run`）需传入 `RSA_AZAHAR_APP` 或 `RSA_RYUBING_APP`。
 
 常用工作区与控制命令速查：
 
 | 命令 | 行为与边界 |
 | --- | --- |
-| `rsa init` | 生成 `rsa.json` 及缺失的 `AGENTS.md`、`perception.py`、`action.py` 模板，绝不覆盖已有文件。默认使用网页控制台；加 `--pet` 显式启用已安装的桌宠。 |
+| `rsa init --name <name> [--workspace <path>] --driver <id>` | 创建工作区配置、稳定身份与缺失的模板并登记；无显式目录时必须给名称。全局创建默认值写入 `rsa.json`，以后修改全局默认值不改已有工作区。加 `--pet` 显式启用已安装的桌宠。 |
+| `rsa config [show]` · `rsa config set <workspaceRoot\|defaults.field> <value>` | 查看全局配置，或设置未来工作区的父目录及默认配置。 |
+| `rsa workspace open <path>` · `rsa workspace list` | 登记已有工作区，或列出当前全局 home 的登记项。 |
+| `rsa workspace forget <id>` | 只移除索引；不删目录、会话或日志，不停止服务。 |
 | `rsa up --dry-run` | 校验配置并打印完整进程启动计划，不实际拉起服务；需要新启动 Dashboard 时，实际 `rsa up` 才执行其构建检查。 |
 | `rsa up [--pet / --no-pet]` | 按需启动或复用模拟器、Baseware、Host 与 Dashboard；按 `pet` 设置启用桌宠，也可用互斥的 `--pet` / `--no-pet` 仅覆盖本次启动，不写回配置。新启动的 Host 处于 `manual` 模式；若复用已在 `auto` 运行的 Host 则继续原控制周期。重复 `up` 不会热加载修改后的 `rsa.json`，复用现有 Dashboard 也不会热更新其构建。 |
 | `rsa services` | 查询当前工作区关联的 launchd 任务 PID、状态与最近退出码。 |
@@ -92,6 +95,38 @@ rsa auto on
 | `rsa down [--dashboard] [--pet]` | 停止本工作区受管的 Host、Baseware 与模拟器（**执行前请先在游戏内保存进度**）。默认保留共享的 Dashboard 与已运行的 Ludens Pet；附加 `--dashboard`（仅限启动它的工作区）或 `--pet` 可一并关闭对应共享服务。 |
 
 跨目录操作工作区时，可在任意命令前传入 `rsa --workspace /absolute/path/to/workspace <subcommand>` 或设置环境变量 `RSA_WORKSPACE`。
+
+### 全局设置与默认目录
+
+`$LUDENS_HOME/config.json` 的结构为 `{ "version": 1, "workspaceRoot": "/absolute/path", "defaults": { ... } }`。`defaults` 支持 `model`、`seconds`、`requests`、`compactionThreshold`、`dashboard`、`pet`，只在创建工作区时使用；显式初始化参数优先。修改父目录只影响之后新建的工作区，不搬动已登记目录：
+
+```sh
+rsa config show
+rsa config set workspaceRoot "$HOME/Ludens Workspaces"
+rsa config set defaults.seconds 1800
+rsa config set defaults.pet false
+rsa init --name desktop-task --driver cua
+rsa workspace list
+```
+
+Dashboard 的“工作区”页提供创建（可选目录）、登记已有目录、移除索引和设置默认父目录。CLI、Dashboard 与桌宠应使用相同的 `LUDENS_HOME`；修改环境变量后需重新启动相应进程才会生效。
+
+### 已有工作区登记与迁移
+
+- **重新登记**：已有 `.rsa/workspace.json` 的工作区执行 `rsa workspace open <path>`。全局 registry 只保存 `{id, workspace, name, updatedAt}`，丢失后可逐个 `open` 重建，不影响工作区内的历史。
+- **移动目录**：先停止该工作区的受管服务，搬动完整目录，再 `rsa workspace open /new/path` 更新索引。持久 ID 不变；不要让原目录和副本同时使用同一 ID。
+- **复制成独立实验**：先停止副本目录对应的 Host 与 Baseware，再执行 `rsa workspace open /path/to/copy --new-id`，分配新 ID 并清除当前会话续接选择，保留历史会话与录制。身份文件的 `historyIds` 记录可读取的旧身份，历史记录不会用于连接原工作区的活跃 Host；原工作区不变。
+- **导入旧布局**：显式执行下面的 `import`。`--legacy-state` 指向原来的 `artifacts/rsa/ws-...` 状态目录；若目录已搬动，用 `--previous-workspace` 提供旧的绝对工作区路径。导入负责将旧外部状态纳入新布局；日常运行不隐式读取旧缓存或旧注册目录。
+
+```sh
+rsa workspace import /absolute/path/to/workspace \
+  --legacy-state /absolute/path/to/old-artifacts/rsa/ws-name-hash \
+  --previous-workspace /previous/absolute/workspace
+```
+
+导入前停止相关服务并备份工作区及旧状态目录。无外部旧状态时可省略 `--legacy-state`，未移动目录时可省略 `--previous-workspace`。更新源码本身不会迁移或启动已有工作区。
+
+该导入命令只迁入会话、会话选择与技能版本快照，保留外部源文件。旧版运行日志、录像引用和 Benchmark 的绝对路径不会被重写，外部媒体也不会自动复制；搬动目录后，这些旧记录可能无法回放或重新评分。需要保留旧回放时，先保留原目录及其外部依赖。新格式生成的工作区记录支持整体搬动后重新登记。
 
 ### 2. `rsa.json` 配置参考
 
@@ -115,4 +150,4 @@ rsa auto on
 ### 3. 会话续接与后台服务目录
 
 - **会话续接**：工作区 OMP 会话保存在 `.rsa/shiori/sessions/`，当前默认续接指针位于 `.rsa/shiori/current-session.json`。重启 Host 默认续接原会话并开启新的 `logs/<run-id>/` 目录。前台 `rsa run` 可传 `--new-session` 开启全新上下文（保留工作区文件），或传 `--resume /absolute/path/to/session.jsonl` 切换到同工作区的指定历史会话。
-- **后台服务日志**：[launch-background.py](../../rsa/scripts/launch-background.py) 将工作区受管进程的标准输出与 launchd 状态写入 `<workspace>/logs/background/`；共享 Ludens Pet 的日志位于仓库同级的 `../artifacts/rsa/alice/background/`（launchd label 为 `dev.ludens.pet`）。所有后台服务均脱离终端运行，但不注册开机自启或崩溃死循环重启；排障时先查看 `rsa services` 与对应 `logs/background/` 日志。
+- **后台服务日志**：[launch-background.py](../../rsa/scripts/launch-background.py) 将工作区受管进程的标准输出与 launchd 状态写入 `<workspace>/logs/background/`；共享 Ludens Pet 的日志位于 `$LUDENS_HOME/pet/background/`（launchd label 为 `dev.ludens.pet`），偏好位于 `$LUDENS_HOME/pet/profile/`。独立 Baseware 未指定 `--data-dir` 时写入 `$LUDENS_HOME/logs/baseware/<socket-name>/`，工作区编排仍显式使用 `<workspace>/logs/baseware/`。所有后台服务均脱离终端运行，但不注册开机自启或崩溃死循环重启；排障时先查看 `rsa services` 与对应日志。

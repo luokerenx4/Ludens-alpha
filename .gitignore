@@ -10,7 +10,7 @@ playwright-report/
 
 # Local workspaces, runtime data, and games
 artifacts/
-workspaces/
+/workspaces/
 logs/
 roms/
 *.log

@@ -1,3 +1,4 @@
+import { registerFixture } from "./fixtures/registry";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { access, chmod, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
@@ -10,10 +11,9 @@ import { DashboardWorker } from "../lib/dashboard-worker";
 const json = (path: string, value: unknown) => writeFile(path, JSON.stringify(value));
 async function fixture() {
   const base = await realpath(await mkdtemp(join(tmpdir(), "dashboard-capabilities-")));
-  const root = join(base, "artifacts"), workspace = join(base, "workspace");
-  await mkdir(join(root, "ws-capabilities"), { recursive: true });
+  const root = join(base, "home"), workspace = join(base, "workspace");
   await mkdir(workspace);
-  await json(join(root, "ws-capabilities/workspace.json"), { workspace });
+  await registerFixture(root, "ws-capabilities", workspace);
   await json(join(workspace, "baseware.json"), { schemaVersion: 2, drivers: [], controllers: [
     { name: "pad/press", description: "Press a button.", inputSchema: { type: "object" }, requiresControl: true, annotations: { readOnlyHint: false } },
     { name: "screen/read", description: "Read the screen.", inputSchema: { type: "object" }, requiresControl: false, annotations: { readOnlyHint: true } },
@@ -39,9 +39,8 @@ async function waitFor(check: () => Promise<boolean>) {
 test("capability catalog reads the selected run-free workspace and real static Python discovery protocol", async () => {
   const f = await fixture();
   try {
-    await mkdir(join(f.root, "other"));
     const other = join(f.base, "other-workspace"); await mkdir(other);
-    await json(join(f.root, "other/workspace.json"), { workspace: other });
+    await registerFixture(f.root, "other", other);
     // Both stdlib and package shadowing used to execute before source discovery.
     await writeFile(join(f.workspace, "json.py"), `open(${JSON.stringify(join(f.base, "SHADOW_EXECUTED"))}, "w").close()\nraise RuntimeError("workspace json imported")\n`);
     await mkdir(join(f.workspace, "rsa_tools"));
@@ -87,7 +86,7 @@ test("the configured Python interpreter can fail without losing the device snaps
   const f = await fixture(), interpreter = join(f.base, "python-failure");
   await writeFile(interpreter, `#!${process.execPath}\nprocess.stderr.write("fixture interpreter failed"); process.exit(3);\n`);
   await chmod(interpreter, 0o755);
-  const worker = new DashboardWorker({ env: { ...process.env, RSA_DASHBOARD_ARTIFACT_ROOT: f.root, RSA_PYTHON: interpreter } });
+  const worker = new DashboardWorker({ env: { ...process.env, LUDENS_HOME: f.root, RSA_PYTHON: interpreter } });
   try {
     const page = await worker.call("capabilities", ["ws-capabilities"]);
     assert.equal(page.groups[0].items.length, 2);
@@ -100,7 +99,7 @@ test("slow Python discovery leaves the shared worker responsive and request canc
   const f = await fixture(), interpreter = join(f.base, "python-slow"), started = join(f.base, "started");
   await writeFile(interpreter, `#!${process.execPath}\nrequire("node:fs").writeFileSync(${JSON.stringify(started)}, String(process.pid)); setInterval(() => {}, 1000);\n`);
   await chmod(interpreter, 0o755);
-  const worker = new DashboardWorker({ env: { ...process.env, RSA_DASHBOARD_ARTIFACT_ROOT: f.root, RSA_PYTHON: interpreter } });
+  const worker = new DashboardWorker({ env: { ...process.env, LUDENS_HOME: f.root, RSA_PYTHON: interpreter } });
   const abort = new AbortController();
   try {
     assert.deepEqual(await worker.call("catalog", []), []);

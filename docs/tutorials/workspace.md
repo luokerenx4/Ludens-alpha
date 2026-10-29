@@ -8,6 +8,24 @@ Workspace 是交由 Agent 与开发者共同演进的普通 Coding 工作区：�
 
 ### 1. 工作区目录结构
 
+全局目录与工作区分为两层。`LUDENS_HOME` 默认为 `~/.ludens`，不随源码 checkout 移动；它只保存应用配置、可重建的索引、共享缓存与桌宠状态：
+
+```text
+~/.ludens/                  # 可由 LUDENS_HOME 覆盖
+├── config.json             # {version: 1, workspaceRoot: absolute, defaults: {...}}
+├── registry/<id>.json      # {id, workspace, name, updatedAt}，只指向工作区
+├── cache/drivers/          # 外部驱动安装缓存
+├── logs/baseware/          # 未指定 --data-dir 的独立 Baseware 日志
+├── pet/
+│   ├── target.json         # 桌宠跟随的稳定 workspace ID
+│   ├── consumer.json       # 桌宠消费者心跳
+│   ├── profile/            # Electron 偏好与本地缓存
+│   └── background/         # 共享桌宠后台日志
+└── workspaces/             # 初始 workspaceRoot，可改到任意绝对路径
+```
+
+每个工作区独立保存运行所需的状态，移动或备份时应保留整个目录：
+
 ```text
 workspace/
 ├── rsa.json                 # 本机服务启动配置（driver、端口、模型、预算）
@@ -18,7 +36,9 @@ workspace/
 ├── skills/<name>/SKILL.md   # 可复用技能文档与配套脚本
 ├── memory/current.md        # 当前目标、状态与下一步计划
 ├── .rsa/
+│   ├── workspace.json       # {version: 1, id: "ws-UUID"}，持久身份
 │   ├── settings.json        # 可选的工作区感知热窗口与视频分段参数覆盖
+│   ├── skill-versions/      # 技能与记忆的历史内容快照
 │   ├── timeline/            # 跨 run 共享的 @record 能力记录、MP4 视频段与去重媒体原件
 │   ├── archive/             # 模型与工具日志的内容寻址 JSON 归档（媒体引用 timeline）
 │   └── shiori/
@@ -31,8 +51,8 @@ workspace/
 
 ### 2. 模板与会话生命周期
 
-- **初始化模板**：`rsa init` 会创建缺失的 [AGENTS.md](../../rsa/templates/AGENTS.md)、[perception.py](../../rsa/templates/perception.py) 与 [action.py](../../rsa/templates/action.py) 模板。`AGENTS.md` 可自由修改或删除，后续启动不会强行补回；修改 `AGENTS.md` 后需重启 Host 生效。
-- **工作区身份**：工作区的 `realpath` 决定其唯一身份与默认 Unix socket 地址（移动或重命名目录会改变身份）。Dashboard 用于发现工作区的注册文件及历史快照保存在仓库同级的 `../artifacts/rsa/ws-<name>-<hash>/`。
+- **初始化模板**：`rsa init --name <name> --driver <id>` 在全局默认父目录下创建工作区，也可传 `--workspace <path>` 指定目录。创建缺失的 [AGENTS.md](../../rsa/templates/AGENTS.md)、[perception.py](../../rsa/templates/perception.py) 与 [action.py](../../rsa/templates/action.py) 模板；全局 `defaults` 复制到新建的 `rsa.json`，之后修改全局配置不影响它。`AGENTS.md` 可自由修改或删除，后续启动不会强行补回；修改后需重启 Host 生效。
+- **工作区身份**：`.rsa/workspace.json` 的 ID 是唯一身份，不由目录名称或路径计算。移动后执行 `rsa workspace open <new-path>` 更新全局索引；独立副本用 `open <copy-path> --new-id` 分配新身份并清除当前会话选择。原始会话、技能版本、录制和日志仍在工作区内。registry 丢失后可重新 `open`，`forget <id>` 只注销索引。旧目录需显式 [导入](quickstart.md#已有工作区登记与迁移)。
 - **会话续接**：重启 Host 默认读取 `.rsa/shiori/current-session.json` 续接上一轮 OMP 会话；`rsa run --new-session` 开启新会话并保留工作区全部代码与文件，`--resume <session.jsonl>` 可指定恢复同一工作区下的历史会话。
 - **技能与记忆**：`skills/<name>/SKILL.md` 采用含 `name` 与 `description` 的 YAML frontmatter。Agent 通过 OMP 原生 `read` / `write` / `edit` 工具按需读写技能与记忆，RSA 不会在每轮模型请求中重复推送全量文件索引。
 

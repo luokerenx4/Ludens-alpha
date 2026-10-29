@@ -7,14 +7,17 @@ import { resolveDriver, defaultDriverCacheRoot } from "@ludens/baseware/drivers/
 import workspaceGuide from "../../templates/AGENTS.md" with { type: "text" };
 import perceptionTemplate from "../../templates/perception.py" with { type: "text" };
 import actionTemplate from "../../templates/action.py" with { type: "text" };
+import { ensureWorkspaceIdentity, ludensHome, readGlobalConfig, registerWorkspace, validateWorkspaceRegistration } from "../../../shared/ludens.ts";
 
 export const WORKSPACE_HELP = `Workspace startup (macOS):
-rsa init --driver <id> [--driver-package <npm|github:org/repo#rev|file:path>] [--game <path>] [--cua-command <path>] [--seconds <n>] [--pet]
+rsa init --name <name> [--workspace <path>] --driver <id> [--driver-package <spec>] [--game <path>] [--cua-command <path>] [--model <id>] [--seconds <n>] [--requests <n>] [--pet | --no-pet]
 rsa up [--dry-run] [--pet | --no-pet]
 rsa services
 rsa down [--keep-emulator] [--dashboard] [--pet]
 
 These commands use <workspace>/rsa.json. Paths are relative to that workspace.
+init uses the configured workspaceRoot unless --workspace selects a directory.
+An explicit directory does not require --name. Global defaults are copied at creation only.
 New hosts start in manual mode; use rsa auto on to let the agent act.
 Ludens Pet is off by default. init --pet enables it in rsa.json.
 up --pet or --no-pet overrides that setting for this launch without changing rsa.json.
@@ -113,7 +116,7 @@ export async function launchPlan(config: LaunchConfig, workspace: string, repo =
   const baseware = join(repo, "baseware/bin/baseware");
   const basewareSocket = socket ?? await defaultSocket(workspace);
   const background = join(workspace, "logs/background");
-  const sharedPet = { cwd: repo, background: resolve(repo, "../artifacts/rsa/alice/background") };
+  const sharedPet = { cwd: repo, background: join(ludensHome(), "pet/background") };
   const bridge = manifest ? manifest.transport !== "stdio" : true;
   return {
     workspace, config, manifest, dashboardUrl: "http://127.0.0.1:3015", background, sharedPet,
@@ -172,7 +175,9 @@ const systemIO: LaunchIO = {
   async dashboardReady(url) {
     try {
       const response = await fetch(`${url}/api/catalog`, { signal: AbortSignal.timeout(2000) });
-      return response.ok && Array.isArray(await response.json());
+      if (!response.ok || !Array.isArray(await response.json())) return false;
+      const settings = await fetch(`${url}/api/workspaces`, { signal: AbortSignal.timeout(2000) });
+      return settings.ok && (await settings.json()).home === ludensHome();
     } catch { return false; }
   },
   async petReady(url) {
@@ -261,6 +266,7 @@ export class WorkspaceLauncher {
     if (this.plan.config.dashboard && !dashboard) {
       const build = await this.run(this.plan.dashboardCheck);
       if (build.code !== 0) throw new Error(build.stderr || build.stdout || "Build the Dashboard before starting it.");
+      if ((await this.listeningPids(3015)).length) throw new Error("Port 3015 is occupied by a Dashboard with a different Ludens home or an unready service. Stop that Dashboard before switching global homes.");
     }
     let baseware = await this.baseware();
     if (!baseware) {
@@ -382,32 +388,60 @@ export class WorkspaceLauncher {
   }
 }
 
-export async function workspaceCommand(command: string, args: string[], selectedWorkspace: string) {
+export async function workspaceCommand(command: string, args: string[], selectedWorkspace: string, explicitWorkspace = false) {
   if (args.includes("--help")) { console.log(WORKSPACE_HELP); return; }
   const { values } = parseArgs({ args, options: command === "init" ? {
     driver: { type: "string" }, "driver-package": { type: "string" }, game: { type: "string" },
-    "cua-command": { type: "string" }, seconds: { type: "string" }, pet: { type: "boolean" },
+    "cua-command": { type: "string" }, seconds: { type: "string" }, requests: { type: "string" }, model: { type: "string" },
+    name: { type: "string" }, workspace: { type: "string" }, pet: { type: "boolean" }, "no-pet": { type: "boolean" },
   } : command === "up" ? { "dry-run": { type: "boolean" }, pet: { type: "boolean" }, "no-pet": { type: "boolean" } }
     : command === "down" ? { dashboard: { type: "boolean" }, pet: { type: "boolean" }, "keep-emulator": { type: "boolean" } } : {} });
   if (values.pet && values["no-pet"]) throw new Error("Choose either --pet or --no-pet");
   if (command === "init") {
-    await mkdir(selectedWorkspace, { recursive: true });
-    const workspace = await realpath(selectedWorkspace);
+    const global = await readGlobalConfig();
+    if (values.name !== undefined && (typeof values.name !== "string" || !values.name.trim() || /[\\/\x00]/.test(values.name) || [".", ".."].includes(values.name))) {
+      throw new Error("--name must be a single non-empty directory name");
+    }
+    if (typeof values.workspace === "string" && explicitWorkspace && resolve(values.workspace) !== resolve(selectedWorkspace)) {
+      throw new Error("Choose one --workspace directory");
+    }
+    const directory = typeof values.workspace === "string" ? resolve(values.workspace) : explicitWorkspace ? resolve(selectedWorkspace)
+      : typeof values.name === "string" ? join(global.workspaceRoot, values.name) : undefined;
+    if (!directory) throw new Error("Use --name to create under the default workspaceRoot, or --workspace <path> to select a directory");
+    if (typeof values.driver !== "string" || !values.driver.trim()) throw new Error("init requires --driver <id>");
+    await mkdir(directory, { recursive: true });
+    const workspace = await realpath(directory);
     const packageSpec = typeof values["driver-package"] === "string" ? values["driver-package"] : undefined;
-    const raw = { driver: values.driver,
-      ...(packageSpec ? { driverPackage: packageSpec.startsWith("file:") ? `file:${resolve(workspace, packageSpec.slice(5))}` : packageSpec } : {}),
+    const raw = { ...global.defaults, driver: values.driver,
+      ...(packageSpec ? { driverPackage: packageSpec } : {}),
       ...(values.game ? { game: values.game } : {}), ...(values["cua-command"] ? { cuaCommand: values["cua-command"] } : {}),
-      ...(values.seconds ? { seconds: Number(values.seconds) } : {}), ...(values.pet ? { pet: true } : {}) };
-    const manifest = await resolveDriver(raw.driver as string, raw.driverPackage, defaultDriverCacheRoot());
+      ...(values.seconds ? { seconds: Number(values.seconds) } : {}), ...(values.requests ? { requests: Number(values.requests) } : {}),
+      ...(values.model ? { model: values.model } : {}), ...(values.pet || values["no-pet"] ? { pet: Boolean(values.pet) } : {}) };
+    const resolvedPackage = packageSpec?.startsWith("file:") ? `file:${resolve(workspace, packageSpec.slice(5))}` : packageSpec;
+    const manifest = await resolveDriver(raw.driver as string, resolvedPackage, defaultDriverCacheRoot());
     const config = parseConfig(raw, manifest);
     await writeFile(join(workspace, "rsa.json"), `${JSON.stringify(config, null, 2)}\n`, { flag: "wx" });
     await writeFile(join(workspace, "AGENTS.md"), workspaceGuide, { flag: "wx" }).catch(error => { if (error.code !== "EEXIST") throw error; });
     await writeFile(join(workspace, "perception.py"), perceptionTemplate, { flag: "wx" }).catch(error => { if (error.code !== "EEXIST") throw error; });
     await writeFile(join(workspace, "action.py"), actionTemplate, { flag: "wx" }).catch(error => { if (error.code !== "EEXIST") throw error; });
-    console.log(`Created ${join(workspace, "rsa.json")}\nReview with rsa up --dry-run, then run rsa up.`);
+    await ensureWorkspaceIdentity(workspace);
+    const entry = await registerWorkspace(workspace);
+    console.log(JSON.stringify({ ...entry, configPath: join(workspace, "rsa.json") }, null, 2));
     return;
   }
   const workspace = await realpath(selectedWorkspace);
+  if (command === "up") {
+    // Reject missing identities and conflicting copies before package discovery or device startup.
+    try {
+      if (values["dry-run"]) await validateWorkspaceRegistration(workspace);
+      else await registerWorkspace(workspace);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new Error("Workspace identity is missing. Use rsa init for a new workspace, or rsa workspace import <path> for an existing workspace.");
+      }
+      throw error;
+    }
+  }
   // Status and shutdown remain available even if the launch config was removed or edited badly.
   const raw = command === "up" ? await Bun.file(join(workspace, "rsa.json")).json() : { driver: "cua" };
   if (typeof raw.driverPackage === "string" && raw.driverPackage.startsWith("file:")) raw.driverPackage = `file:${resolve(workspace, raw.driverPackage.slice(5))}`;

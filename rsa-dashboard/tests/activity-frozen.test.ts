@@ -1,3 +1,4 @@
+import { registerFixture } from "./fixtures/registry";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { appendFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
@@ -7,19 +8,20 @@ import { awaitArchive } from "./fixtures/await-archive";
 
 test("getActivity keeps snapshots and cursor deltas readable while a published generation is frozen", async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), "rsa-activity-frozen-")));
-  const previousRoot = process.env.RSA_DASHBOARD_ARTIFACT_ROOT;
-  process.env.RSA_DASHBOARD_ARTIFACT_ROOT = root;
+  const previousRoot = process.env.LUDENS_HOME;
+  process.env.LUDENS_HOME = root;
   // getActivity resolves the same registry and retained index as the HTTP worker.
   const { getActivity, refreshActivity } = await import("../lib/activity");
   const { getLogIndex, closeLogIndexes } = await import("../lib/log-index");
   const { closeArchiveBuilds } = await import("../lib/cold-build");
-  const path = join(root, "fixture", "runs", "run");
+  const workspace = join(root, "workspace"), path = join(workspace, "logs", "run");
   const event = (seq: number, type: string, data: Record<string, unknown>) => ({
     seq, at: new Date(seq * 1000).toISOString(), atMs: seq * 1000,
     type, data, trace: { epoch: "cycle" },
   });
   try {
     await mkdir(path, { recursive: true });
+    await registerFixture(root, "fixture", workspace);
     await writeFile(join(path, "manifest.json"), JSON.stringify({ kind: "benchmark", model: "fixture", drivers: [] }));
     await writeFile(join(path, "events.jsonl"), [event(1, "control", { mode: "auto" }),
       event(2, "tool_start", { toolName: "read", intent: "first intent" })].map(row => JSON.stringify(row)).join("\n") + "\n");
@@ -56,8 +58,8 @@ test("getActivity keeps snapshots and cursor deltas readable while a published g
   } finally {
     await closeArchiveBuilds();
     await closeLogIndexes();
-    if (previousRoot === undefined) delete process.env.RSA_DASHBOARD_ARTIFACT_ROOT;
-    else process.env.RSA_DASHBOARD_ARTIFACT_ROOT = previousRoot;
+    if (previousRoot === undefined) delete process.env.LUDENS_HOME;
+    else process.env.LUDENS_HOME = previousRoot;
     await rm(root, { recursive: true, force: true });
   }
 });

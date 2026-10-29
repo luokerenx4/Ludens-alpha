@@ -36,7 +36,7 @@ mGBA、Azahar、Ryubing 必须通过 `--driver-package` 显式选择外部包；
 
 ```sh
 baseware driver discover --package 'github:org/repo#rev'
-rsa init --driver <id> --driver-package 'github:org/repo#rev'
+rsa init --name my-task --driver <id> --driver-package 'github:org/repo#rev'
 ```
 
 - **路径解析**：`rsa init` 与 `rsa up` 中的相对 `file:` 路径均以目标工作区目录为基准解析并归一化；`baseware driver discover` 的相对 `file:` 按当前 shell 目录解析；Dashboard 网页端的外部驱动校验要求 `file:` 使用绝对路径。

@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { openRun, artifactRoot } from "./data";
+import { openRun, globalHome } from "./data";
 import { type EventRef, type LogIndex } from "./log-index";
 import { getOperation, queryOperationRefs, refreshOperationIndex, type OperationRef } from "./operation-index";
 import { timelineRecord, timelinePath, timelineWindow, type StoredTimelineRecord, type TimelineCursor } from "./timeline-record";
@@ -317,7 +317,7 @@ async function segmentMedia(scope: Scope, query: ReplayQuery): Promise<FileMedia
 }
 
 /** Read archived facts only. Video and frame requests never wait for event presentation work. */
-export async function getReplay(project: string, run: string, query: ReplayQuery, root = artifactRoot, signal?: AbortSignal) {
+export async function getReplay(project: string, run: string, query: ReplayQuery, root = globalHome, signal?: AbortSignal) {
   const { index, release } = await openRun(project, run, root);
   try {
     signal?.throwIfAborted();

@@ -99,7 +99,7 @@ Baseware 支持通过 `--driver <id> --driver-package <spec>` 加载外部驱动
 
 `<spec>` 支持三类格式：
 
-1. **npm 包**：如 `@scope/pkg@1.2.0`，由 Bun 安装至仓库外的缓存目录（默认 `~/.local/state/ludens/baseware/drivers/`；设置 `XDG_STATE_HOME` 时使用其下的 `ludens/baseware/drivers/`）；
+1. **npm 包**：如 `@scope/pkg@1.2.0`，由 Bun 安装至全局 `$LUDENS_HOME/cache/drivers/`（未设置 `LUDENS_HOME` 时为 `~/.ludens/cache/drivers/`）；缓存独立于源码仓库与工作区；
 2. **GitHub 仓库**：如 `github:org/repo#commit-sha`、完整 GitHub HTTPS URL 或 `git@github.com:org/repo.git#rev`。SSH 地址保留 SSH 传输；缓存按传输方式、仓库与 revision 区分。完成检出与依赖安装后按 `package.json` 的 `exports` 解析入口；
 3. **本地目录或入口文件**：`file:/absolute/path` 或 `file:relative/path`；Baseware CLI 的相对路径从当前目录解析，RSA 工作区配置中的相对路径从工作区根目录解析。
 

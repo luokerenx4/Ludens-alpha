@@ -22,7 +22,7 @@ test("offline packaged programs, verifiers and storage bindings share Shiori", a
       ["perception-lifecycle", {}], ["ws-recovery", {}], ["background-compaction", {}],
       ["clamp", { samples: 30 }], ["video-storage", { records: 12, rate: 30 }], ["index-memory", { run: source }],
     ] as const) {
-      const result = await runTask(`ludens/${name}`, { workspace, artifactRoot: join(root, "index"), seconds: 60, parameters });
+      const result = await runTask(`ludens/${name}`, { workspace, globalHome: join(root, "index"), seconds: 60, parameters });
       if (result.trial.status !== "completed") throw new Error(`${name}: ${await readFile(join(workspace, "logs", result.trial.id, "stderr.log"), "utf8")}`);
       expect({ name, status: result.trial.status, error: result.trial.error, verification: result.verification?.status,
         scoringError: result.verification?.error }).toEqual({ name, status: "completed", error: undefined, verification: "completed", scoringError: undefined });

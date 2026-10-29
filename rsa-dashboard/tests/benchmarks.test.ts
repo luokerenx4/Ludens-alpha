@@ -1,3 +1,4 @@
+import { registerFixture } from "./fixtures/registry";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, readFile, realpath, rm, symlink, access } from "node:fs/promises";
@@ -24,10 +25,9 @@ async function taskPackage(directory: string, name = "fixture/capability", extra
 }
 async function fixture() {
   const temporary = await mkdtemp(join(tmpdir(), "rsa-bench-dashboard-"));
-  const base = await realpath(temporary), root = join(base, "artifacts"), workspace = join(base, "workspace"), repository = join(base, "tasks");
-  await mkdir(join(root, "ws-bench"), { recursive: true });
+  const base = await realpath(temporary), root = join(base, "home"), workspace = join(base, "workspace"), repository = join(base, "tasks");
   await mkdir(join(workspace, "logs"), { recursive: true });
-  await json(join(root, "ws-bench/workspace.json"), { workspace });
+  await registerFixture(root, "ws-bench", workspace);
   const task = await taskPackage(join(repository, "capability"));
   const make = (id = "run-010", patch: Partial<Trial> = {}): Trial => ({
     schemaVersion: 1, id, runId: id, task: { name: task.name, digest: task.digest }, project: "ws-bench", workspace,

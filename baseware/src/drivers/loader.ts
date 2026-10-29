@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
-import { homedir } from "node:os";
 import { createHash } from "node:crypto";
+import { ludensHome } from "../../../shared/ludens.ts";
 import { getDriver, type DriverRegistration, type DriverSource } from "./registry.ts";
 import { asRegistration, driverCacheDir, parseDriverSpec, type DriverSpec } from "./spec.ts";
 
@@ -126,5 +126,5 @@ export async function resolveDriver(id: string, packageSpec: string | undefined,
   return registrationFrom(await resolvePackage(id, packageSpec, cacheRoot), id);
 }
 export function defaultDriverCacheRoot(): string {
-  return join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local/state"), "ludens/baseware/drivers");
+  return join(ludensHome(), "cache", "drivers");
 }

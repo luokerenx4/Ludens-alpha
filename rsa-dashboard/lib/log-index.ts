@@ -89,7 +89,7 @@ export class LogIndex {
       this.metadata = saved.metadata; this.files = saved.files;
     }
     // An interrupted projection is rebuilt rather than exposing a half-committed cursor.
-    if (this.metadata.format !== FORMAT || existsSync(join(directory, ".writing"))) this.reset();
+    if (this.metadata.format !== FORMAT || this.metadata.sourceRoot !== path || existsSync(join(directory, ".writing"))) this.reset();
     this.eventPosition = Number(this.metadata.eventPosition ?? 0);
   }
   store(name: string) {
@@ -143,7 +143,7 @@ export class LogIndex {
     for (const store of this.stores.values()) store.close();
     this.stores.clear();
     rmSync(this.directory, { recursive: true, force: true }); mkdirSync(this.directory, { recursive: true });
-    this.metadata = { format: FORMAT, generation: randomUUID(), revision: "0", eventPosition: "0" };
+    this.metadata = { format: FORMAT, sourceRoot: this.path, generation: randomUUID(), revision: "0", eventPosition: "0" };
     this.files = {}; this.eventPosition = 0; this.dirty = false; this.markDirty();
   }
   /** Drop only named derived tables; raw logs and other projections stay intact. */

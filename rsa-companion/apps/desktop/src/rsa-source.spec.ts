@@ -1,4 +1,5 @@
-import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -8,6 +9,8 @@ const directories: string[] = []
 function workspace() {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), 'rsa-pet-source-')))
   directories.push(directory)
+  mkdirSync(join(directory, '.rsa'))
+  writeFileSync(join(directory, '.rsa', 'workspace.json'), JSON.stringify({ version: 1, id: `ws-${randomUUID()}` }))
   return directory
 }
 function page(directory: string, overrides: Partial<ActivityChanges> = {}): ActivityChanges {
@@ -26,6 +29,18 @@ function page(directory: string, overrides: Partial<ActivityChanges> = {}): Acti
 afterEach(() => { vi.unstubAllGlobals(); for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }) })
 
 describe('RSA incremental activity source', () => {
+  it('keeps the persisted workspace identity after relocation and rejects missing identity files', () => {
+    const directory = workspace(), project = rsaProjectId(directory)
+    const source = new RsaSource({ workspace: directory, dashboardUrl: 'http://localhost:3015', onSnapshot: () => {} })
+    const relocated = directory + '-moved'; renameSync(directory, relocated); directories.push(relocated)
+    expect(rsaProjectId(relocated)).toBe(project)
+    const moved = new RsaSource({ workspace: relocated, dashboardUrl: 'http://localhost:3015', onSnapshot: () => {} })
+    expect(moved.identity()).toBe(source.identity())
+    source.stop(); moved.stop()
+    rmSync(join(relocated, '.rsa', 'workspace.json'))
+    expect(() => rsaProjectId(relocated)).toThrow()
+  })
+
   it('makes one changes request, publishes thin current state, and commits the cursor only after acceptance', async () => {
     const directory = workspace(), link = directory + '-link'; symlinkSync(directory, link); directories.push(link)
     const onSnapshot = vi.fn(), response = page(directory)
