@@ -175,7 +175,7 @@ class ObservationHistory:
         self._video = None
         self.hot_bytes = 0
         self._references = Counter()
-        self._expired = None  # min/max wall time and last evicted sequence, not old records.
+        self._expired = None  # min/max wall time and greatest evicted sequence, not old records.
         self._temporary = None
         self._active = None
         self._segments = []
@@ -544,7 +544,7 @@ class ObservationHistory:
                 del self._channel_bytes[channel]
         if not self.persistent:
             previous = self._expired or (at, at, 0)
-            self._expired = (min(at, previous[0]), max(at, previous[1]), sequence)
+            self._expired = (min(at, previous[0]), max(at, previous[1]), max(sequence, previous[2]))
         for path in paths:
             self._references[path] -= 1
             if not self._references[path]:

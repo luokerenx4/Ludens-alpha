@@ -25,9 +25,10 @@ def main():
     instance = sampler = history = None
 
     def send(value):
-        encoded = json.dumps(value, allow_nan=False)
         with protocol_lock:
-            protocol.write(encoded + "\n")
+            if history is not None:
+                value = {**value, "history": history.policy()}
+            protocol.write(json.dumps(value, allow_nan=False) + "\n")
 
     def append(*, sample, identity, sampling, generation=None, runId=None, trace=None):
         if history is None:

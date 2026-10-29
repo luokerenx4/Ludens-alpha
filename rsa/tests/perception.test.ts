@@ -119,6 +119,26 @@ test("cold history remains queryable across segments and worker reload", async (
   } finally { await f.cleanup(); }
 });
 
+test("budget eviction status updates without observe calls and resets on reload", async () => {
+  const f = await fixture({ env: { RSA_PERCEPTION_PERSIST: "0", RSA_PERCEPTION_HOT_BYTES: "3500" } });
+  try {
+    await f.runtime.reload(); // A timeline writer exists even without a sampler.
+    expect(f.runtime.status().history?.budgetEvictions).toBe(0);
+    for (const [channel, size] of [["A", 1500], ["B", 3000], ["A", 1500]] as const) {
+      await f.runtime.append({ sample: { text: "x".repeat(size) }, identity: { id: channel }, generation: "g",
+        sampling: { clock: "test", startedAtMs: 0, finishedAtMs: 1 } }, new AbortController().signal);
+    }
+    expect(f.runtime.status().history?.budgetEvictions).toBeGreaterThan(0);
+    expect(f.events.filter(event => event.type === "perception_observe_end")).toHaveLength(0);
+    expect(f.events.filter(event => event.type === "perception_status" && event.data.history?.budgetEvictions > 0)).toHaveLength(0);
+    await f.runtime.reload();
+    expect(f.runtime.status().history?.budgetEvictions).toBe(0);
+    await f.load(source('        return {"text": "x" * 3000}'));
+    await f.wait(() => (f.runtime.status().history?.budgetEvictions ?? 0) > 0);
+    expect(f.events.filter(event => event.type === "perception_observe_end")).toHaveLength(0);
+  } finally { await f.cleanup(); }
+});
+
 test("sampling continues without reads, archives overwritten files, and queries paginated time history", async () => {
   const f = await fixture();
   try {

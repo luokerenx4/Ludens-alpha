@@ -15,7 +15,8 @@ export interface PerceptionStatus {
   codeSHA?: string;
   error?: string;
   sampleHz?: number;
-  history?: { persistent: boolean; hotSeconds: number; segmentSeconds: number; hotBytes: number; segmentBytes: number };
+  history?: { persistent: boolean; hotSeconds: number; segmentSeconds: number; hotBytes: number; segmentBytes: number;
+    videoSegmentSeconds: number; videoIdleSeconds: number; budgetEvictions: number };
 }
 export interface PerceptionSnapshot {
   id: string;
@@ -239,6 +240,8 @@ export class PerceptionRuntime {
         // Expected exits still flush statistics and media registrations.
         if (this.worker !== worker) return;
         for (const media of reply.mediaReferences ?? []) this.options.registerMedia?.(media);
+        if (reply.history && this.isCurrent(worker))
+          this.setStatus({ ...this.current, history: reply.history }, backgroundTrace, false);
         if (reply.event === "status" && this.isCurrent(worker)) this.setStatus({ ...this.current, state: reply.state,
           error: typeof reply.error === "string" ? reply.error : undefined }, backgroundTrace, !reply.transient);
         if (reply.event === "recording" && reply.type) this.record(reply.type, reply.data, reply.trace ?? backgroundTrace, reply.channel, reply.origin);
@@ -260,7 +263,7 @@ export class PerceptionRuntime {
       this.options.startTimeoutMs ?? 30_000);
       if (!reply.ok) throw new Error(`${reply.error?.type}: ${reply.error?.message}`);
       const result = reply.result as { sampleHz?: number; history: PerceptionStatus["history"]; state: PerceptionStatus["state"]; error?: string };
-      this.setStatus({ ...this.current, sampleHz: result.sampleHz, history: result.history,
+      this.setStatus({ ...this.current, sampleHz: result.sampleHz, history: this.current.history ?? result.history,
         ...(this.current.state === "loading" ? { state: result.state, error: result.error } : {}) }, trace);
     } catch (error) {
       await this.closeWorker();
@@ -270,7 +273,13 @@ export class PerceptionRuntime {
   }
 
   private request(worker: PythonWorker, message: Record<string, unknown>, timeoutMs: number, signal?: AbortSignal): Promise<WorkerReply> {
-    return worker.request(message, timeoutMs, signal);
+    return worker.request(message, timeoutMs, signal).then(reply => {
+      const history = (reply as WorkerReply & { history?: PerceptionStatus["history"] }).history;
+      // A later sample event can arrive before this reply's promise resumes.
+      if (history && this.isCurrent(worker) && history.budgetEvictions >= (this.current.history?.budgetEvictions ?? 0))
+        this.setStatus({ ...this.current, history }, undefined, false);
+      return reply;
+    });
   }
 
   private async closeWorker() {

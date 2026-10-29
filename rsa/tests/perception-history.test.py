@@ -228,6 +228,24 @@ class HistoryTests(unittest.TestCase):
                 self.assertLessEqual(history.hot_bytes, 8192)
                 history.close()
 
+    def test_window_expiry_keeps_the_highest_evicted_cursor_across_channels(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+                "RSA_PERCEPTION_PERSIST": "0", "RSA_PERCEPTION_HOT_BYTES": "3500"}):
+            history = ObservationHistory(directory)
+            try:
+                for second, (channel, size) in enumerate((("A", 1500), ("B", 3000), ("A", 1500))):
+                    history.append({"text": "x" * size}, "g", SAMPLING,
+                                   f"2026-10-22T00:00:0{second}Z", identity={"id": channel})
+                # B's second record is evicted before A's older first record.
+                # A later eviction must not hide the missing seq2 from after=1.
+                page = history.observe({"capability": "*", "after": 1})
+                self.assertEqual([record["sequence"] for record in page["records"]], [3])
+                self.assertTrue(page["availability"]["expired"])
+                self.assertFalse(history.observe({"capability": "*", "after": 2})["availability"]["expired"])
+                self.assertEqual(history.policy()["budgetEvictions"], 2)
+            finally:
+                history.close()
+
     def test_window_only_expiry_inline_delivery_and_source_media_ownership(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
                 "RSA_PERCEPTION_PERSIST": "0", "RSA_PERCEPTION_HOT_SECONDS": "10"}):
