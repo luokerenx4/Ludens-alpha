@@ -73,7 +73,7 @@ rsa controller list
 rsa auto on
 ```
 
-省略 `--workspace` 时，`rsa init --name my-task --driver ...` 使用全局配置的 `workspaceRoot/my-task`；初始父目录为 `$LUDENS_HOME/workspaces`。显式相对路径以当前 shell 目录解析；要初始化当前目录，请使用 `rsa init --workspace . --driver ...`，也支持前置 `rsa --workspace . init --driver ...`。已有工作区使用下文的 `open` 或 `import`，不要重新初始化。
+省略 `--workspace` 时，`rsa init --name my-task --driver ...` 使用全局配置的 `workspaceRoot/my-task`；初始父目录为 `$LUDENS_HOME/workspaces`。显式相对路径以当前 shell 目录解析；要初始化当前目录，请使用 `rsa init --workspace . --driver ...`，也支持前置 `rsa --workspace . init --driver ...`。已有工作区使用下文的 `open` 或 `import`，不要重新初始化。只指定名称而不传显式目录时，如 shell 从另一工作区继承了 `RSA_WORKSPACE`，请先取消该变量。
 
 已有模拟器工作区还需按 [外部驱动迁移说明](devices.md#外部驱动包发现与接入) 添加 `driverPackage`。默认启动路径来自各驱动的构建缓存；沿用已安装应用时，每次 `up`（含 `--dry-run`）需传入 `RSA_AZAHAR_APP` 或 `RSA_RYUBING_APP`。
 

@@ -299,13 +299,12 @@
   },
   "capabilitiesView": {
     "readFailed": "读取失败",
-    "copyFailed": "无法复制，请手动选择并复制下方命令。",
     "driverSectionLabel": "外部驱动",
-    "driverTitle": "外部驱动验证 · Driver Package",
+    "driverTitle": "社区驱动验证",
     "onDemandBadge": "按需校验",
     "discoverNote1a": "输入外部驱动包地址（npm 包名、",
     "discoverNote1b": " 或 ",
-    "discoverNote1c": "），校验其注册声明并生成工作区初始化命令。",
+    "discoverNote1c": "），先检查声明，再选择它创建工作区。",
     "examplePath": "file:/绝对路径",
     "discoverNote2a": "注意：验证过程可能下载安装依赖并会导入包代码，请仅使用可信来源。验证不调用 ",
     "discoverNote2b": "，通过仅代表声明合规，不保证设备可连接。",
@@ -313,11 +312,7 @@
     "specAriaLabel": "驱动包地址",
     "verifying": "验证中…",
     "verifyDriver": "验证驱动包",
-    "verifiedPrefix": "已验证包：",
     "defaultPortPrefix": " · 默认端口 ",
-    "needsGameNote": " · 需预备已启动游戏的后端",
-    "copiedLabel": "已复制",
-    "copyInitCommand": "复制初始化命令",
     "needsControl": "需要接管",
     "noControl": "免接管",
     "readOnlySuffix": " · 只读",
@@ -325,25 +320,18 @@
     "loadErrorTitle": "暂时无法读取能力",
     "loadingTitle": "正在读取能力",
     "loadingDesc": "正在从当前工作区的 baseware.json 与 Python @capability 声明读取…",
-    "emptyTitle": "尚无已注册的工作区",
-    "emptyDesc": "在工作区启动 RSA 后，这里将展示其设备能力快照、Python 自创能力与评测任务。",
+    "emptyTitle": "选择要查看的工作区",
+    "emptyDesc": "请创建或选择已登记的工作区；上方的驱动包验证不依赖工作区选择。",
     "diagnosticsTitle": "读取诊断",
     "overviewLabel": "能力概览",
     "capabilitiesUnit": "项能力",
-    "tasksMetricLabel": "评测任务",
     "taskPackagesUnit": "个任务包",
-    "itemsUnit": " 项",
     "capabilityCol": "能力",
     "descriptionCol": "说明",
     "controlCol": "控制要求",
     "noDescription": "无描述",
-    "noGroupsHint": "暂无。设备能力来自连接时的实际目录；自创能力来自 workspace 的 @capability 发现。",
-    "tasksSectionLabel": "评测任务",
-    "benchmarkTitle": "评测任务 · Benchmark",
-    "tasksUnit": " 个",
     "taskCol": "任务",
     "versionCol": "版本摘要",
-    "noTasksHint": "目录中没有任务包。执行历史与评分见 Benchmark 的评测目录。",
     "catalogFailed": "无法刷新工作区列表。",
     "retryCatalog": "重试工作区列表",
     "retryRead": "重试读取",
@@ -352,7 +340,61 @@
     "loadingWorkspaces": "正在读取工作区列表…",
     "errorDetails": "技术详情",
     "showingCached": "正在显示上次读取的能力目录。",
-    "readOnlyRefreshHint": "刷新只读取能力目录，保留驱动验证结果。"
+    "readOnlyRefreshHint": "刷新只读取能力目录，保留驱动验证结果。",
+    "title": "能力目录",
+    "description": "验证社区驱动包、创建工作区，再查看其中记录和声明的能力。",
+    "verifiedTitle": "已检查驱动包声明",
+    "verifiedBoundary": "驱动包声明已通过验证；尚未测试设备、游戏或单项能力能否执行。",
+    "declaredVersion": "声明版本",
+    "createWithDriver": "用此驱动创建工作区",
+    "createWorkspace": "创建工作区",
+    "viewWorkspaces": "管理工作区",
+    "deviceGuide": "设备准备指南",
+    "capabilityGuide": "能力编写指南",
+    "benchmarkGuide": "评测任务指南",
+    "existingWorkspaceHint": "已有工作区？请按照设备指南配置其 rsa.json；新建工作区不会改变原有配置。",
+    "creationRechecks": "创建时会再次检查驱动包，可能下载或导入代码，但不会启动服务。",
+    "sourcesTitle": "工作区来源",
+    "sourcesDescription": "各来源独立读取；数量表示已记录或已声明的条目，不代表执行成功。",
+    "groupTitles": {
+      "device": "设备目录快照",
+      "workspace": "工作区能力声明",
+      "tasks": "评测任务"
+    },
+    "sourceStates": {
+      "available": "已读取",
+      "partial": "部分读取",
+      "missing": "暂无快照",
+      "error": "读取失败"
+    },
+    "sourceDescriptions": {
+      "device": "宿主连接时保存于 baseware.json；这份快照不能确认当前连接状态。",
+      "workspace": "静态扫描 Python 源码中的 @capability 声明，不执行工作区代码。",
+      "tasks": "仓库和工作区内发现的任务包；发现任务不会运行评测，也不代表取得了分数。"
+    },
+    "sourceEmpty": {
+      "device": "尚无设备能力记录。请准备设备、从终端启动工作区，再刷新快照。",
+      "workspace": "尚未声明 Python 能力，可在工作区源码中添加带文档的 @capability 函数。",
+      "tasks": "尚未发现评测任务包，可按任务指南添加。"
+    },
+    "sourceFailure": "此来源读取失败，请查看诊断后刷新；其他来源仍可查看。",
+    "snapshotAt": "快照生成于",
+    "snapshotTimeUnknown": "未记录快照生成时间。",
+    "recordedDrivers": "快照中的驱动",
+    "checkedAt": "检查时间",
+    "runtimeTitle": "宿主连接检查",
+    "runtimeUnchecked": "尚未检查宿主状态。",
+    "runtimeChecking": "正在检查…",
+    "checkRuntime": "检查宿主状态",
+    "runtimeReadOnly": "仅读取宿主报告的控制连接状态；不验证物理设备、游戏或单项能力执行，也不启动服务。",
+    "runtimeUnknown": "宿主已回复，但未提供明确的控制连接状态。",
+    "runtimeConnected": "检查时，宿主报告控制连接可用。",
+    "runtimeDisconnected": "检查时，宿主报告控制连接不可用或状态不确定。",
+    "runtimeUnavailable": "无法确认所选工作区的宿主状态；设备和游戏是否可用仍未知。",
+    "runtimeReadFailed": "未能读取宿主状态。",
+    "runtimeStale": "最新检查失败，当前显示较早的宿主观测。",
+    "hostRunLabel": "宿主运行",
+    "viewBenchmark": "打开 Benchmark"
   },
   "petSettings": {
     "title": "Ludens Pet",
@@ -1030,7 +1072,85 @@
     "limitationsTitle": "适用范围与限制",
     "provenanceTitle": "条件、被测版本与来源",
     "baselineTitle": "基线",
-    "chooseWorkspace": "请创建或选择工作区，查看其中的评测。"
+    "chooseWorkspace": "请创建或选择工作区，查看其中的评测。",
+    "workspaceLoading": "正在读取工作区",
+    "workspaceLoadingDescription": "先确认已登记的工作区位置，再读取评测。",
+    "workspaceUnavailable": "工作区位置不可用",
+    "workspaceUnavailableDescription": "请在工作区管理中检查或重新关联位置；已保存的运行链接仍可单独尝试读取。",
+    "manageWorkspaces": "管理工作区",
+    "readQuickstart": "阅读快速开始",
+    "retryWorkspaceCatalog": "重试工作区列表",
+    "workspaceReadFailed": "无法读取工作区列表",
+    "workspaceReadFailedCached": "正在使用上次读取的工作区信息，请重试以确认当前登记状态。",
+    "workspaceReadFailedDescription": "工作区列表读取失败，不代表没有工作区。",
+    "retrying": "正在读取…",
+    "refreshHistory": "刷新任务与历史",
+    "readFailedCached": "保留上次读取的数据，重试可检查是否有更新。",
+    "readFailedDescription": "可以重试读取，或清除选择返回历史；这些操作不会启动评测。",
+    "catalogReadFailedDescription": "请重试任务与历史读取；读取失败不代表工作区为空。",
+    "technicalDetails": "技术详情",
+    "firstTaskTitle": "添加第一个评测任务",
+    "firstTaskDescription": "定义要执行的任务、评分方式和需要保留的证据；任务指南说明任务包与执行配置的结构。",
+    "readTaskGuide": "阅读任务指南",
+    "viewCapabilities": "查看能力目录",
+    "inspectTaskCatalog": "在终端检查任务发现结果",
+    "copyListCommand": "复制列表命令",
+    "copyTaskHelpCommand": "复制任务帮助命令",
+    "missingTaskPackages": "未发现任务包；仍可查看已有运行历史和固定链接中的证据。",
+    "tasksUnavailable": "部分任务包无法读取；请先检查诊断信息，不应将其视为没有任务。",
+    "terminalRunNote": "复制不会执行任务；请检查命令，准备好后在终端中运行。",
+    "allTaskVersions": "历史包含此任务的所有版本",
+    "clearTaskFilter": "清除任务筛选",
+    "chooseFirstTask": "选择任务，准备运行",
+    "refreshSelected": "重新读取所选运行",
+    "refreshBaseline": "重新读取基线",
+    "refreshAttachment": "重新读取附件",
+    "clearSelected": "清除运行选择",
+    "clearBaseline": "清除基线",
+    "invalidSelected": "此运行链接无效，请清除选择或从历史中选择运行。",
+    "invalidBaseline": "此基线链接无效，请清除后从历史中选择另一条基线。",
+    "selectedUnavailable": "无法读取所选运行",
+    "baselineUnavailable": "无法读取基线",
+    "steps": {
+      "addTask": {
+        "title": "添加任务",
+        "description": "添加任务包及与之匹配的执行配置。"
+      },
+      "runTerminal": {
+        "title": "在终端运行",
+        "description": "选择任务并检查命令，准备好后手动运行。"
+      },
+      "inspectEvidence": {
+        "title": "查看证据",
+        "description": "回到这里查看运行、评分版本与记录的证据。"
+      }
+    },
+    "historyEmpty": {
+      "no-tasks": {
+        "title": "尚无运行记录",
+        "description": "任务执行后，已保存的运行会显示在这里。"
+      },
+      "no-runs": {
+        "title": "可以准备第一次运行了",
+        "description": "选择任务以查看执行配置；复制命令不会启动任务。"
+      },
+      "filter-empty": {
+        "title": "没有符合任务筛选的运行",
+        "description": "清除筛选可浏览其他任务；当前筛选包含所选任务的所有已记录版本。"
+      },
+      "page-empty": {
+        "title": "此较早页面没有运行记录",
+        "description": "返回最新页会保留任务筛选和所选证据。"
+      },
+      "unreadable": {
+        "title": "部分运行记录无法读取",
+        "description": "请检查历史诊断并刷新；记录无法读取不代表没有运行。"
+      },
+      "tasks-unavailable": {
+        "title": "需要检查任务发现结果",
+        "description": "当前未列出运行；添加或运行任务前，请先处理任务诊断。"
+      }
+    }
   },
   "runVisuals": {
     "transport": {

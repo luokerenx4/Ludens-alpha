@@ -1,12 +1,13 @@
 import { registerFixture } from "./fixtures/registry";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { access, chmod, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdtemp, mkdir, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { capabilities } from "../lib/capabilities";
 import { catalog, clearCatalogCache } from "../lib/data";
 import { DashboardWorker } from "../lib/dashboard-worker";
+import { registerWorkspace } from "../../shared/ludens";
 
 const json = (path: string, value: unknown) => writeFile(path, JSON.stringify(value));
 async function fixture() {
@@ -14,7 +15,7 @@ async function fixture() {
   const root = join(base, "home"), workspace = join(base, "workspace");
   await mkdir(workspace);
   await registerFixture(root, "ws-capabilities", workspace);
-  await json(join(workspace, "baseware.json"), { schemaVersion: 2, drivers: [], controllers: [
+  await json(join(workspace, "baseware.json"), { schemaVersion: 2, generatedAt: "2026-10-30T00:00:00.000Z", drivers: [{ id: "recorded-driver", version: "recorded-version" }], controllers: [
     { name: "pad/press", description: "Press a button.", inputSchema: { type: "object" }, requiresControl: true, annotations: { readOnlyHint: false } },
     { name: "screen/read", description: "Read the screen.", inputSchema: { type: "object" }, requiresControl: false, annotations: { readOnlyHint: true } },
   ] });
@@ -51,19 +52,21 @@ test("capability catalog reads the selected run-free workspace and real static P
     await writeFile(join(task, "instruction.md"), "Read the capability.");
     await writeFile(join(task, "tests/test.sh"), `touch '${join(f.base, "MUST_NOT_EXECUTE")}'\n`);
     assert.deepEqual(await catalog(f.root), []);
-    const page = await capabilities("ws-capabilities", f.root);
+    const page = await capabilities("ws-capabilities", f.workspace, f.root);
     assert.equal(page.workspace, f.workspace);
     assert.deepEqual(page.issues, []);
     assert.deepEqual(page.groups[0].items.map(item => [item.id, item.requiresControl, item.readOnly]), [
       ["controller/pad/press", true, false], ["controller/screen/read", false, true],
     ]);
-    assert.match(page.groups[0].title, /快照/);
+    assert.equal(page.sources.device.status, "available");
+    assert.ok(Number.isFinite(Date.parse(page.checkedAt)));
+    assert.deepEqual(page.deviceSnapshot, { generatedAt: "2026-10-30T00:00:00.000Z", drivers: [{ id: "recorded-driver", version: "recorded-version" }] });
     assert.deepEqual(page.groups[1].items, [{ id: "python/actions.py:clamp", kind: "workspace",
       description: "Clamp a value to the unit interval.", requiresControl: null, readOnly: null }]);
     assert.ok(page.tasks.some(item => item.name === "workspace/custom"));
     await assert.rejects(access(join(f.base, "MUST_NOT_EXECUTE")));
     await assert.rejects(access(join(f.base, "SHADOW_EXECUTED")));
-    await assert.rejects(capabilities("missing", f.root), /未找到能力工作区/);
+    await assert.rejects(capabilities("missing", f.workspace, f.root), /ENOENT/);
   } finally { clearCatalogCache(); await f.cleanup(); }
 });
 
@@ -72,14 +75,47 @@ test("broken snapshot and Python declarations remain visible as issues without h
   try {
     await json(join(f.workspace, "baseware.json"), { controllers: [{ name: "invalid", requiresControl: "yes" }] });
     await writeFile(join(f.workspace, "broken.py"), 'from rsa_tools import capability\n@capability\ndef broken(value: int):\n    return value\n');
-    const page = await capabilities("ws-capabilities", f.root);
+    const page = await capabilities("ws-capabilities", f.workspace, f.root);
     assert.deepEqual(page.groups[0].items, []);
+    assert.equal(page.sources.device.status, "error");
+    assert.equal(page.sources.workspace.status, "partial");
     assert.equal(page.groups[1].items[0].id, "python/actions.py:clamp");
     assert.ok(page.issues.some(item => /baseware.json.*无效能力声明/.test(item.error)));
     assert.ok(page.issues.some(item => /broken.py/.test(item.error)));
     await rm(join(f.workspace, "baseware.json"));
-    assert.ok((await capabilities("ws-capabilities", f.root)).issues.some(item => /baseware.json.*ENOENT/.test(item.error)));
+    const absent = await capabilities("ws-capabilities", f.workspace, f.root);
+    assert.equal(absent.sources.device.status, "missing");
+    assert.equal(absent.deviceSnapshot, null);
+    assert.ok(!absent.issues.some(item => /baseware.json/.test(item.error)));
   } finally { clearCatalogCache(); await f.cleanup(); }
+});
+
+test("selected capability reads ignore unrelated registry failures and distinguish an empty valid snapshot", async () => {
+  const f = await fixture();
+  try {
+    await writeFile(join(f.root, "registry", "unrelated.json"), "{");
+    await json(join(f.workspace, "baseware.json"), { controllers: [], generatedAt: "not a date" });
+    const page = await capabilities("ws-capabilities", f.workspace, f.root);
+    assert.equal(page.sources.device.status, "available");
+    assert.equal(page.groups[0].items.length, 0);
+    assert.deepEqual(page.deviceSnapshot, { generatedAt: null, drivers: [] });
+    assert.equal(page.sources.workspace.status, "available");
+    assert.equal(page.groups[1].items.length, 1);
+    await assert.rejects(access(join(f.base, "MUST_NOT_EXECUTE")));
+  } finally { await f.cleanup(); }
+});
+
+test("capability reads require the expected canonical directory and reject a stale alias after a move", async () => {
+  const f = await fixture();
+  try {
+    await assert.rejects(capabilities("ws-capabilities", "", f.root), { status: 400, code: "WORKSPACE_SCOPE_REQUIRED" });
+    const moved = join(f.base, "moved");
+    await rename(f.workspace, moved); await symlink(moved, f.workspace);
+    await registerWorkspace(moved, f.root);
+    await assert.rejects(capabilities("ws-capabilities", f.workspace, f.root), { status: 409, code: "WORKSPACE_SCOPE_CHANGED" });
+    assert.equal((await capabilities("ws-capabilities", moved, f.root)).workspace, moved);
+    await assert.rejects(access(join(f.base, "MUST_NOT_EXECUTE")));
+  } finally { await f.cleanup(); }
 });
 
 test("the configured Python interpreter can fail without losing the device snapshot", async () => {
@@ -88,10 +124,10 @@ test("the configured Python interpreter can fail without losing the device snaps
   await chmod(interpreter, 0o755);
   const worker = new DashboardWorker({ env: { ...process.env, LUDENS_HOME: f.root, RSA_PYTHON: interpreter } });
   try {
-    const page = await worker.call("capabilities", ["ws-capabilities"]);
+    const page = await worker.call("capabilities", ["ws-capabilities", f.workspace]);
     assert.equal(page.groups[0].items.length, 2);
     assert.deepEqual(page.groups[1].items, []);
-    assert.ok(page.issues.some(item => /Python 能力发现.*fixture interpreter failed/.test(item.error)));
+    assert.ok(page.issues.some(item => /Python @capability.*fixture interpreter failed/.test(item.error)));
   } finally { await worker.close(); await f.cleanup(); }
 });
 
@@ -104,7 +140,7 @@ test("slow Python discovery leaves the shared worker responsive and request canc
   try {
     assert.deepEqual(await worker.call("catalog", []), []);
     assert.equal((await worker.call("catalog", [true]))[0].id, "ws-capabilities");
-    const pending = worker.call("capabilities", ["ws-capabilities"], abort.signal);
+    const pending = worker.call("capabilities", ["ws-capabilities", f.workspace], abort.signal);
     const rejected = assert.rejects(pending, { name: "AbortError" });
     await waitFor(() => access(started).then(() => true, () => false));
     const pid = Number(await readFile(started, "utf8"));

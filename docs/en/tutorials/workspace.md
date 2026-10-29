@@ -8,6 +8,24 @@ All CLI commands below run in the **target workspace directory** (assuming the r
 
 ### 1. Workspace Directory Layout
 
+Global state and workspaces form two layers. `LUDENS_HOME` defaults to `~/.ludens` and does not move with a source checkout. It holds application configuration, rebuildable indexes, shared caches, and pet state:
+
+```text
+~/.ludens/                  # Override with LUDENS_HOME
+├── config.json             # {version: 1, workspaceRoot: absolute, defaults: {...}}
+├── registry/<id>.json      # {id, workspace, name, updatedAt}, a pointer to the workspace
+├── cache/drivers/          # External driver installation cache
+├── logs/baseware/          # Standalone Baseware logs without --data-dir
+├── pet/
+│   ├── target.json         # Stable workspace ID followed by the pet
+│   ├── consumer.json       # Pet consumer heartbeat
+│   ├── profile/            # Electron preferences and local cache
+│   └── background/         # Shared pet background logs
+└── workspaces/             # Initial workspaceRoot; configurable to any absolute path
+```
+
+Each workspace owns its runtime state. Preserve the whole directory when moving or backing it up:
+
 ```text
 workspace/
 ├── rsa.json                 # Local service startup config (driver, ports, model, budget)
@@ -18,7 +36,9 @@ workspace/
 ├── skills/<name>/SKILL.md   # Reusable skill docs and helper scripts
 ├── memory/current.md        # Current goals, status, and next steps
 ├── .rsa/
+│   ├── workspace.json       # {version: 1, id: "ws-UUID"}, persistent identity
 │   ├── settings.json        # Optional workspace perception hot-window and video segment parameter overrides
+│   ├── skill-versions/      # Historical skill and memory content snapshots
 │   ├── timeline/            # Cross-run shared @record capability records, MP4 video segments, and deduped media originals
 │   ├── archive/             # Content-addressed JSON archive of model and tool logs (media references timeline)
 │   └── shiori/
@@ -31,8 +51,8 @@ workspace/
 
 ### 2. Templates and Session Lifecycle
 
-- **Init templates**: `rsa init` creates any missing [AGENTS.md](../../rsa/templates/AGENTS.md), [perception.py](../../rsa/templates/perception.py), and [action.py](../../rsa/templates/action.py) templates. `AGENTS.md` may be freely edited or deleted and is never force-restored on later starts; restart the Host after editing `AGENTS.md` for changes to take effect.
-- **Workspace identity**: a workspace's `realpath` determines its unique identity and default Unix socket address (moving or renaming the directory changes its identity). The registration files and history snapshots the Dashboard uses for workspace discovery live in `../artifacts/rsa/ws-<name>-<hash>/` next to the repo.
+- **Init templates**: `rsa init --name <name> --driver <id>` creates a workspace below the global default parent; pass `--workspace <path>` for an explicit directory. It creates missing [AGENTS.md](../../rsa/templates/AGENTS.md), [perception.py](../../rsa/templates/perception.py), and [action.py](../../rsa/templates/action.py) templates. Global `defaults` are copied into the new `rsa.json`; later global changes do not affect it. `AGENTS.md` may be freely edited or deleted and is never force-restored on later starts; restart the Host after editing it for changes to take effect.
+- **Workspace identity**: the ID in `.rsa/workspace.json` is persistent and is not derived from the directory name or path. After moving a workspace, run `rsa workspace open <new-path>` to update the global index. Use `open <copy-path> --new-id` for an independent copy, assigning a new identity and clearing the current session selection. Past sessions, skill versions, recordings, and logs remain in the workspace. Rebuild a lost registry with `open`; `forget <id>` removes only its index entry. Old directories need explicit [import](quickstart.md#registering-and-migrating-existing-workspaces).
 - **Session resume**: restarting the Host resumes the previous OMP session via `.rsa/shiori/current-session.json` by default; `rsa run --new-session` starts a new session while keeping all workspace code and files, and `--resume <session.jsonl>` resumes a specified historical session under the same workspace.
 - **Skills and memory**: `skills/<name>/SKILL.md` uses YAML frontmatter with `name` and `description`. The agent reads and writes skills and memory on demand through the OMP-native `read` / `write` / `edit` tools; RSA does not re-push a full file index on every model request.
 

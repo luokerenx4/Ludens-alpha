@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   emptyWorkspaceDraft, normalizedWorkspacePath, switchWorkspaceEnvironment, workspaceCreateInput,
-  workspaceDriverCapabilities, workspaceLocation,
+  workspaceDriverCapabilities, workspaceLocation, initialWorkspaceSetup,
 } from "../components/workspace-create-model";
 import type { DiscoveredDriver } from "../lib/drivers";
 
@@ -12,6 +12,18 @@ const driver: DiscoveredDriver = {
   id: "example", spec: "github:example/driver#v1", version: "1.0", transport: "bridge", defaultPort: 47663,
   needsGame: true, launchCommand: ["example-emulator"],
 };
+
+test("a creation URL only prefills a package; matching in-memory discovery can carry verification", () => {
+  const fromUrl = initialWorkspaceSetup({ driverPackage: ` ${driver.spec} ` });
+  assert.equal(fromUrl.draft.environment, "community");
+  assert.equal(fromUrl.draft.driverPackage, driver.spec);
+  assert.equal(fromUrl.driver, null);
+  assert.equal(workspaceCreateInput(root, { ...fromUrl.draft, name: "demo" }, fromUrl.driver).ok, false);
+  const verified = initialWorkspaceSetup({ driverPackage: driver.spec, driver });
+  assert.equal(workspaceCreateInput(root, { ...verified.draft, name: "demo" }, verified.driver).ok, true);
+  assert.equal(initialWorkspaceSetup({ driverPackage: "other", driver }).driver, null);
+  assert.deepEqual(initialWorkspaceSetup({ driverPackage: "" }).draft, emptyWorkspaceDraft);
+});
 
 test("desktop creation only needs a folder name and leaves the default root to the server", () => {
   assert.deepEqual(workspaceCreateInput(root, desktop, null), { ok: true, input: { name: "My workspace", driver: "cua" } });

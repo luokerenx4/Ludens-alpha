@@ -10,6 +10,7 @@ import { Dialog, DialogClose, DialogContent, DialogDescription, DialogHeader, Di
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { WorkspaceCreateForm } from "@/components/workspace-create-form";
+import type { WorkspaceCreationIntent } from "@/components/workspace-create-model";
 import type { CreateWorkspaceInput, WorkspaceRootResult, WorkspaceRemovalResult, WorkspaceSettings } from "../lib/workspaces";
 import type { WorkspaceRegistration } from "../../shared/ludens";
 import { useLocale, useTranslations } from "@/lib/locale";
@@ -28,9 +29,11 @@ async function request<T>(fallback: string, method = "GET", body?: unknown, sign
   return value;
 }
 
-export function WorkspacesView({ onChanged, onOpen, catalogError, catalogLoading, onRetryCatalog }: {
+export function WorkspacesView({ onChanged, onOpen, catalogError, catalogLoading, onRetryCatalog, createIntent, onCloseCreateIntent }: {
   onChanged(): void; onOpen(id: string): void;
   catalogError?: string; catalogLoading?: boolean; onRetryCatalog?(): void;
+  createIntent?: WorkspaceCreationIntent | null;
+  onCloseCreateIntent?(): void;
 }) {
   const t = useTranslations("workspaceLibrary");
   const { locale } = useLocale();
@@ -40,6 +43,9 @@ export function WorkspacesView({ onChanged, onOpen, catalogError, catalogLoading
   const [loadError, setLoadError] = useState("");
   const [pageError, setPageError] = useState("");
   const [dialog, setDialog] = useState<DialogKind | null>(null);
+  const [initialIntent, setInitialIntent] = useState<WorkspaceCreationIntent | null>(null);
+  const handledIntent = useRef<string | null>(null);
+  const createTrigger = useRef<HTMLButtonElement>(null);
   const [actionError, setActionError] = useState("");
   const [pending, setPending] = useState("");
   const [filter, setFilter] = useState("");
@@ -92,11 +98,34 @@ export function WorkspacesView({ onChanged, onOpen, catalogError, catalogLoading
     return () => clearTimeout(timer);
   }, [copied]);
 
+  const requestedPackage = createIntent?.driverPackage;
+  const verifiedDriver = createIntent?.driver;
+  useEffect(() => {
+    if (requestedPackage === undefined) {
+      if (handledIntent.current !== null) setDialog(null);
+      handledIntent.current = null;
+      return;
+    }
+    if (!settings || handledIntent.current === requestedPackage) return;
+    handledIntent.current = requestedPackage;
+    trigger.current = createTrigger.current;
+    setInitialIntent({ driverPackage: requestedPackage, driver: verifiedDriver });
+    setLastDialog("create");
+    setActionError("");
+    setDialog("create");
+  }, [requestedPackage, verifiedDriver, settings]);
+
+  const closeDialog = () => {
+    setDialog(null);
+    if (createIntent) onCloseCreateIntent?.();
+  };
+
   const openDialog = (kind: DialogKind, element: HTMLElement, path = "") => {
     trigger.current = element;
     setLastDialog(kind);
     focusCompletion.current = false;
     setActionError("");
+    setInitialIntent(null);
     setExistingPath(path);
     setWorkspaceRoot(settings?.config.workspaceRoot ?? "");
     setDialog(kind);
@@ -146,7 +175,7 @@ export function WorkspacesView({ onChanged, onOpen, catalogError, catalogLoading
     setCopied("idle");
     setCompletion({ kind, entry });
     focusCompletion.current = true;
-    setDialog(null);
+    closeDialog();
   };
   const createWorkspace = (input: CreateWorkspaceInput) => {
     void mutate("create", () => request<WorkspaceRegistration>(t("operationFailed"), "POST", { action: "create", workspace: input }),
@@ -164,7 +193,7 @@ export function WorkspacesView({ onChanged, onOpen, catalogError, catalogLoading
   const dialogTitle = activeDialog === "create" ? t("createTitle") : activeDialog === "register" ? t("addTitle") : t("locationTitle");
 
   return (
-    <Dialog open={dialog !== null} onOpenChange={open => { if (!open && !busy.current) setDialog(null); }}>
+    <Dialog open={dialog !== null} onOpenChange={open => { if (!open && !busy.current) closeDialog(); }}>
       <section className="workspace-library mx-auto grid w-full max-w-6xl gap-5">
         <header className="flex flex-wrap items-start justify-between gap-4 pb-1">
           <div className="space-y-2"><h1>{t("title")}</h1><p className="text-sm leading-relaxed text-muted-foreground">{t("description")}</p></div>
@@ -174,7 +203,7 @@ export function WorkspacesView({ onChanged, onOpen, catalogError, catalogLoading
               setLoadRevision(value => value + 1); onRetryCatalog?.();
             }}><RefreshCw /><span className="hidden sm:inline">{t(loading ? "refreshing" : "refreshList")}</span></Button>
             <Button type="button" variant="outline" disabled={!settings || !!pending} onClick={event => openDialog("register", event.currentTarget)}><FolderOpen />{t("addExisting")}</Button>
-            <Button type="button" disabled={!settings || !!pending} onClick={event => openDialog("create", event.currentTarget)}><Plus />{t("newWorkspace")}</Button>
+            <Button ref={createTrigger} type="button" disabled={!settings || !!pending} onClick={event => openDialog("create", event.currentTarget)}><Plus />{t("newWorkspace")}</Button>
           </div>
         </header>
 
@@ -279,7 +308,7 @@ export function WorkspacesView({ onChanged, onOpen, catalogError, catalogLoading
           focusCompletion.current = false;
         }}>
         <DialogHeader className="pr-6 text-left"><DialogTitle className="text-xl">{dialogTitle}</DialogTitle><DialogDescription className="leading-relaxed">{activeDialog === "create" ? t("createDescription") : activeDialog === "register" ? t("addDescription") : t("locationDescription")}</DialogDescription></DialogHeader>
-        {activeDialog === "create" && settings && <WorkspaceCreateForm defaultRoot={settings.config.workspaceRoot} pending={pending === "create"} error={actionError} onSubmit={createWorkspace} onCancel={() => setDialog(null)} />}
+        {activeDialog === "create" && settings && <WorkspaceCreateForm key={initialIntent?.driverPackage ?? "default"} defaultRoot={settings.config.workspaceRoot} initialIntent={initialIntent} pending={pending === "create"} error={actionError} onSubmit={createWorkspace} onCancel={closeDialog} />}
         {activeDialog === "register" && <form className="grid gap-5" onSubmit={event => {
           event.preventDefault();
           void mutate("register", () => request<WorkspaceRegistration>(t("operationFailed"), "POST", { action: "register", workspace: existingPath.trim() }), entry => acceptEntry(entry, "registered"));
