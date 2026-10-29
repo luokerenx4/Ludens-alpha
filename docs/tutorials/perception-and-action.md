@@ -2,6 +2,8 @@
 
 在实时交互环境中，高频采样与高频动作由工作区内的两个独立常驻 Python 进程承担：`perception.py:Perception` 负责持续采集环境状态并写入 `.rsa/timeline/`，`action.py:Action` 负责在 `auto` 周期内持续读取时空轴并下发控制输入。能力装饰器与时空轴信封约定见 [工作区与能力编程](workspace.md)。
 
+下文中的 CLI 命令均在**目标工作区目录**下执行，假定仓库 `rsa/bin` 与 `baseware/bin` 已加入 `PATH`。跨目录操作时，在子命令前传入 `rsa --workspace /absolute/path/to/workspace`。
+
 ## 常驻感知与历史读取
 
 ### 1. `perception.py:Perception` 生命周期

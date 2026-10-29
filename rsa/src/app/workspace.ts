@@ -270,9 +270,15 @@ export class WorkspaceLauncher {
           if (this.plan.commands.emulator) {
             const emulator = await this.job("emulator");
             if (!emulator.pid) {
+              // Package launchers may exec a different binary, so matching argv[0]
+              // alone cannot identify an already prepared external emulator.
+              if ((await this.listeningPids(port)).length) {
+                throw new Error(`Bridge port ${port} is already listening outside this workspace's emulator job. Omit game to connect to the prepared device, or use its workspace.`);
+              }
               const executable = manifest?.launchCommand?.[0];
               if (executable) {
-                const running = await this.run(["pgrep", "-f", `^${executable}`]);
+                const literalExecutable = executable.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+                const running = await this.run(["pgrep", "-f", `^${literalExecutable}([[:space:]]|$)`]);
                 if (running.code === 0) throw new Error(`${this.plan.config.driver} is already running outside this workspace's emulator job. Use its workspace, or omit game to explicitly connect to the prepared device.`);
               }
             }

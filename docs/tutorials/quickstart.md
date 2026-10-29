@@ -44,19 +44,23 @@ OMP 原生 shell 会自动注入 `RSA_PYTHON`。在工作区脚本中若需复�
 
 ### 1. 初始化与生命周期命令
 
-先按 [设备与驱动准备](devices.md) 准备好目标环境，再在仓库外新建目录作为工作区（以下以 Azahar 为例，其他内置驱动可替换为 `--driver mgba`、`--driver ryubing --game /path/to/game.nsp` 或 `--driver cua`）：
+先按 [设备与驱动准备](devices.md) 准备好目标环境，再在仓库外新建目录作为工作区。以下以 Azahar 为例，显式选择固定提交的外部驱动包；mGBA、Ryubing 使用各自的 [可选包](devices.md#外部驱动包发现与接入)，内置桌面驱动使用 `--driver cua`：
 
 ```sh
 mkdir -p /absolute/path/to/workspace
 cd /absolute/path/to/workspace
 
-rsa init --driver azahar --game /absolute/path/to/game.3ds --seconds 1800
+rsa init --driver azahar \
+  --driver-package github:luokerenx4/ludens-3ds-driver#5b9b1f4032a5973a8882aa23957c3c34da50af9e \
+  --game /absolute/path/to/game.3ds --seconds 1800
 rsa up --dry-run
 rsa up
 rsa services
 rsa controller list
 rsa auto on
 ```
+
+已有模拟器工作区请按 [外部驱动迁移说明](devices.md#外部驱动包发现与接入) 添加 `driverPackage`，不要重新执行 `rsa init`。默认启动路径来自各驱动的构建缓存；沿用已安装应用时，每次 `up`（含 `--dry-run`）需传入 `RSA_AZAHAR_APP` 或 `RSA_RYUBING_APP`。
 
 常用工作区与控制命令速查：
 
@@ -80,10 +84,10 @@ rsa auto on
 
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
-| `driver` | 必填 | 驱动 ID；内置为 `mgba` / `ryubing` / `azahar` / `cua`，外部驱动须与包导出的 `id` 一致。 |
-| `driverPackage` | 无 | 可选外部驱动包地址（npm spec、`github:org/repo#rev` 或 `file:path`），接入方式见 [设备与驱动准备](devices.md#外部驱动包发现与接入)。 |
+| `driver` | 必填 | 驱动 ID；当前仅 `cua` 内置，模拟器 ID 须与外部包导出的 `id` 一致。 |
+| `driverPackage` | 无 | 外部驱动包地址（npm spec、`github:org/repo#rev` 或 `file:path`）；模拟器驱动必填，`cua` 可省略。接入方式见 [设备与驱动准备](devices.md#外部驱动包发现与接入)。 |
 | `game` | 无 | 支持自动启动的 bridge 驱动可选（路径相对工作区）；省略时连接已手动启动的模拟器。`mgba` 与 stdio 驱动不接受此字段。 |
-| `port` | 随驱动 | 显式端口优先，否则取驱动 manifest 的 `defaultPort`（内置 mGBA `47653`、Ryubing `47663`、Azahar `47673`）；stdio 驱动不使用。 |
+| `port` | 随驱动 | 显式端口优先，否则取驱动 manifest 的 `defaultPort`（现有外部包：mGBA `47653`、Ryubing `47663`、Azahar `47673`）；stdio 驱动不使用。 |
 | `cuaCommand` | `"cua-driver"` | 仅 stdio 驱动有效，指定后端可执行文件路径或命令名。 |
 | `model` | `"openai-codex/gpt-6.1-sol"` | 具备图像输入能力的 OMP `provider/model` 标识。 |
 | `seconds` | `1800` | 单次 `auto on` 控制周期的时长预算（秒），每次接管重置。 |

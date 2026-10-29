@@ -1,6 +1,6 @@
 # Driver Bridge 协议
 
-本规范定义 Baseware `bridge` 传输层（TCP Socket）的模拟器通信协议，由内置 `mgba`、`azahar`、`ryubing` 三个驱动共同实现。开发新模拟器驱动时，需在模拟器侧实现本协议服务端（Bridge），并在 TypeScript 侧通过 `DriverRegistration.load` 提供适配的 Provider（包注册契约见 [Baseware 设计理念与能力契约](baseware.md#driver-包与启动描述)）。注：`cua` 桌面驱动采用 `stdio` MCP 传输，不使用本协议。
+本规范定义 Baseware `bridge` 传输层（TCP Socket）的模拟器通信协议，由独立可选包 [mgba](https://github.com/luokerenx4/ludens-gba-driver)、[azahar](https://github.com/luokerenx4/ludens-3ds-driver)、[ryubing](https://github.com/luokerenx4/ludens-switch-driver) 共同实现。开发新模拟器驱动时，需在模拟器侧实现本协议服务端（Bridge），并在 TypeScript 侧通过 `DriverRegistration.load` 提供适配的 Provider（包注册契约见 [Baseware 设计理念与能力契约](baseware.md#driver-包与启动描述)）。注：`cua` 桌面驱动采用 `stdio` MCP 传输，不使用本协议。
 
 ## 传输
 

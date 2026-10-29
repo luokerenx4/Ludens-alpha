@@ -2,68 +2,23 @@
 
 各 Driver 仅暴露设备的原生输入与采集能力，不包含游戏策略、跨屏坐标融合或自动存读档逻辑。完成本页的设备准备后，即可按 [安装与工作区启停](quickstart.md#工作区启动与停止) 创建并启动工作区。
 
+模拟器驱动均按需安装，主仓不再包含模拟器 Provider、原生桥或构建补丁。驱动包安装与模拟器本体构建是两个步骤：`--driver-package` 安装 TypeScript 包；各卫星仓的构建说明负责准备带桥的模拟器。
+
 ## mGBA
 
-已适配 mGBA `0.10.5`，并实机验证官方开发版 `0.11-9161-1509d8602`（[macOS 固定构建下载](https://s3.amazonaws.com/mgba/build/mGBA-build-2026-10-25-macos-9161-1509d86028c7df2d844b590723a80b2978f49e7c.dmg)）的采集、按键、断线释放与重连。升级前请先退出模拟器并备份应用、配置与 `.sav` 存档。
-
-1. 打开 mGBA 并加载 ROM（mGBA 始终手动加载游戏与桥，`rsa.json` 不接受 `game` 字段）。
-2. 打开菜单 **Tools → Scripting**，执行仓库内的 [bridge.lua](../../baseware/src/drivers/mgba/bridge.lua)（可用 `realpath baseware/src/drivers/mgba/bridge.lua` 获取绝对路径）：
-
-```lua
-dofile("/absolute/path/to/repo/baseware/src/drivers/mgba/bridge.lua")
-```
-
-看到控制台输出 `RSA bridge listening on 127.0.0.1:47653 (manual)` 即表示就绪。重复执行 `dofile` 会安全关闭旧桥并热加载新脚本；加载后可关闭 Scripting 窗口，但模拟器本体不可暂停，否则帧回调、截图采集与控制权交接都会挂起。多开实例时，在 `dofile` 前先执行 `RSA_BRIDGE_PORT = 47654`，并将对应工作区 `rsa.json` 的 `port` 设为 `47654`；每个桥端口同一时刻只能由一个 Baseware 实例连接。
-
-**GBA 存档类型注意事项**：部分中文绿宝石改版使用 **SRAM 64 KiB**，若被自动识别为 Flash 1Mb 会导致游戏内保存失败。上述 `0.11-9161` 开发版已包含[用户 override 优先级修复](https://github.com/mgba-emu/mgba/commit/5337ae7ae14daaf0aecd4d2c40429fc31440b245)。针对此类 ROM，可在 `~/.config/mgba/config.ini` 的 `[override.<四字节游戏编号>]` 节写入 `savetype=SRAM512`（空编号 ROM 对应 `[override.]`，会作用于所有无编号 ROM，勿全局滥用），配置后务必通过“游戏内保存 → 完全退出 → 冷启动读档”验证。部分改版因双存档槽在 64 KiB 地址空间内重叠，冷启动读档成功时仍可能提示“记录破损”，建议保留独立 `.sav` 备份。
+使用 [ludens-gba-driver](https://github.com/luokerenx4/ludens-gba-driver)（驱动 ID `mgba`）。按该仓 README 安装 mGBA、加载游戏及包内 `bridge.lua`，默认桥端口为 `47653`。mGBA 需要手动准备游戏与桥，`rsa.json` 不接受 `game` 字段。开发版兼容记录、端口配置和 SRAM 存档说明也维护在该仓。
 
 ## Ryubing
 
-Nintendo Switch 原生桥基于 [Ryubing 源码归档](https://starforgejo.dev/archive/Ryubing)（固定标签 `Canary-1.3.351`，提交 `475615f0431b4995b03c930c5089d20f6f3570e0`，本地构建标识 `1.3.351-rsa.3`）。在 Apple Silicon macOS 上准备 **.NET 10 SDK**（已验证 `10.0.402`）、**Python 3** 与 **Xcode Command Line Tools**：
+使用 [ludens-switch-driver](https://github.com/luokerenx4/ludens-switch-driver)（驱动 ID `ryubing`）。该仓统一维护固定上游版本、原生桥、补丁、构建/启动脚本与专属测试；默认桥端口为 `47663`。按该仓 README 准备带桥的模拟器后，RSA 可通过驱动 manifest 启动游戏。
 
-```sh
-# 默认使用 ../artifacts/switch/dotnet/dotnet；可通过 RSA_DOTNET 指定已有 SDK
-RSA_DOTNET=/absolute/path/to/dotnet baseware/src/drivers/ryubing/build.sh
-```
-
-[build.sh](../../baseware/src/drivers/ryubing/build.sh) 会校验上游 commit、应用 [ryubing.patch](../../baseware/src/drivers/ryubing/ryubing.patch)（含 `https://nuget.ryulynx.org/v3/index.json` LibHac 源替换）、注入 [RsaBridge.cs](../../baseware/src/drivers/ryubing/RsaBridge.cs)，并附带 JIT entitlements 完成 ad-hoc 签名。源码位于 `../artifacts/switch/ryubing-canary-source`，构建产物位于 `../artifacts/switch/ryubing-build/Ryujinx.app`。
-
-1. **安装**：构建脚本不会自动覆盖系统应用。先退出正在运行的模拟器，再将 `Ryujinx.app` 复制安装为 `/Applications/Ryubing.app`（Finder 显示为 Ryubing，内部可执行文件与进程名仍为 `Ryujinx`）。
-2. **启动**：通过 [launch.sh](../../baseware/src/drivers/ryubing/launch.sh) 或 `rsa up` 启动以注入 `RSA_BRIDGE_PORT`（默认 `47663`）；直接从 Finder 双击图标不会开启桥服务：
-
-```sh
-baseware/src/drivers/ryubing/launch.sh /absolute/path/to/game.nsp
-```
-
-固件、密钥与存档沿用本机 Ryujinx 数据目录，切勿并发启动两个共用同一数据目录的实例。暴露能力包括：
-
-- `pad.play / state / status / wait / cancel / release`：手柄时间表与状态查询；
-- `screen.capture`：抓取游戏 framebuffer 或当前前台 Switch 系统键盘弹窗；
-- `touch.down / move / up`：触屏操作，坐标范围 `x = 0..1279`、`y = 0..719`（左上角为原点）；
-- `keyboard.type / press`：当 Switch 系统文本输入框可见时输入文本或功能键。
+原生能力包括 `pad.*`、`screen.capture`、`touch.down / move / up`，以及 Switch 系统输入框的 `keyboard.type / press`。触屏范围为 `1280×720`。固件、密钥和存档留在本机，避免并发启动共用同一数据目录的模拟器实例。
 
 ## Azahar
 
-Nintendo 3DS 原生桥基于 Azahar `2126.2`（提交 `219d743a1e698101fe1ab8bef43e6563126c3c27`）。在 Apple Silicon macOS 上准备 **Git**、**CMake** 与 **Xcode Command Line Tools**（Qt 与 MoltenVK 由上游 CMake 自动拉取）：
+使用 [ludens-3ds-driver](https://github.com/luokerenx4/ludens-3ds-driver)（驱动 ID `azahar`）。该仓维护固定上游版本、原生桥、补丁、构建/启动脚本与专属测试；默认桥端口为 `47673`。按该仓 README 准备带桥的模拟器后，RSA 可通过 manifest 启动游戏。
 
-```sh
-baseware/src/drivers/azahar/build.sh
-```
-
-[build.sh](../../baseware/src/drivers/azahar/build.sh) 拉取源码与子模块、应用 [azahar.patch](../../baseware/src/drivers/azahar/azahar.patch)、注入 [rsa_bridge.cpp](../../baseware/src/drivers/azahar/rsa_bridge.cpp)，输出 `../artifacts/3ds/azahar-build/bundle/azahar.app`（可通过 `RSA_AZAHAR_SOURCE` 指定源码路径、`RSA_BUILD_JOBS` 调整并发编译数）。
-
-1. **安装**：退出旧模拟器后，将产物安装至 `/Applications/Azahar.app`。
-2. **启动**：通过 [launch.sh](../../baseware/src/drivers/azahar/launch.sh) 或 `rsa up` 启动（默认端口 `47673`，独立脚本可用 `RSA_AZAHAR_APP` 覆盖应用路径）：
-
-```sh
-baseware/src/drivers/azahar/launch.sh /absolute/path/to/game.3ds
-```
-
-原生能力由 [azahar/provider.ts](../../baseware/src/drivers/azahar/provider.ts) 定义，无需依赖桌面 Cua：
-
-- `pad.*`：手柄与摇杆时间表控制；
-- `screen.top.capture` / `screen.bottom.capture`：独立输出上屏（`400×240` 左眼画面）与下屏（`320×240`）；
-- `touch.down / move / up`：下屏触控，坐标范围 `x = 0..319`、`y = 0..239`（左上角原点，含端点）。点按、拖拽与跨屏坐标换算由工作区代码实现。
+原生能力包括 `pad.*`、`screen.top.capture`（上屏 `400×240`）、`screen.bottom.capture`（下屏 `320×240`）和 `touch.down / move / up`（下屏范围 `x = 0..319`、`y = 0..239`）。坐标换算与游戏策略由工作区实现。
 
 ## Cua
 
@@ -77,7 +32,7 @@ baseware/src/drivers/azahar/launch.sh /absolute/path/to/game.3ds
 
 ## 外部驱动包发现与接入
 
-除四个内置驱动外，可通过 `--driver-package` 接入第三方或本地驱动包（支持 npm 包名、`github:org/repo#rev` 或 `file:path`）。初始化工作区前，可用 `baseware driver discover` 或 Dashboard 能力页（`?view=caps`）校验包的 `DriverRegistration` 声明：
+mGBA、Azahar、Ryubing 必须通过 `--driver-package` 显式选择外部包；当前仅 `cua` 桌面接入内置。包地址支持 npm 包名、`github:org/repo#rev` 或 `file:path`。初始化工作区前，可用 `baseware driver discover` 或 Dashboard 能力页（`?view=caps`）校验包的 `DriverRegistration` 声明：
 
 ```sh
 baseware driver discover --package github:org/repo#rev
@@ -86,3 +41,13 @@ rsa init --driver <id> --driver-package github:org/repo#rev
 
 - **路径解析**：`rsa init` 与 `rsa up` 中的相对 `file:` 路径均以目标工作区目录为基准解析并归一化；`baseware driver discover` 的相对 `file:` 按当前 shell 目录解析；Dashboard 网页端的外部驱动校验要求 `file:` 使用绝对路径。
 - **信任边界**：发现阶段虽不调用驱动的 `load()`，但会下载安装依赖并导入包入口代码；仅对可信来源执行发现与初始化。驱动包规范详见 [Driver 包与启动描述](../reference/baseware.md#driver-包与启动描述) 与 [Driver Bridge 协议](../reference/driver-bridge-protocol.md)。
+
+**已有模拟器工作区迁移**：先执行 `rsa auto off`，再执行 `rsa down --keep-emulator`；在原 `rsa.json` 增加匹配驱动的 `driverPackage`，固定下面对应仓库的 commit SHA，然后 `rsa up --dry-run` / `rsa up`。不重新执行 `rsa init`，原工作区文件与存档继续保留。已经运行的服务不会因源码更新自动换包。
+
+新包默认从各自构建缓存启动模拟器。若沿用已安装的应用，在启动命令前设置 `RSA_AZAHAR_APP=/Applications/Azahar.app` 或 `RSA_RYUBING_APP=/Applications/Ryubing.app`，例如 `RSA_RYUBING_APP=/Applications/Ryubing.app rsa up`。这些变量选择启动路径，不会复制或覆盖已有应用；自定义路径在每次 `up`（包括 `--dry-run`）时都需传入。仅连接已手动准备的模拟器时，省略 `game`。
+
+| 驱动 ID | 可选包 |
+| --- | --- |
+| `mgba` | `github:luokerenx4/ludens-gba-driver#9c1a014be3d87fe6846fef8ad7eba1c13439e8a5` |
+| `azahar` | `github:luokerenx4/ludens-3ds-driver#5b9b1f4032a5973a8882aa23957c3c34da50af9e` |
+| `ryubing` | `github:luokerenx4/ludens-switch-driver#070edf662ba724e1a31c5b477f414d4da61bbd6f` |

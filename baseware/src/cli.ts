@@ -5,7 +5,7 @@ import type { Catalog, Request } from "./protocol.ts";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 
-export const HELP = `baseware serve --driver mgba|ryubing|azahar|cua [--driver-package <npm|github:org/repo#rev|https://github.com/org/repo#rev|file:path>] [--port <n>] [--cua-command <path>] [--socket <path>] [--data-dir <path>] [--diagnostics normal|full]
+export const HELP = `baseware serve --driver <id> [--driver-package <npm|github:org/repo#rev|https://github.com/org/repo#rev|file:path>] [--port <n>] [--cua-command <path>] [--socket <path>] [--data-dir <path>] [--diagnostics normal|full]
 baseware status
 baseware list
 baseware export [--output <path>]
@@ -16,6 +16,7 @@ baseware revoke
 baseware mcp
 
 BASEWARE_SOCKET selects the service. Its default address is derived from the current directory.
+Emulator drivers require --driver-package. Only the desktop cua driver is built in.
 export writes the live capability and invocation contract to ./baseware.json by default.
 Controllers marked requiresControl require BASEWARE_EPOCH from an existing owner connection.
 The CLI never acquires a lease; use the client API to hold a persistent owner connection.`;
