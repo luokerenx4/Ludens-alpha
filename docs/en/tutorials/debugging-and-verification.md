@@ -64,7 +64,16 @@ Open `http://127.0.0.1:3015` in a browser to use the console:
 - **Performance & benchmarks (`?view=benchmark`)**: inspect per-request latency, caches, and call-chain profiling, or browse cross-workspace Harbor task runs and score comparisons in the "benchmark catalog" (`?view=benchmark&bench=cases`).
 - **Capability catalog & driver validation (`?view=caps`)**: statically display the selected workspace's device catalog snapshot (`baseware.json`), Python `@capability` declarations, and Harbor eval tasks, plus online validation of external driver packages and `rsa init` command generation.
 - **Perception settings (`?view=perception`)**: configure the selected workspace's hot-window seconds, video segment duration, and idle-stop finalization seconds (written to `.rsa/settings.json`, effective after `rsa perception reload`).
+- **Workspaces (`?view=workspaces`)**: search and open registered folders, create a new workspace, add an existing directory, or change the default parent directory in the same `LUDENS_HOME`.
 - **In-console docs (`?view=docs`)**: browse `docs/tutorials/`, `docs/reference/`, and `docs/insights/` inside the console, with cross-article and section-anchor navigation.
+
+### Workspace entry flow
+
+The Workspaces page puts **New workspace** and **Add existing** beside the library. Desktop creation only needs a folder name. A community driver requires an explicit package check, which may download the package and install dependencies; its manifest determines the driver ID and which optional fields are available. **Location & advanced options** accepts a full custom directory; the preview and folder name reflect that exact destination.
+
+Creation initializes files without starting the agent. The confirmation offers **Open workspace**, a copyable `rsa --workspace '…' up` command, and the setup guide. New workspaces remain selectable in Live and Replay before their first run, with a next-step prompt instead of an endless loading state.
+
+**Folder available** means the workspace identity can be read, not that its services are running. **Remove from list** keeps files and services; removing an accessible folder offers **Undo** to register it again. For a moved or disconnected folder, reconnect its drive or use **Add new location**. Changing **Default location** only affects future creations.
 
 ### 3. Ludens Pet Desktop Companion
 

@@ -7,6 +7,9 @@ import { useLocale, useTranslations } from "@/lib/locale";
 import type { Project, RunData } from "@/lib/types";
 import type { ReplayOverviewResult } from "@/lib/replay-types";
 import { initialSelection, latestGameRun } from "@/lib/initial-selection";
+import { isPlainNavigationClick } from "@/lib/dashboard-navigation";
+import { workspaceRunEntry } from "@/lib/workspace-run-entry";
+import { WorkspaceRunEmpty } from "@/components/workspace-run-empty";
 import { ActivityFeed } from "@/components/activity-feed";
 import { useActivityFeed } from "@/components/use-activity-feed";
 import { PerceptionSettingsPanel } from "@/components/perception-settings";
@@ -136,13 +139,13 @@ export default function Dashboard() {
   const requestedView = query.get("view");
   const view: View = requestedView && (viewIds as readonly string[]).includes(requestedView) ? requestedView as View : "live";
   const benchmarkCases = view === "benchmark" && query.get("bench") === "cases";
-  const includeEmptyProjects = ["caps", "perception", "settings", "workspaces"].includes(view);
   // Views needing run/epoch context: live, replay and benchmark profiling; other views skip run data.
   const runControls = view === "live" || view === "replay" || (view === "benchmark" && !benchmarkCases);
   const [catalogRevision, setCatalogRevision] = useState(0);
   const refreshCatalog = useCallback(() => setCatalogRevision(value => value + 1), []);
   const [projects, setProjects] = useState<Project[]>([]);
   const [catalogReady, setCatalogReady] = useState(false);
+  const [catalogLoading, setCatalogLoading] = useState(true);
   const [catalogError, setCatalogError] = useState("");
   const [loaded, setLoaded] = useState<{ key: string; data: RunData } | null>(
     null,
@@ -151,7 +154,7 @@ export default function Dashboard() {
   const onReplayOverview = useCallback((value: ReplayOverviewResult) => {
     setReplayCycles({ key: JSON.stringify([value.project, value.run]), cycles: value.cycles });
   }, []);
-  const [error, setError] = useState("");
+  const [runFailure, setRunFailure] = useState<{ key: string; message: string } | null>(null);
   const [preparing, setPreparing] = useState<{ key: string; progress: ArchiveProgress } | null>(null);
   const [archiveRevision, setArchiveRevision] = useState(0);
   const archiveReady = useCallback(() => setArchiveRevision(value => value + 1), []);
@@ -163,11 +166,13 @@ export default function Dashboard() {
   const project = projects.find((p) => p.id === selection.project);
   const latest = latestGameRun(project);
   const run = selection.run || latest?.id || "";
+  const entry = workspaceRunEntry({ catalogReady, catalogError, project, run });
   const scopeKey = selection.project + "/" + run + "/" + selection.epoch;
   const beforeCall = query.get("beforeCall") ?? "";
   const requestedCall = query.get("call") ?? "";
   const selectedImage = query.get("image") ?? undefined;
   const key = JSON.stringify([scopeKey, beforeCall, requestedCall, selectedImage]);
+  const error = runFailure?.key === key ? runFailure.message : "";
   const data = loaded?.key === key ? loaded.data : null;
   const cycles = view === "replay"
     ? replayCycles?.key === JSON.stringify([selection.project, run]) ? replayCycles.cycles : []
@@ -207,8 +212,10 @@ export default function Dashboard() {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     const load = async () => {
+      setCatalogLoading(true);
       try {
-        const value = await json<Project[]>(includeEmptyProjects ? "/api/catalog?includeEmpty=1" : "/api/catalog", controller.signal);
+        const value = await json<Project[]>("/api/catalog?includeEmpty=1", controller.signal);
+        if (controller.signal.aborted) return;
         setProjects(value);
         setCatalogError("");
       } catch (e) {
@@ -216,6 +223,7 @@ export default function Dashboard() {
       } finally {
         if (!controller.signal.aborted) {
           setCatalogReady(true);
+          setCatalogLoading(false);
           timer = setTimeout(load, 10000);
         }
       }
@@ -225,7 +233,7 @@ export default function Dashboard() {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [includeEmptyProjects, catalogRevision]);
+  }, [catalogRevision]);
   useEffect(() => {
     if (view === "workspaces" || view === "settings" || view === "dev" || benchmarkCases || view === "replay" || view === "docs" || view === "caps" || view === "perception" || !selection.project || !run) return;
     const controller = new AbortController();
@@ -248,10 +256,10 @@ export default function Dashboard() {
         if (controller.signal.aborted) return;
         setLoaded({ key, data: next });
         setPreparing(null);
-        setError("");
+        setRunFailure(null);
 
       } catch (e) {
-        if (!controller.signal.aborted) setError(String(e));
+        if (!controller.signal.aborted) setRunFailure({ key, message: String(e) });
       } finally {
         if (!controller.signal.aborted && refresh)
           timer = setTimeout(load, 2500);
@@ -323,9 +331,9 @@ export default function Dashboard() {
           }),
       );
       setLoaded({ key, data: next });
-      setError("");
+      setRunFailure(null);
     } catch (e) {
-      setError(String(e));
+      setRunFailure({ key, message: String(e) });
     } finally {
       setStopping(false);
     }
@@ -345,10 +353,11 @@ export default function Dashboard() {
       <aside className="sidebar">
         <a
           className="brand"
-          href="?view=live"
+          href={viewLink("live")}
           onClick={(e) => {
+            if (!isPlainNavigationClick(e)) return;
             e.preventDefault();
-            navigate({ view: "live" });
+            navigateUrl(viewLink("live"));
           }}
         >
           <NavIcon kind="logo" />
@@ -396,6 +405,7 @@ export default function Dashboard() {
                   className={view === id ? "active" : ""}
                   aria-current={view === id ? "page" : undefined}
                   onClick={(e) => {
+                    if (!isPlainNavigationClick(e)) return;
                     e.preventDefault();
                     navigateUrl(viewLink(id));
                   }}
@@ -425,6 +435,7 @@ export default function Dashboard() {
                 <NativeSelect
                   aria-label={dt("runHistoryLabel")}
                   className="max-w-60 text-xs"
+                  disabled={!project?.runs.length}
                   value={selection.run}
                   onChange={(e) =>
                     navigate({
@@ -439,7 +450,7 @@ export default function Dashboard() {
                   }
                 >
                   <NativeSelectOption value="">
-                    {dt("latestRun")}
+                    {latest ? dt("latestRun") : t("workspaceRunEmpty.noGameRuns")}
                     {latest
                       ? " · " + runDate(latest.id)
                       : ""}
@@ -454,6 +465,7 @@ export default function Dashboard() {
                 <NativeSelect
                   aria-label={dt("epochLabel")}
                   className="max-w-48 text-xs"
+                  disabled={!run}
                   value={selection.epoch}
                   onChange={(e) =>
                     navigate({
@@ -483,7 +495,7 @@ export default function Dashboard() {
                 </NativeSelect>
               </>
             )}
-            {(view === "live" || view === "benchmark") && <Button
+            {(run || benchmarkCases) && (view === "live" || view === "benchmark") && <Button
               type="button"
               size="sm"
               variant="outline"
@@ -498,14 +510,14 @@ export default function Dashboard() {
           </div>
         </header>
         <main className="page-content">
-          <div className="page-heading">
+          {view !== "workspaces" && <div className="page-heading">
             <div>
               <h1>{benchmarkCases ? t("benchmark.casesTitle") : t(`views.${view}.title`)}</h1>
               <p>
                 {benchmarkCases ? t("benchmark.casesDescription") : t(`views.${view}.description`)}
               </p>
             </div>
-            {(view === "live" || (view === "benchmark" && !benchmarkCases)) && (
+            {data && (view === "live" || (view === "benchmark" && !benchmarkCases)) && (
               <Button
                 type="button"
                 variant="outline"
@@ -516,7 +528,7 @@ export default function Dashboard() {
                 {stopping ? dt("handingOver") : dt("handover")}
               </Button>
             )}
-          </div>
+          </div>}
           {view === "benchmark" && (
             <nav className="mb-5 flex gap-2 border-b pb-3" aria-label={dt("benchNavLabel")}>
               {[
@@ -538,18 +550,21 @@ export default function Dashboard() {
               ))}
             </nav>
           )}
-          {runControls && <ArchiveBuild key={selection.project + "/" + run}
+          {runControls && run && <ArchiveBuild key={selection.project + "/" + run}
             project={selection.project} run={run} onReady={archiveReady} />}
-          {runControls && (catalogError || (view !== "replay" && error)) && (
-            <Alert variant="destructive" className="mb-5"><AlertDescription>
-              {catalogError || error}
+          {runControls && entry !== "catalog-error" && (catalogError || (view !== "replay" && error)) && (
+            <Alert variant="destructive" className="mb-5"><AlertDescription className="flex flex-wrap items-center justify-between gap-3">
+              <span className="min-w-0 break-words">{catalogError || error}
               {data && (
                 <small>{dt("keepLast")} · {clockTime(data.updatedAt)}</small>
-              )}
+              )}</span>
+              {catalogError && <Button type="button" size="sm" variant="outline" disabled={catalogLoading} onClick={refreshCatalog}>
+                {t(catalogLoading ? "workspaceRunEmpty.retrying" : "workspaceRunEmpty.retry")}
+              </Button>}
             </AlertDescription></Alert>
           )}
           {view === "workspaces" ? (
-            <WorkspacesView onChanged={refreshCatalog} onOpen={id => navigate({ view: "caps", project: id, workspace: null, run: null, epoch: null, call: null, block: null, image: null })} />
+            <WorkspacesView onChanged={refreshCatalog} onOpen={id => navigateUrl("/?" + new URLSearchParams({ view: "caps", project: id }))} />
           ) : view === "settings" ? (
             <SettingsView follow={pet} projects={projects} />
           ) : view === "dev" ? (
@@ -560,6 +575,10 @@ export default function Dashboard() {
             <DocsView search={search} navigate={navigate} />
           ) : view === "caps" ? (
             <CapabilitiesView project={selection.project} ready={catalogReady} catalogError={catalogError} />
+          ) : runControls && entry !== "ready" ? (
+            <WorkspaceRunEmpty state={entry} project={project?.id} workspaceName={workspaceName(project)}
+              benchmarkRun={project?.runs.find(r => r.kind === "benchmark" || r.benchmark)?.id}
+              error={catalogError} retrying={catalogLoading} onRetry={refreshCatalog} onNavigate={navigateUrl} />
           ) : view === "replay" ? (
             <TimelinePlayer key={scopeKey} project={selection.project} run={run} epoch={selection.epoch || "latest"}
               onOverview={onReplayOverview} archiveRevision={archiveRevision}
@@ -575,26 +594,15 @@ export default function Dashboard() {
             <section className="surface empty-state main-empty">
               <span className="empty-symbol">◫</span>
               <h2>
-                {!catalogReady
-                  ? dt("empty.discovering")
-                  : !projects.length
-                    ? dt("empty.noRuns")
-                    : error
-                      ? dt("empty.readFailed")
-                      : preparing?.key === key ? dt("empty.archiving") : dt("empty.loadingRun")}
+                {error ? dt("empty.readFailed")
+                  : preparing?.key === key ? dt("empty.archiving") : dt("empty.loadingRun")}
               </h2>
               <p>
-                {!catalogReady
-                  ? dt("emptyHint.connecting")
-                  : !projects.length
-                    ? dt("emptyHint.startRsa")
-                    : error
-                      ? dt("emptyHint.checkService")
+                {error ? dt("emptyHint.checkService")
                       : preparing?.key === key
                         ? `${dt("archive.read")} ${bytes(preparing.progress.bytes)} / ${bytes(preparing.progress.totalBytes)}${preparing.progress.projection ? ` · ${dt("archive.organizedPrefix")}${preparing.progress.projection.position.toLocaleString()} / ${preparing.progress.projection.total.toLocaleString()}${dt("archive.organizedSuffix")}` : ""}${dt("archive.replayNote")}`
                         : dt("emptyHint.loadingObs")}
               </p>
-              {!projects.length && <Button type="button" onClick={() => navigate({ view: "workspaces" })}>{dt("manageWorkspaces")}</Button>}
             </section>
           ) : (
             <>
