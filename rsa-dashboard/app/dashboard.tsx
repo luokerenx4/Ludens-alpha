@@ -1,4 +1,5 @@
 "use client";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
@@ -353,19 +354,10 @@ export default function Dashboard() {
           <NavIcon kind="logo" />
           <span>Ludens</span>
         </a>
-        <div className="workspace-picker">
+        {!["workspaces", "docs", "settings", "dev"].includes(view) && !benchmarkCases && <div className="workspace-picker">
           <label htmlFor="workspace">
-            {benchmarkCases ? dt("picker.benchAcross") : view === "docs" ? dt("picker.docsSource") : view === "settings" ? dt("picker.globalSettings") : view === "workspaces" ? dt("picker.workspacesAdmin") : dt("picker.workspace")}
+            {dt("picker.workspace")}
           </label>
-          {view === "workspaces" ? (
-            <div className="bench-global-workspace">{dt("picker.localWorkspaces")}</div>
-          ) : benchmarkCases ? (
-            <div className="bench-global-workspace">{dt("picker.allWorkspaces")}</div>
-          ) : view === "docs" ? (
-            <div className="bench-global-workspace">{dt("picker.repoDocs")}</div>
-          ) : view === "settings" ? (
-            <div className="bench-global-workspace">{dt("picker.sharedDesktopWeb")}</div>
-          ) : (
             <NativeSelect
               id="workspace"
               className="w-full text-xs"
@@ -392,8 +384,7 @@ export default function Dashboard() {
                 </NativeSelectOption>
               ))}
             </NativeSelect>
-          )}
-        </div>
+        </div>}
         <nav aria-label={dt("consoleNav")}>
           {navSections.map(section => (
             <div key={section.label} className="nav-section">
@@ -550,12 +541,12 @@ export default function Dashboard() {
           {runControls && <ArchiveBuild key={selection.project + "/" + run}
             project={selection.project} run={run} onReady={archiveReady} />}
           {runControls && (catalogError || (view !== "replay" && error)) && (
-            <div className="error-banner" role="alert">
+            <Alert variant="destructive" className="mb-5"><AlertDescription>
               {catalogError || error}
               {data && (
                 <small>{dt("keepLast")} · {clockTime(data.updatedAt)}</small>
               )}
-            </div>
+            </AlertDescription></Alert>
           )}
           {view === "workspaces" ? (
             <WorkspacesView onChanged={refreshCatalog} onOpen={id => navigate({ view: "caps", project: id, workspace: null, run: null, epoch: null, call: null, block: null, image: null })} />
@@ -661,21 +652,21 @@ export default function Dashboard() {
                       onImage={(id) => navigate({ ...pinned, image: id })}
                     />
                     <div className="run-context">
-                      <button
-                        className="text-button"
+                      <Button type="button" variant="ghost" size="xs"
+                        className="h-auto justify-start whitespace-normal text-left text-xs text-muted-foreground hover:text-foreground"
                         onClick={() => navigate({ view: "benchmark" })}
                       >
                         {dt("checkPerf")} ↗
-                      </button>
+                      </Button>
                       {(query.has("call") || query.has("beforeCall")) && (
-                        <button
-                          className="text-button"
+                        <Button type="button" variant="ghost" size="xs"
+                          className="h-auto justify-start whitespace-normal text-left text-xs text-muted-foreground hover:text-foreground"
                           onClick={() =>
                             navigate({ beforeCall: null, call: null, image: null, block: null })
                           }
                         >
                           {dt("backToLatest")} ↓
-                        </button>
+                        </Button>
                       )}
                       <span>
                         {data.manifest.drivers.map((d) => d.id).join(" · ")}
@@ -731,21 +722,21 @@ export default function Dashboard() {
                     <section className="surface request-timeline">
                       <div className="surface-heading">
                         <h2>{dt("timeline")}</h2>
-                        <button
-                          className="text-button"
+                        <Button type="button" variant="ghost" size="xs"
+                          className="h-auto justify-start whitespace-normal text-left text-xs text-muted-foreground hover:text-foreground"
                           onClick={() =>
                             navigate({ beforeCall: null, call: null, image: null, block: null })
                           }
                         >
                           {dt("followLatest")} ↓
-                        </button>
+                        </Button>
                       </div>
                       <p className="feed-notice">{pageRange}</p>
                       <div className="timeline-list">
                         {[...data.calls]
                           .reverse()
                           .map((c) => (
-                            <button
+                            <button type="button"
                               key={c.id}
                               className={
                                 "request-row" +
@@ -783,10 +774,10 @@ export default function Dashboard() {
                             </button>
                           ))}
                         {data.paging.hasMore && data.paging.beforeCall !== null && (
-                          <button className="text-button load-more"
+                          <Button type="button" variant="ghost" size="xs" className="load-more text-muted-foreground"
                             onClick={() => navigate({ ...pinned, beforeCall: String(data.paging.beforeCall), call: null, image: null, block: null })}>
                             {dt("loadMore")}
-                          </button>
+                          </Button>
                         )}
                         {!data.calls.length && (
                           <div className="empty-state">

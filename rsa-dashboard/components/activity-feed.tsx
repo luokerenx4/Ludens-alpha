@@ -9,6 +9,10 @@ import {
 } from "./activity-feed-model";
 import type { ActivityFeedData } from "./use-activity-feed";
 import { useTranslations } from "@/lib/locale";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import "./activity-feed.css";
 
 interface ActivityFeedProps {
@@ -82,9 +86,11 @@ function CopyButton({ text }: { text: string }) {
     return () => window.clearTimeout(timer);
   }, [copied]);
   return (
-    <button
+    <Button
       type="button"
-      className="block-copy"
+      variant="ghost"
+      size="xs"
+      className="ml-auto h-auto shrink-0 px-1 py-0.5 text-muted-foreground"
       aria-label={t("copyAria")}
       onClick={async () => {
         try {
@@ -96,7 +102,7 @@ function CopyButton({ text }: { text: string }) {
       }}
     >
       {copied === "done" ? t("copyDone") : copied === "error" ? t("copyFailed") : t("copyLabel")}
-    </button>
+    </Button>
   );
 }
 
@@ -160,19 +166,20 @@ function ActivityBlock({
           <span className="block-source" title={block.source?.implementation}>
             {sourceName}
           </span>
-          <span className="block-kind">{t(`kind.${block.kind}`)}</span>
+          <Badge variant="secondary" className="rounded px-1.5 py-0 text-[11px]">{t(`kind.${block.kind}`)}</Badge>
           <time dateTime={block.at} title={block.at}>
             {at}
           </time>
-          <span className={`block-status block-status-${block.status}`}>
+          <Badge variant={block.status === "error" ? "destructive" : "outline"}
+            className={`ml-auto px-1.5 py-0 text-[10px]${block.status === "running" ? " border-primary/40 text-primary" : ""}`}>
             {block.outcome === "raised" ? t("outcomeRaised") : block.outcome === "unmet" ? t("outcomeUnmet") : t(`status.${block.status}`)}
-          </span>
+          </Badge>
         </div>
         <div className="block-title-row">
           {onSelect ? (
             <button
               type="button"
-              className="block-title"
+              className="block-title rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               onClick={() => onSelect(block)}
               title={t("locateTitle")}
             >
@@ -306,34 +313,38 @@ export function ActivityFeed({ feed, expectedEpoch, selectedBlock, onSelect }: A
       </header>
       <div className="feed-filters" role="group" aria-label={t("filtersLabel")}>
         {filters.map((kind) => (
-          <button type="button" key={kind}
-            className={`feed-filter${filter === kind ? " feed-filter-active" : ""}${kind === "diagnostic" ? " feed-filter-diagnostic" : ""}`}
+          <Button type="button" key={kind} size="xs" variant={filter === kind ? "default" : "outline"}
+            className={kind === "diagnostic" && filter !== kind ? "border-dashed text-muted-foreground" : undefined}
             aria-pressed={filter === kind} onClick={() => setFilter(kind)}>
             {kind === "all" ? t("filterAll") : t(`kind.${kind}`)}
-          </button>
+          </Button>
         ))}
       </div>
       <div className="feed-search-row">
-        <label className="feed-search">
-          <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" aria-hidden="true">
+        <label className="relative min-w-0 flex-1">
+          <svg className="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-muted-foreground" width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" aria-hidden="true">
             <circle cx="8.5" cy="8.5" r="5.5" /><path d="m13 13 4 4" />
           </svg>
-          <input aria-label={t("searchAria")} type="search" placeholder={t("searchPlaceholder")}
+          <Input className="h-8 pl-8 text-xs" aria-label={t("searchAria")} type="search" placeholder={t("searchPlaceholder")}
             value={query} onChange={(event) => setQuery(event.target.value)} />
         </label>
-        <button type="button" className="feed-latest" title={t("latestTitle")}
+        <Button type="button" variant="outline" size="sm" className="shrink-0" title={t("latestTitle")}
           onClick={() => { positionLatest.current = true; feed.latest(); }}>
           {t("latestLabel")} <span aria-hidden="true">↓</span>
-        </button>
+        </Button>
       </div>
-      {feed.error && <p className="feed-error" role="alert">{t("loadErrorPrefix")}{feed.error}
-        {page.length > 0 ? t("loadErrorCachedSuffix") : ""}</p>}
-      {missingSelection && !loading && <p className="feed-notice">{t("missingSelectionNotice")}</p>}
+      {feed.error && <Alert variant="destructive" className="mx-4 mb-3 w-auto px-3 py-2">
+        <AlertDescription className="text-xs">{t("loadErrorPrefix")}{feed.error}{page.length > 0 ? t("loadErrorCachedSuffix") : ""}</AlertDescription>
+      </Alert>}
+      {missingSelection && !loading && <Alert role="status" className="mx-4 mb-3 w-auto px-3 py-2">
+        <AlertDescription className="text-xs">{t("missingSelectionNotice")}</AlertDescription>
+      </Alert>}
       <div ref={list} className="feed-list" aria-busy={loading || feed.loadingOlder}>
         {pinned && <div className="feed-pinned">
           <p className="feed-notice">{t("pinnedNotice")}</p>{renderBlock(pinned)}
         </div>}
-        {feed.hasMore && consistent && <button type="button" className="feed-earlier"
+        {feed.hasMore && consistent && <Button type="button" variant="outline" size="sm"
+          className="mx-[18px] mt-3 h-auto w-[calc(100%-36px)] flex-wrap gap-x-2 whitespace-normal px-3 py-2 text-xs"
           disabled={loading || feed.loadingOlder} onClick={() => {
             const first = page[0];
             const node = first && nodes.current.get(first.id);
@@ -341,8 +352,8 @@ export function ActivityFeed({ feed, expectedEpoch, selectedBlock, onSelect }: A
             void feed.earlier();
           }}>
           {feed.loadingOlder ? t("loadingEarlier") : t("loadEarlier")}
-          <span>{t("earlierHint")}</span>
-        </button>}
+          <span className="text-muted-foreground">{t("earlierHint")}</span>
+        </Button>}
         {page.map(renderBlock)}
         {page.length === 0 && !pinned && <div className="feed-empty">
           <BlockIcon kind={filter === "all" ? "text" : filter} />

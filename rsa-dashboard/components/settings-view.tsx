@@ -11,32 +11,30 @@ export function SettingsView({ follow, projects }: { follow: PetFollow; projects
   const { locale, setLocale } = useLocale();
   const t = useTranslations("settings");
   return (
-    <section className="mx-auto flex w-full max-w-4xl flex-col gap-5">
-      <p className="text-sm leading-relaxed text-muted-foreground">
-        {t("intro")}
-      </p>
-      <PetSettings follow={follow} projects={projects} />
-      <Card>
-        <CardHeader>
-          <CardTitle role="heading" aria-level={2}>{t("language")}</CardTitle>
-          <CardDescription>{t("languageDescription")}</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <NativeSelect value={locale} onChange={event => setLocale(event.target.value === "zh" ? "zh" : "en")}
-            aria-label={t("language")}>
-            <NativeSelectOption value="en">{t("languageEnglish")}</NativeSelectOption>
-            <NativeSelectOption value="zh">{t("languageChinese")}</NativeSelectOption>
-          </NativeSelect>
-        </CardContent>
-      </Card>
-       <Card>
-        <CardHeader>
-          <CardTitle role="heading" aria-level={2}>{t("consoleTitle")}</CardTitle>
-          <CardDescription>
-            {t("consoleDescription")}
-          </CardDescription>
-        </CardHeader>
-      </Card>
+    <section className="settings-page mx-auto w-full max-w-7xl">
+      <PetSettings follow={follow} projects={projects}>
+        <Card>
+          <CardHeader>
+            <CardTitle role="heading" aria-level={3}>{t("language")}</CardTitle>
+            <CardDescription>{t("languageDescription")}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <NativeSelect value={locale} onChange={event => setLocale(event.target.value === "zh" ? "zh" : "en")}
+              aria-label={t("language")}>
+              <NativeSelectOption value="en">{t("languageEnglish")}</NativeSelectOption>
+              <NativeSelectOption value="zh">{t("languageChinese")}</NativeSelectOption>
+            </NativeSelect>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle role="heading" aria-level={3}>{t("consoleTitle")}</CardTitle>
+            <CardDescription>
+              {t("consoleDescription")}
+            </CardDescription>
+          </CardHeader>
+        </Card>
+      </PetSettings>
     </section>
   );
 }

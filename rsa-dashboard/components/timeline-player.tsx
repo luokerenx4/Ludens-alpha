@@ -1,6 +1,10 @@
 "use client";
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import type { ReplayDetail, ReplayFrame, ReplayItem, ReplayOverview, ReplayOverviewResult, ReplayCoverage, ReplayWindow } from "../lib/replay-types";
 import { adjacentReplayFrame, clampReplayTime, mergeReplayPages, nearbyReplayItems, REPLAY_WINDOW_MS,
   replayDuration, replayFramesAt, replayItemActive, replayTracks, replayWindowBounds,
@@ -112,8 +116,8 @@ function ReplayDetails({ scope, selection, onClose }: { scope: string; selection
   }, [url]);
   return <section className="surface replay-detail" aria-label={t("detailsAria")}>
     <div className="surface-heading"><h2>{detail?.title ?? t("detailsTitle")}</h2>
-      <button type="button" className="text-button" onClick={onClose}>{t("closeDetails")}</button></div>
-    {error ? <p role="alert">{error}</p> : !detail ? <p role="status">{t("readingRecord")}</p> : <>
+      <Button type="button" variant="ghost" size="xs" onClick={onClose}>{t("closeDetails")}</Button></div>
+    {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : !detail ? <p role="status">{t("readingRecord")}</p> : <>
       {!!detail.observations?.length && <div className="replay-inputs"><h3>{t("modelObservations")}</h3>
         {detail.observations.map(observation => <div key={observation.id}>
           {observation.url ? <img src={observation.url} alt={t("modelInput") + " " + observation.id} loading="lazy" /> : <span>{t("unrecordedMedia")}</span>}
@@ -132,6 +136,7 @@ export function TimelinePlayer({ project, run, epoch, position, onPosition, onOv
   archiveRevision?: number;
 }) {
   const t = useTranslations("timelinePlayer");
+  const controlsId = useId();
   const requestedScope = new URLSearchParams({ project, run, ...(epoch ? { epoch } : {}) }).toString();
   const [overview, setOverview] = useState<ReplayOverview | null>(null);
   const resolvedEpoch = overview ? overview.epoch : epoch;
@@ -369,88 +374,96 @@ export function TimelinePlayer({ project, run, epoch, position, onPosition, onOv
 
   if (!project || !run) return <section className="surface empty-state"><h2>{t("emptyTitle")}</h2><p>{t("emptyDescription")}</p></section>;
   if (!overview) return <section className="surface empty-state"><h2>{overviewError ? t("unavailable") : t("preparing")}</h2>
-    <p role={overviewError ? "alert" : "status"}>{overviewError || (coverage ? <>{t("readingSourceDir")} {Math.round(coverage.bytes / Math.max(1, coverage.totalBytes) * 100)}% · {t("loadIndependent")}</> : t("readingFromRecords"))}</p>
-    {overviewError && <button className="control-button" onClick={() => setRefresh(value => value + 1)}>{t("retryLoad")}</button>}</section>;
+    {overviewError ? <Alert variant="destructive"><AlertDescription>{overviewError}</AlertDescription></Alert>
+      : <p role="status">{coverage ? <>{t("readingSourceDir")} {Math.round(coverage.bytes / Math.max(1, coverage.totalBytes) * 100)}% · {t("loadIndependent")}</> : t("readingFromRecords")}</p>}
+    {overviewError && <Button type="button" variant="outline" size="sm" onClick={() => setRefresh(value => value + 1)}>{t("retryLoad")}</Button>}</section>;
   const duration = overview.endAt - overview.startAt;
   const x = (time: number) => Math.max(0, Math.min(100, (time - bounds.startAt) / Math.max(1, bounds.endAt - bounds.startAt) * 100));
   const trackFrames = (activeWindow?.frames ?? []).filter(frame => frame.at >= bounds.startAt && (!capability || frame.capability === capability));
   return <div className="replay-player">
     <div className="replay-toolbar">
       <span className="replay-readonly"><i /> {t("readonlyNotice")}</span>
-      <div><button className="text-button" disabled={refreshing} onClick={() => { cached.current = []; setWindows([]); setRefresh(value => value + 1); setRetry(value => value + 1); }}>
-        {refreshing ? t("refreshing") : t("refreshRecords")}</button>
-        <button className="text-button" onClick={share}>{t("shareMoment")}</button></div>
+      <div><Button type="button" variant="ghost" size="xs" disabled={refreshing} onClick={() => { cached.current = []; setWindows([]); setRefresh(value => value + 1); setRetry(value => value + 1); }}>
+        {refreshing ? t("refreshing") : t("refreshRecords")}</Button>
+        <Button type="button" variant="ghost" size="xs" onClick={share}>{t("shareMoment")}</Button></div>
     </div>
     {coverage && !coverage.complete && <p className="replay-notice" role="status">{t("coverageReadPrefix")} {Math.round(coverage.bytes / Math.max(1, coverage.totalBytes) * 100)}%{t("coverageReadSuffix")}</p>}
     {shareState && <p className="replay-notice" role="status">{shareState}</p>}
-    {overviewError && <p className="error-banner" role="alert">{overviewError}{t("keepLoaded")}</p>}
+    {overviewError && <Alert variant="destructive"><AlertDescription>{overviewError}{t("keepLoaded")}</AlertDescription></Alert>}
     <section className="surface replay-stage">
-      <div className="surface-heading"><h2>{t("stageTitle")}</h2><label className="replay-capability">{t("capabilityLabel")}
-        <select aria-label={t("capabilityLabel")} value={capability} onChange={event => {
+      <div className="surface-heading"><h2>{t("stageTitle")}</h2><div className="replay-capability">
+        <Label htmlFor={`${controlsId}-capability`} className="text-xs font-normal">{t("capabilityLabel")}</Label>
+        <NativeSelect id={`${controlsId}-capability`} size="sm" className="max-w-[260px] text-xs max-[620px]:max-w-[180px]" value={capability} onChange={event => {
           stepRequest.current?.abort(); setStepping(false); setCapability(event.target.value);
         }}>
-          <option value="">{t("allCapabilities")}</option>{capabilities.map(value => <option key={value} value={value}>{value}</option>)}
-        </select></label></div>
+          <NativeSelectOption value="">{t("allCapabilities")}</NativeSelectOption>{capabilities.map(value => <NativeSelectOption key={value} value={value}>{value}</NativeSelectOption>)}
+        </NativeSelect></div></div>
       <div className="replay-frames" aria-busy={!ready}>
         {shownFrames.length ? shownFrames.map(frame => <article className="replay-frame" key={frame.capability} data-frame-id={frame.id}>
-          <div className="replay-frame-meta"><button type="button" className="text-button" onClick={() => setSelection({ kind: "frame", value: frame })}>
-            {frame.capability} · #{frame.sequence} ↗</button><span>{t("sampled")} {wallTime(frame.at)}{ready ? " · " + (Math.max(0, at - frame.at) / 1000).toFixed(1) + " " + t("secondsAgo") : t("previousFrame")}</span></div>
+          <div className="replay-frame-meta"><Button type="button" variant="ghost" size="xs" onClick={() => setSelection({ kind: "frame", value: frame })}>
+            {frame.capability} · #{frame.sequence} ↗</Button><span>{t("sampled")} {wallTime(frame.at)}{ready ? " · " + (Math.max(0, at - frame.at) / 1000).toFixed(1) + " " + t("secondsAgo") : t("previousFrame")}</span></div>
           <FrameMedia key={refresh + ":" + retry} frame={frame} images={displayed?.images ?? new Map()} playback={{ at, playing, clockReady: ready, speed, onReady: onVideoReady }} />
         </article>) : <div className="replay-loading">{!ready ? t("loadingFrames") : capability ? t("noFramesFiltered") : t("noFramesAll")}<small>{t("playbackContinues")}</small></div>}
         {!ready && <span className="replay-buffering" role="status">{windowError ? t("segmentFailed") : t("buffering")}</span>}
       </div>
-      {windowError && <div className="replay-window-error" role="alert">{windowError}<button className="text-button" onClick={() => setRetry(value => value + 1)}>{t("retrySegment")}</button></div>}
+      {windowError && <Alert variant="destructive"><AlertDescription className="flex flex-wrap items-center justify-between gap-2">
+        <span>{windowError}</span><Button type="button" variant="outline" size="xs" onClick={() => setRetry(value => value + 1)}>{t("retrySegment")}</Button>
+      </AlertDescription></Alert>}
       <div className="replay-controls">
-        <input className="replay-seek" type="range" min={overview.startAt} max={Math.max(overview.endAt, overview.startAt + 1)} step="1" value={at}
+        {/* The media scrubber keeps native pointer/key commit semantics and millisecond steps. */}
+        <input className="replay-seek accent-primary focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring" type="range" min={overview.startAt} max={Math.max(overview.endAt, overview.startAt + 1)} step="1" value={at}
           disabled={duration <= 0} aria-label={t("seekLabel")} aria-valuetext={replayDuration(at - overview.startAt) + " / " + replayDuration(duration)}
           onChange={event => seek(Number(event.target.value), false)} onPointerUp={() => onPosition(Math.round(atRef.current))}
           onKeyUp={() => onPosition(Math.round(atRef.current))} />
         <div className="replay-control-row"><div className="replay-transport">
-          <button type="button" className="replay-play" aria-label={playing ? t("pauseReplay") : t("playReplay")} disabled={duration <= 0 || !!windowError}
+          <Button type="button" size="sm" className="min-w-[90px]" aria-label={playing ? t("pauseReplay") : t("playReplay")} disabled={duration <= 0 || !!windowError}
             onClick={() => { stepRequest.current?.abort(); setStepping(false); if (at >= overview.endAt) move(overview.startAt); setPlaying(value => !value); }}>
-            {playing ? t("pause") : t("play")}</button>
-          <button type="button" aria-label={t("prevFrame")} disabled={stepping || at <= overview.startAt} onClick={() => void step(-1)}>{t("prevFrameShort")}</button>
-          <button type="button" aria-label={t("nextFrame")} disabled={stepping || at >= overview.endAt} onClick={() => void step(1)}>{t("nextFrameShort")}</button>
+            {playing ? t("pause") : t("play")}</Button>
+          <Button type="button" variant="outline" size="sm" aria-label={t("prevFrame")} disabled={stepping || at <= overview.startAt} onClick={() => void step(-1)}>{t("prevFrameShort")}</Button>
+          <Button type="button" variant="outline" size="sm" aria-label={t("nextFrame")} disabled={stepping || at >= overview.endAt} onClick={() => void step(1)}>{t("nextFrameShort")}</Button>
           <span className="replay-time mono">{replayDuration(at - overview.startAt)} <small>/ {replayDuration(duration)}</small></span>
         </div><div className="replay-clock"><span className="mono">{wallTime(at)}</span>
-          <select aria-label={t("speedLabel")} value={speed} onChange={event => setSpeed(Number(event.target.value))}>
-            {[0.25, 0.5, 1, 2, 4, 8].map(value => <option key={value} value={value}>{value}×</option>)}
-          </select></div></div>
+          <NativeSelect size="sm" aria-label={t("speedLabel")} value={speed} onChange={event => setSpeed(Number(event.target.value))}>
+            {[0.25, 0.5, 1, 2, 4, 8].map(value => <NativeSelectOption key={value} value={value}>{value}×</NativeSelectOption>)}
+          </NativeSelect></div></div>
       </div>
     </section>
     <section className="surface replay-timeline" aria-label={t("timelineLabel")}>
-      <div className="surface-heading"><h2>{t("timelineTitle")}</h2><label className="replay-window-size">{t("windowLabel")}
-        <select aria-label={t("windowSelectLabel")} value={windowMs} onChange={event => {
+      <div className="surface-heading"><h2>{t("timelineTitle")}</h2><div className="replay-window-size">
+        <Label htmlFor={`${controlsId}-window`} className="text-xs font-normal">{t("windowLabel")}</Label>
+        <NativeSelect id={`${controlsId}-window`} size="sm" className="text-xs" aria-label={t("windowSelectLabel")} value={windowMs} onChange={event => {
           stepRequest.current?.abort(); setStepping(false); cached.current = []; setWindows([]); setWindowMs(Number(event.target.value));
-        }}>{[1, 5, 15, 30, 60].map(seconds => <option key={seconds} value={seconds * 1000}>{seconds} {t("seconds")}</option>)}</select>
-        <span className="mono">{wallTime(bounds.startAt)} — {wallTime(bounds.endAt)}</span></label></div>
+        }}>{[1, 5, 15, 30, 60].map(seconds => <NativeSelectOption key={seconds} value={seconds * 1000}>{seconds} {t("seconds")}</NativeSelectOption>)}</NativeSelect>
+        <span className="mono">{wallTime(bounds.startAt)} — {wallTime(bounds.endAt)}</span></div></div>
       <div className="replay-track-row"><span>{t("track.perception")}</span><div className="replay-track-lane">
-        {trackFrames.map(frame => <button key={frame.id} className="replay-frame-tick" style={{ left: x(frame.at) + "%" }}
+        {trackFrames.map(frame => <button type="button" key={frame.id} className="replay-frame-tick focus-visible:z-10 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-ring" style={{ left: x(frame.at) + "%" }}
           aria-label={t("viewPerception") + " " + wallTime(frame.at)} title={frame.capability + " · " + wallTime(frame.at)} onClick={() => selectFrame(frame)} />)}
         <i className="replay-cursor" style={{ left: x(at) + "%" }} />
       </div></div>
       {replayTracks.map(track => <div key={track} className="replay-track-row"><span>{t(`track.${track}`)}</span><div className="replay-track-lane">
-        {items.filter(item => item.track === track).map(item => <button key={item.id}
-          className={"replay-span " + track + (replayItemActive(item, at) ? " active" : "") + (/error|failed/.test(item.status ?? "") ? " failed" : "")}
+        {items.filter(item => item.track === track).map(item => <button type="button" key={item.id}
+          className={"replay-span focus-visible:z-10 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-ring " + track + (replayItemActive(item, at) ? " active" : "") + (/error|failed/.test(item.status ?? "") ? " failed" : "")}
           style={{ left: x(item.startAt) + "%", width: Math.max(0.35, x(item.endAt ?? bounds.endAt) - x(item.startAt)) + "%" }}
           title={item.label + " · " + wallTime(item.startAt)} aria-label={t(`track.${track}`) + " · " + item.label}
           onClick={() => selectItem(item)}>{track === "log" ? "" : item.label}</button>)}
         <i className="replay-cursor" style={{ left: x(at) + "%" }} />
       </div></div>)}
-      {eventError && <p className="error-banner" role="alert">{t("eventTrackPrefix")}{eventError}{t("videoContinues")}<button className="text-button" onClick={() => setEventPage(value => value + 1)}>{t("retry")}</button></p>}
+      {eventError && <Alert variant="destructive"><AlertDescription className="flex flex-wrap items-center justify-between gap-2">
+        <span>{t("eventTrackPrefix")}{eventError}{t("videoContinues")}</span><Button type="button" variant="outline" size="xs" onClick={() => setEventPage(value => value + 1)}>{t("retry")}</Button>
+      </AlertDescription></Alert>}
       {eventsLoading && <p role="status">{t("supplementingEvents")}</p>}
-      {eventWindow?.nextCursor && !eventsLoading && <button className="text-button" onClick={() => setEventPage(value => value + 1)}>{t("continueEvents")}</button>}
+      {eventWindow?.nextCursor && !eventsLoading && <Button type="button" variant="ghost" size="xs" onClick={() => setEventPage(value => value + 1)}>{t("continueEvents")}</Button>}
       <p className="replay-axis-note">{t("axisNote")}</p>
     </section>
     <div className="replay-context-grid">
       <section className="surface replay-context"><div className="surface-heading"><h2>{t("currentActions")}</h2><span>{activeItems.length} {t("items")}</span></div>
-        {activeItems.length ? activeItems.map(item => <button key={item.id} className="replay-context-item" onClick={() => selectItem(item)}>
+        {activeItems.length ? activeItems.map(item => <button type="button" key={item.id} className="replay-context-item focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring" onClick={() => selectItem(item)}>
           <span className={"replay-track-badge " + item.track}>{t(`track.${item.track}`)}</span><strong>{item.label}</strong>
           <small>{item.status && statusKey[item.status] ? t(`status.${statusKey[item.status]}`) : (item.status ?? (item.endAt === null ? t("status.notEnded") : t("status.recorded")))}</small>
         </button>) : <p className="replay-empty-context">{t("noActiveItems")}</p>}
       </section>
       <section className="surface replay-context"><div className="surface-heading"><h2>{t("nearbyLogs")}</h2><span>{t("clickToLocate")}</span></div>
-        {logs.length ? logs.map(item => <button key={item.id} className={"replay-context-item" + (item.startAt <= at ? " past" : " future")} onClick={() => selectItem(item)}>
+        {logs.length ? logs.map(item => <button type="button" key={item.id} className={"replay-context-item focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring" + (item.startAt <= at ? " past" : " future")} onClick={() => selectItem(item)}>
           <time className="mono">{wallTime(item.startAt)}</time><strong>{item.label}</strong>
         </button>) : <p className="replay-empty-context">{t("noLogs")}</p>}
       </section>

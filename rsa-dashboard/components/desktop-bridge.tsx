@@ -7,6 +7,8 @@ import {
 } from "../lib/desktop";
 import "./pet-settings.css";
 import { useTranslations } from "@/lib/locale";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 
 /** Native affordances around the same Web console; no second run view. */
 export function DesktopBridge({
@@ -67,27 +69,24 @@ export function DesktopBridge({
             <span className="desktop-notification-label">
               LUDENS PET · {input.block?.kind ?? t("activityFallback")}
             </span>
-            <button
+            <Button type="button" variant="ghost" size="icon-xs"
               aria-label={t("dismiss")}
               onClick={() => void action("dismiss", id)}
             >
               ×
-            </button>
+            </Button>
           </div>
           <strong>{input.title}</strong>
           {input.description && <p>{input.description}</p>}
-          <button
-            className="control-button"
+          <Button type="button" variant="outline" size="sm"
             onClick={() => void action("open", id)}
           >
             {t("viewDetails")} ↗
-          </button>
+          </Button>
         </article>
       ))}
       {error && (
-        <p role="alert" className="setting-error">
-          {t("actionFailed")}
-        </p>
+        <Alert variant="destructive"><AlertDescription>{t("actionFailed")}</AlertDescription></Alert>
       )}
     </aside>
   );

@@ -4,6 +4,11 @@ import type { CapabilityEntry, CapabilitiesResult } from "@/lib/capabilities";
 import type { DiscoveredDriver } from "@/lib/drivers";
 import { driverInitCommand } from "@/lib/driver-command";
 import { useTranslations } from "@/lib/locale";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
 function useJson<T>(url: string | null): { value?: T; error?: string } {
   const t = useTranslations("capabilitiesView");
@@ -70,25 +75,25 @@ function DiscoverDriver() {
     catch { setCopied(""); setFailure(t("copyFailed")); }
   };
   return <section className="surface" aria-label={t("driverSectionLabel")}>
-    <div className="surface-heading"><h2>{t("driverTitle")}</h2><span>{t("onDemandBadge")}</span></div>
+    <div className="surface-heading"><h2>{t("driverTitle")}</h2><Badge variant="outline">{t("onDemandBadge")}</Badge></div>
     <div className="caps-section">
       <p className="bench-note">{t("discoverNote1a")}<code>github:org/repo#rev</code>{t("discoverNote1b")}<code>{t("examplePath")}</code>{t("discoverNote1c")}</p>
       <p className="bench-note">{t("discoverNote2a")}<code>load()</code>{t("discoverNote2b")}</p>
       <form className="caps-discover-row" onSubmit={event => { event.preventDefault(); void discover(); }}>
-        <input value={spec} onChange={event => changeSpec(event.target.value)} placeholder={t("specPlaceholder")}
+        <Input className="min-w-0 basis-60 flex-1" value={spec} onChange={event => changeSpec(event.target.value)} placeholder={t("specPlaceholder")}
           aria-label={t("specAriaLabel")} spellCheck={false} />
-        <button type="submit" className="control-button" disabled={pending || !spec.trim()}>
+        <Button type="submit" variant="outline" disabled={pending || !spec.trim()}>
           {pending ? t("verifying") : t("verifyDriver")}
-        </button>
+        </Button>
       </form>
-      {failure ? <p role="alert" className="bench-note error-text">{failure}</p> : null}
+      {failure ? <Alert variant="destructive" className="mt-3"><AlertDescription>{failure}</AlertDescription></Alert> : null}
       {result ? <div className="caps-discover-result">
         <p className="bench-note">{t("verifiedPrefix")}<code>{result.spec}</code></p>
         <p><code>{result.id}</code> · {result.version}{result.transport ? ` · ${result.transport}` : ""}{result.defaultPort !== undefined ? `${t("defaultPortPrefix")}${result.defaultPort}` : ""}{result.needsGame ? t("needsGameNote") : ""}</p>
         {result.launchHint ? <p className="bench-note">{result.launchHint}</p> : null}
         <div className="bench-command">
           <code>{command}</code>
-          <button type="button" className="control-button" onClick={copy}>{copied === command ? t("copiedLabel") : t("copyInitCommand")}</button>
+          <Button type="button" variant="outline" size="sm" onClick={copy}>{copied === command ? t("copiedLabel") : t("copyInitCommand")}</Button>
         </div>
       </div> : null}
     </div>
@@ -122,25 +127,25 @@ function WorkspaceCapabilities({ project, ready, catalogError }: { project: stri
     </section>
     {caps.groups.map(group => <section className="surface" key={group.id} aria-label={group.title}>
       <div className="surface-heading"><h2>{group.title}</h2><span>{group.items.length}{t("itemsUnit")}</span></div>
-      {group.items.length ? <div className="bench-table-scroll"><table className="bench-table">
-        <thead><tr><th>{t("capabilityCol")}</th><th>{t("descriptionCol")}</th><th>{t("controlCol")}</th></tr></thead>
-        <tbody>{group.items.map(item => <tr key={item.id}>
-          <td><code>{item.id}</code></td>
-          <td>{item.description || <span className="muted">{t("noDescription")}</span>}</td>
-          <td>{controlLabel(item)}{readOnlyLabel(item)}</td>
-        </tr>)}</tbody>
-      </table></div> : <p className="bench-note">{t("noGroupsHint")}</p>}
+      {group.items.length ? <Table className="text-xs [&_th]:px-3 [&_td]:px-3 [&_td]:py-3 [&_td]:align-top">
+        <TableHeader className="bg-muted/40"><TableRow><TableHead>{t("capabilityCol")}</TableHead><TableHead>{t("descriptionCol")}</TableHead><TableHead>{t("controlCol")}</TableHead></TableRow></TableHeader>
+        <TableBody>{group.items.map(item => <TableRow key={item.id}>
+          <TableCell className="min-w-40"><code>{item.id}</code></TableCell>
+          <TableCell className="min-w-64 whitespace-normal">{item.description || <span className="text-muted-foreground">{t("noDescription")}</span>}</TableCell>
+          <TableCell>{controlLabel(item)}{readOnlyLabel(item)}</TableCell>
+        </TableRow>)}</TableBody>
+      </Table> : <p className="bench-note">{t("noGroupsHint")}</p>}
     </section>)}
     <section className="surface" aria-label={t("tasksSectionLabel")}>
       <div className="surface-heading"><h2>{t("benchmarkTitle")}</h2><span>{caps.tasks.length}{t("tasksUnit")}</span></div>
-      {caps.tasks.length ? <div className="bench-table-scroll"><table className="bench-table">
-        <thead><tr><th>{t("taskCol")}</th><th>{t("descriptionCol")}</th><th>{t("versionCol")}</th></tr></thead>
-        <tbody>{caps.tasks.map(task => <tr key={`${task.name}@${task.digest}`}>
-          <td><code>{task.name}</code></td>
-          <td>{task.title !== task.name ? task.title : <span className="muted">{t("noDescription")}</span>}</td>
-          <td><code>{task.digest.slice(0, 20)}…</code></td>
-        </tr>)}</tbody>
-      </table></div> : <p className="bench-note">{t("noTasksHint")}</p>}
+      {caps.tasks.length ? <Table className="text-xs [&_th]:px-3 [&_td]:px-3 [&_td]:py-3 [&_td]:align-top">
+        <TableHeader className="bg-muted/40"><TableRow><TableHead>{t("taskCol")}</TableHead><TableHead>{t("descriptionCol")}</TableHead><TableHead>{t("versionCol")}</TableHead></TableRow></TableHeader>
+        <TableBody>{caps.tasks.map(task => <TableRow key={`${task.name}@${task.digest}`}>
+          <TableCell className="min-w-40"><code>{task.name}</code></TableCell>
+          <TableCell className="min-w-64 whitespace-normal">{task.title !== task.name ? task.title : <span className="text-muted-foreground">{t("noDescription")}</span>}</TableCell>
+          <TableCell><code>{task.digest.slice(0, 20)}…</code></TableCell>
+        </TableRow>)}</TableBody>
+      </Table> : <p className="bench-note">{t("noTasksHint")}</p>}
     </section>
   </div>;
 }
