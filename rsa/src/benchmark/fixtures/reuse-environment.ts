@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { Capabilities, ToolArguments, ToolExecutionResult } from "@playness/baseware/contracts";
-import { structuredResult } from "@playness/baseware/tool-contract";
+import type { Capabilities, ToolArguments, ToolExecutionResult } from "@ludens/baseware/contracts";
+import { structuredResult } from "@ludens/baseware/tool-contract";
 import type { EventTrace, RecordEvent } from "../../harness/events.ts";
 import { renderBoard } from "./reuse-board.ts";
 

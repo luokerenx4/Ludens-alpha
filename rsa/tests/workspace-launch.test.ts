@@ -4,7 +4,7 @@ import { chmod, mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } fro
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { launchPlan, parseConfig, WorkspaceLauncher, type DriverManifest, type LaunchIO, type LaunchPlan } from "../src/app/workspace.ts";
-import { getDriver } from "@playness/baseware/drivers/registry.ts";
+import { getDriver } from "@ludens/baseware/drivers/registry.ts";
 
 const manifestFor = (id: string): DriverManifest => {
   const { load: _load, fallbackVersion: _fallback, ...manifest } = getDriver(id);
@@ -36,7 +36,7 @@ class FakeServices implements LaunchIO {
   constructor(readonly plan: LaunchPlan) { this.bridgePort = plan.config.port; }
   target(name: string) {
     const hash = createHash("sha256").update(this.plan.workspace).digest("hex").slice(0, 16);
-    return `gui/${process.getuid!()}/${name === "pet" ? "dev.playness.alice.pet" : `dev.playness.rsa.${hash}.${name}`}`;
+    return `gui/${process.getuid!()}/${name === "pet" ? "dev.ludens.pet" : `dev.ludens.rsa.${hash}.${name}`}`;
   }
   seed(name: string) { this.jobs.set(this.target(name), 100 + this.jobs.size); }
   dashboardReady = async () => this.dashboard;
@@ -84,7 +84,7 @@ class FakeServices implements LaunchIO {
       const nameIndex = sharedPetLaunch ? 6 : 2;
       const name = argv[nameIndex]!;
       this.starts.push(name);
-      if (sharedPetLaunch) expect(argv.slice(2, 6)).toEqual(["--label", "dev.playness.alice.pet", "--log-dir", this.plan.sharedPet.background]);
+      if (sharedPetLaunch) expect(argv.slice(2, 6)).toEqual(["--label", "dev.ludens.pet", "--log-dir", this.plan.sharedPet.background]);
       expect(argv.slice(nameIndex + 1)).toEqual(this.plan.commands[name as keyof typeof this.plan.commands]!);
       if (name === this.failStart) return result("", 1, `${name} unavailable`);
       if (name === "host") expect(this.events).toContain("baseware:manual:true");
@@ -333,7 +333,7 @@ test("down waits for takeover cleanup, stops only owned jobs, and keeps the shar
   const value = await plan();
   const io = new FakeServices(value);
   for (const name of ["host", "baseware", "emulator", "pet", "dashboard"]) io.seed(name);
-  const foreign = "gui/501/dev.playness.rsa.another-workspace.host";
+  const foreign = "gui/501/dev.ludens.rsa.another-workspace.host";
   io.jobs.set(foreign, 999);
   io.dashboard = true;
   io.mode = "auto";
@@ -416,7 +416,7 @@ test("shared launchd options write the chosen label and logs while preserving a 
     await writeFile(launchctl, '#!/bin/sh\nif [ "$1" = print ]; then exit 1; fi\nexit 0\n');
     await chmod(launchctl, 0o755);
     const script = resolve(import.meta.dir, "../scripts/launch-background.py");
-    const child = Bun.spawn(["/usr/bin/python3", script, "--label", "dev.playness.alice.pet", "--log-dir", logs, "pet", "/bin/echo", "--workspace", "/tmp/seed workspace"], {
+    const child = Bun.spawn(["/usr/bin/python3", script, "--label", "dev.ludens.pet", "--log-dir", logs, "pet", "/bin/echo", "--workspace", "/tmp/seed workspace"], {
       cwd: stableCwd, env: { ...process.env, PATH: bin, RSA_WORKSPACE: "/tmp/stale",
         RSA_PERCEPTION_PERSIST: "0", RSA_PERCEPTION_HOT_SECONDS: "600" }, stdout: "pipe", stderr: "pipe",
     });
@@ -426,11 +426,11 @@ test("shared launchd options write the chosen label and logs while preserving a 
     const canonicalCwd = await realpath(stableCwd);
     const canonicalLogs = await realpath(logs);
     expect(JSON.parse(stdout)).toMatchObject({
-      target: `gui/${process.getuid!()}/dev.playness.alice.pet`, workspace: canonicalCwd,
+      target: `gui/${process.getuid!()}/dev.ludens.pet`, workspace: canonicalCwd,
       log: join(canonicalLogs, "pet.log"), plist: join(canonicalLogs, "pet.plist"),
     });
     const plist = await readFile(join(logs, "pet.plist"), "utf8");
-    expect(plist).toContain("<string>dev.playness.alice.pet</string>");
+    expect(plist).toContain("<string>dev.ludens.pet</string>");
     expect(plist).toContain(`<key>WorkingDirectory</key>\n\t<string>${canonicalCwd}</string>`);
     expect(plist).toContain(`<string>${join(canonicalLogs, "pet.log")}</string>`);
     expect(plist).not.toContain("RSA_WORKSPACE");

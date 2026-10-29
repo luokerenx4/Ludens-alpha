@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { defaultSocket } from "@playness/baseware/address";
-import { resolveDriver, defaultDriverCacheRoot } from "@playness/baseware/drivers/loader.ts";
+import { defaultSocket } from "@ludens/baseware/address";
+import { resolveDriver, defaultDriverCacheRoot } from "@ludens/baseware/drivers/loader.ts";
 import workspaceGuide from "../../templates/AGENTS.md" with { type: "text" };
 import perceptionTemplate from "../../templates/perception.py" with { type: "text" };
 import actionTemplate from "../../templates/action.py" with { type: "text" };
@@ -193,7 +193,7 @@ export class WorkspaceLauncher {
   }
   async job(name: ServiceName): Promise<Job> {
     const hash = createHash("sha256").update(this.plan.workspace).digest("hex").slice(0, 16);
-    const label = name === "pet" ? "dev.playness.alice.pet" : `dev.playness.rsa.${hash}.${name}`;
+    const label = name === "pet" ? "dev.ludens.pet" : `dev.ludens.rsa.${hash}.${name}`;
     const target = `gui/${process.getuid!()}/${label}`;
     const result = await this.run(["launchctl", "print", target]);
     return { target, registered: result.code === 0,
@@ -235,7 +235,7 @@ export class WorkspaceLauncher {
     if (job.registered) await this.checked(["launchctl", "bootout", job.target]);
     this.io.note(`Starting ${name}; log: ${this.log(name)}`);
     await this.checked(["python3", this.plan.launcher,
-      ...(name === "pet" ? ["--label", "dev.playness.alice.pet", "--log-dir", this.plan.sharedPet.background] : []),
+      ...(name === "pet" ? ["--label", "dev.ludens.pet", "--log-dir", this.plan.sharedPet.background] : []),
       name, ...this.plan.commands[name]!], name === "pet" ? this.plan.sharedPet.cwd : this.plan.workspace);
   }
   private async alive(name: ServiceName) {

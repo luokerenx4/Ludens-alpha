@@ -110,7 +110,7 @@ export function cuaCapabilities(options: { tools: Tool[]; client: CuaClient; clo
 
 export async function createCuaProvider(options: { command?: string; clock: Clock }) {
   const transport = new StdioClientTransport({ command: options.command ?? "cua-driver", args: ["mcp"] });
-  const client = new Client({ name: "playness-baseware", version: "0.1.0" }, { capabilities: {} });
+  const client = new Client({ name: "ludens-baseware", version: "0.1.0" }, { capabilities: {} });
   let onDisconnect: ((error: Error) => void) | undefined;
   let closed = false;
   client.onclose = () => { if (!closed) onDisconnect?.(new Error("Cua Driver connection closed")); };

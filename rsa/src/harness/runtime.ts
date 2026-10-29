@@ -1,5 +1,5 @@
-import type { ExecutionResult, ToolArguments } from "@playness/baseware/contracts";
-import type { Catalog } from "@playness/baseware/protocol";
+import type { ExecutionResult, ToolArguments } from "@ludens/baseware/contracts";
+import type { Catalog } from "@ludens/baseware/protocol";
 import type { DiagnosticsMode, EventTrace, RecordEvent } from "./events.ts";
 import type { PerceptionRuntime } from "./perception.ts";
 import type { WorkspaceController } from "./controller.ts";

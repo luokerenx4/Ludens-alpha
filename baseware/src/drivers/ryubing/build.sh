@@ -33,7 +33,7 @@ import plistlib, sys
 path = sys.argv[1]
 with open(path, 'rb') as file:
     info = plistlib.load(file)
-info.update(CFBundleIdentifier='dev.playness.Ryubing', CFBundleName='Ryubing',
+info.update(CFBundleIdentifier='dev.ludens.Ryubing', CFBundleName='Ryubing',
             CFBundleDisplayName='Ryubing',
             CFBundleShortVersionString='1.3.351', CFBundleVersion='1.3.351',
             CFBundleLongVersionString='1.3.351-rsa.3-475615f04')

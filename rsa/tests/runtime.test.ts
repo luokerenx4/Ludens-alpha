@@ -1,7 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { rm } from "node:fs/promises";
 import { resolve } from "node:path";
-import type { Capabilities, Controller } from "@playness/baseware/contracts";
+import type { Capabilities, Controller } from "@ludens/baseware/contracts";
 import { captureResult, createTestRuntime, createTestDeviceSession, readTestController } from "./runtime-fixture.ts";
 import { Runtime } from "../src/harness/runtime.ts";
 import { WorkspaceController } from "../src/harness/controller.ts";

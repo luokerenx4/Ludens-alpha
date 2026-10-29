@@ -19,7 +19,7 @@ if not args.command:
     parser.error("a command is required")
 workspace = Path.cwd().resolve()
 identity = hashlib.sha256(str(workspace).encode()).hexdigest()[:16]
-label = args.label or f"dev.playness.rsa.{identity}.{args.name}"
+label = args.label or f"dev.ludens.rsa.{identity}.{args.name}"
 domain = f"gui/{os.getuid()}"
 target = f"{domain}/{label}"
 if subprocess.run(["launchctl", "print", target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:

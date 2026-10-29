@@ -3,10 +3,10 @@ import { join } from "node:path";
 import { gzipSync, gunzipSync } from "node:zlib";
 import { randomBytes } from "node:crypto";
 import { JsonArchive, type JsonArchiveRef } from "../../../shared/log-archive.ts";
-import type { Clock } from "@playness/baseware/contracts";
-import type { EventMetadata, EventSource } from "@playness/baseware/protocol";
+import type { Clock } from "@ludens/baseware/contracts";
+import type { EventMetadata, EventSource } from "@ludens/baseware/protocol";
 
-export type { EventMetadata, EventSource } from "@playness/baseware/protocol";
+export type { EventMetadata, EventSource } from "@ludens/baseware/protocol";
 export const EVENT_SCHEMA_VERSION = 2;
 export const RSA_SOURCE: EventSource = { component: "rsa" };
 

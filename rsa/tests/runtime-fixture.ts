@@ -1,5 +1,5 @@
-import { BasewareCore } from "@playness/baseware/core";
-import type { Capabilities, ExecutionResult, Observation, ToolArguments, ToolExecutionResult } from "@playness/baseware/contracts";
+import { BasewareCore } from "@ludens/baseware/core";
+import type { Capabilities, ExecutionResult, Observation, ToolArguments, ToolExecutionResult } from "@ludens/baseware/contracts";
 import { childTrace, type EventTrace, type RecordEvent } from "../src/harness/events.ts";
 import { Runtime, type DeviceSession } from "../src/harness/runtime.ts";
 import { PerceptionRuntime, perceptionMetadata, type PerceptionRead } from "../src/harness/perception.ts";
