@@ -15,6 +15,6 @@
 ## 阅读建议
 
 - **接入新模拟器或硬件驱动**：先读 [Baseware 设计理念与能力契约](baseware.md#driver-包与启动描述)，再对照 [Driver Bridge 协议](driver-bridge-protocol.md) 实现模拟器侧 TCP 桥与 TypeScript Provider。
-- **理解 Agent 如何感知环境并下发动作**：阅读 [架构与边界](architecture.md#会话与-loop) 与教程中的 [Workspace 与自适应代码](../tutorials/workspace.md)。
+- **理解 Agent 如何感知环境并下发动作**：阅读 [架构与边界](architecture.md#会话与-loop)、[工作区与能力编程](../tutorials/workspace.md) 与 [常驻感知与动作循环](../tutorials/perception-and-action.md)。
 - **消费运行日志、排查模型上下文或修改 Dashboard**：阅读 [日志与调用链](logging.md)。
 - **编写新评测任务或复核评分结果**：阅读 [Benchmark](benchmark.md)。
