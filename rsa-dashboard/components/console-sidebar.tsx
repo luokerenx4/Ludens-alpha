@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { MenuIcon, XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useLocale, useTranslations } from "@/lib/locale";
@@ -81,12 +81,69 @@ export function ConsoleSidebar({ view, viewLink, onNavigate, pet, petProject, pr
   const dt = useTranslations("dashboard");
   const st = useTranslations("consoleSidebar");
   const id = useId();
+  const sidebar = useRef<HTMLElement>(null);
   const menuButton = useRef<HTMLButtonElement>(null);
+  const scrollArea = useRef<HTMLDivElement>(null);
+  const footer = useRef<HTMLElement>(null);
+  const lastSidebarFocus = useRef<HTMLElement | null>(null);
   const [expanded, setExpanded] = useState(false);
+  useEffect(() => {
+    const narrow = window.matchMedia("(max-width: 680px)");
+    let animation = 0;
+    const rememberFocus = (event: FocusEvent) => {
+      if (event.target instanceof HTMLElement && event.target !== document.body)
+        lastSidebarFocus.current = sidebar.current?.contains(event.target) ? event.target : null;
+    };
+    const forgetOutsidePointer = (event: PointerEvent) => {
+      if (event.target instanceof Node && !sidebar.current?.contains(event.target)) lastSidebarFocus.current = null;
+    };
+    const revealInMiddle = (target: HTMLElement) => {
+      const middle = scrollArea.current;
+      if (!middle?.contains(target)) return;
+      const bounds = middle.getBoundingClientRect(), item = target.getBoundingClientRect();
+      // Match the scroll area's padding, including the link's outer focus ring.
+      if (item.top < bounds.top + 6) middle.scrollTop += item.top - bounds.top - 6;
+      else if (item.bottom > bounds.bottom - 6) middle.scrollTop += item.bottom - bounds.bottom + 6;
+    };
+    const restoreVisibleFocus = () => {
+      cancelAnimationFrame(animation);
+      animation = requestAnimationFrame(() => {
+        const active = document.activeElement;
+        const previous = lastSidebarFocus.current;
+        // CSS may hide and blur the old control before the media-query event arrives.
+        // Only reuse that control if focus is still on BODY and it is now hidden.
+        const target = active instanceof HTMLElement && active !== document.body ? active
+          : previous?.isConnected && !previous.getClientRects().length ? previous : null;
+        if (!target || !sidebar.current?.contains(target)) return;
+        if (narrow.matches) {
+          if (!expanded && (scrollArea.current?.contains(target) || footer.current?.contains(target))) menuButton.current?.focus();
+          else if (expanded) {
+            const bounds = target.getBoundingClientRect();
+            if (bounds.top < 0 || bounds.bottom > window.innerHeight)
+              target.scrollIntoView({ block: "nearest", inline: "nearest" });
+          }
+        } else if (target === menuButton.current) {
+          const current = sidebar.current.querySelector<HTMLElement>('a[aria-current="page"]')
+            ?? sidebar.current.querySelector<HTMLElement>(".brand");
+          current?.focus({ preventScroll: true });
+          if (current) revealInMiddle(current);
+        } else revealInMiddle(target);
+      });
+    };
+    document.addEventListener("focusin", rememberFocus);
+    document.addEventListener("pointerdown", forgetOutsidePointer, true);
+    window.addEventListener("resize", restoreVisibleFocus);
+    return () => {
+      cancelAnimationFrame(animation);
+      document.removeEventListener("focusin", rememberFocus);
+      document.removeEventListener("pointerdown", forgetOutsidePointer, true);
+      window.removeEventListener("resize", restoreVisibleFocus);
+    };
+  }, [expanded]);
   const closeMenu = () => {
     if (!expanded) return;
     setExpanded(false);
-    menuButton.current?.focus();
+    if (menuButton.current?.getClientRects().length) menuButton.current.focus();
   };
   const renderLink = (id: ConsoleView) => <a key={id} href={viewLink(id)}
     className={view === id ? "active" : undefined} aria-current={view === id ? "page" : undefined}
@@ -96,24 +153,28 @@ export function ConsoleSidebar({ view, viewLink, onNavigate, pet, petProject, pr
     }}>
     <NavIcon kind={id} /><span>{t(`nav.${id}`)}</span>
   </a>;
-  return <aside className="sidebar" data-expanded={expanded}>
+  return <aside ref={sidebar} className="sidebar" data-expanded={expanded}>
     <a className="brand" href={viewLink("live")} onClick={event => {
       if (!isPlainNavigationClick(event)) return;
       event.preventDefault(); closeMenu(); onNavigate(viewLink("live"));
     }}><NavIcon kind="logo" /><span>Ludens</span></a>
-    <Button ref={menuButton} type="button" variant="ghost" size="sm" className="sidebar-menu-toggle hidden max-[680px]:inline-flex"
-      aria-expanded={expanded} aria-controls={`${id}-navigation ${id}-footer`}
-      onClick={() => setExpanded(value => !value)}>
-      {expanded ? <XIcon aria-hidden="true" /> : <MenuIcon aria-hidden="true" />}
-      {st(expanded ? "menuClose" : "menuOpen")}
-    </Button>
-    <nav id={`${id}-navigation`} className="sidebar-navigation" aria-label={dt("consoleNav")}>
-      {navSections.map(section => <div key={section.label} className="nav-section">
-        <small>{t(section.label)}</small>{section.ids.map(renderLink)}
-      </div>)}
-    </nav>
-    <footer id={`${id}-footer`} className="sidebar-footer">
+    <div className="sidebar-menu-control">
+      <Button ref={menuButton} type="button" variant="ghost" size="sm" className="sidebar-menu-toggle"
+        aria-expanded={expanded} aria-controls={`${id}-content ${id}-footer`}
+        onClick={() => setExpanded(value => !value)}>
+        {expanded ? <XIcon aria-hidden="true" /> : <MenuIcon aria-hidden="true" />}
+        {st(expanded ? "menuClose" : "menuOpen")}
+      </Button>
+    </div>
+    <div ref={scrollArea} id={`${id}-content`} className="sidebar-scroll-area">
+      <nav className="sidebar-navigation" aria-label={dt("consoleNav")}>
+        {navSections.map(section => <div key={section.label} className="nav-section">
+          <small>{t(section.label)}</small>{section.ids.map(renderLink)}
+        </div>)}
+      </nav>
       <PetFollowCard follow={pet} project={petProject} projects={projects} onSettings={() => { closeMenu(); onPetSettings(); }} />
+    </div>
+    <footer ref={footer} id={`${id}-footer`} className="sidebar-footer">
       <nav className="sidebar-settings" aria-label={t("nav.settings")}>{renderLink("settings")}</nav>
     </footer>
   </aside>;
