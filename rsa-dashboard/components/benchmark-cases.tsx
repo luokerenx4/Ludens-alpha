@@ -1,5 +1,5 @@
 "use client";
-import { useState, type MouseEvent } from "react";
+import { useEffect, useId, useRef, useState, type MouseEvent } from "react";
 import {
   benchmarkCommand, benchmarkVerifyCommand, benchmarkSelection, benchmarkRunUrl, compareResults,
   evidenceLabel, parseResultKey, resultKey, taskKey,
@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { BookOpen, ArrowRight, ClipboardList, ChevronRight, Check } from "lucide-react";
 import { isPlainNavigationClick } from "@/lib/dashboard-navigation";
 import { useRetryFocus } from "./use-retry-focus";
@@ -72,6 +73,12 @@ export function BenchmarkCases({ search, workspace, workspacePath, ready, refres
   const t = useTranslations("benchmarkCases");
   const { locale } = useLocale();
   const query = new URLSearchParams(search);
+  const id = useId();
+  const taskNavigation = useRef<HTMLElement>(null);
+  const taskRail = useRef<HTMLDivElement>(null);
+  const taskPicker = useRef<HTMLDivElement>(null);
+  const historyTarget = useRef<HTMLDivElement>(null);
+  const navigationFocus = useRef<HTMLElement | null>(null);
   const [copied, setCopied] = useState("");
   const params = new URLSearchParams({ project: workspace, limit: "25" });
   if (query.get("case")) params.set("task", query.get("case")!);
@@ -100,6 +107,49 @@ export function BenchmarkCases({ search, workspace, workspacePath, ready, refres
   const comparison = selected && baseline ? compareResults(selected, baseline) : null;
   const taskSelection = benchmarkTaskSelection(taskChoices, query.get("case"), query.get("caseDigest"));
   const chosenTask = taskSelection.task;
+  // taskKey always includes "@"; this non-task value cannot select a package by accident.
+  const pickerValue = chosenTask ? taskKey(chosenTask) : query.get("case") ? "unresolved-task" : "";
+  const currentTask = useRef(pickerValue); currentTask.current = pickerValue;
+  const taskOption = (task: typeof taskChoices[number]) => {
+    const label = `${task.name} · ${task.version ? `v${task.version}` : t("taskVersionMissing")}`;
+    const duplicates = taskChoices.filter(other => other !== task && other.name === task.name && other.version === task.version);
+    if (!duplicates.length) return label;
+    const digest = shortDigest(task.digest);
+    const collision = duplicates.some(other => other.source === task.source && shortDigest(other.digest) === digest);
+    return `${label} · ${t(task.source === "repository" ? "repoTask" : "workspaceTask")} · ${collision ? task.digest : digest}`;
+  };
+  useEffect(() => {
+    let frame = 0;
+    const contains = (target: Node) => taskRail.current?.contains(target) || taskPicker.current?.contains(target);
+    const remember = (event: FocusEvent) => {
+      if (event.target instanceof HTMLElement && event.target !== document.body)
+        navigationFocus.current = contains(event.target) ? event.target : null;
+    };
+    const release = (event: PointerEvent) => {
+      if (!(event.target instanceof Node) || !contains(event.target)) navigationFocus.current = null;
+    };
+    const resize = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const previous = navigationFocus.current;
+        if (!previous?.isConnected || previous.getClientRects().length) return;
+        if (document.activeElement !== document.body && document.activeElement !== previous) return;
+        const target = taskRail.current?.contains(previous) ? taskPicker.current?.querySelector<HTMLSelectElement>("select")
+          : taskRail.current?.querySelector<HTMLElement>(currentTask.current
+            ? `[data-benchmark-task="${CSS.escape(currentTask.current)}"]` : '[data-benchmark-choice="all"]') ?? taskNavigation.current;
+        if (target?.getClientRects().length) target.focus();
+      });
+    };
+    document.addEventListener("focusin", remember);
+    document.addEventListener("pointerdown", release, true);
+    window.addEventListener("resize", resize);
+    return () => {
+      cancelAnimationFrame(frame);
+      document.removeEventListener("focusin", remember);
+      document.removeEventListener("pointerdown", release, true);
+      window.removeEventListener("resize", resize);
+    };
+  }, []);
   const link = (event: MouseEvent<HTMLAnchorElement>, url: string) => {
     if (!isPlainNavigationClick(event)) return;
     event.preventDefault(); onNavigate(url);
@@ -148,13 +198,30 @@ export function BenchmarkCases({ search, workspace, workspacePath, ready, refres
         if (catalogLoad.loading) return; readFocus.remember(event.currentTarget); catalogLoad.retry();
       }}>{t(catalogLoad.loading ? "retrying" : "refreshHistory")}</Button>
     </div>}
-    {catalogLoad.error && <ReadIssue title={t("catalogUnavailable")} error={catalogLoad.error} cached={!!catalog} state="catalog-error" />}
     {(!!taskCatalog?.issues.length || !!catalog?.history.issues.length) && <details className="bench-warning"><summary>{t("diagnostics")}</summary>
       {taskCatalog?.issues.map((issue, index) => <p key={`catalog:${index}`}><code>{issue.project}</code> · {issue.error}</p>)}
       {catalog?.history.issues.map((issue, index) => <p key={`history:${index}`}><code>{issue.runId}</code> · {issue.error}</p>)}
     </details>}
     <div className={taskChoices.length ? "bench-case-layout" : "grid min-w-0 gap-4"}>
-      {!!taskChoices.length && <aside className="surface bench-case-list" aria-label={t("catalogAria")}><div className="bench-list-heading"><h2>{t("taskCatalogTitle")}</h2><p>{t("taskCatalogDescription")}</p><small>{taskChoices.length} {t("taskPackages")}</small></div>
+      {!!taskChoices.length && <aside ref={taskNavigation} tabIndex={-1} className="surface bench-case-list" aria-label={t("catalogAria")}><div className="bench-list-heading"><h2>{t("taskCatalogTitle")}</h2><p>{t("taskCatalogDescription")}</p><small>{taskChoices.length} {t("taskPackages")}</small></div>
+        <div ref={taskPicker} className="bench-task-picker">
+          <div className="bench-task-picker-label"><label htmlFor={`${id}-task`}>{t("taskPickerLabel")}</label><small>{taskChoices.length} {t("taskPackages")}</small></div>
+          <NativeSelect id={`${id}-task`} wrapperClassName="w-full" value={pickerValue} onChange={event => {
+            if (!event.target.value) { navigate(clearBenchmarkFilter); return; }
+            const task = taskChoices.find(item => taskKey(item) === event.target.value);
+            if (task) navigate(benchmarkTaskFilter(task.name, task.digest));
+          }}>
+            <NativeSelectOption value="">{t("allHistory")}</NativeSelectOption>
+            {pickerValue === "unresolved-task" && <NativeSelectOption value="unresolved-task" disabled>{t(taskSelection.kind === "ambiguous" ? "taskPickerAmbiguous" : "taskPickerMissing")}</NativeSelectOption>}
+            {taskChoices.map(task => <NativeSelectOption key={taskKey(task)} value={taskKey(task)}>{taskOption(task)}</NativeSelectOption>)}
+          </NativeSelect>
+          <a className="bench-history-jump" href={`#${id}-history`} onClick={event => {
+            if (!isPlainNavigationClick(event)) return;
+            event.preventDefault(); historyTarget.current?.focus({ preventScroll: true });
+            historyTarget.current?.scrollIntoView({ block: "start" });
+          }}>{t("viewExecutionHistory")} <ArrowRight aria-hidden="true" /></a>
+        </div>
+        <div ref={taskRail} className="bench-task-options">
         <Button type="button" variant="ghost" className="bench-task-choice bench-task-all h-auto w-full justify-between whitespace-normal border text-left" data-benchmark-choice="all" aria-pressed={!query.get("case")} onClick={() => navigate(clearBenchmarkFilter)}><span>{t("allHistory")}</span>{!query.get("case") && <Check aria-hidden="true" />}</Button>
         {taskChoices.map(task => <Button type="button" variant="ghost" key={taskKey(task)} className="bench-task-choice h-auto w-full justify-start whitespace-normal border text-left"
           data-benchmark-task={taskKey(task)} aria-pressed={!!query.get("case") && chosenTask === task} onClick={() => navigate(benchmarkTaskFilter(task.name, task.digest))}>
@@ -163,6 +230,7 @@ export function BenchmarkCases({ search, workspace, workspacePath, ready, refres
             {task.unsupportedRequirements.length > 0 && <span className="bench-task-requirement">{t("envUnmet")}</span>}
           </span>{chosenTask === task ? <Check aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
         </Button>)}
+        </div>
         <p className="bench-task-choice-hint">{t("taskChoiceHint")}</p>
         {catalogLoad.metadataStale && <p className="bench-task-choice-hint" role="status" data-benchmark-task-metadata="retained">{t(catalogLoad.error ? "taskMetadataStale" : "taskMetadataPending")}</p>}
       </aside>}
@@ -201,6 +269,8 @@ export function BenchmarkCases({ search, workspace, workspacePath, ready, refres
           </div></>}
           {chosenTask.unsupportedRequirements.length > 0 && <div className="bench-warning">{t("envUnsupportedPrefix")}{chosenTask.unsupportedRequirements.join(t("listSeparator"))}</div>}
         </section>}
+        <div ref={historyTarget} id={`${id}-history`} tabIndex={-1} className="bench-history-target" role="region" aria-label={t("historyTitle")} aria-busy={catalogLoad.loading}>
+        {catalogLoad.error && <ReadIssue title={t("catalogUnavailable")} error={catalogLoad.error} cached={!!catalog} state="catalog-error" />}
         {workspaceState === "ready" && !catalog && catalogLoad.loading && <Card data-benchmark-state="catalog-loading"><CardHeader><CardTitle><h2>{t(taskCatalog ? "historyLoadingTitle" : "catalogLoading")}</h2></CardTitle><CardDescription role="status">{t(taskCatalog ? "historyLoadingDescription" : "catalogDescription")}</CardDescription></CardHeader></Card>}
         {catalog && <section className="surface bench-history" data-benchmark-state={historyState}>
           <div className="surface-heading"><h2>{t("historyTitle")}</h2><span>{rows.length} {t("historySubtitle")}</span></div>
@@ -220,6 +290,7 @@ export function BenchmarkCases({ search, workspace, workspacePath, ready, refres
           {(query.get("benchCursor") || catalog.history.nextCursor) && <div className="bench-selectors">{query.get("benchCursor") && <Button type="button" variant="outline" size="sm" onClick={event => clearSelection(event, { benchCursor: null })}>{t("latestPage")}</Button>}
             {catalog.history.nextCursor && <Button type="button" variant="link" size="xs" className="h-auto whitespace-normal px-0 text-left" onClick={event => clearSelection(event, { benchCursor: catalog.history.nextCursor! })}>{t("olderRuns")}</Button>}</div>}
         </section>}
+        </div>
         {baselineState !== "none" && <section className="surface bench-result" data-benchmark-baseline={baselineState} aria-label={t("baselineTitle")}>
           <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-sm font-medium">{t("baselineTitle")}</h2><div className="flex flex-wrap gap-2">
             {baselineState === "valid" && <Button type="button" variant="outline" size="sm" aria-disabled={baselineLoad.loading} onClick={() => { if (!baselineLoad.loading) baselineLoad.retry(); }}>{t(baselineLoad.loading ? "retrying" : "refreshBaseline")}</Button>}

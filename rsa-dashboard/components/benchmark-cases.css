@@ -2,6 +2,16 @@
 .benchmark-cases { min-width:0; }
 .benchmark-cases .bench-case-layout { grid-template-columns:minmax(240px,300px) minmax(0,1fr); }
 .benchmark-cases .bench-case-list { display:grid; grid-template-columns:minmax(0,1fr); gap:8px; padding:14px; min-width:0; }
+.bench-task-options { display:grid; grid-template-columns:minmax(0,1fr); gap:8px; }
+.bench-task-picker { display:none; }
+.bench-task-picker-label { display:flex; flex-wrap:wrap; align-items:baseline; justify-content:space-between; gap:4px 12px; }
+.bench-task-picker-label label { font-size:13px; font-weight:600; }
+.bench-task-picker-label small { color:var(--muted-foreground); font-size:11px; }
+.bench-history-jump { display:inline-flex; align-items:center; justify-self:start; gap:6px; color:var(--primary); font-size:12px; line-height:1.6; text-decoration:underline; text-underline-offset:3px; }
+.bench-history-jump svg { width:14px; height:14px; }
+.bench-history-target { display:grid; min-width:0; gap:12px; scroll-margin-block:20px; }
+.bench-history-target:empty { display:none; }
+.bench-history-target:focus-visible,.bench-case-list:focus-visible,.bench-history-jump:focus-visible { outline:2px solid var(--primary); outline-offset:4px; border-radius:var(--radius); }
 .benchmark-cases .bench-list-heading { display:block; padding:2px 2px 7px; min-width:0; }
 .bench-list-heading h2 { color:var(--foreground); font-size:14px; font-weight:600; line-height:1.5; }
 .bench-list-heading p { margin:6px 0 8px; font-size:12px; line-height:1.6; color:var(--muted-foreground); }
@@ -30,6 +40,10 @@
 .benchmark-cases .bench-result-heading>div { min-width:0; }
 .benchmark-cases .bench-result-heading h2,.benchmark-cases .bench-result-heading p { overflow-wrap:anywhere; }
 @media(max-width:1150px) { .benchmark-cases .bench-case-layout { grid-template-columns:minmax(220px,260px) minmax(0,1fr); } }
-@media(max-width:900px) { .benchmark-cases .bench-case-layout { grid-template-columns:minmax(0,1fr); } }
+@media(max-width:900px) {
+  .benchmark-cases .bench-case-layout { grid-template-columns:minmax(0,1fr); }
+  .benchmark-cases .bench-list-heading,.bench-task-options { display:none; }
+  .bench-task-picker { display:grid; min-width:0; gap:10px; }
+}
 @media(max-width:480px) { .benchmark-cases .bench-case-list { padding:12px; } .bench-task-metadata>div { grid-template-columns:85px minmax(0,1fr); gap:10px; } }
 }
