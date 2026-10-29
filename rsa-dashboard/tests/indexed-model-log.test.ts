@@ -1,3 +1,4 @@
+import { registerFixture } from "./fixtures/registry";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { appendFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
@@ -104,9 +105,7 @@ test("missing inbound objects fail explicitly; non-JSON and DONE stream frames r
 
 test("Dashboard binds archives to the registered workspace and rejects a foreign manifest", async () => fixture(async (workspace, run) => {
   const root = join(workspace, "registered");
-  const state = join(root, "test");
-  await mkdir(state, { recursive: true });
-  await writeFile(join(state, "workspace.json"), JSON.stringify({ workspace }));
+  await registerFixture(root, "test", workspace);
   await writeFile(join(run, "events.jsonl"), "");
   const loaded = await openRun("test", "run", root);
   assert.equal(loaded.index.archiveWorkspace, workspace); loaded.release();

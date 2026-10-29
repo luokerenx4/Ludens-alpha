@@ -1,3 +1,4 @@
+@layer components {
 .feed-panel {
   min-width: 0;
   display: flex;
@@ -455,4 +456,6 @@
   .block-full {
     max-height: 340px;
   }
+}
+
 }

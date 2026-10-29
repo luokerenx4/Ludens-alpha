@@ -5,60 +5,60 @@ import { join, posix, resolve, sep } from "node:path";
 const repoRoot = resolve(process.cwd(), "..");
 const docsRoot = join(repoRoot, "docs");
 
-export interface DocEntry { id: string; title: string; group: DocGroup; path: string }
+export interface DocEntry { id: string; title: string; group: DocGroup; path: string; lang: "en" | "zh" }
 export type DocGroup = "tutorials" | "reference" | "insights";
 const groups: { id: DocGroup; title: string; blurb: string }[] = [
-  { id: "tutorials", title: "教程 · Tutorials", blurb: "怎么安装、准备设备与跑通工作区。" },
-  { id: "reference", title: "契约 · Reference", blurb: "组件边界、通信协议与日志评测规范。" },
-  { id: "insights", title: "洞见 · Insights", blurb: "真实长跑踩坑复盘与架构取舍依据。" },
+  { id: "tutorials", title: "Tutorials", blurb: "Install, prepare devices, and run a workspace." },
+  { id: "reference", title: "Reference", blurb: "Component boundaries, protocols, and logging/eval specs." },
+  { id: "insights", title: "Insights", blurb: "Postmortems from long runs and architecture rationale." },
 ];
 
-const titles: Record<string, string> = {
-  "tutorials/index.md": "教程概览",
-  "tutorials/quickstart.md": "安装与工作区启停",
-  "tutorials/devices.md": "设备与驱动准备",
-  "tutorials/workspace.md": "工作区与能力编程",
-  "tutorials/perception-and-action.md": "常驻感知与动作循环",
-  "tutorials/debugging-and-verification.md": "控制台调试与验证",
-  "reference/index.md": "组件与契约概览",
-  "reference/architecture.md": "架构与边界",
-  "reference/baseware.md": "Baseware 设计理念与能力契约",
-  "reference/driver-bridge-protocol.md": "Driver Bridge 协议",
-  "reference/logging.md": "日志与调用链",
-  "reference/benchmark.md": "Benchmark",
-  "insights/index.md": "洞见概览",
-  "insights/omp-compaction.md": "OMP 后台压缩改造",
-  "insights/ws-recovery.md": "WS 恢复测试依据",
-};
-const order = Object.keys(titles);
+const order = [
+  "tutorials/index", "tutorials/quickstart", "tutorials/devices", "tutorials/workspace",
+  "tutorials/perception-and-action", "tutorials/debugging-and-verification",
+  "reference/index", "reference/architecture", "reference/baseware",
+  "reference/driver-bridge-protocol", "reference/logging", "reference/dashboard-ui", "reference/benchmark",
+  "insights/index", "insights/omp-compaction", "insights/ws-recovery", "insights/omp-injection",
+];
 const rank = (key: string) => { const idx = order.indexOf(key); return idx < 0 ? 999 : idx; };
 
 const docIdPattern = /^(tutorials|reference|insights)\/[a-z0-9-]+$/;
 
-async function listed(group: DocGroup, root: string): Promise<DocEntry[]> {
-  const dir = join(root, group);
+async function fileTitle(path: string, fallback: string): Promise<string> {
+  try {
+    const source = await readFile(path, "utf8");
+    const heading = source.match(/^#\s+(.+)$/m);
+    const title = heading?.[1].trim();
+    return title ? title : fallback;
+  } catch { return fallback; }
+}
+
+async function listed(group: DocGroup, root: string, lang: "en" | "zh"): Promise<DocEntry[]> {
+  const dir = join(root, lang, group);
   let files: string[];
   try {
     files = (await readdir(dir)).filter(name => name.endsWith(".md") && docIdPattern.test(`${group}/${name.slice(0, -3)}`))
-      .sort((a, b) => rank(`${group}/${a}`) - rank(`${group}/${b}`) || a.localeCompare(b));
+      .sort((a, b) => rank(`${group}/${a.slice(0, -3)}`) - rank(`${group}/${b.slice(0, -3)}`) || a.localeCompare(b));
   } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
-  return files.map(name => ({ id: `${group}/${name.replace(/\.md$/, "")}`, group,
-    title: titles[`${group}/${name}`] ?? name.replace(/\.md$/, ""),
-    path: join(dir, name) }));
+  return Promise.all(files.map(async name => {
+    const id = `${group}/${name.replace(/\.md$/, "")}`;
+    return { id, group, lang, path: join(dir, name),
+      title: await fileTitle(join(dir, name), id) };
+  }));
 }
 
 export async function docGroups(root = docsRoot) {
-  return Promise.all(groups.map(async group => ({ ...group,
-    docs: (await listed(group.id, root)).map(({ id, title }) => ({ id, title })) })));
-}
-
-/** Resolve a whitelisted doc id to an absolute file; anything else is rejected. */
-async function resolveDoc(id: string, entries: DocEntry[], root: string): Promise<DocEntry> {
-  const entry = entries.find(item => item.id === id);
-  if (!entry) throw new Error("未知文档");
-  const [absolute, allowedRoot] = await Promise.all([realpath(entry.path), realpath(root)]);
-  if (!absolute.startsWith(allowedRoot + sep)) throw new Error("未知文档");
-  return { ...entry, path: absolute };
+  return Promise.all(groups.map(async group => {
+    const [en, zh] = await Promise.all([listed(group.id, root, "en"), listed(group.id, root, "zh")]);
+    const zhIds = new Set(zh.map(item => item.id));
+    const merged = new Map<string, DocEntry & { zhAvailable: boolean; enMissing?: boolean }>(
+      en.map(item => [item.id, { ...item, zhAvailable: true }]));
+    for (const item of zh) if (!merged.has(item.id)) merged.set(item.id, { ...item, zhAvailable: true, enMissing: true });
+    for (const item of merged.values()) if (!zhIds.has(item.id)) item.zhAvailable = false;
+    const docs = [...merged.values()].sort((a, b) => rank(a.id) - rank(b.id) || a.id.localeCompare(b.id))
+      .map(({ id, title }) => ({ id, title }));
+    return { ...group, docs };
+  }));
 }
 
 const escape = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
@@ -103,7 +103,7 @@ function inline(text: string, currentId: string, ids?: ReadonlySet<string>, link
 }
 
 /** Minimal markdown renderer: headings, code fences, tables, lists, paragraphs. */
-export function renderMarkdown(source: string, currentId: string, ids?: ReadonlySet<string>): string {
+export function renderMarkdown(source: string, currentId: string, ids?: ReadonlySet<string>, lang: "en" | "zh" = "en"): string {
   const lines = source.split("\n");
   const html: string[] = [];
   let i = 0, inCode = false, codeLang = "", code: string[] = [];
@@ -113,7 +113,7 @@ export function renderMarkdown(source: string, currentId: string, ids?: Readonly
   const flushList = () => { if (list) { html.push(`<${listTag}>` + list.map(item => `<li>${renderInline(item)}</li>`).join("") + `</${listTag}>`); list = null; } };
   const flushCode = () => {
     if (codeLang === "mermaid") {
-      html.push(`<details class="doc-diagram"><summary>架构与流程图（点击展开源码）</summary><pre><code class="language-mermaid">${escape(code.join("\n"))}</code></pre></details>`);
+      html.push(`<details class="doc-diagram"><summary>${lang === "zh" ? "架构与流程图（点击展开源码）" : "Architecture diagram (click to expand source)"}</summary><pre><code class="language-mermaid">${escape(code.join("\n"))}</code></pre></details>`);
     } else {
       html.push(`<pre><code${codeLang ? ` class="language-${escape(codeLang)}"` : ""}>${escape(code.join("\n"))}</code></pre>`);
     }
@@ -168,11 +168,20 @@ export function renderMarkdown(source: string, currentId: string, ids?: Readonly
   return html.join("\n");
 }
 
-export async function readDoc(id: string, root = docsRoot): Promise<{ id: string; title: string; group: DocGroup; html: string }> {
-  if (!docIdPattern.test(id)) throw new Error("未知文档");
-  const entries = (await Promise.all(groups.map(group => listed(group.id, root)))).flat();
-  const entry = await resolveDoc(id, entries, root);
+export async function readDoc(id: string, root = docsRoot, lang: "en" | "zh" = "en"): Promise<{ id: string; title: string; group: DocGroup; lang: "en" | "zh"; fallback: boolean; html: string }> {
+  if (!docIdPattern.test(id)) throw new Error("Unknown doc");
+  const pick = async (want: "en" | "zh") => {
+    const entries = (await Promise.all(groups.map(group => listed(group.id, root, want)))).flat();
+    const entry = entries.find(item => item.id === id);
+    if (!entry) return undefined;
+    const [absolute, allowedRoot] = await Promise.all([realpath(entry.path), realpath(join(root, want))]);
+    if (!absolute.startsWith(allowedRoot + sep)) throw new Error("Unknown doc");
+    return { ...entry, path: absolute };
+  };
+  const entry = (await pick(lang)) ?? (lang === "en" ? await pick("zh") : undefined);
+  if (!entry) throw new Error("Unknown doc");
   const source = await readFile(entry.path, "utf8");
-  return { id: entry.id, title: entry.title, group: entry.group,
-    html: renderMarkdown(source, entry.id, new Set(entries.map(item => item.id))) };
+  const ids = new Set((await Promise.all(groups.map(group => listed(group.id, root, entry.lang)))).flat().map(item => item.id));
+  return { id: entry.id, title: entry.title, group: entry.group, lang: entry.lang,
+    fallback: entry.lang !== lang, html: renderMarkdown(source, entry.id, ids, entry.lang) };
 }

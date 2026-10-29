@@ -1,10 +1,11 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { launchPlan, parseConfig, WorkspaceLauncher, type DriverManifest, type LaunchIO, type LaunchPlan } from "../src/app/workspace.ts";
 import { getDriver } from "@ludens/baseware/drivers/registry.ts";
+import { ensureWorkspaceIdentity, ludensHome, registerWorkspace } from "../../shared/ludens.ts";
 
 const fixtureManifests: Record<string, DriverManifest> = {
   "bridge-fixture": { id: "bridge-fixture", transport: "bridge", defaultPort: 47991, needsGame: true,
@@ -36,6 +37,7 @@ class FakeServices implements LaunchIO {
   bridgeClientPids: number[] = [];
   bridgePort: number | undefined;
   dashboard = false;
+  occupiedDashboard = false;
   dashboardBuild = true;
   mode = "manual";
   cleanupReads = 0;
@@ -102,6 +104,7 @@ class FakeServices implements LaunchIO {
     }
     if (argv[0] === "pgrep") return result(this.externalEmulator ? "999\n" : "", this.externalEmulator ? 0 : 1);
     if (argv[0] === "lsof") {
+      if (argv.includes("-iTCP:3015")) return this.occupiedDashboard ? result("3015\n") : result("", 1);
       const pid = this.jobs.get(this.target("emulator")) ?? this.preparedBridgePid;
       if (argv.includes("-p")) return pid ? result(`p${pid}\nn127.0.0.1:${this.bridgePort}\n`) : result("", 1);
       if (!argv.includes(`-iTCP:${this.bridgePort}`) || !pid) return result("", 1);
@@ -116,6 +119,40 @@ class FakeServices implements LaunchIO {
 
 const plan = () => launchPlan(parseConfig({ driver: "bridge-fixture", game: "games/A game; $(touch BAD).nsp", pet: true }, manifestFor("bridge-fixture")),
   "/tmp/Workspace with spaces", "/tmp/Source with spaces", "/tmp/baseware-test.sock", manifestFor("bridge-fixture"));
+
+test("up rejects unidentified and conflicting workspaces before loading drivers, including dry runs", async () => {
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "rsa-up-identity-")));
+  try {
+    const home = join(directory, "global"), original = join(directory, "original"), copy = join(directory, "copy"), legacy = join(directory, "legacy");
+    await mkdir(original);
+    await mkdir(legacy);
+    const marker = join(directory, "driver-loaded");
+    const driver = join(directory, "driver.ts");
+    await writeFile(driver, `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(marker)}, "loaded"); throw new Error("driver must not load");`);
+    const config = JSON.stringify({ driver: "fixture", driverPackage: `file:${driver}` });
+    await writeFile(join(original, "rsa.json"), config);
+    await writeFile(join(legacy, "rsa.json"), config);
+    const identity = await ensureWorkspaceIdentity(original);
+    await registerWorkspace(original, home);
+    const registration = await readFile(join(home, "registry", `${identity.id}.json`), "utf8");
+    await cp(original, copy, { recursive: true });
+    for (const workspace of [copy, legacy]) {
+      for (const extra of [[], ["--dry-run"]]) {
+        const env: NodeJS.ProcessEnv = { ...process.env, LUDENS_HOME: home };
+        delete env.RSA_WORKSPACE; delete env.RSA_SOCKET; delete env.BASEWARE_SOCKET;
+        const child = Bun.spawn([process.execPath, resolve(import.meta.dir, "../src/app/main.ts"), "--workspace", workspace, "up", ...extra], {
+          env, stdout: "pipe", stderr: "pipe",
+        });
+        const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+        expect(code).not.toBe(0);
+        expect(stderr).toContain(workspace === copy ? "--new-id" : "workspace import");
+      }
+    }
+    expect(await Bun.file(marker).exists()).toBe(false);
+    expect(await readdir(legacy)).toEqual(["rsa.json"]);
+    expect(await readFile(join(home, "registry", `${identity.id}.json`), "utf8")).toBe(registration);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
 
 test("default web startup starts the Dashboard without launching or waiting for Electron", async () => {
   const config = parseConfig({ driver: "cua" }, manifestFor("cua"));
@@ -155,6 +192,25 @@ test("system Pet readiness uses the Dashboard pet endpoint", async () => {
   } finally { server.stop(true); }
 });
 
+test("Dashboard reuse requires the same global home and rejects occupied mismatched services before startup", async () => {
+  let home = ludensHome();
+  const server = Bun.serve({ port: 0, fetch(request) {
+    return new URL(request.url).pathname === "/api/catalog" ? Response.json([]) : Response.json({ home });
+  } });
+  try {
+    const value = await plan();
+    const io = new WorkspaceLauncher(value)["io"];
+    expect(await io.dashboardReady(server.url.origin)).toBe(true);
+    home = "/tmp/different-ludens-home";
+    expect(await io.dashboardReady(server.url.origin)).toBe(false);
+    const occupied = new FakeServices(value);
+    occupied.occupiedDashboard = true;
+    await expect(new WorkspaceLauncher(value, occupied).up()).rejects.toThrow("different Ludens home");
+    expect(occupied.starts).toEqual([]);
+    expect(occupied.calls.some(argv => argv[1] === "bootout")).toBe(false);
+  } finally { server.stop(true); }
+});
+
 test("managed Dashboard uses a current production build and fails before starting devices when stale", async () => {
   const value = await plan();
   expect(value.commands.dashboard).toEqual(["npm", "--prefix", "/tmp/Source with spaces/rsa-dashboard", "run", "start"]);
@@ -189,7 +245,7 @@ test("launch config keeps limits explicit and paths as literal argv entries", as
   expect(value.commands.host).not.toContain("--port");
   expect(value.commands.pet).toContain("/tmp/Workspace with spaces");
   expect(value.commands.pet).not.toContain("--profile");
-  expect(value.sharedPet).toEqual({ cwd: "/tmp/Source with spaces", background: "/tmp/artifacts/rsa/alice/background" });
+  expect(value.sharedPet).toEqual({ cwd: "/tmp/Source with spaces", background: join(ludensHome(), "pet/background") });
 });
 
 test("bridge plugins require a resolved port before any services start", () => {
@@ -283,7 +339,7 @@ test("init and dry-run preserve existing workspace files and never invoke servic
     await writeFile(join(workspace, "AGENTS.md"), "My existing workspace instructions\n");
     const run = async (...args: string[]) => {
       const child = Bun.spawn([process.execPath, resolve(import.meta.dir, "../src/app/main.ts"), ...args], {
-        cwd: workspace, env: { ...process.env, PATH: bin, SERVICE_MARKER: marker, RSA_WORKSPACE: workspace }, stdout: "pipe", stderr: "pipe",
+        cwd: workspace, env: { ...process.env, LUDENS_HOME: join(directory, "global"), PATH: bin, SERVICE_MARKER: marker, RSA_WORKSPACE: workspace }, stdout: "pipe", stderr: "pipe",
       });
       const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
       return { code, stdout, stderr };
@@ -305,7 +361,7 @@ test("init and dry-run preserve existing workspace files and never invoke servic
     expect(repeated.stderr).toContain("EEXIST");
     expect(await readFile(join(workspace, "rsa.json"), "utf8")).toBe(configBefore);
     expect(await readFile(join(workspace, "AGENTS.md"), "utf8")).toBe("My existing workspace instructions\n");
-    expect((await readdir(workspace)).sort()).toEqual(["AGENTS.md", "action.py", "perception.py", "rsa.json"]);
+    expect((await readdir(workspace)).sort()).toEqual([".rsa", "AGENTS.md", "action.py", "perception.py", "rsa.json"]);
     expect(await readFile(join(workspace, "perception.py"), "utf8")).toContain("NotImplementedError");
     expect(await readFile(join(workspace, "action.py"), "utf8")).toContain("NotImplementedError");
     const desktop = join(directory, "Desktop workspace");
@@ -343,7 +399,7 @@ test("external packages resolve workspace-relative file specs and check only exe
     }
     const run = async (...args: string[]) => {
       const child = Bun.spawn([process.execPath, resolve(import.meta.dir, "../src/app/main.ts"), "--workspace", workspace, ...args], {
-        cwd: directory, env: { ...process.env, PATH: bin }, stdout: "pipe", stderr: "pipe",
+        cwd: directory, env: { ...process.env, LUDENS_HOME: join(directory, "global"), PATH: bin }, stdout: "pipe", stderr: "pipe",
       });
       const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
       return { code, stdout, stderr };
@@ -351,7 +407,7 @@ test("external packages resolve workspace-relative file specs and check only exe
     const initialized = await run("init", "--driver", "fixture", "--driver-package", "file:./driver", "--game", "game.rom");
     expect(initialized.code).toBe(0);
     const config = JSON.parse(await readFile(join(workspace, "rsa.json"), "utf8"));
-    expect(config.driverPackage).toBe(`file:${await realpath(driver)}`);
+    expect(config.driverPackage).toBe("file:./driver");
     // Hand-edited relative specs must receive the same workspace interpretation on up.
     await writeFile(join(workspace, "rsa.json"), JSON.stringify({ ...config, driverPackage: "file:./driver", dashboard: false, pet: false }));
     const preview = await run("up", "--dry-run");
@@ -422,7 +478,7 @@ test("two workspaces reuse one Ludens Pet process and either workspace can expli
   const firstIO = new FakeServices(first);
   const firstStatus = await new WorkspaceLauncher(first, firstIO).up();
   const firstPet = firstStatus.jobs.find(job => job.name === "pet")!;
-  expect(firstPet).toMatchObject({ scope: "shared", log: "/tmp/artifacts/rsa/alice/background/pet.log" });
+  expect(firstPet).toMatchObject({ scope: "shared", log: join(ludensHome(), "pet/background/pet.log") });
 
   const secondIO = new FakeServices(second);
   secondIO.jobs = firstIO.jobs;
@@ -480,7 +536,7 @@ test("shared launchd options preserve the working directory, Python override and
     const script = resolve(import.meta.dir, "../scripts/launch-background.py");
     const child = Bun.spawn(["/usr/bin/python3", script, "--label", "dev.ludens.pet", "--log-dir", logs, "pet", "/bin/echo", "--workspace", "/tmp/seed workspace"], {
       cwd: stableCwd, env: { ...process.env, PATH: bin, RSA_WORKSPACE: "/tmp/stale",
-        XDG_STATE_HOME: driverState, RSA_PYTHON: python,
+        XDG_STATE_HOME: driverState, RSA_PYTHON: python, LUDENS_HOME: join(directory, "global"), SSH_AUTH_SOCK: join(directory, "agent.sock"),
         RSA_PERCEPTION_PERSIST: "0", RSA_PERCEPTION_HOT_SECONDS: "600" }, stdout: "pipe", stderr: "pipe",
     });
     const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
@@ -499,6 +555,8 @@ test("shared launchd options preserve the working directory, Python override and
     expect(plist).not.toContain("RSA_WORKSPACE");
     expect(plist).toContain(`<key>XDG_STATE_HOME</key>\n\t\t<string>${driverState}</string>`);
     expect(plist).toContain(`<key>RSA_PYTHON</key>\n\t\t<string>${python}</string>`);
+    expect(plist).toContain(`<key>LUDENS_HOME</key>\n\t\t<string>${join(directory, "global")}</string>`);
+    expect(plist).toContain(`<key>SSH_AUTH_SOCK</key>\n\t\t<string>${join(directory, "agent.sock")}</string>`);
     expect(plist).toContain("<key>RSA_PERCEPTION_PERSIST</key>\n\t\t<string>0</string>");
     expect(plist).toContain("<key>RSA_PERCEPTION_HOT_SECONDS</key>\n\t\t<string>600</string>");
     expect(await readdir(stableCwd)).toEqual([]);

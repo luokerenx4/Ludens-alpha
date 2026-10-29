@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { basename, join, resolve } from "node:path";
-import { homedir } from "node:os";
 import { parseArgs } from "node:util";
+import { ludensHome } from "../../shared/ludens.ts";
 import { cli, HELP } from "./cli.ts";
 import { defaultSocket } from "./address.ts";
 import { BasewareCore } from "./core.ts";
@@ -28,7 +28,7 @@ export async function main(args = process.argv.slice(2)) {
   const portValue = values.port ?? registration.defaultPort;
   const port = portValue === undefined ? undefined : Number(portValue);
   if (port !== undefined && (!Number.isInteger(port) || port < 1 || port > 65535)) throw new Error("--port must be between 1 and 65535");
-  const dataDir = resolve(values["data-dir"] ?? join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local/state"), "ludens/baseware", basename(values.socket!, ".sock")));
+  const dataDir = resolve(values["data-dir"] ?? join(ludensHome(), "logs", "baseware", basename(values.socket!, ".sock")));
   let core: BasewareCore | undefined;
   let provider: DriverProvider | undefined;
   // Claim the address before touching a device; a second service must fail immediately.

@@ -3,6 +3,7 @@ import { mkdirSync, realpathSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
+import { ludensHome } from '../../../../shared/ludens.js'
 import { createCompanion } from './companion.js'
 import type { RsaPetSnapshot } from './rsa-source.js'
 import { PetSessionCoordinator } from './pet-session.js'
@@ -24,7 +25,7 @@ if (values.help) {
   }
   const here = dirname(fileURLToPath(import.meta.url))
   app.setName('RSA Ludens Pet')
-  app.setPath('userData', resolve(values.profile ?? join(app.getPath('appData'), 'RSA Ludens Pet')))
+  app.setPath('userData', resolve(values.profile ?? join(ludensHome(), 'pet', 'profile')))
   mkdirSync(app.getPath('userData'), { recursive: true })
   if (!app.requestSingleInstanceLock()) {
     app.exit(0)

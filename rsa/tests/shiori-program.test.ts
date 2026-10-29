@@ -32,7 +32,7 @@ test("invalid verifier budget is rejected before a pending verification can be c
   const root = await mkdtemp(join(tmpdir(), "shiori-verify-budget-")), workspace = join(root, "workspace");
   await mkdir(workspace);
   try {
-    const result = await runTask("ludens/clamp", { workspace, artifactRoot: join(root, "index"), parameters: { samples: 10 }, verify: false });
+    const result = await runTask("ludens/clamp", { workspace, globalHome: join(root, "index"), parameters: { samples: 10 }, verify: false });
     expect(result.trial.status).toBe("completed");
     const task = join(workspace, "benchmarks/tasks/clamp");
     await mkdir(join(task, "tests"), { recursive: true }); await mkdir(join(task, "environment"));
@@ -66,7 +66,7 @@ async function budgetFixture(mode: "cooperative" | "blocked" | "failed" | "initi
     import { readFile, writeFile } from "node:fs/promises";
     import { join } from "node:path";
     import { createHostRuntime } from ${JSON.stringify(resolve(import.meta.dir, "../src/harness/host.ts"))};
-    import { resolveWorkspaceState } from ${JSON.stringify(resolve(import.meta.dir, "../src/harness/workspace-state.ts"))};
+    import { initializeWorkspaceState } from ${JSON.stringify(resolve(import.meta.dir, "../src/harness/workspace-state.ts"))};
     import { createTestDeviceSession } from ${JSON.stringify(resolve(import.meta.dir, "runtime-fixture.ts"))};
     import type { BenchmarkContext } from ${JSON.stringify(resolve(import.meta.dir, "../src/benchmark/types.ts"))};
     const mode = ${JSON.stringify(mode)};
@@ -85,7 +85,7 @@ async function budgetFixture(mode: "cooperative" | "blocked" | "failed" | "initi
       let releases = 0;
       const release = devices.release.bind(devices);
       devices.release = async epoch => { releases++; await release(epoch); };
-      const state = await resolveWorkspaceState(ctx.workspace, join(ctx.runDir, "state"));
+      const state = await initializeWorkspaceState(ctx.workspace);
       const runtime = await createHostRuntime({ devices, workspace: ctx.workspace, runDir: ctx.runDir, state,
         log: ctx.log, rsaSocket: "", basewareSocket: "", seconds: ctx.seconds / 10, budget: ctx.budget,
         maxRequests: 1, action: false });
@@ -116,7 +116,7 @@ async function budgetFixture(mode: "cooperative" | "blocked" | "failed" | "initi
         reason: runtime.status().reason, descendant: descendant.pid };
     }
   `);
-  return { root, workspace, ready, options: { workspace, artifactRoot: join(root, "index"),
+  return { root, workspace, ready, options: { workspace, globalHome: join(root, "index"),
     seconds: 1, config: { task: "local/budget", argv: [process.execPath, resolve(import.meta.dir, "../src/harness/module-program.ts"), program] } } };
 }
 

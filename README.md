@@ -24,10 +24,10 @@ These are mechanisms for experimenting with adaptation, not a claim that an agen
 
 | Driver | Environment | Setup |
 | --- | --- | --- |
-| mGBA | Game Boy Advance emulator | Open a ROM and load the optional driver package's Lua bridge. See [mGBA setup](docs/tutorials/devices.md#mgba). |
-| Ryubing | Nintendo Switch emulator | Build and install the patched emulator. See the [Ryubing guide](docs/tutorials/devices.md#ryubing). |
-| Azahar | Nintendo 3DS emulator | Build and install the patched emulator. Native pad, touch, and separate top/bottom screen capture. See the [Azahar guide](docs/tutorials/devices.md#azahar). |
-| Cua | Local desktop applications | Install the upstream Cua Driver and grant its required OS permissions. See [Cua setup](docs/tutorials/devices.md#cua). |
+| mGBA | Game Boy Advance emulator | Open a ROM and load the optional driver package's Lua bridge. See [mGBA setup](docs/en/tutorials/devices.md#mgba). |
+| Ryubing | Nintendo Switch emulator | Build and install the patched emulator. See the [Ryubing guide](docs/en/tutorials/devices.md#ryubing). |
+| Azahar | Nintendo 3DS emulator | Build and install the patched emulator. Native pad, touch, and separate top/bottom screen capture. See the [Azahar guide](docs/en/tutorials/devices.md#azahar). |
+| Cua | Local desktop applications | Install the upstream Cua Driver and grant its required OS permissions. See [Cua setup](docs/en/tutorials/devices.md#cua). |
 
 Emulator drivers are optional packages maintained in [ludens-gba-driver](https://github.com/luokerenx4/ludens-gba-driver), [ludens-3ds-driver](https://github.com/luokerenx4/ludens-3ds-driver), and [ludens-switch-driver](https://github.com/luokerenx4/ludens-switch-driver). Only the Cua desktop adapter is built in.
 
@@ -42,7 +42,7 @@ Drivers expose device capabilities, not game strategies. Screen processing, coor
 - Local **OMP model credentials** configured before starting the agent. RSA reuses OMP authentication; the default model is `openai-codex/gpt-6.1-sol`.
 - One prepared environment from the table above. ROMs, firmware, keys, and saves are not included.
 
-For device preparation and model configuration, see [Devices & Drivers](docs/tutorials/devices.md) and [Installation & Quickstart](docs/tutorials/quickstart.md).
+For device preparation and model configuration, see [Devices & Drivers](docs/en/tutorials/devices.md) and [Installation & Quickstart](docs/en/tutorials/quickstart.md).
 
 ### 2. Install the components
 
@@ -64,31 +64,31 @@ The PATH setting applies to the current shell. Keep using that shell for the com
 
 ### 3. Create a workspace
 
-The example below uses a prepared Ryubing installation and a local game file.
+The example below uses a prepared Ryubing installation and a local game file. Global settings live in `~/.ludens` (override with `LUDENS_HOME`), independently of the source checkout.
 
 ```sh
-mkdir -p ../workspaces/my-task
-cd ../workspaces/my-task
-
-rsa init --driver ryubing \
+rsa init --name my-task --workspace "$HOME/Ludens Workspaces/my-task" --driver ryubing \
   --driver-package github:luokerenx4/ludens-switch-driver#070edf662ba724e1a31c5b477f414d4da61bbd6f \
   --game /absolute/path/to/game.nsp --seconds 1800
+cd "$HOME/Ludens Workspaces/my-task"
 rsa up --dry-run
 rsa up
 rsa services
 ```
 
-`rsa init` creates `rsa.json` and starter workspace files. `rsa up --dry-run` prints the launch plan without starting services. `rsa up` starts or reuses Baseware, the agent host and the Dashboard. A newly started host remains in manual mode. New workspaces use the browser console by default; Ludens Pet is optional.
+`rsa init` creates `rsa.json`, a persistent `.rsa/workspace.json` identity, and starter workspace files, then registers the workspace. Omit `--workspace` to create `--name` under the configured `workspaceRoot` (initially `$LUDENS_HOME/workspaces`). `rsa up --dry-run` prints the launch plan without starting services. `rsa up` starts or reuses Baseware, the agent host and the Dashboard. A newly started host remains in manual mode. New workspaces use the browser console by default; Ludens Pet is optional.
 
 To choose another environment, replace the `rsa init` command above with exactly one of:
 
 ```sh
-rsa init --driver mgba --driver-package github:luokerenx4/ludens-gba-driver#9c1a014be3d87fe6846fef8ad7eba1c13439e8a5
-rsa init --driver azahar --driver-package github:luokerenx4/ludens-3ds-driver#5b9b1f4032a5973a8882aa23957c3c34da50af9e --game /absolute/path/to/game.3ds
-rsa init --driver cua
+rsa init --name my-task --workspace "$HOME/Ludens Workspaces/my-task" --driver mgba --driver-package github:luokerenx4/ludens-gba-driver#9c1a014be3d87fe6846fef8ad7eba1c13439e8a5
+rsa init --name my-task --workspace "$HOME/Ludens Workspaces/my-task" --driver azahar --driver-package github:luokerenx4/ludens-3ds-driver#5b9b1f4032a5973a8882aa23957c3c34da50af9e --game /absolute/path/to/game.3ds
+rsa init --name my-task --workspace "$HOME/Ludens Workspaces/my-task" --driver cua
 ```
 
 Use a new workspace. mGBA needs its ROM and Lua bridge loaded first. Cua does not use a game path; use `--cua-command /absolute/path/to/cua-driver` if the executable is not on PATH. Detailed setup is linked in [Supported environments](#supported-environments).
+
+Use `rsa config show` to inspect global creation defaults and `rsa config set workspaceRoot /absolute/path` to change the parent for future workspaces. Reopen an existing workspace with `rsa workspace open /absolute/path`; list registered workspaces with `rsa workspace list`. `rsa workspace forget <id>` only removes the registry entry. Workspaces retain their identity and history when moved; copied experiments require `rsa workspace open /path/to/copy --new-id`. Older workspaces use the explicit [import command](docs/tutorials/quickstart.md#已有工作区登记与迁移).
 
 ### 4. Inspect and start
 
@@ -111,7 +111,7 @@ rsa down --keep-emulator  # Stop the host and Baseware; keep the game open
 rsa down                  # Also stop the workspace-managed emulator
 ```
 
-Save your game before closing its emulator. The shared Dashboard and any running Ludens Pet remain open by default; see the [lifecycle guide](docs/tutorials/quickstart.md#工作区启动与停止) for shutdown options and configuration changes.
+Save your game before closing its emulator. The shared Dashboard and any running Ludens Pet remain open by default; see the [lifecycle guide](docs/en/tutorials/quickstart.md#starting-and-stopping-workspaces) for shutdown options and configuration changes.
 
 ### 5. Optional desktop pet
 
@@ -123,7 +123,7 @@ The browser Dashboard works without Electron. To add Ludens Pet, install **pnpm 
 
 For a new workspace, append `--pet` to the selected `rsa init` command above. For an existing workspace, set `"pet": true` in `rsa.json` before `rsa up`; existing explicit `pet: true` settings remain enabled. Set `"pet": false` to use the browser without starting the pet on subsequent launches.
 
-For a single launch, `rsa up --pet` or `rsa up --no-pet` overrides that setting without changing `rsa.json`; the two flags cannot be combined. Neither `pet: false` nor `--no-pet` quits an already running shared pet; use its tray menu to quit. See [optional pet setup](docs/tutorials/quickstart.md#可选桌宠).
+For a single launch, `rsa up --pet` or `rsa up --no-pet` overrides that setting without changing `rsa.json`; the two flags cannot be combined. Neither `pet: false` nor `--no-pet` quits an already running shared pet; use its tray menu to quit. See [optional pet setup](docs/en/tutorials/quickstart.md#optional-pet).
 
 ## How it works
 
@@ -140,7 +140,7 @@ RSA uses **Shiori** as its sole runner. Agent execution uses **OMP 18.9.1**; ord
 
 ### The workspace is ordinary code
 
-A workspace lives outside the source checkout:
+A workspace lives outside the source checkout. `~/.ludens/config.json` holds application defaults; `~/.ludens/registry/<id>.json` is a rebuildable index pointing to each workspace. Sessions, recordings and history travel with the workspace:
 
 ```text
 my-task/
@@ -151,10 +151,11 @@ my-task/
 ├── action.py         # Persistent control program while auto is active
 ├── skills/           # Reusable methods and supporting scripts
 ├── memory/           # Current goals, state, and next steps
+├── .rsa/             # Stable identity, sessions, skill snapshots, timeline and archive
 └── logs/             # Run records, model inputs, and diagnostics
 ```
 
-The agent can compose Python functions, retain models in its separate perception and action processes, and manage background programs with OMP's native tools. Workspace files and sessions persist across runs; separate CLI invocations do not share memory. See [Workspace & Capabilities](docs/tutorials/workspace.md) and [Resident Perception & Action](docs/tutorials/perception-and-action.md) for unified `@capability` functions, optional `@record`, resident lifecycle, and storage locations.
+The agent can compose Python functions, retain models in its separate perception and action processes, and manage background programs with OMP's native tools. Workspace files and sessions persist across runs; separate CLI invocations do not share memory. See [Workspace & Capabilities](docs/en/tutorials/workspace.md) and [Resident Perception & Action](docs/en/tutorials/perception-and-action.md) for unified `@capability` functions, optional `@record`, resident lifecycle, and storage locations.
 
 ### Benchmarks
 
@@ -168,11 +169,11 @@ rsa bench help ludens/capability-reuse
 
 The built-in cases cover perception lifecycle, control handoff, WebSocket recovery, background compaction, and capability reuse. Each run selects one case explicitly; read its help first. The capability-reuse case uses a real model in an isolated test environment.
 
-Harbor Task packages describe the evaluation; separate run configurations select the program. Programs write facts, and `tests/test.sh` writes numeric rewards. `rsa bench verify` regrades fixed evidence without rerunning the program. Inspect results in the console or use `rsa bench history` and `rsa bench compare`. Execution and verification status are separate; a completed call does not prove task success. See the [Benchmark guide](docs/reference/benchmark.md).
+Harbor Task packages describe the evaluation; separate run configurations select the program. Programs write facts, and `tests/test.sh` writes numeric rewards. `rsa bench verify` regrades fixed evidence without rerunning the program. Inspect results in the console or use `rsa bench history` and `rsa bench compare`. Execution and verification status are separate; a completed call does not prove task success. See the [Benchmark guide](docs/en/reference/benchmark.md).
 
 ## Development
 
-Follow [AGENTS.md](AGENTS.md) for development conventions and [Console, Debugging & Verification](docs/tutorials/debugging-and-verification.md) for component startup and checks. Each component retains its own lockfile. Default checks are offline; live model and device tests are explicit.
+Follow [AGENTS.md](AGENTS.md) for development conventions and [Console, Debugging & Verification](docs/en/tutorials/debugging-and-verification.md) for component startup and checks. Each component retains its own lockfile. Default checks are offline; live model and device tests are explicit.
 
 ## Boundaries and safety
 
@@ -188,25 +189,25 @@ Current documentation lives in the root `docs/` directory, split into `tutorials
 
 | Guide | Category | Contents |
 | --- | --- | --- |
-| [Tutorials Overview](docs/tutorials/index.md) | Tutorials | End-to-end onboarding path and common operational workflows. |
-| [Quickstart](docs/tutorials/quickstart.md) | Tutorials | Installation, `RSA_PYTHON` runtime, `rsa.json`, and workspace lifecycle (`init / up / auto / down`). |
-| [Devices & Drivers](docs/tutorials/devices.md) | Tutorials | Preparing `mGBA`, `Ryubing`, `Azahar`, `Cua`, and external driver packages. |
-| [Workspace & Capabilities](docs/tutorials/workspace.md) | Tutorials | Workspace layout, `@capability` / `@record`, `.rsa/timeline/`, and background programs. |
-| [Perception & Action](docs/tutorials/perception-and-action.md) | Tutorials | Resident `perception.py` & `action.py` loops, `rsa observe`, and context injection. |
-| [Debugging & Verification](docs/tutorials/debugging-and-verification.md) | Tutorials | Standalone component debugging, Dashboard & Ludens Pet, and offline/live test suites. |
-| [Reference Overview](docs/reference/index.md) | Reference | System layers, contract index, and source-of-truth code map. |
-| [Architecture](docs/reference/architecture.md) | Reference | Component boundaries, Shiori, control leases, OMP session loop, and storage ownership. |
-| [Baseware](docs/reference/baseware.md) | Reference | CUA native capability contract, driver boundaries, control arbitration, media, and external driver packages. |
-| [Driver Bridge Protocol](docs/reference/driver-bridge-protocol.md) | Reference | TCP line protocol (`HELLO` / `OWN` / `APPLY` / `TOUCH` / `CAPTURE`) for emulator bridges. |
-| [Logging](docs/reference/logging.md) | Reference | Event envelopes, timeline/archive storage, trace attribution, Dashboard cold/hot indexing, and replay. |
-| [Benchmark](docs/reference/benchmark.md) | Reference | Harbor 1.4 native profile, run bindings, `current_trial()`, independent verifiers, and built-in tasks. |
-| [Insights Overview](docs/insights/index.md) | Insights | Index of engineering decisions, production postmortems, and empirical measurements. |
-| [OMP Compaction](docs/insights/omp-compaction.md) | Insights | Why and how OMP speculative compaction was patched for real-time control with continuous 30Hz perception. |
-| [WS Recovery](docs/insights/ws-recovery.md) | Insights | 2026-10-20 Codex WebSocket recovery TDD rationale and 13-condition fault matrix. |
+| [Tutorials Overview](docs/en/tutorials/index.md) | Tutorials | End-to-end onboarding path and common operational workflows. |
+| [Quickstart](docs/en/tutorials/quickstart.md) | Tutorials | Installation, `RSA_PYTHON` runtime, `rsa.json`, and workspace lifecycle (`init / up / auto / down`). |
+| [Devices & Drivers](docs/en/tutorials/devices.md) | Tutorials | Preparing `mGBA`, `Ryubing`, `Azahar`, `Cua`, and external driver packages. |
+| [Workspace & Capabilities](docs/en/tutorials/workspace.md) | Tutorials | Workspace layout, `@capability` / `@record`, `.rsa/timeline/`, and background programs. |
+| [Perception & Action](docs/en/tutorials/perception-and-action.md) | Tutorials | Resident `perception.py` & `action.py` loops, `rsa observe`, and context injection. |
+| [Debugging & Verification](docs/en/tutorials/debugging-and-verification.md) | Tutorials | Standalone component debugging, Dashboard & Ludens Pet, and offline/live test suites. |
+| [Reference Overview](docs/en/reference/index.md) | Reference | System layers, contract index, and source-of-truth code map. |
+| [Architecture](docs/en/reference/architecture.md) | Reference | Component boundaries, Shiori, control leases, OMP session loop, and storage ownership. |
+| [Baseware](docs/en/reference/baseware.md) | Reference | CUA native capability contract, driver boundaries, control arbitration, media, and external driver packages. |
+| [Driver Bridge Protocol](docs/en/reference/driver-bridge-protocol.md) | Reference | TCP line protocol (`HELLO` / `OWN` / `APPLY` / `TOUCH` / `CAPTURE`) for emulator bridges. |
+| [Logging](docs/en/reference/logging.md) | Reference | Event envelopes, timeline/archive storage, trace attribution, Dashboard cold/hot indexing, and replay. |
+| [Benchmark](docs/en/reference/benchmark.md) | Reference | Harbor 1.4 native profile, run bindings, `current_trial()`, independent verifiers, and built-in tasks. |
+| [Insights Overview](docs/en/insights/index.md) | Insights | Index of engineering decisions, production postmortems, and empirical measurements. |
+| [OMP Compaction](docs/en/insights/omp-compaction.md) | Insights | Why and how OMP speculative compaction was patched for real-time control with continuous 30Hz perception. |
+| [WS Recovery](docs/en/insights/ws-recovery.md) | Insights | 2026-10-20 Codex WebSocket recovery TDD rationale and 13-condition fault matrix. |
 
 Detailed guides in `docs/` are currently in Chinese. Runtime prompts, workspace templates, and license notices remain beside the files that consume them.
 
 ## License and attribution
 
-A repository-wide license has not yet been declared. Ludens Pet's retained [license](rsa-companion/LICENSE), [provenance record](rsa-companion/upstream.json), and [asset notices](rsa-companion/ui/public/companion/NOTICE.md) document the companion's existing licensing and sources; they are not a repository-wide license declaration.
+Ludens is licensed under the [MIT License](LICENSE), including the OpenAlice-derived code used with the copyright holder's authorization. See [third-party notices and provenance](THIRD_PARTY_NOTICES.md) for retained attributions and licenses. Dependencies and optional community drivers retain their own licenses.
 

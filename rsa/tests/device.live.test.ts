@@ -5,7 +5,7 @@ import { defaultSocket } from "@ludens/baseware/address";
 import type { ExecutionResult, ToolArguments, ToolExecutionResult } from "@ludens/baseware/contracts";
 import { rm } from "node:fs/promises";
 import { resolve } from "node:path";
-import { resolveWorkspaceState } from "../src/harness/workspace-state.ts";
+import { resolveWorkspaceAddress } from "../src/harness/workspace-state.ts";
 
 async function control(socket: string, value: "on" | "off") {
   const status = await send(socket, { kind: "status", argv: [] }) as { runId: string; epoch: string | null };
@@ -13,7 +13,7 @@ async function control(socket: string, value: "on" | "off") {
 }
 test.skipIf(process.env.RSA_MGBA !== "1")("real device captures PNG, completes sequences, interrupts and rejects the old owner", async () => {
   const workspace = process.env.RSA_WORKSPACE ?? process.cwd();
-  const socket = process.env.RSA_SOCKET ?? (await resolveWorkspaceState(workspace, resolve(import.meta.dir, "../../../artifacts/rsa"))).socket;
+  const socket = process.env.RSA_SOCKET ?? (await resolveWorkspaceAddress(workspace)).socket;
   const baseware = await BasewareClient.connect(process.env.BASEWARE_SOCKET ?? await defaultSocket(workspace));
   const sequenceFile = `/tmp/rsa-sequence-${crypto.randomUUID()}.json`;
   try {

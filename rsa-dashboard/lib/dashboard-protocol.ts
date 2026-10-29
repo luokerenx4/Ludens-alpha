@@ -11,9 +11,15 @@ import type { RunPage } from "./run-index";
 import type { diagnosticEvents, DiagnosticQuery } from "./diagnostic-events";
 import type { indexCacheStats } from "./log-index";
 import type { PerceptionSettings, PerceptionSettingsPatch } from "./perception-config";
+import type { workspaceSettings, updateWorkspaceRoot, openWorkspace, removeWorkspace, createWorkspace } from "./workspaces";
 
 /** Only existing Dashboard operations cross the worker boundary, never arbitrary code or paths. */
 export interface DashboardMethods {
+  workspaceSettings: { args: []; result: Awaited<ReturnType<typeof workspaceSettings>> };
+  updateWorkspaceRoot: { args: [path: unknown]; result: Awaited<ReturnType<typeof updateWorkspaceRoot>> };
+  openWorkspace: { args: [path: unknown]; result: Awaited<ReturnType<typeof openWorkspace>> };
+  removeWorkspace: { args: [id: unknown]; result: Awaited<ReturnType<typeof removeWorkspace>> };
+  createWorkspace: { args: [input: unknown]; result: Awaited<ReturnType<typeof createWorkspace>> };
   archiveBuild: { args: [project: string, run: string, action?: "cancel" | "retry", buildId?: string]; result: Awaited<ReturnType<typeof archiveBuild>> };
   diagnosticEvents: { args: [project: string, run: string, query?: DiagnosticQuery]; result: Awaited<ReturnType<typeof diagnosticEvents>> };
   diagnostics: { args: []; result: { memory: NodeJS.MemoryUsage; index: ReturnType<typeof indexCacheStats>; activeRequests: number } };
@@ -29,13 +35,13 @@ export interface DashboardMethods {
   capabilities: { args: [project?: string]; result: Awaited<ReturnType<typeof capabilities>> };
   discoverDriver: { args: [spec: string]; result: Awaited<ReturnType<typeof discoverDriver>> };
   docGroups: { args: []; result: Awaited<ReturnType<typeof docGroups>> };
-  readDoc: { args: [id: string]; result: Awaited<ReturnType<typeof readDoc>> };
+  readDoc: { args: [id: string, root?: string, lang?: "en" | "zh"]; result: Awaited<ReturnType<typeof readDoc>> };
   stop: { args: [project: string, run: string, epoch: string | null]; result: Awaited<ReturnType<typeof stopRun>> };
   perceptionSettings: { args: [project: string]; result: Partial<PerceptionSettings> };
   updatePerceptionSettings: { args: [project: string, patch: PerceptionSettingsPatch]; result: Partial<PerceptionSettings> };
-  petState: { args: []; result: ReturnType<typeof petState> };
+  petState: { args: []; result: Awaited<ReturnType<typeof petState>> };
   petTarget: { args: [project: unknown, ifUnset: boolean]; result: Awaited<ReturnType<typeof setPetTarget>> };
-  petConsumer: { args: [input: unknown]; result: ReturnType<typeof recordPetConsumer> };
+  petConsumer: { args: [input: unknown]; result: Awaited<ReturnType<typeof recordPetConsumer>> };
 }
 export type DashboardMethod = keyof DashboardMethods;
 export type WorkerRequest = { type: "call"; id: number; method: DashboardMethod; args: unknown[] }

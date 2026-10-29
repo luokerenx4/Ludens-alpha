@@ -21,8 +21,9 @@ export interface PetState {
   consumer: PetConsumer | null;
   connected: boolean;
 }
-export function workspaceLabel(project?: Pick<Project, "id" | "workspace">) {
+export function workspaceLabel(project?: Pick<Project, "id" | "workspace" | "name">) {
   if (!project) return "未选择工作区";
+  if (project.name) return project.name;
   const parts = project.workspace?.split("/").filter(Boolean);
   return (parts?.at(-1) === "workspace" ? parts.at(-2) : parts?.at(-1)) ?? project.id;
 }

@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { delimiter, join } from "node:path";
-import { artifactRoot, catalog } from "./data";
+import { globalHome, catalog } from "./data";
 import type { Project } from "./types";
 import { discoverTasks } from "../../rsa/src/benchmark/catalog";
 import { isObject } from "../../rsa/src/benchmark/contract";
@@ -70,7 +70,7 @@ export interface CapabilitiesResult {
   issues: { error: string }[];
 }
 
-export async function capabilities(projectId?: string, root = artifactRoot, signal?: AbortSignal): Promise<CapabilitiesResult> {
+export async function capabilities(projectId?: string, root = globalHome, signal?: AbortSignal): Promise<CapabilitiesResult> {
   signal?.throwIfAborted();
   const projects: Project[] = await catalog(root, true);
   const withWorkspace = projects.filter((item): item is Project & { workspace: string } => !!item.workspace);

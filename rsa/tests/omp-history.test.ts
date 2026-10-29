@@ -107,24 +107,26 @@ test.each([1, 26])("OMP persists batches of %i images and reuses the Codex prefi
     session.agent.streamFn = streamFn;
     await session.prompt("Resume.");
     expect(requests).toBe(9);
-    // Any explicit observation in a batch supplies its result, even if a later
-    // sibling is bash. The next model sees the requested frame without a second capture.
-    // The larger batch also crosses Codex's SDK cap of 200 retained images.
-    expect(imageCounts).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9].map(n => n * batchSize));
-    expect(textCounts).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
-    expect(states).toEqual(["initial", "second", "third", "third", ...Array(5).fill("fourth")]);
-    expect(events.filter(e => e.type === "perception_observe_end")).toHaveLength(9);
+    // Every explicit observation stays in its own tool result; each prompt
+    // start adds one automatic delivery. The next request sees the requested
+    // frame without a second capture, and the larger batch crosses Codex's
+    // SDK cap of 200 retained images.
+    expect(imageCounts).toEqual([1, 1, 2, 3, 4, 5, 5, 6, 7].map(n => n * batchSize));
+    expect(textCounts).toEqual([1, 1, 2, 3, 4, 5, 5, 6, 7]);
+    // Batch 3's observe runs before its own bash, so it still reads the prior state.
+    expect(states).toEqual(["initial", "third", "third", ...Array(4).fill("fourth")]);
+    expect(events.filter(e => e.type === "perception_observe_end")).toHaveLength(7);
     const contexts = events.filter(e => e.type === "observation_context");
-    expect(contexts).toHaveLength(9);
+    expect(contexts).toHaveLength(7);
     // Every capture has one query and one delivery receipt. All four explicit
     // reads stay in their own tool results, including when bash finishes last.
     expect(contexts.map(e => e.data.queries)).toEqual(events.filter(e => e.type === "perception_observe_end")
       .map(e => [e.data.queryId]));
     expect(contexts.every(e => e.data.observations.length === batchSize)).toBe(true);
-    expect(new Set(contexts.map(e => e.data.id)).size).toBe(9);
+    expect(new Set(contexts.map(e => e.data.id)).size).toBe(7);
     expect(contexts.every(e => e.data.snapshot === undefined && e.data.records === undefined
       && e.data.reusedObservations === undefined && e.data.executions === undefined)).toBe(true);
-    expect(events.filter(e => e.type === "observation_media")).toHaveLength(9 * batchSize);
+    expect(events.filter(e => e.type === "observation_media")).toHaveLength(7 * batchSize);
     expect(deltas).toHaveLength(8);
     expect(deltas.every((delta) => delta !== null)).toBe(true);
     const entries = manager.getEntries();
@@ -133,11 +135,8 @@ test.each([1, 26])("OMP persists batches of %i images and reuses the Codex prefi
     expect(results).toHaveLength(11);
     const counts = results.map(entry => entry.type === "message" && entry.message.role === "toolResult"
       ? entry.message.content.filter(part => part.type === "image").length : 0);
-    // Native bash can finish independent commands in either order. The batch
-    // gets one observation on its last successful tool, never on invalid calls.
-    expect(counts.slice(0, 4)).toEqual([0, expect.any(Number), expect.any(Number), 0]);
-    expect(counts.slice(1, 3).toSorted((a, b) => a - b)).toEqual([0, batchSize]);
-    expect(counts.slice(4)).toEqual([0, 1, 1, 0, 1, 1, 1].map(n => n * batchSize));
+    // Bash results never carry observation images; only explicit observe results do.
+    expect(counts).toEqual([0, 0, 0, 0, 0, 1, 1, 0, 1, 1, 0].map(n => n * batchSize));
   } finally {
     await session.dispose(); authStorage.close(); await runtime.close();
     await rm(directory, { recursive: true, force: true });

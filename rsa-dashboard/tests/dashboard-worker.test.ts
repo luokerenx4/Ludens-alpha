@@ -1,6 +1,7 @@
+import { registerFixture } from "./fixtures/registry";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { DashboardWorker } from "../lib/dashboard-worker";
@@ -72,13 +73,14 @@ test("worker request cap, timeout and shutdown release pending listeners", async
   } finally { await worker.close(); }
 });
 
-test("real TypeScript backend boots outside Next and reads only its configured artifact root", async () => {
-  const root = await mkdtemp(join(tmpdir(), "dashboard-worker-real-"));
-  const worker = new DashboardWorker({ env: { ...process.env, RSA_DASHBOARD_ARTIFACT_ROOT: root } });
+test("real TypeScript backend boots outside Next and reads only its configured Ludens home", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "dashboard-worker-real-")));
+  const worker = new DashboardWorker({ env: { ...process.env, LUDENS_HOME: root } });
   try {
     assert.deepEqual(await worker.call("catalog", []), []);
     await assert.rejects(worker.call("run", ["../outside", "run"]), /无效|Invalid/);
-    const run = join(root, "project/runs/run");
+    const workspace = join(root, "workspace"), run = join(workspace, "logs/run");
+    await registerFixture(root, "project", workspace);
     await mkdir(run, { recursive: true });
     await writeFile(join(run, "manifest.json"), JSON.stringify({ runId: "run" }));
     await writeFile(join(run, "events.jsonl"), "");

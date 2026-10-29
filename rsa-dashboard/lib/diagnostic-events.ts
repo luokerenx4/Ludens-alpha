@@ -1,10 +1,10 @@
-import { resolveRun, artifactRoot } from "./data";
+import { resolveRun, globalHome } from "./data";
 import { getDiagnosticIndex, type EventQuery } from "./log-index";
 
 export type DiagnosticQuery = Pick<EventQuery, "afterPosition" | "limit" | "epoch" | "fromAt" | "toAt" | "traceId" | "spanId" | "actionId" | "observationId">;
 
 /** Bounded explicit reads; optional full traces never enter activity/replay or Pet. */
-export async function diagnosticEvents(project: string, run: string, query: DiagnosticQuery = {}, signal?: AbortSignal, root = artifactRoot) {
+export async function diagnosticEvents(project: string, run: string, query: DiagnosticQuery = {}, signal?: AbortSignal, root = globalHome) {
   const path = await resolveRun(project, run, root), index = getDiagnosticIndex(path), release = index.retain();
   try {
     const progress = await index.refreshEvents({ maxBytes: 4 * 1024 * 1024, signal });

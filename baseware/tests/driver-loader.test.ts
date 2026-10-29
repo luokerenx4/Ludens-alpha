@@ -5,6 +5,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveDriver } from "../src/drivers/loader.ts";
 
+test("default driver cache uses Ludens home independently of checkout and XDG state", async () => {
+  const root = await mkdtemp(join(tmpdir(), "driver-home-"));
+  try {
+    const child = Bun.spawn([process.execPath, "--eval", `import { defaultDriverCacheRoot } from ${JSON.stringify(join(import.meta.dir, "../src/drivers/loader.ts"))}; console.log(defaultDriverCacheRoot());`], {
+      cwd: root, stdout: "pipe", stderr: "pipe",
+      env: { ...process.env, LUDENS_HOME: join(root, "home"), XDG_STATE_HOME: join(root, "unused-state") },
+    });
+    const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    expect(code, stderr).toBe(0);
+    expect(stdout.trim()).toBe(join(root, "home", "cache", "drivers"));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("serve has no implicit emulator and requires a package for emulator ids", async () => {
   const root = await mkdtemp(join(tmpdir(), "driver-explicit-"));
   try {
@@ -145,7 +158,7 @@ test("discover CLI imports registration without loading devices and rejects inva
   await writeFile(bad, `export default { version: "1.0" };`);
   const run = async (spec: string, expectedCode = 0) => {
     const child = Bun.spawn([process.execPath, join(import.meta.dir, "../src/main.ts"), "driver", "discover", "--package", spec],
-      { stdout: "pipe", stderr: "pipe", env: { ...process.env, XDG_STATE_HOME: join(root, "state") } });
+      { stdout: "pipe", stderr: "pipe", env: { ...process.env, LUDENS_HOME: join(root, "home") } });
     const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
     expect(code, stderr).toBe(expectedCode);
     return expectedCode === 0 ? JSON.parse(stdout) : stderr;
@@ -164,7 +177,7 @@ test("discover CLI imports registration without loading devices and rejects inva
   }
 });
 
-test("serve forwards explicit bridge ports without defaults and publishes registration version and launch environment", async () => {
+for (const explicitDataDir of [false, true]) test(`serve publishes driver metadata with ${explicitDataDir ? "explicit" : "global default"} log directory`, async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), "driver-serve-")));
   const entry = join(import.meta.dir, "../src/main.ts");
   const driver = join(root, "driver.ts");
@@ -177,14 +190,20 @@ test("serve forwards explicit bridge ports without defaults and publishes regist
     }
   };`);
   const socket = join(root, "service.sock");
+  const home = join(root, "home");
+  const dataDir = explicitDataDir ? join(root, "data") : join(home, "logs", "baseware", "service");
   const child = Bun.spawn([process.execPath, entry, "serve", "--driver", "fixture", "--driver-package", `file:${driver}`,
-    "--port", "45678", "--socket", socket, "--data-dir", join(root, "data")], { stdout: "pipe", stderr: "pipe" });
+    "--port", "45678", "--socket", socket, ...(explicitDataDir ? ["--data-dir", dataDir] : [])], {
+      stdout: "pipe", stderr: "pipe", env: { ...process.env, LUDENS_HOME: home },
+    });
   const serviceError = new Response(child.stderr).text();
   try {
     const reader = child.stdout.getReader();
     const ready = await reader.read();
     if (ready.done) throw new Error(`Fixture service exited before ready: ${await serviceError}`);
-    expect(new TextDecoder().decode(ready.value)).toContain('"ready":true');
+    const readyState = JSON.parse(new TextDecoder().decode(ready.value));
+    expect(readyState.ready).toBe(true);
+    expect(readyState.dataDir).toBe(dataDir);
     reader.releaseLock();
     const list = Bun.spawn([process.execPath, entry, "driver", "list"], {
       env: { ...process.env, BASEWARE_SOCKET: socket }, stdout: "pipe", stderr: "pipe",
@@ -194,8 +213,8 @@ test("serve forwards explicit bridge ports without defaults and publishes regist
     const source = { kind: "file", spec: `file:${driver}`, entry: "driver.ts",
       entrySha256: createHash("sha256").update(await readFile(driver)).digest("hex") };
     expect(JSON.parse(stdout)).toEqual([{ id: "fixture", transport: "bridge", version: "3.2.1", launchEnv: { DOTNET_DefaultStackSize: "200000" }, source }]);
-    const [serviceId] = await readdir(join(root, "data"));
-    const events = join(root, "data", serviceId!, "events");
+    const [serviceId] = await readdir(dataDir);
+    const events = join(dataDir, serviceId!, "events");
     const lines = await Promise.all((await readdir(events)).filter(name => name.endsWith(".jsonl")).map(name => readFile(join(events, name), "utf8")));
     const start = lines.flatMap(text => text.trim().split("\n").map(line => JSON.parse(line))).find(event => event.type === "service_start");
     expect(start.data.driverSource).toEqual(source);

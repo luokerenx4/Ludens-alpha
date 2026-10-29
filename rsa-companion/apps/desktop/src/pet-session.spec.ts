@@ -1,4 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { randomUUID } from 'node:crypto'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { PetSessionCoordinator, type PetTarget } from './pet-session.js'
 import { RsaActivityController } from './rsa-activity-controller.js'
 import { DEFAULT_ACTIVITY_PREFERENCES } from './activity-policy.js'
@@ -14,7 +18,11 @@ function snapshot(name: string): RsaActivitySnapshot {
     intent: null, observationUrl: null, updatedAt: null, error: null, dashboardUrl: 'http://localhost:3015',
   } }
 }
-afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers() })
+const directories: string[] = []
+afterEach(() => {
+  vi.unstubAllGlobals(); vi.useRealTimers()
+  for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true })
+})
 
 describe('shared Pet follow target', () => {
   it('can stay open without a workspace, reports idle, and recovers from a missing dashboard', async () => {
@@ -90,6 +98,9 @@ describe('shared Pet follow target', () => {
 
   it('uses an explicit launch workspace only as ifUnset initialization and keeps target polling independent of reads', async () => {
     vi.useFakeTimers()
+    const workspace = mkdtempSync(join(tmpdir(), 'rsa-pet-launch-')), project = `ws-${randomUUID()}`
+    directories.push(workspace); mkdirSync(join(workspace, '.rsa'))
+    writeFileSync(join(workspace, '.rsa', 'workspace.json'), JSON.stringify({ version: 1, id: project }))
     let selected = target('saved')
     const calls: { method: string; body: any }[] = [], changed = vi.fn()
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
@@ -100,9 +111,9 @@ describe('shared Pet follow target', () => {
       dashboardUrl: 'http://localhost:3015', onSnapshot: () => {}, onTargetChanged: changed,
       createSource: workspace => ({ identity: () => workspace, read: () => new Promise(() => {}) }),
     })
-    await session.start('/launch-workspace')
+    await session.start(workspace)
     expect(calls[0]).toMatchObject({ method: 'PUT', body: { ifUnset: true } })
-    expect((calls[0].body as any).project).toMatch(/^ws-launch-workspace-/)
+    expect((calls[0].body as any).project).toBe(project)
     void session.read()
     selected = target('next')
     await vi.advanceTimersByTimeAsync(2_500)

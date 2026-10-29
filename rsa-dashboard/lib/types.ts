@@ -30,6 +30,7 @@ export interface Manifest {
   shiori?: { implementation: string; implementationVersion: string } | null;
   runId: string;
   workspace: string;
+  workspaceId?: string;
   socket: string;
   drivers: { id: string; version: string }[];
   model: string | null;
@@ -47,6 +48,8 @@ export interface RunInfo {
 }
 export interface Project {
   id: string;
+  name?: string;
+  available?: boolean;
   workspace?: string;
   runs: RunInfo[];
 }

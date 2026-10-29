@@ -166,7 +166,7 @@ export function RequestChart({
               x2={x(i)}
               y1="18"
               y2="139"
-              stroke="var(--muted)"
+              stroke="var(--muted-foreground)"
               strokeDasharray="3 4"
             />
           )}

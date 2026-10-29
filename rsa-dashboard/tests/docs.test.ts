@@ -72,37 +72,53 @@ test("only available docs become navigation links; source labels and unsafe path
 });
 
 test("current repository documents and their internal section links all resolve", async () => {
-  const groups = await docGroups(repositoryDocs);
-  for (const group of groups) assert.equal(group.docs[0]?.id, `${group.id}/index`);
-  const documents = await Promise.all(groups.flatMap(group => group.docs.map(doc => readDoc(doc.id, repositoryDocs))));
-  const byId = new Map(documents.map(doc => [doc.id, doc]));
-  let links = 0, anchoredLinks = 0;
-  for (const doc of documents) {
-    for (const match of doc.html.matchAll(/data-doc="([^"]+)" data-doc-anchor="([^"]*)"/g)) {
-      links++;
-      const target = byId.get(match[1]);
-      assert.ok(target, `${doc.id} links to missing ${match[1]}`);
-      if (match[2]) {
-        anchoredLinks++;
-        assert.ok(target.html.includes(`id="${match[2]}"`), `${doc.id} links to missing section ${match[1]}#${match[2]}`);
+  for (const lang of ["en", "zh"] as const) {
+    const groups = await docGroups(repositoryDocs);
+    for (const group of groups) assert.equal(group.docs[0]?.id, `${group.id}/index`);
+    const documents = await Promise.all(groups.flatMap(group => group.docs.map(doc => readDoc(doc.id, repositoryDocs, lang))));
+    const byId = new Map(documents.filter(doc => !doc.fallback).map(doc => [doc.id, doc]));
+    let links = 0, anchoredLinks = 0;
+    for (const doc of documents) {
+      if (doc.fallback) continue;
+      for (const match of doc.html.matchAll(/data-doc="([^"]+)" data-doc-anchor="([^"]*)"/g)) {
+        links++;
+        const target = byId.get(match[1]);
+        assert.ok(target, `${doc.id} links to missing ${match[1]}`);
+        if (match[2]) {
+          anchoredLinks++;
+          assert.ok(target.html.includes(`id="${match[2]}"`), `${doc.id} links to missing section ${match[1]}#${match[2]}`);
+        }
       }
     }
+    assert.ok(links > 20);
+    assert.ok(anchoredLinks >= 3);
   }
-  assert.ok(links > 20);
-  assert.ok(anchoredLinks >= 3);
+});
+
+test("english-first read falls back to chinese when the translation is missing", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ludens-docs-"));
+  const root = join(directory, "docs");
+  try {
+    await mkdir(join(root, "zh/reference"), { recursive: true });
+    await writeFile(join(root, "zh/reference/index.md"), "# 概览\n");
+    const doc = await readDoc("reference/index", root);
+    assert.equal(doc.lang, "zh");
+    assert.equal(doc.fallback, true);
+    assert.equal(doc.title, "概览");
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 test("document reads reject traversal and symlinks outside the docs tree", async () => {
   const directory = await mkdtemp(join(tmpdir(), "ludens-docs-"));
   const root = join(directory, "docs");
   try {
-    await mkdir(join(root, "reference"), { recursive: true });
-    await writeFile(join(root, "reference/index.md"), "# Overview\n");
+    await mkdir(join(root, "en/reference"), { recursive: true });
+    await writeFile(join(root, "en/reference/index.md"), "# Overview\n");
     await writeFile(join(directory, "outside.md"), "private fixture");
-    await symlink(join(directory, "outside.md"), join(root, "reference/escape.md"));
-    assert.equal((await readDoc("reference/index", root)).title, "组件与契约概览");
+    await symlink(join(directory, "outside.md"), join(root, "en/reference/escape.md"));
+    assert.equal((await readDoc("reference/index", root)).title, "Overview");
     for (const id of ["reference/../outside", "../outside", "reference/index.md", "history/old", "reference/escape"]) {
-      await assert.rejects(readDoc(id, root), /未知文档/);
+      await assert.rejects(readDoc(id, root), /Unknown doc/);
     }
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

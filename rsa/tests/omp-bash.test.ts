@@ -48,7 +48,7 @@ const tool = (id: string, name: string, args: Record<string, unknown>): Assistan
  */
 async function fixture() {
   const originalEnvironment = new Map([
-    "PATH", "PYTHONPATH", "RSA_PYTHON", "RSA_ARTIFACT_ROOT", "RSA_SOCKET", "RSA_WORKSPACE", "RSA_RUN_ID", "BASEWARE_SOCKET",
+    "PATH", "PYTHONPATH", "RSA_PYTHON", "LUDENS_HOME", "RSA_SOCKET", "RSA_WORKSPACE", "RSA_RUN_ID", "BASEWARE_SOCKET",
     "BASEWARE_EPOCH", "BASEWARE_TRACE", "RSA_EPOCH", "RSA_TRACE",
   ].map(key => [key, process.env[key]]));
   const directory = await realpath(await mkdtemp(join(tmpdir(), "rsa-native-bash-")));

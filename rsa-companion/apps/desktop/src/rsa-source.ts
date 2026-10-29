@@ -1,6 +1,7 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { appendFileSync, mkdirSync, realpathSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { join } from 'node:path'
+import { readWorkspaceIdentitySync } from '../../../../shared/ludens.js'
 import { ActivityChangesClient, type ActivityBlock, type ActivityProjection } from '../../../../rsa-dashboard/lib/activity-client.js'
 export type { ActivityBlock, ActivityProjection, ActivityChanges, LogBlock } from '../../../../rsa-dashboard/lib/activity-client.js'
 
@@ -57,11 +58,9 @@ export interface RsaActivitySource {
   record?: ConsumerRecord
 }
 
-/** Matches RSA resolveWorkspaceState; the input must already be canonical. */
+/** Read the workspace's persistent identity without creating or registering it. */
 export function rsaProjectId(workspace: string): string {
-  const hash = createHash('sha256').update(workspace).digest('hex').slice(0, 16)
-  const name = basename(workspace).toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32) || 'workspace'
-  return `ws-${name}-${hash}`
+  return readWorkspaceIdentitySync(workspace).id
 }
 
 function url(base: string, path: string, query: Record<string, string | null> = {}): string {
@@ -90,7 +89,7 @@ export class RsaSource implements RsaActivitySource {
         observationUrl: null, updatedAt: null, error: null, dashboardUrl: this.dashboardUrl } }
     this.record = options.record ?? (() => {})
   }
-  identity(): string { return `${this.workspace}:${this.dashboardUrl}` }
+  identity(): string { return `${this.project}:${this.dashboardUrl}` }
   stop() { this.abort.abort() }
   async read(signal?: AbortSignal): Promise<RsaActivitySnapshot> {
     const started = performance.now()
@@ -105,7 +104,7 @@ export class RsaSource implements RsaActivitySource {
         throw new Error('运行记录不属于当前工作区')
       const { activity, observationId, ...current } = page.current
       next = {
-        identity: `${this.workspace}:${page.scope.runId ?? ''}:${page.scope.epoch ?? ''}:${page.projection.generation}`,
+        identity: `${this.project}:${page.scope.runId ?? ''}:${page.scope.epoch ?? ''}:${page.projection.generation}`,
         activity, blocks: page.blocks, mode: page.mode, revision: page.projection.revision,
         hasMore: page.hasMore, projection: page.projection,
         current: { ...current, workspace: current.workspace ?? this.workspace, phase: current.phase ?? '尚未读取日志',

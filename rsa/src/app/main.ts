@@ -11,15 +11,16 @@ import { defaultSocket } from "@ludens/baseware/address";
 import { writeCapabilityDocument } from "@ludens/baseware/catalog";
 import { EventLog, EVENT_SCHEMA_VERSION } from "../harness/events.ts";
 import { runProvenance } from "../harness/provenance.ts";
-import { readCurrentSession, resolveWorkspaceState } from "../harness/workspace-state.ts";
-import { migrateWorkspaceSessions, validateSessionWorkspace } from "../harness/omp/workspace-session.ts";
+import { readCurrentSession, resolveWorkspaceAddress, resolveWorkspaceState } from "../harness/workspace-state.ts";
+import { validateSessionWorkspace } from "../harness/omp/workspace-session.ts";
 import perceptionTemplate from "../../templates/perception.py" with { type: "text" };
 import actionTemplate from "../../templates/action.py" with { type: "text" };
 import { WORKSPACE_HELP, workspaceCommand } from "./workspace.ts";
 import { LOG_HELP, logCommand } from "./log-archive.ts";
+import { ludensHome, registerWorkspace } from "../../../shared/ludens.ts";
+import { GLOBAL_HELP, globalCommand } from "./global.ts";
 
-// Workspace registry and experience versions live outside the monorepo.
-const artifactRoot = resolve(import.meta.dir, "../../../../artifacts/rsa");
+const globalHome = ludensHome();
 let exit: (code: number) => void | Promise<void> = code => process.exit(code);
 const RUN_HELP = `rsa [--workspace <path>] run [--baseware-socket <path>] [--workspace <path>] [--device-only] [--model <provider/model>] [--resume <session.jsonl> | --new-session] [--seconds <n>] [--requests <n>] [--compaction-threshold <tokens>]
 Each workspace keeps its sessions in .rsa/shiori/; --new-session starts fresh without deleting workspace files.
@@ -34,20 +35,23 @@ Hardware is provided by an independent Baseware service. Its default socket is d
 async function main() {
   const args = process.argv.slice(2);
   let selectedWorkspace = process.env.RSA_WORKSPACE ?? process.cwd();
+  let explicitWorkspace = !!process.env.RSA_WORKSPACE;
   if (args[0] === "--workspace") {
     if (!args[1] || args[1].startsWith("--")) throw new Error("--workspace requires a path");
     selectedWorkspace = args[1];
+    explicitWorkspace = true;
     args.splice(0, 2);
   }
   if (!args.length || args[0] === "--help" || (args[0] === "run" && args.includes("--help"))) {
-    console.log(`${WORKSPACE_HELP}\n\n${RUN_HELP}\n${HELP}\nrsa bench <list|help|run|history|compare> — unified benchmarks; rsa bench --help\n${LOG_HELP}`);
+    console.log(`${GLOBAL_HELP}\n\n${WORKSPACE_HELP}\n\n${RUN_HELP}\n${HELP}\nrsa bench <list|help|run|history|compare> — unified benchmarks; rsa bench --help\n${LOG_HELP}`);
     return;
   }
-  if (args[0] === "bench") return (await import("../benchmark/cli.ts")).benchmarkCommand(args.slice(1), artifactRoot, selectedWorkspace);
+  if (args[0] === "config" || args[0] === "workspace") return globalCommand(args[0], args.slice(1), globalHome);
+  if (args[0] === "bench") return (await import("../benchmark/cli.ts")).benchmarkCommand(args.slice(1), globalHome, selectedWorkspace);
   if (args[0] === "logs") return logCommand(args.slice(1));
-  if (["init", "up", "services", "down"].includes(args[0]!)) return workspaceCommand(args[0]!, args.slice(1), selectedWorkspace);
+  if (["init", "up", "services", "down"].includes(args[0]!)) return workspaceCommand(args[0]!, args.slice(1), selectedWorkspace, explicitWorkspace);
   if (args[0] !== "run") {
-    const socket = process.env.RSA_SOCKET ?? (await resolveWorkspaceState(selectedWorkspace, artifactRoot)).socket;
+    const socket = process.env.RSA_SOCKET ?? (await resolveWorkspaceAddress(selectedWorkspace)).socket;
     return cli(args, socket);
   }
   const { values } = parseArgs({ args: args.slice(1), options: {
@@ -74,8 +78,9 @@ async function main() {
   }
   if (values.resume && values["new-session"]) throw new Error("Use either --resume or --new-session");
   if (values["device-only"] && (values.resume || values["new-session"])) throw new Error("Session options require an agent");
-  const state = await resolveWorkspaceState(values.workspace!, artifactRoot);
+  const state = await resolveWorkspaceState(values.workspace!, globalHome);
   const workspace = state.workspace;
+  await registerWorkspace(workspace, globalHome);
   const socket = process.env.RSA_SOCKET ?? state.socket;
   const runId = new Date().toISOString().replaceAll(":", "-");
   const runDir = join(workspace, "logs", runId);
@@ -105,18 +110,16 @@ async function main() {
     };
     closeServers.push(await listen(state.socket, getRuntime));
     if (socket !== state.socket) closeServers.push(await listen(socket, getRuntime));
-    if (!values["device-only"]) await migrateWorkspaceSessions(state);
     const resume = values["device-only"] || values["new-session"] ? undefined
       : values.resume ? await realpath(resolve(values.resume)) : await readCurrentSession(state);
     if (resume) await validateSessionWorkspace(resume, workspace);
     process.chdir(workspace);
+    await mkdir(state.sessionsDir, { recursive: true });
     await mkdir(join(workspace, "skills"), { recursive: true });
     await mkdir(join(workspace, "memory"), { recursive: true });
     await mkdir(runDir, { recursive: true });
     await writeFile(join(workspace, "perception.py"), perceptionTemplate, { flag: "wx" }).catch(error => { if (error.code !== "EEXIST") throw error; });
     await writeFile(join(workspace, "action.py"), actionTemplate, { flag: "wx" }).catch(error => { if (error.code !== "EEXIST") throw error; });
-    // Let the dashboard locate logs even when this workspace is outside the checkout.
-    await writeFile(join(state.dir, "workspace.json"), JSON.stringify({ workspace }, null, 2));
     const clock = { id: runId, now: () => performance.now() };
     log = new EventLog(runDir, clock, workspace, diagnostics);
     log.record("run_start", { workspace, workspaceId: state.id, diagnostics });

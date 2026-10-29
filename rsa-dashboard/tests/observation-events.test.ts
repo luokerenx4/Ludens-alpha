@@ -1,3 +1,4 @@
+import { registerFixture } from "./fixtures/registry";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
@@ -190,9 +191,10 @@ test("media conversion failures replace the input result and epoch history retai
 test("media serving accepts archived perception output and preserves type and run-directory boundaries", async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), "rsa-hook-media-")));
   try {
-    const runDir = join(root, "project/runs/run");
+    const workspace = join(root, "workspace"), runDir = join(workspace, "logs/run");
     const mediaDir = join(runDir, "observations");
     await mkdir(mediaDir, { recursive: true });
+    await registerFixture(root, "project", workspace);
     const image = join(mediaDir, "fused.png"), outside = join(root, "outside.png");
     await writeFile(image, "archived pixels");
     await writeFile(outside, "outside run");
@@ -237,12 +239,11 @@ test("timeline media is shared across runs and resolved only within the register
   const root = await realpath(await mkdtemp(join(tmpdir(), "rsa-timeline-media-")));
   try {
     const workspace = join(root, "workspace"), timeline = join(workspace, ".rsa/timeline");
-    const state = join(root, "project"), other = join(root, "other-workspace");
+    const other = join(root, "other-workspace");
     await mkdir(join(timeline, "objects"), { recursive: true });
     await mkdir(join(timeline, "window"), { recursive: true });
     await mkdir(other);
-    await mkdir(state);
-    await writeFile(join(state, "workspace.json"), JSON.stringify({ workspace }));
+    await registerFixture(root, "project", workspace);
     await writeFile(join(timeline, "objects/shared.png"), "one immutable original");
     await writeFile(join(timeline, "window/recent.png"), "temporary frame");
     await writeFile(join(other, "secret.png"), "other workspace");
@@ -267,8 +268,8 @@ test("timeline media is shared across runs and resolved only within the register
     for (const run of ["first", "second"]) {
       const runDir = join(workspace, "logs", run);
       await mkdir(runDir, { recursive: true });
-      // The registry, not the manifest or event path, chooses the workspace.
-      await writeFile(join(runDir, "manifest.json"), JSON.stringify({ workspace: other }));
+      // Stable identity binds a relocated archive even when its recorded path is old.
+      await writeFile(join(runDir, "manifest.json"), JSON.stringify({ workspace: other, workspaceId: "project" }));
       await writeFile(join(runDir, "events.jsonl"), events.map(item => JSON.stringify(item)).join("\n") + "\n");
       const media = await mediaFile("project", run, "shared", root);
       assert.equal(media.bytes.toString(), "one immutable original");
