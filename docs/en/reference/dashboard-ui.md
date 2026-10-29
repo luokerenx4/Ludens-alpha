@@ -49,6 +49,12 @@ Documentation follows the interface language unless `docLang=en` or `docLang=zh`
 
 Docs, Capabilities, and Perception expose explicit retries for failed reads. A failed refresh keeps the last loaded content; driver verification and unsaved perception edits stay separate from GET state. Workspace catalog failures are shown as errors, never as an empty workspace list. Retrying a read never replays a write, and a successful perception save supersedes any earlier read.
 
+Replay separates playback sampling from event inspection. Playback loads bounded 30-second frame windows; the frame API accepts at most 60 seconds per request. Event windows can cover up to 15 minutes without expanding the frame window. Precise elapsed-time entry, ten-second jumps, and the seek bar move within the selected run or cycle. Missing samples and recording gaps remain visible; a later frame must never be shown as evidence for an earlier time.
+
+Replay event search reads the entire selected run or cycle through the server's existing archive index. It matches literal, case-insensitive titles, statuses, event types, and identifiers, with an optional track filter; it does not search arbitrary payloads or expand artifacts. Each response scans at most 500 event candidates and returns at most 100 matches. The interface continues through empty scan pages automatically, permits cancellation and retry, and keeps displayed result batches bounded. Cursors bind the query and scope to a source generation and fixed event snapshot: appended events require a fresh search, while rewritten sources invalidate old cursors. Finishing that snapshot is distinct from indexing the whole archive; only both `scan.complete` and `coverage.complete` justify an exhaustive result or a definitive empty state.
+
+Replay evidence links preserve workspace, run, cycle, and time together with `replayItem`, or `replayRecord` plus `replaySequence`. Native links support new tabs and browser history. Details show recorded identifiers, times, status, source text, and exact model inputs where recorded; missing input media is not replaced with a nearby screenshot. Truncated text is labelled and the full record remains available in the raw-data disclosure. Invalid or unavailable references stay explicit. Seeking, searching, copying links, reading details, and retrying reads never start a driver, model, or game or change host control.
+
 ## Interaction Conventions
 
 - Associate form controls with a `Label`, and help text via `aria-describedby`. Icon buttons must have an accessible name.
