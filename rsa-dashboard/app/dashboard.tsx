@@ -629,6 +629,7 @@ export default function Dashboard() {
           ) : benchmarkCases ? (
             <BenchmarkCases
               workspace={selection.project}
+              workspacePath={project?.workspace ?? null}
               ready={catalogReady}
               workspaceAvailable={project?.available !== false}
               catalogError={catalogError} catalogLoading={catalogLoading} onRetryCatalog={refreshCatalog}

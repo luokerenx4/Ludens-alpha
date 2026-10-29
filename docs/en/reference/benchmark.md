@@ -179,6 +179,10 @@ The CLI and Dashboard Benchmark views read the `Trial + Verification + Reward` t
 
 In **Benchmark → Eval catalog**, an empty task catalog links to the task guide; a task without runs offers its version-bound terminal command. History filters match task names across versions; the selected digest binds the command, not the history filter. Empty filtered results and an empty older page offer separate reset actions. Missing or malformed run and baseline links can be retried or cleared without discarding the task selection; pinned history remains readable after a task leaves the current catalog. Browsing, refreshing, following guides, and copying commands never start an evaluation or invoke a model.
 
+Task packages stay visible while another history filter or page loads, retaining keyboard focus and exposing any failed read. This retained directory belongs only to the current workspace identity and location; a changed workspace does not inherit it. History rows remain tied to the current query. On narrow screens tasks use a single-column list; choose a task to inspect its complete version digest and package path. A task name with multiple discovered versions requires an explicit version selection before a run command is offered.
+
+Task filters, the selected run, and the comparison baseline are independent. Changing or clearing a task filter preserves an explicitly selected run and baseline. Choose a run from history to read its details; clearing that selection shows the unselected state, without silently opening the first history row.
+
 ## Built-in tasks and evidence boundaries
 
 The repo ships 8 standard evaluation tasks (defined in `rsa/benchmarks/tasks/` and `rsa/src/benchmark/cases/`):

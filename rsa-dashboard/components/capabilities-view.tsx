@@ -13,6 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
 interface WorkspaceCatalogProps {
@@ -73,10 +74,13 @@ function DiscoverDriver({ project, onCreateWithDriver, onNavigate }: Pick<Worksp
         <Box className="size-5 shrink-0 text-primary" /><h2 className="text-base font-semibold">{t("driverTitle")}</h2>
       </div><Badge variant="outline">{t("onDemandBadge")}</Badge></div>
       <p className="text-sm leading-relaxed text-muted-foreground">{t("discoverNote1a")}<code>github:org/repo#rev</code>{t("discoverNote1b")}<code>{t("examplePath")}</code>{t("discoverNote1c")}</p>
-      <form className="flex flex-wrap items-center gap-3" onSubmit={event => { event.preventDefault(); void discover(); }}>
-        <Input className="min-w-0 basis-60 flex-1" value={spec} onChange={event => changeSpec(event.target.value)} placeholder={t("specPlaceholder")}
-          aria-label={t("specAriaLabel")} aria-describedby="driver-import-boundary" spellCheck={false} />
-        <Button type="submit" aria-disabled={pending || !spec.trim()} className="aria-disabled:opacity-50">{pending ? t("verifying") : t("verifyDriver")}</Button>
+      <form className="grid grid-cols-1 items-end gap-3 sm:grid-cols-[minmax(0,1fr)_auto]" onSubmit={event => { event.preventDefault(); void discover(); }}>
+        <div className="min-w-0 space-y-2">
+          <Label htmlFor="driver-package-spec">{t("specAriaLabel")}</Label>
+          <Input id="driver-package-spec" className="font-mono" value={spec} onChange={event => changeSpec(event.target.value)} placeholder={t("specPlaceholder")}
+            aria-describedby="driver-import-boundary" spellCheck={false} autoCapitalize="none" autoCorrect="off" />
+        </div>
+        <Button type="submit" aria-disabled={pending || !spec.trim()} className="h-auto min-h-9 whitespace-normal py-2 aria-disabled:opacity-50">{pending ? t("verifying") : t("verifyDriver")}</Button>
       </form>
       <p id="driver-import-boundary" className="text-xs leading-relaxed text-muted-foreground">{t("discoverNote2a")}<code>load()</code>{t("discoverNote2b")}</p>
       {failure && <Alert variant="destructive"><AlertDescription>{failure}</AlertDescription></Alert>}

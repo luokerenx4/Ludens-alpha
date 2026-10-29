@@ -1,4 +1,32 @@
-import { parseResultKey, type BenchmarkCatalog } from "../lib/benchmarks";
+import { parseResultKey, taskKey, type BenchmarkCatalog } from "../lib/benchmarks";
+
+type BenchmarkTask = BenchmarkCatalog["tasks"][number];
+
+/** A name+digest identifies one task; use the same local-copy preference as the CLI resolver. */
+export function benchmarkTaskChoices(tasks: BenchmarkTask[]): BenchmarkTask[] {
+  const choices = new Map<string, BenchmarkTask>();
+  for (const task of tasks) {
+    const key = taskKey(task), previous = choices.get(key);
+    if (!previous || (previous.source !== "workspace" && task.source === "workspace")) choices.set(key, task);
+  }
+  return [...choices.values()];
+}
+
+export type BenchmarkTaskSelection = { kind: "none" | "missing" | "ambiguous"; task?: undefined }
+  | { kind: "selected"; task: BenchmarkTask };
+
+/** Task preparation is independent of the result and baseline selected for inspection. */
+export function benchmarkTaskSelection(tasks: BenchmarkTask[], name: string | null, digest: string | null): BenchmarkTaskSelection {
+  if (!name) return { kind: "none" };
+  const matches = benchmarkTaskChoices(tasks).filter(task => task.name === name && (!digest || task.digest === digest));
+  if (!matches.length) return { kind: "missing" };
+  if (matches.length > 1) return { kind: "ambiguous" };
+  return { kind: "selected", task: matches[0]! };
+}
+
+export function benchmarkTaskFilter(name: string, digest: string) {
+  return { case: name, caseDigest: digest, benchCursor: null };
+}
 
 export function benchmarkWorkspaceState({ ready, workspace, catalogError, available }: {
   ready: boolean; workspace: string; catalogError: string; available: boolean;

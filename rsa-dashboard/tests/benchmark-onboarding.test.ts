@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import type { BenchmarkCatalog } from "../lib/benchmarks";
 import { benchmarkWorkspaceState, benchmarkHistoryState, benchmarkReferenceState, benchmarkDetailUrl,
   benchmarkGuidanceLinks, benchmarkListCommand, benchmarkTaskHelpCommand,
-  clearBenchmarkResult, clearBenchmarkBaseline, clearBenchmarkFilter } from "../components/benchmark-onboarding";
+  clearBenchmarkResult, clearBenchmarkBaseline, clearBenchmarkFilter,
+  benchmarkTaskChoices, benchmarkTaskSelection, benchmarkTaskFilter } from "../components/benchmark-onboarding";
 
 const catalog = (patch: Partial<BenchmarkCatalog> = {}): BenchmarkCatalog => ({
   project: "alpha", projects: [{ id: "alpha", workspace: "/work/alpha" }], tasks: [], history: { trials: [], issues: [] }, issues: [], ...patch,
@@ -83,4 +84,36 @@ test("guidance links preserve workspace and document language without stale resu
 test("read-only preparation commands quote paths and task names, and never start an execution", () => {
   assert.equal(benchmarkListCommand("/work/it's here"), "rsa --workspace '/work/it'\\''s here' bench list");
   assert.equal(benchmarkTaskHelpCommand("/work/it's here", "fixture/task", "sha256:abc"), "rsa --workspace '/work/it'\\''s here' bench help 'fixture/task' --digest 'sha256:abc'");
+});
+
+test("task filters change history scope without clearing independently selected evidence", () => {
+  const search = new URLSearchParams({ result: "alpha/run-1", verification: "score-1", baseline: "beta/run-2", baselineVerification: "score-2", benchCursor: "old-page" });
+  const patch = benchmarkTaskFilter("fixture/task", "sha256:a");
+  for (const [key, value] of Object.entries(patch)) value === null ? search.delete(key) : search.set(key, value);
+  assert.equal(search.get("case"), "fixture/task");
+  assert.equal(search.get("caseDigest"), "sha256:a");
+  assert.equal(search.get("benchCursor"), null);
+  assert.equal(search.get("result"), "alpha/run-1");
+  assert.equal(search.get("verification"), "score-1");
+  assert.equal(search.get("baseline"), "beta/run-2");
+  assert.equal(search.get("baselineVerification"), "score-2");
+});
+
+test("task selection requires an unambiguous package and never borrows a result version", () => {
+  const one = { name: "fixture/task", digest: "sha256:a", source: "repository" } as BenchmarkCatalog["tasks"][number];
+  const two = { ...one, digest: "sha256:b" };
+  assert.equal(benchmarkTaskSelection([one, two], null, one.digest).kind, "none");
+  assert.equal(benchmarkTaskSelection([one, two], one.name, null).kind, "ambiguous");
+  assert.equal(benchmarkTaskSelection([one, two], one.name, "sha256:missing").kind, "missing");
+  assert.equal(benchmarkTaskSelection([one, two], one.name, two.digest).task, two);
+  assert.equal(benchmarkTaskSelection([one], one.name, null).task, one);
+});
+
+test("identical task copies prefer workspace bindings exactly as the CLI resolver does", () => {
+  const repository = { name: "fixture/task", digest: "sha256:a", source: "repository", bindings: [{ path: "/repo/config.json" }] } as BenchmarkCatalog["tasks"][number];
+  const workspace = { ...repository, source: "workspace" as const, bindings: [{ ...repository.bindings[0]!, path: "/workspace/config.json" }] };
+  const anotherVersion = { ...repository, digest: "sha256:b" };
+  assert.deepEqual(benchmarkTaskChoices([repository, workspace, anotherVersion]), [workspace, anotherVersion]);
+  assert.deepEqual(benchmarkTaskChoices([workspace, repository]), [workspace]);
+  assert.equal(benchmarkTaskSelection([repository, workspace], repository.name, null).task, workspace);
 });
