@@ -9,8 +9,8 @@
     "build": "npm run build:native",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "preview": "npm run build:native && electron dist/electron/companion-preview.js",
-    "smoke": "npm run build:native && electron dist/electron/companion-preview.js --smoke",
+    "pet:preview": "npm run build:native && electron dist/electron/companion-preview.js",
+    "pet:smoke": "npm run build:native && electron dist/electron/companion-preview.js --smoke",
     "start": "electron dist/electron/main.js"
   },
   "dependencies": {

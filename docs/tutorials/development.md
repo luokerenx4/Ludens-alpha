@@ -261,7 +261,7 @@ node --expose-gc --max-old-space-size=1024 --import tsx scripts/check-index-memo
 
 ### 2. 桌宠交互冒烟与姿态规则
 
-執行 `(cd rsa-companion && pnpm smoke)` 会使用临时 profile 自动验证窗口几何、点击穿透、尺寸缩放、音频与五类日志气泡；执行 `pnpm preview` 则保留交互窗口供人工体验。
+执行 `(cd rsa-companion && pnpm pet:smoke)` 会使用临时 profile 自动验证窗口几何、点击穿透、尺寸缩放、音频与五类日志气泡；执行 `pnpm pet:preview` 则保留桌宠交互窗口供人工体验。
 
 卢登斯桌宠采用静态透明 WebP 素材（定义于 `rsa-companion/ui/public/companion/ludens/manifest.json`，含 24 个全身姿态、8 个叠加特效、3 个头像与托盘图标；修改 manifest 后需同步 `catalog.js`）：
 
