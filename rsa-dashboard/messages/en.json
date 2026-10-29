@@ -1664,6 +1664,13 @@
     "verifyFirst": "Verify this package before creating the workspace.",
     "unsupportedBridge": "This driver does not declare a default bridge port, which workspace creation requires."
   },
+  "runPicker": {
+    "description": "Choose a recorded run by its full ID. Timestamp summaries use the Asia/Shanghai time zone.",
+    "close": "Close",
+    "current": "Current",
+    "benchmark": "Benchmark",
+    "empty": "No recorded runs"
+  },
   "workspacePicker": {
     "choose": "Choose a workspace",
     "description": "Check the folder before switching.",

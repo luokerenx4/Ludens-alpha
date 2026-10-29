@@ -1,0 +1,30 @@
+@layer components {
+  .context-picker-dialog { max-height:calc(100dvh - 2rem); }
+  .context-picker-header { display:flex; flex:0 0 auto; align-items:center; justify-content:space-between; gap:12px; padding:16px 18px; border-bottom:1px solid var(--border); }
+  .context-picker-header h2 { min-width:0; margin:0; font-size:16px; line-height:1.5; overflow-wrap:anywhere; }
+  .context-picker-body { min-height:0; overflow-y:auto; overscroll-behavior:contain; scrollbar-gutter:stable; padding:16px 18px 18px; }
+  .context-picker-description { margin:0 0 14px; line-height:1.6; }
+  .context-picker-list { display:grid; gap:8px; margin:0; padding:0; list-style:none; }
+  .context-picker-list>li { min-width:0; }
+  .context-picker-choice { display:grid; width:100%; min-width:0; min-height:44px; gap:7px; padding:12px; border:1px solid var(--border); border-radius:8px; background:transparent; color:var(--foreground); text-align:left; cursor:pointer; }
+  .context-picker-choice:hover { background:var(--accent); }
+  .context-picker-choice[aria-current="true"] { border-color:var(--primary); background:color-mix(in srgb,var(--primary) 7%,var(--card)); }
+  .context-picker-choice:focus-visible { outline:2px solid var(--ring); outline-offset:2px; }
+  .context-picker-choice-heading { display:flex; flex-wrap:wrap; align-items:start; justify-content:space-between; gap:6px 12px; min-width:0; }
+  .context-picker-choice-heading>strong { min-width:0; font-size:14px; font-weight:600; line-height:1.5; overflow-wrap:anywhere; }
+  .context-picker-markers { display:flex; flex-wrap:wrap; gap:6px; min-width:0; font-size:12px; line-height:1.5; }
+  .context-picker-markers>span { padding:2px 6px; border-radius:4px; overflow-wrap:anywhere; }
+  .context-picker-current { color:var(--primary); background:color-mix(in srgb,var(--primary) 10%,var(--card)); }
+  .context-picker-badge { color:var(--muted-foreground); background:var(--muted); }
+  .context-picker-identity { min-width:0; color:var(--muted-foreground); white-space:normal; overflow-wrap:anywhere; font:12px/1.6 ui-monospace,monospace; }
+  .context-picker-secondary { color:var(--muted-foreground); font-size:13px; line-height:1.6; overflow-wrap:anywhere; }
+  .context-picker-empty { color:var(--muted-foreground); font-size:13px; line-height:1.6; }
+  .context-picker-empty p+p { margin-top:8px; }
+  @media (max-width:680px) {
+    .context-controls>.topbar-run-picker { flex:1 1 100px; }
+  }
+  @media (max-width:480px) {
+    .context-picker-header { padding:12px 14px; }
+    .context-picker-body { padding:14px; }
+  }
+}

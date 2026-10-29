@@ -1664,6 +1664,13 @@
     "verifyFirst": "创建工作区前，请先验证此驱动包。",
     "unsupportedBridge": "此驱动未声明默认桥接端口，暂时无法创建工作区。"
   },
+  "runPicker": {
+    "description": "根据完整 ID 选择已记录的运行。时间摘要使用 Asia/Shanghai 时区。",
+    "close": "关闭",
+    "current": "当前",
+    "benchmark": "Benchmark",
+    "empty": "暂无运行记录"
+  },
   "workspacePicker": {
     "choose": "选择工作区",
     "description": "切换前请确认工作区目录。",
