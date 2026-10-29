@@ -8,15 +8,15 @@ const docsRoot = join(repoRoot, "docs");
 export interface DocEntry { id: string; title: string; group: DocGroup; path: string }
 export type DocGroup = "tutorials" | "reference" | "insights";
 const groups: { id: DocGroup; title: string; blurb: string }[] = [
-  { id: "tutorials", title: "教程", blurb: "怎么跑起来。" },
-  { id: "reference", title: "介绍", blurb: "组件是什么、怎么运转。" },
-  { id: "insights", title: "洞见", blurb: "当时为什么这么做。" },
+  { id: "tutorials", title: "教程 · Tutorials", blurb: "怎么安装、准备设备与跑通工作区。" },
+  { id: "reference", title: "契约 · Reference", blurb: "组件边界、通信协议与日志评测规范。" },
+  { id: "insights", title: "洞见 · Insights", blurb: "真实长跑踩坑复盘与架构取舍依据。" },
 ];
 
 const titles: Record<string, string> = {
-  "tutorials/README.md": "教程概览",
-  "reference/README.md": "组件与契约概览",
-  "insights/README.md": "洞见概览",
+  "tutorials/index.md": "教程概览",
+  "reference/index.md": "组件与契约概览",
+  "insights/index.md": "洞见概览",
   "tutorials/development.md": "开发与运行",
   "tutorials/workspace.md": "Workspace 与自适应代码",
   "reference/architecture.md": "架构与边界",
@@ -28,13 +28,14 @@ const titles: Record<string, string> = {
   "insights/ws-recovery.md": "WS 恢复测试依据",
 };
 
-const docIdPattern = /^(tutorials|reference|insights)\/(?:[a-z0-9-]+|README)$/;
+const docIdPattern = /^(tutorials|reference|insights)\/[a-z0-9-]+$/;
 
 async function listed(group: DocGroup, root: string): Promise<DocEntry[]> {
   const dir = join(root, group);
   let files: string[];
   try {
-    files = (await readdir(dir)).filter(name => name.endsWith(".md") && docIdPattern.test(`${group}/${name.slice(0, -3)}`)).sort();
+    files = (await readdir(dir)).filter(name => name.endsWith(".md") && docIdPattern.test(`${group}/${name.slice(0, -3)}`))
+      .sort((a, b) => (a === "index.md" ? -1 : b === "index.md" ? 1 : a.localeCompare(b)));
   } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
   return files.map(name => ({ id: `${group}/${name.replace(/\.md$/, "")}`, group,
     title: titles[`${group}/${name}`] ?? name.replace(/\.md$/, ""),
@@ -105,7 +106,14 @@ export function renderMarkdown(source: string, currentId: string, ids?: Readonly
   const headings = new Map<string, number>();
   let list: string[] | null = null, listTag: "ol" | "ul" = "ul";
   const flushList = () => { if (list) { html.push(`<${listTag}>` + list.map(item => `<li>${renderInline(item)}</li>`).join("") + `</${listTag}>`); list = null; } };
-  const flushCode = () => { html.push(`<pre><code${codeLang ? ` class="language-${escape(codeLang)}"` : ""}>${escape(code.join("\n"))}</code></pre>`); code = []; };
+  const flushCode = () => {
+    if (codeLang === "mermaid") {
+      html.push(`<details class="doc-diagram"><summary>架构与流程图（点击展开源码）</summary><pre><code class="language-mermaid">${escape(code.join("\n"))}</code></pre></details>`);
+    } else {
+      html.push(`<pre><code${codeLang ? ` class="language-${escape(codeLang)}"` : ""}>${escape(code.join("\n"))}</code></pre>`);
+    }
+    code = [];
+  };
   while (i < lines.length) {
     const line = lines[i];
     const fence = line.match(/^```(\S*)\s*$/);

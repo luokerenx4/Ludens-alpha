@@ -34,16 +34,16 @@ const subscribeLocation = (listener: () => void) => {
 const getLocation = () => window.location.search;
 const serverLocation = () => "";
 const views = {
-  live: ["运行", "运行现场", "看看它正在看什么、做什么。"],
-  replay: ["回放", "经历回放", "沿着同一条时间轴，回看感知、动作、模型调用和日志。"],
-  benchmark: ["Benchmark", "运行性能", "沿着一次请求，找到循环里的等待。"],
-  docs: ["文档", "文档", "教程、介绍与洞见：从仓库实时读取。"],
-  caps: ["能力", "能力与评测", "工作空间的能力目录与评测任务。"],
-  pet: ["Ludens Pet", "与 Ludens Pet 一起工作", "按自己的习惯，调整她的陪伴方式。"],
+  live: ["运行", "运行现场", "实时观察模型输入画面、活动日志与控制状态。"],
+  replay: ["回放", "经历回放", "在同一条时间轴上对齐感知画面、设备动作与模型调用。"],
+  benchmark: ["Benchmark", "运行性能", "追踪单次请求的传输等待、缓存命中与显式调用链。"],
+  caps: ["能力", "能力与评测", "查看当前工作区的设备接口快照、Python @capability 与评测任务。"],
+  pet: ["Ludens Pet", "Ludens Pet 陪伴", "配置桌宠关注的工作区、气泡通知与声音偏好。"],
+  docs: ["文档", "项目文档", "教程、架构契约与设计洞见（从仓库 docs/ 实时读取）。"],
 } as const;
 type View = keyof typeof views;
 function workspaceName(project?: Project) {
-  if (!project) return "选择工作空间";
+  if (!project) return "选择工作区";
   if (project.workspace) {
     const parts = project.workspace.split("/").filter(Boolean);
     return (
@@ -343,10 +343,14 @@ export default function Dashboard() {
         </a>
         <div className="workspace-picker">
           <label htmlFor="workspace">
-            {benchmarkCases ? "评测目录 · 跨工作空间" : "工作空间"}
+            {benchmarkCases ? "评测目录 · 跨工作区" : view === "docs" ? "文档来源" : view === "pet" ? "伴侣设置" : "工作区"}
           </label>
           {benchmarkCases ? (
-            <div className="bench-global-workspace">所有工作空间</div>
+            <div className="bench-global-workspace">所有工作区</div>
+          ) : view === "docs" ? (
+            <div className="bench-global-workspace">仓库 docs/</div>
+          ) : view === "pet" ? (
+            <div className="bench-global-workspace">桌面与网页共享</div>
           ) : (
             <select
               id="workspace"
@@ -365,7 +369,7 @@ export default function Dashboard() {
                 })
               }
             >
-              {!projects.length && <option value="">暂无工作空间</option>}
+              {!projects.length && <option value="">暂无工作区</option>}
               {projects.map((p) => (
                 <option key={p.id} value={p.id}>
                   {workspaceName(p)}
@@ -391,20 +395,20 @@ export default function Dashboard() {
             </a>
           ))}
         </nav>
-        <PetFollowCard follow={pet} project={benchmarkCases ? undefined : project}
+        <PetFollowCard follow={pet} project={benchmarkCases || view === "docs" || view === "pet" ? undefined : project}
           onSettings={() => navigate({ view: "pet" })} />
       </aside>
       <div className="console-main">
         <header className="context-bar">
           <div className="breadcrumb">
             <span>
-              {benchmarkCases ? "所有工作空间" : workspaceName(project)}
+              {benchmarkCases ? "所有工作区" : view === "docs" || view === "pet" ? "Ludens" : workspaceName(project)}
             </span>
             <i>/</i>
             <strong>{views[view][0]}</strong>
           </div>
           <div className="context-controls">
-            {!benchmarkCases && view !== "docs" && view !== "caps" && (
+            {!benchmarkCases && view !== "docs" && view !== "caps" && view !== "pet" && (
               <>
                 <select
                   aria-label="运行记录"
@@ -465,7 +469,7 @@ export default function Dashboard() {
                 </select>
               </>
             )}
-            {view !== "replay" && view !== "docs" && view !== "caps" && <button
+            {view !== "replay" && view !== "docs" && view !== "caps" && view !== "pet" && <button
               className={"refresh-toggle" + (refresh ? " active" : "")}
               aria-pressed={refresh}
               title="只控制界面刷新，不影响 Agent"
@@ -548,7 +552,7 @@ export default function Dashboard() {
               <span className="empty-symbol">◫</span>
               <h2>
                 {!catalogReady
-                  ? "正在发现工作空间"
+                  ? "正在发现工作区"
                   : !projects.length
                     ? "还没有运行记录"
                     : error
@@ -557,14 +561,14 @@ export default function Dashboard() {
               </h2>
               <p>
                 {!catalogReady
-                  ? "连接本地日志服务…"
+                  ? "正在连接本地日志服务…"
                   : !projects.length
-                    ? "在工作空间启动 RSA 后，画面、日志和性能会出现在这里。"
+                    ? "在工作区启动 RSA 后，实时画面、活动日志与性能统计会显示在这里。"
                     : error
                       ? "请检查本地日志服务，恢复连接后会自动更新。"
                       : preparing?.key === key
                         ? `已读取 ${bytes(preparing.progress.bytes)} / ${bytes(preparing.progress.totalBytes)}${preparing.progress.projection ? `，已整理 ${preparing.progress.projection.position.toLocaleString()} / ${preparing.progress.projection.total.toLocaleString()} 条已知事件` : ""}。录像可在回放页直接播放。`
-                        : "保留每一次观察与行动。"}
+                        : "正在加载当前工作区的观察与行动记录…"}
               </p>
             </section>
           ) : (
@@ -664,7 +668,6 @@ export default function Dashboard() {
                   <section className="charts">
                     {(["latency", "cache", "body"] as const).map((type) => (
                       <div className="surface chart-card" key={type}>
-                        <p className="feed-notice">{pageRange}</p>
                         <div className="surface-heading">
                           <h2>
                             {type === "latency"
@@ -862,10 +865,7 @@ export default function Dashboard() {
                       </div>
                     </dl>
                     <p>
-                      请求统计仅含主循环，独立压缩请求单列于事件。Shiori、工具和嵌套能力的耗时与用量不能相加。WS
-                      字节是构建帧大小；HTTP 等待截至响应头，WS
-                      等待从发送截至首事件，概况分别取完成请求的中位数。两者都不能进一步拆分网络与服务端耗时。来源分布仅覆盖当前运行事件，不代表
-                      Pet 的在线状态。图表和时间轴按请求分页，技能、通知和独立压缩详情显示近期截面；完整历史可在活动日志中搜索。
+                      主循环请求统计不含后台独立压缩请求；Shiori、工具与嵌套能力的耗时呈包含关系，不重复累加。HTTP 等待计至响应头，WS 等待计至首个入站事件（请求体为构建帧大小）。图表与时间轴按请求分页（{pageRange}），完整历史可在运行页的活动日志中检索。
                     </p>
                   </details>
                 </>

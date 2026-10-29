@@ -1,58 +1,66 @@
 # OMP 后台压缩改造
 
-RSA 锁定 OMP 18.9.1,压缩复用其原生实现。触发阈值默认跟随所选模型的原生 OMP 设置(`contextWindow − reserve`),可经 `rsa.json`/`--compaction-threshold` 显式覆盖;本文实测数据来自显式 256000 阈值的历史 run。本篇记录我们对 OMP 压缩(speculative compaction)做了什么、为什么改、改动的行为边界与验收方式。改动全部在 [rsa/patches/](../../rsa/patches/) 下的依赖补丁中,由 Bun 按 `rsa/package.json` 的 `patchedDependencies` 配置应用;agent loop 本体未替换,见 [架构边界](../reference/architecture.md)。
+如果只是一问一答地写代码，OMP（`18.9.1`）原生的上下文压缩其实挺好用的；但当我们直接把 OMP 扔进一个**时空一致的实时游戏环境**里跑时，它的乐观压缩机制几乎立刻就失灵了。
 
-## OMP 原生逻辑
+这篇笔记聊聊当时到底发生了什么，以及我们为什么在 [rsa/patches/](../../rsa/patches/) 里给 OMP 的压缩结构动了手术（Agent Loop 本体没换，边界见 [架构与边界](../reference/architecture.md)）。
 
-两段式:平时后台预备,到期前台执行。
+## 先看原版 OMP 是怎么想的
 
-1. **后台预备**:上下文进入预测带(距阈值约 12.5%,8k–32k)时,起一个后台 run,把历史快照发给模型生成摘要。算好后存为 armed,loop 无感。
-2. **前台执行**:上下文到达阈值时,在 loop 关键路径上同步检查:
-   - 有 armed 摘要且校验通过 → 直接拼接(快照前用摘要,快照后的尾部消息完整重放),瞬时完成;
-   - 否则 → 作废在途 run,`compact()` 同步发摘要请求并 await——loop 阻塞到摘要返回。
+因为 Agent 的推理主循环是个**串行结构**，如果在对话途中停下来同步做一次长上下文摘要，整个 Loop 就会原地卡住。为了不卡主循环，OMP 设计了一套“后台乐观预备 + 到期前台拼接”（speculative compaction）的两段式逻辑：
 
-上游对 armed 摘要的作废条件之一是 refresh-on-growth:从候选快照开始累计的上下文增长超过 `max(keepRecentTokens, 8192)`(默认预算 20k)就判定快照过旧,作废重算。
+1. **后台偷偷预备**：当上下文快接近压缩阈值（进到距阈值约 12.5%、8k–32k tokens 的预测带）时，在后台单开一个请求，把当前历史快照发给模型算摘要。算好之后存成 `armed` 状态，前台主循环完全无感，继续往前跑。
+2. **到线一把切换**：等主循环的上下文真正撞上阈值时，在关键路径上同步检查——要是手里正好有一份算好的 `armed` 摘要且校验通过，就直接把“快照前的摘要 + 快照后新攒的尾部消息”拼起来，瞬间完成切换；要是手里没有，就只能把在途任务掐掉，老老实实发起前台同步 `compact()`，卡住主循环等摘要回来。
 
-## 为什么要改
+听起来很合理对吧？问题就出在：**OMP 对“什么时候该把后台算好的摘要扔掉”这件事，定得太激进了。**
 
-该次测量的工作区使用 30Hz 感知加每步截图的实时控制循环。实测(马造 run `2026-10-27T17-22-02.413Z`,4 个压缩周期):
+上游有一条叫 **refresh-on-growth** 的规则：从后台开始算摘要的那一刻算起，只要前台主循环里的上下文又往上涨了超过 `max(keepRecentTokens, 8192)`（默认也就 **20k tokens**），它就觉得刚才那份快照“太旧了”，直接把已经算好的 `armed` 摘要作废扔掉，重新算！而且如果撞上阈值时后台摘要还在路上（`pendingSpec`），它也会毫不留情地直接 `abort` 掉后台请求，退回前台从头同步重算。
 
-| 事实 | 数值 | 来源 |
+## 扔进时空一致的环境里，灾难就来了
+
+在短轮次的 Coding 场景里，20k 的增长余量可能足够。但在我们的场景里，外部环境是**时空一致、一刻不停往前流逝的**——比如马造工作区开着 30Hz 的连续感知，模型也在持续操作与观察，积累截图和工具记录。这里的 30Hz 是采样频率，不是推理或上下文更新频率：自动注入只在 prompt 开始与工具批次结束时读取最新记录，并按记录 ID 去重；显式 `observe` 也只交付选中的记录，不会把每个采样帧都塞进模型历史。
+
+我们直接拉出当时马造实跑的一组真实数据（run `2026-10-27T17-22-02.413Z`，显式使用 `256000` 阈值，4 个压缩周期）算一笔账。当前默认阈值仍跟随所选模型的 OMP 原生设置（`contextWindow - reserve`）：
+
+| 当时测到的事实 | 实际数值 | 数据来源 |
 | --- | --- | --- |
-| 一次摘要请求耗时 | 70–93 s | `compaction_speculation` armed `durationMs` |
-| armed → 阈值应用间隔 | 3.9–6.0 min | 事件时间差 |
-| 该窗口内历史增长 | 27.9k–35.9k token | `model_end` usage(input+cacheRead+cacheWrite) |
-| 单轮中位增长 | ~210 token | 同上 |
+| 让模型算一次长上下文摘要要多久 | **70–93 秒** | `compaction_speculation` 的 `armed durationMs` |
+| 从 `armed` 算好到真正撞上阈值隔了多久 | **3.9–6.0 分钟** | 事件时间戳差值 |
+| 这几分钟里前台上下文涨了多少 | **27.9k–35.9k tokens** | `model_end` usage（`input + cacheRead + cacheWrite`） |
+| 单轮推理增长的中位数 | **~210 tokens** | 同上 |
 
-这些记录说明的影响:
+看到那个 **27.9k–35.9k tokens** 了吗？
 
-- **增长超过刷新预算**:四个周期在 armed 后的增长已超过 20k,按上游规则推断,这些候选无法一直保留到阈值。实际是否落入前台阻塞还取决于重算时机与耗时;这组记录没有直接测量未打补丁版本的阻塞次数。
-- **前台阻塞暂停 OMP 决策**:同步摘要请求会延迟新的模型决策与工具调用,依赖这些调用控制设备的场景会出现响应空档。独立 Action worker 与后台程序仍可继续输入;恢复后使用的观察是否过期,应从实际观察交付与动作事件核对。
+也就是说，在这四个实测周期里，后台摘要算好到主循环撞线的这四五分钟里，前台上下文**都涨超了 20k 的容忍线**。
 
-`pendingSpec` 问题同类:阈值到达时若 remote 候选还在途,上游 abort 它再用前台请求重算,放弃已完成的后台工作并重新等待摘要。
+按上游规则推断，这些候选无法一直保留到阈值：前台涨超 20k 后就会作废重算。如果新候选在撞线时仍是 `pendingSpec`，上游又会把它 `abort` 掉，退回前台同步重算。是否真的落入这条路径，取决于重算时机与耗时；这组记录没有直接测量未打补丁版本的前台阻塞次数。
 
-## 改动内容
+而别忘了，**OMP 的主循环是个串行结构**。一旦退回前台同步压缩，新的模型决策与工具调用就得等摘要返回。这里测到的后台摘要耗时为 70–93 秒，说明重算可能带来明显的决策空档，但不是前台停顿的直接测量；后台独立的 Action 进程与普通程序仍可继续运行。
 
-### pi-coding-agent(session-maintenance.ts / speculation-lead.ts)
+## 我们是怎么改这套压缩结构的？
 
-- **删除 refresh-on-growth 作废条件**。armed 摘要只要通过保留的校验(分支未变、投影余量足够)就保留;提交时重放快照后完整尾部,历史不丢。作废统一走 `cancelSpeculation(reason, contextTokens)`,带原因和上下文规模。
-- **pendingSpec 等待**。阈值触发且 remote 候选在途时,`untilAborted` 等待其完成再校验拼接,不再 abort 重算。等待与前台 auto compaction 信号联动,预算取消随时打断,不晚提交。
-- **候选身份与可观测性**。`diagnostics_channel("omp.compaction.speculation")` 绑定 `operationId`;started / armed / failed / cancelled / applied / invalidated 全生命周期结构化日志,含耗时、`snapshotLeafId`、`contextTokensAtStart`。宿主侧 [trace.ts](../../rsa/src/harness/omp/trace.ts) 订阅该 channel 记录 `compaction_speculation` 事件,HTTP 子 span 与重试沿用候选身份。
-- **后台候选会话隔离**。compaction 请求用独立 `sessionId: "<id>:spec:<snowflake>"` 加新增 `parentSessionId` 保持 prompt-cache 亲和,强制 `preferWebsockets: false`,避免与活跃轮次的 sticky session 交错。
+想通了这个症结，改法就非常明确了——**宁可让压缩后保留的尾部稍微长一点，也绝不轻易丢弃后台已经算好（或快算好）的压缩结果**：
 
-### pi-agent-core / pi-ai(管道)
+### 1. 砍掉 `refresh-on-growth`（不再因为涨得快就丢弃）
 
-`parentSessionId` 从 `SummaryOptions` 穿过 `compact()` 与 V2 streaming request,仅参数透传,无行为逻辑。
+在 `pi-coding-agent`（`session-maintenance.ts` / `speculation-lead.ts`）里，我们直接删掉了“因为上下文增长超限而作废候选”的条件。只要会话分支没变、压缩完之后留给后续对话的上下文余量还够，那份 `armed` 摘要就一直留着有效！哪怕快照之后前台又多攒了 30k 的新消息，提交时把快照后面的全部尾部消息原封不动拼在摘要后面重放就行——历史一条不丢，切换瞬间完成。
 
-## 行为边界
+### 2. 撞线时如果后台还在算（`pendingSpec`），等它算完，别杀它重来
 
-- 调度不变:触发阈值默认跟随所选模型的原生 OMP 设置(历史 run 曾显式用 256000),预测带、方法选择、投影校验逻辑原样保留。
-- 摘要"旧"的代价:快照后的新增消息原样带入新历史,增加保留尾部的 token 数,以复用已有摘要。有效候选已就绪时可避免重新请求摘要;候选仍在途或校验失败时仍可能等待。
-- 作废仍然发生:分支变化、投影余量不足、配置变更、取消,都会按原语义作废,只是不再因增长作废。
-- 适用前提是实时控制循环。若场景允许压缩时安全暂停设备,此改动价值下降,可重新权衡。
+如果到达阈值时后台候选还在路上，说明它可能已经在后台跑了五六十秒、马上就要出结果了。这时候 `abort` 它再重开一个前台请求纯属自残。我们改成了用 `untilAborted` 直接等待在途的后台请求跑完并校验拼接；同时把这个等待跟控制周期的取消信号绑死，万一预算到期或人工交还，随时能干净打断，绝不晚提交。
 
-## 验收
+### 3. 把后台压缩请求跟前台的 WebSocket 连接隔离开
 
-- [rsa/tests/omp-speculation.test.ts](../../rsa/tests/omp-speculation.test.ts):真实 OMP preparation/validation/commit/尾部重放,覆盖阈值等待、armed 后增长存活、分支/余量失效仍刷新、后台失败回退、预算取消可打断等待且不重发、不晚提交、operation 上下文贯穿前后台。
-- [rsa bench run ludens/background-compaction](../reference/benchmark.md):离线 case,验证只提交一次、尾部完整、HTTP 子链明确、取消后不晚提交。
-- 运行证据:`compaction_speculation` 事件按 `operationId` 贯穿,Dashboard 与 `analyze-run.py` 可核对候选归属;归属规则见 [日志](../reference/logging.md)。
+后台算摘要如果去抢前台正在用的会话通道，很容易把前台的 WebSocket sticky session 搞乱。所以我们让后台压缩请求使用独立的 `sessionId: "<id>:spec:<snowflake>"`，同时通过 `pi-agent-core` / `pi-ai` 透传一个新增的 `parentSessionId` 来继承服务端的 Prompt Cache 亲和性，并强制后台压缩走 HTTP（`preferWebsockets: false`），前后台井水不犯河水。
+
+### 4. 给每个后台候选发身份证（`operationId`）
+
+以前后台压缩怎么死的、花了多久，在日志里是一笔糊涂账。我们加了 `diagnostics_channel("omp.compaction.speculation")`，从候选创建起就绑定唯一的 `operationId`，把 `started / armed / failed / cancelled / applied / invalidated` 全生命周期和耗时打进日志（见 [trace.ts](../../rsa/src/harness/omp/trace.ts) 与 [日志契约](../reference/logging.md#shiori-压缩与传输)）。
+
+## 改完之后的代价与验证
+
+天下没有免费的午餐，这么改的代价很清楚：**因为复用了几分钟前的快照摘要，快照点之后新增的消息会原样留在压缩后的历史尾部里**，所以刚压缩完那一刻的上下文体积会比“从头现算一份最新摘要”稍微胖一点。有效候选已就绪时，可以避免重新请求摘要；候选仍在途或校验失败时仍可能等待。分支变化、投影余量不足、配置变更和取消仍会作废候选。如果未来某个非实时场景允许在压缩时把环境直接暂停，也可以重新权衡这项改动。
+
+为了防止以后升级把这套行为改坏，我们配了两道锁：
+
+- **集成测试**：[rsa/tests/omp-speculation.test.ts](../../rsa/tests/omp-speculation.test.ts) 直接跑真实的 OMP preparation / validation / commit / 尾部重放，锁死“涨超 20k 仍存活”、“撞线等待在途候选”、“分支/余量不足仍正常作废”以及“取消打断不晚提交”。
+- **内置 Benchmark**：`rsa bench run ludens/background-compaction`（见 [Benchmark](../reference/benchmark.md)），用受控流离线复刻整套后台压缩生命周期。
