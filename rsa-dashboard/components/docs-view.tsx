@@ -3,8 +3,7 @@ import { useEffect, useRef, useState, type MouseEvent } from "react";
 
 interface DocItem { id: string; title: string }
 interface DocGroup { id: string; title: string; blurb: string; docs: DocItem[] }
-interface DocDetail { id: string; title: string; group: string; html: string }
-
+interface DocDetail { id: string; title: string; group: string; lang: "en" | "zh"; fallback: boolean; html: string }
 function useJson<T>(url: string | null): { value?: T; error?: string } {
   const [loaded, setLoaded] = useState<{ url: string; value?: T; error?: string } | null>(null);
   useEffect(() => {
@@ -32,9 +31,10 @@ export function DocsView({ search, navigate }: {
   const query = new URLSearchParams(search);
   const docId = query.get("doc");
   const docAnchor = query.get("docAnchor");
+  const docLang = query.get("docLang") === "zh" ? "zh" : "en";
   const article = useRef<HTMLElement>(null);
   const groupsLoad = useJson<DocGroup[]>("/api/docs");
-  const docLoad = useJson<DocDetail>(docId ? `/api/docs?doc=${encodeURIComponent(docId)}` : null);
+  const docLoad = useJson<DocDetail>(docId ? `/api/docs?lang=${docLang}&doc=${encodeURIComponent(docId)}` : null);
   const groups = groupsLoad.value;
   const doc = docLoad.value;
   const displayedDocId = groups && doc ? doc.id : undefined;
@@ -87,7 +87,8 @@ export function DocsView({ search, navigate }: {
         </div></>}
       {docId && docLoad.error && <div className="error-banner" role="alert">{docLoad.error}</div>}
       {docId && !doc && !docLoad.error && <div className="docs-body"><p role="status">正在读取…</p></div>}
-      {doc && <><div className="surface-heading"><h2>{doc.title}</h2><span>{doc.id}</span></div>
+      {doc && <><div className="surface-heading"><h2>{doc.title}</h2><span>{doc.id} · {doc.lang === "zh" ? "中文" : "EN"}<button type="button" className="text-button" onClick={() => navigate({ docLang: docLang === "zh" ? "en" : "zh" })}>{docLang === "zh" ? "English" : "中文"}</button></span></div>
+        {doc.fallback && <div className="error-banner" role="status">No English translation yet — showing the Chinese original.</div>}
         <div className="docs-body" dangerouslySetInnerHTML={{ __html: doc.html }} /></>}
     </article>
   </div>;
