@@ -421,7 +421,7 @@ export default function Dashboard() {
   return (
     <div className="console-shell">
       <DesktopBridge onNavigate={navigateUrl} />
-      <ConsoleSidebar view={view} viewLink={viewLink} onNavigate={navigateUrl} pet={pet}
+      <ConsoleSidebar projects={projects} view={view} viewLink={viewLink} onNavigate={navigateUrl} pet={pet}
         petProject={benchmarkCases || view === "docs" || view === "settings" || view === "workspaces" ? undefined : project}
         onPetSettings={() => navigate({ view: "settings" })} />
       <div className="console-main">

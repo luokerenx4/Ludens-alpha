@@ -41,7 +41,7 @@ describe('shared Pet follow target', () => {
     await session.pollTarget(); await session.heartbeat()
     expect(await session.read()).toMatchObject({ activity: 'idle', blocks: [], current: { workspace: null, runId: null, error: null } })
     expect(createSource).not.toHaveBeenCalled()
-    expect(posts.at(-1)).toMatchObject({ pid: process.pid, revision: null, workspace: null, runId: null, phase: 'idle', error: null })
+    expect(posts.at(-1)).toMatchObject({ pid: process.pid, revision: null, targetRevision: null, workspace: null, runId: null, phase: 'idle', error: null })
     session.stop()
   })
 
@@ -88,7 +88,7 @@ describe('shared Pet follow target', () => {
     await Promise.resolve(); await Promise.resolve()
     expect(sent.at(-1)).toMatchObject({ type: 'show', input: { id: 'b' } })
     await session.heartbeat()
-    expect(posts.at(-1)).toMatchObject({ pid: process.pid, revision: 'b', workspace: '/b', runId: 'run-b', phase: 'following' })
+    expect(posts.at(-1)).toMatchObject({ pid: process.pid, revision: 'b', targetRevision: 'b', workspace: '/b', runId: 'run-b', phase: 'following' })
     selected = null
     await session.pollTarget()
     expect(sent.at(-1)).toMatchObject({ type: 'hide' })
@@ -103,17 +103,21 @@ describe('shared Pet follow target', () => {
     writeFileSync(join(workspace, '.rsa', 'workspace.json'), JSON.stringify({ version: 1, id: project }))
     let selected = target('saved')
     const calls: { method: string; body: any }[] = [], changed = vi.fn()
+    const snapshots: RsaPetSnapshot[] = []
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
       calls.push({ method: init.method!, body: init.body ? JSON.parse(init.body as string) : null })
-      return Response.json({ target: selected })
+      if (init.method === 'PUT') return Response.json({ target: selected })
+      if (init.method === 'POST') return Response.json({ consumer: JSON.parse(init.body as string) })
+      return Response.json({ target: selected, consumer: null, connected: null, consumerError: 'Unreadable heartbeat' })
     }))
     const session = new PetSessionCoordinator({
-      dashboardUrl: 'http://localhost:3015', onSnapshot: () => {}, onTargetChanged: changed,
+      dashboardUrl: 'http://localhost:3015', onSnapshot: value => snapshots.push(value), onTargetChanged: changed,
       createSource: workspace => ({ identity: () => workspace, read: () => new Promise(() => {}) }),
     })
     await session.start(workspace)
     expect(calls[0]).toMatchObject({ method: 'PUT', body: { ifUnset: true } })
     expect((calls[0].body as any).project).toBe(project)
+    expect(snapshots.at(-1)?.workspace).toBe('/saved')
     void session.read()
     selected = target('next')
     await vi.advanceTimersByTimeAsync(2_500)
@@ -121,5 +125,59 @@ describe('shared Pet follow target', () => {
     expect(calls.filter(call => call.method === 'PUT')).toHaveLength(1)
     session.stop()
     expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('attributes a failed source attempt to its selection without claiming that revision loaded', async () => {
+    let selected = target('a')
+    const posts: any[] = [], publications: RsaPetSnapshot[] = []
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+      if (init.method === 'POST') {
+        const consumer = JSON.parse(init.body as string)
+        posts.push(consumer)
+        return Response.json({ consumer })
+      }
+      return Response.json({ target: selected, consumer: null, connected: false })
+    }))
+    const session = new PetSessionCoordinator({ dashboardUrl: 'http://localhost:3015',
+      onSnapshot: snapshot => publications.push(snapshot), onTargetChanged: () => {},
+      createSource: () => { throw new Error('Cannot open workspace') },
+    })
+    try {
+      await session.pollTarget(); await session.heartbeat()
+      expect(posts.at(-1)).toMatchObject({ workspace: '/a', revision: null, targetRevision: 'a', phase: 'error',
+        error: 'Error: Cannot open workspace' })
+      selected = { ...selected, revision: 'a-next' }
+      await session.pollTarget(); await session.heartbeat()
+      expect(posts.at(-1)).toMatchObject({ workspace: '/a', revision: null, targetRevision: 'a-next', phase: 'error' })
+      expect(publications.at(-1)?.error).toContain('Cannot open workspace')
+    } finally { session.stop() }
+  })
+
+  it('does not consume an unavailable saved target, stops an existing source, and resumes only after a valid read', async () => {
+    const selected = target('saved'), calls: string[] = [], stop = vi.fn()
+    let unavailable = true
+    const createSource = vi.fn(() => ({ identity: () => '/saved', read: async () => snapshot('saved'), stop }))
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+      calls.push(init.method!)
+      if (init.method === 'POST') return Response.json({ consumer: JSON.parse(init.body as string) })
+      return Response.json({ target: selected, targetUnavailable: unavailable, consumer: null, connected: false })
+    }))
+    const session = new PetSessionCoordinator({ dashboardUrl: 'http://localhost:3015', createSource,
+      onSnapshot: () => {}, onTargetChanged: () => {},
+    })
+    try {
+      await session.pollTarget()
+      expect(createSource).not.toHaveBeenCalled()
+      expect((await session.read()).current.workspace).toBeNull()
+      unavailable = false; await session.pollTarget()
+      expect(createSource).toHaveBeenCalledTimes(1)
+      expect(createSource).toHaveBeenCalledWith('/saved', expect.any(Function))
+      unavailable = true; await session.pollTarget()
+      expect(stop).toHaveBeenCalledTimes(1)
+      expect((await session.read()).current.workspace).toBeNull()
+      unavailable = false; await session.pollTarget()
+      expect(createSource).toHaveBeenCalledTimes(2)
+      expect(calls).not.toContain('PUT')
+    } finally { session.stop() }
   })
 })

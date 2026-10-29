@@ -68,12 +68,13 @@ function NavIcon({ kind }: { kind: ConsoleView | "logo" }) {
 }
 
 
-export function ConsoleSidebar({ view, viewLink, onNavigate, pet, petProject, onPetSettings }: {
+export function ConsoleSidebar({ view, viewLink, onNavigate, pet, petProject, projects, onPetSettings }: {
   view: ConsoleView;
   viewLink(view: ConsoleView): string;
   onNavigate(url: string): void;
   pet: PetFollow;
   petProject?: Project;
+  projects: Project[];
   onPetSettings(): void;
 }) {
   const { t } = useLocale();
@@ -112,7 +113,7 @@ export function ConsoleSidebar({ view, viewLink, onNavigate, pet, petProject, on
       </div>)}
     </nav>
     <footer id={`${id}-footer`} className="sidebar-footer">
-      <PetFollowCard follow={pet} project={petProject} onSettings={() => { closeMenu(); onPetSettings(); }} />
+      <PetFollowCard follow={pet} project={petProject} projects={projects} onSettings={() => { closeMenu(); onPetSettings(); }} />
       <nav className="sidebar-settings" aria-label={t("nav.settings")}>{renderLink("settings")}</nav>
     </footer>
   </aside>;
