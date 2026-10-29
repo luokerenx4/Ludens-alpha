@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { mkdtemp, readFile, realpath, rm, utimes, writeFile } from "node:fs/promises";
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { PerceptionRuntime, observationBytes, perceptionInput, perceptionMetadata, type PerceptionRead, type ObservationQuery } from "../src/harness/perception.ts";
@@ -258,6 +258,36 @@ test("reload replaces code and loaded assets, closes the old process, and preser
     expect(retained.records[0]?.id).toBe(first.records[0]!.id);
     expect(f.runtime.status().state).toBe("error");
   } finally { await f.cleanup(); }
+});
+
+test("status never reports the previous ready worker while stop or reload is flushing it", async () => {
+  for (const operation of ["stop", "reload"] as const) {
+    const f = await fixture();
+    try {
+      await f.load(source('        return {"text": "ready"}', "",
+        '        Path("closing").write_text("started")\n        while not Path("release-close").exists():\n            time.sleep(0.01)'));
+      const previous = f.runtime.status();
+      expect(previous.state).toBe("ready");
+      expect(previous.history).toBeDefined();
+      const pending = operation === "stop" ? f.runtime.stop() : f.runtime.reload();
+      await f.wait(() => existsSync(join(f.workspace, "closing")));
+      const flushing = f.runtime.status();
+      expect(flushing.state).toBe("stopped");
+      expect(flushing.pid).toBeUndefined();
+      expect(flushing.generation).toBe(previous.generation);
+      expect(flushing.history).toEqual(previous.history);
+      await writeFile(join(f.workspace, "release-close"), "release");
+      await pending;
+      if (operation === "reload") {
+        await f.wait(() => f.runtime.status().state === "ready");
+        expect(f.runtime.status().generation).not.toBe(previous.generation);
+        expect(f.runtime.status().pid).not.toBe(previous.pid);
+      } else expect(f.runtime.status().state).toBe("stopped");
+    } finally {
+      await writeFile(join(f.workspace, "release-close"), "release");
+      await f.cleanup();
+    }
+  }
 });
 
 test("invalid query does not damage sampler health and stuck startup is recoverable", async () => {

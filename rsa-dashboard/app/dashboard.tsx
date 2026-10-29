@@ -461,7 +461,7 @@ export default function Dashboard() {
           </div>
         </header>
         <main className="page-content">
-          {view !== "workspaces" && view !== "docs" && (view !== "replay" || entry !== "ready") && <div className={"page-heading" + (view === "settings" ? " mx-auto w-full max-w-5xl" : "")}>
+          {view !== "workspaces" && view !== "docs" && view !== "perception" && (view !== "replay" || entry !== "ready") && <div className={"page-heading" + (view === "settings" ? " mx-auto w-full max-w-5xl" : "")}>
             <div>
               <h1>{benchmarkCases ? t("benchmark.casesTitle") : t(`views.${view}.title`)}</h1>
               <p>
