@@ -1,77 +1,92 @@
-# Driver Bridge 协议（初稿）
+# Driver Bridge 协议
 
-状态：从现有 `mgba / azahar / ryubing` 三个 bridge 实现反推。新 driver 实现对应 socket bridge 后，还需提供适配该协议的 provider，并通过 `DriverRegistration.load` 接入；包和启动描述见 [Baseware](baseware.md#driver-包与启动描述)。`cua` 走 stdio，不用此协议。
+本规范定义 Baseware `bridge` 传输层（TCP Socket）的模拟器通信协议，由内置 `mgba`、`azahar`、`ryubing` 三个驱动共同实现。开发新模拟器驱动时，需在模拟器侧实现本协议服务端（Bridge），并在 TypeScript 侧通过 `DriverRegistration.load` 提供适配的 Provider（包注册契约见 [Baseware 设计理念与能力契约](baseware.md#driver-包与启动描述)）。注：`cua` 桌面驱动采用 `stdio` MCP 传输，不使用本协议。
 
 ## 传输
 
-- TCP，`127.0.0.1:<port>`，单客户端。provider 是客户端，bridge（模拟器侧）是服务端。
-- 行协议：每行 `{id}\t{op}\t{args...}\n`；回复 `{id}\tOK\t{fields...}\n` 或 `{id}\tERROR\t{message}\n`。
-- `id` 由 provider 生成（`crypto.randomUUID()`）， bridge 原样回传，用于匹配异步回复（`APPLY`、`CAPTURE`、`TOUCH_*` 都是延迟回复）。
-- 字段内禁止 `\t\r\n`（见 `drivers/bridge.ts` 校验）。
-- provider 侧 `Bridge.request(op, args, id)`，bridge 侧按 op 分发。断开连接 = 设备断开，`onDisconnect` 触发。
+- **连接模型**：TCP `127.0.0.1:<port>`，单客户端独占。Baseware Provider 作为客户端发起连接，模拟器侧 Bridge 作为服务端监听。
+- **帧格式**：基于 UTF-8 换行符（`\n`）分隔的制表符（`\t`）行协议：
+  - 请求行：`{id}\t{op}\t{args...}\n`
+  - 成功响应：`{id}\tOK\t{fields...}\n`
+  - 失败响应：`{id}\tERROR\t{message}\n`
+- **异步请求配对**：`id` 由 Provider 生成（`crypto.randomUUID()`），Bridge 必须在响应行首原样回传。`APPLY`、`CAPTURE`、`TOUCH_*` 等耗时或等待帧边界的操作均为异步延迟响应，依靠 `id` 精确配对。
+- **字符转义约束**：所有字段内部严禁包含 `\t`、`\r` 或 `\n`（由 [baseware/src/drivers/bridge.ts](../../baseware/src/drivers/bridge.ts) 强制校验）。TCP 连接断开即视为设备断连，立即触发 Provider 的 `onDisconnect` 回调。
 
 ## 会话与所有权
 
-| op | 参数 | 回复 | 语义 |
+| 指令 (`op`) | 请求参数 | 响应格式 | 语义说明 |
 | --- | --- | --- | --- |
-| `HELLO` | — | `OK\t<version>` | 握手。`mgba` 回 `frequency\tcycles`（两字段，用于算 fps）；`azahar` 要求 `azahar-rsa-3`；`ryubing` 要求 `ryubing-rsa-3`。版本不对 provider 直接关连接。 |
-| `OWN` | `epoch` | `OK` / `ERROR OWNED` | 取得设备所有权。已有 epoch 时报错（mgba：`ALREADY_OWNED`，azahar/ryubing：`OWNED`）。成功后清 pad 状态。 |
-| `DISOWN` | `epoch` | `OK` / `ERROR STALE_EPOCH` | 释放所有权；在途 pad action 按 `interrupted` 结算（mgba/ryubing）；azahar 额外清 touch。 |
-| `STATE` | `epoch` | 见下 | 读当前应用中的控制状态，不读游戏内存。 |
+| `HELLO` | 无 | `OK\t<version...>` | 连接握手与版本核验。`mgba` 返回 `<frequency>\t<cycles>`（用于计算精确帧率）；`azahar` 要求返回 `azahar-rsa-3`；`ryubing` 要求返回 `ryubing-rsa-3`。版本不匹配时 Provider 立即关闭连接。 |
+| `OWN` | `<epoch>` | `OK` 或 `ERROR OWNED` | 申请设备控制权。若当前已被其他 epoch 持有则拒绝（`mgba` 返回 `ALREADY_OWNED`，`azahar` / `ryubing` 返回 `OWNED`）。接管成功后立即清零手柄输入状态。 |
+| `DISOWN` | `<epoch>` | `OK` 或 `ERROR STALE_EPOCH` | 释放设备控制权。在途手柄动作按 `interrupted` 结算并归零按键；`azahar` 与 `ryubing` 同时释放触屏接触点。 |
+| `STATE` | `<epoch>` | 见下方说明 | 读取当前 Bridge 注入层持有的控制状态（仅反映控制器状态，绝不读取游戏内存）。 |
 
-`STATE` 回复形状按设备不同：
+各模拟器 `STATE` 响应字段格式：
 
-- mgba：`OK\t<mask>\t<actionId|->`（`mask` 为 10 位 GBA 键；另附 `emu:getKeys()` 原生值，仅诊断用）。
-- azahar/ryubing：`OK\t<mask>\t<lx>\t<ly>\t<rx>\t<ry>\t<actionId|->`（mask 按各 provider 的 `BUTTONS` 位序；轴为 `[-32767, 32767]` 整数，provider 除以 32767 归一）。
+- **mGBA**：`OK\t<mask>\t<actionId|->`（`mask` 为 10 位 GBA 按键位图；末尾附带 `emu:getKeys()` 原生诊断值）。
+- **Azahar / Ryubing**：`OK\t<mask>\t<lx>\t<ly>\t<rx>\t<ry>\t<actionId|->`（`mask` 按各 Provider 的 `BUTTONS` 位序编码；左右摇杆轴 `lx/ly/rx/ry` 为 `[-32767, 32767]` 整数，Provider 侧除以 `32767` 归一化为 `[-1, 1]`）。
 
-epoch 不匹配一律 `ERROR STALE_EPOCH`。这是 Baseware 控制权在 bridge 层的唯一体现。
+凡是携带 `<epoch>` 的指令，若与 Bridge 当前持有的所有权不一致，一律返回 `ERROR STALE_EPOCH`。
 
 ## Pad 时间线
 
-| op | 参数 | 回复 |
-| --- | --- | --- |
-| `APPLY` | `epoch\t<sequence>` | 延迟回复：`OK\tcompleted\t<elapsedMs>\t<polls>` 或 `OK\tinterrupted\t…`。已有 action 时 `ERROR BUSY`。 |
-| `STOP` | `epoch\t[actionId]` | `OK`。无 actionId（或匹配当前）则中断当前 action（`interrupted` 结算）；azahar/ryubing 同时按同一规则释放 touch。 |
+| 指令 (`op`) | 请求参数 | 响应格式 | 语义说明 |
+| --- | --- | --- | --- |
+| `APPLY` | `<epoch>\t<sequence>` | 延迟响应：`OK\tcompleted\t<elapsedMs>\t<polls>` 或 `OK\tinterrupted\t<elapsedMs>\t<polls>` | 执行编译后的手柄状态序列。若已有动作在途则返回 `ERROR BUSY`。 |
+| `STOP` | `<epoch>\t[actionId]` | `OK` | 若省略 `actionId` 或与当前在途动作匹配，则立即中断该动作（使 `APPLY` 以 `interrupted` 结算）并归零输入；`azahar` / `ryubing` 同时按相同规则释放触屏。 |
 
-`sequence` 是逗号分隔的 span，每个 span 为冒号分隔的整数字段：
+Provider 侧先通过 [timeline.ts](../../baseware/src/drivers/timeline.ts) 的 `compileTimeline` 将多通道 `pad.play` 输入校验并切分为不重叠的全状态切片（Span），再编码为逗号分隔的 `<sequence>` 字符串：
 
-- mgba：`mask:frames`（2 字段；`mask ≤ 1023`，`frames ≥ 1`，累计帧数不得超过 max safe integer）。时间语义：按模拟帧推进，`frames = ceil(elapsedMs × fps / 1000)` 累计取整（见 `mgba/provider.ts:encodeSpans`）。
-- azahar/ryubing：`mask:lx:ly:rx:ry:durationMs`（6 字段；`mask < 1<<14`（azahar）/ `≤ 65535`（ryubing），轴 `|v| ≤ 32767`，`durationMs ≥ 16`）。时间语义：输入轮询点的墙钟毫秒，span 间隔不得小于 16ms（含首尾）。
+- **mGBA（帧驱动）**：每个切片格式为 `mask:frames`（`mask <= 1023`，`frames >= 1`）。Provider 按 `ceil(elapsedMs * fps / 1000)` 累计取整将毫秒转换为模拟帧数。
+- **Azahar / Ryubing（轮询墙钟驱动）**：每个切片格式为 `mask:lx:ly:rx:ry:durationMs`（`azahar` 的 `mask < (1 << 14)`，`ryubing` 的 `mask <= 65535`，摇杆轴 `|v| <= 32767`，`durationMs >= 16`）。在模拟器输入轮询点按单调墙钟推进，每个切片持续时间不少于 16ms。
 
-provider 侧 `drivers/timeline.ts:compileTimeline` 把 `pad.play` 的多通道输入编译成完整状态 span，再由各 provider `encodeSpans` 序列化。重叠同通道输入在 provider 层拒绝，不到 bridge。
+## Touch
 
-## Touch（azahar / ryubing；mgba 无）
+仅 `azahar` 与 `ryubing` 支持触屏指令（`mgba` 无触屏硬件）：
 
-| op | 参数 | 回复 |
-| --- | --- | --- |
-| `TOUCH_INFO` | — | `OK\t<minX>\t<minY>\t<maxX>\t<maxY>`。azahar：`0 0 319 239`；ryubing：`0 0 1279 719`。provider 用此生成坐标 schema，越界在 provider 层拒绝。 |
-| `TOUCH_DOWN` / `TOUCH_MOVE` | `epoch\tx\ty` | 延迟回复 `OK\tcompleted`（被采样）或 `OK\tinterrupted`。`DOWN` 时已按下 → `ALREADY_DOWN`/`TOUCH_ALREADY_DOWN`；`MOVE` 时未按下 → `NOT_DOWN`/`TOUCH_NOT_DOWN`；同时只能有一个在途 touch（azahar：`BUSY`，ryubing：`TOUCH_BUSY`）。 |
-| `TOUCH_UP` | `epoch` | azahar/ruybing 未按下时直接回 `completed`（幂等）。 |
+| 指令 (`op`) | 请求参数 | 响应格式 | 语义说明 |
+| --- | --- | --- | --- |
+| `TOUCH_INFO` | 无 | `OK\t<minX>\t<minY>\t<maxX>\t<maxY>` | 查询触屏原生坐标边界。`azahar` 返回 `0 0 319 239`，`ryubing` 返回 `0 0 1279 719`。Provider 据此生成 JSON Schema 并拦截越界坐标。 |
+| `TOUCH_DOWN` | `<epoch>\t<x>\t<y>` | 延迟响应：`OK\tcompleted` 或 `OK\tinterrupted` | 按下指定坐标，待模拟器完成一次输入采样后返回 `completed`，接触状态在返回后继续保持。若已处于按下状态则返回 `ALREADY_DOWN` / `TOUCH_ALREADY_DOWN`。 |
+| `TOUCH_MOVE` | `<epoch>\t<x>\t<y>` | 延迟响应：`OK\tcompleted` 或 `OK\tinterrupted` | 移动当前触点，待采样后返回 `completed`。若未处于按下状态则返回 `NOT_DOWN` / `TOUCH_NOT_DOWN`。 |
+| `TOUCH_UP` | `<epoch>` | `OK\tcompleted` | 抬起触点；未按下时直接幂等返回 `completed`。 |
 
-语义：down 返回后接触保持，completion 只表示“设备已采样新状态”。取消在途 touch（provider `AbortSignal` → `STOP epoch touchId`）或 `pad.release`/`DISOWN` 会抬起接触。
+同一时刻最多允许一个在途 Touch 请求，并发请求返回 `BUSY` / `TOUCH_BUSY`。当调用方取消请求（`AbortSignal` 触发 `STOP <epoch> <touchId>`）、调用 `pad.release` 或执行 `DISOWN` 时，Bridge 会立即抬起触点。
 
 ## Capture
 
-| op | 参数 | 回复 |
-| --- | --- | --- |
-| `CAPTURE` | 见下 | 延迟回复：`OK\t<sequence>`，失败为各设备的错误串（`NO_GAME/PAUSED/CAPTURE_BUSY/CAPTURE_SAVE_FAILED/NO_RENDERER/…`）。 |
+| 模拟器 | 请求格式 | 延迟响应格式 | 采集时机与约束 |
+| --- | --- | --- | --- |
+| `mgba` | `CAPTURE\t<path>` | `OK\t<frame>` | 同步截取当前画面并写入 `<path>`，返回当前模拟帧号。 |
+| `azahar` | `CAPTURE\t<top\|bottom>\t<path>` | `OK\t<captureSequence>` | 截取上屏（400×240 左眼）或下屏（320×240）写入绝对路径 `<path>`，返回递增截图序号。双屏共用一个原生捕获槽，串行采样。 |
+| `ryubing` | `CAPTURE\t<path>` | `OK\t[frame]\t<surface>` | 在下一次渲染帧呈现回调时截图（15s 超时），`<surface>` 标明游戏画面或系统键盘弹窗（系统键盘弹窗时省略 `frame`）。 |
 
-- mgba：`CAPTURE path` → `OK frame`（模拟帧号）。同步截图。
-- azahar：`CAPTURE top|bottom path` → `OK captureSequence`（截图计数，非呈现帧）。双屏共享一个原生捕获槽，串行采样；path 必须绝对路径；无渲染器/忙时直接报错。
-- ryubing：`CAPTURE path` → `OK frame surface`（`surface` 为呈现来源；系统键盘对话框时省略帧号）。下一呈现帧回调时截图，15s 超时。
+图像字节不经过 TCP Socket 传输：Provider 通过 [capture.ts](../../baseware/src/drivers/capture.ts) 的 `withCaptureFile` 分配本地临时文件路径传给 Bridge，待 `CAPTURE` 返回 `OK` 后读取文件字节并在 `finally` 中立即删除临时文件。
 
-截图文件由 bridge 写到 provider 指定的临时 path，provider 读字节后删除（见 `drivers/capture.ts:withCaptureFile`）。图片本身不走 socket。
+## Keyboard
 
-## Keyboard（仅 ryubing）
+仅 `ryubing` 支持原生系统键盘指令：
 
-`KEYBOARD epoch type|press <base64>` → `OK`。只作用于可见的 Switch 系统文本框；`NO_TEXT_INPUT` 时失败。`type` 插文本，`press` 限 `ENTER/ESCAPE/BACKSPACE/CTRL+A` 四键。
+- 请求格式：`KEYBOARD\t<epoch>\t<type|press>\t<base64Payload>`
+- 响应格式：`OK` 或 `ERROR NO_TEXT_INPUT`
+- 语义说明：仅当 Switch 系统文本输入框处于前台激活状态时生效；`type` 插入 Base64 解码后的 UTF-8 文本，`press` 支持 `ENTER`、`ESCAPE`、`BACKSPACE`、`CTRL+A` 四个控制键。
 
 ## 错误码一览
 
-`STALE_EPOCH`（epoch 不匹配）、`OWNED`/`ALREADY_OWNED`（重复接管）、`BUSY`（已有 pad action）、`CAPTURE_BUSY`（已有截图在途）、`TOUCH_BUSY`/`ALREADY_DOWN`/`NOT_DOWN`（touch 状态机）、`UNKNOWN_COMMAND`（未知 op）。provider 把非 `OK` 一律转为异常，`interrupted` 为正常终态之一（`toolExecution` exitCode 130）。
+| 错误码 | 含义与触发条件 |
+| --- | --- |
+| `STALE_EPOCH` | 请求携带的 `epoch` 与当前 Bridge 拥有者不匹配，或尚未 `OWN`。 |
+| `OWNED` / `ALREADY_OWNED` | 其他控制周期已持有该设备，拒绝重复 `OWN`。 |
+| `BUSY` | 已有未完成的 `APPLY` 手柄时间表在途。 |
+| `CAPTURE_BUSY` | 已有未完成的截图请求在途。 |
+| `TOUCH_BUSY` / `ALREADY_DOWN` / `NOT_DOWN` | 触屏状态机冲突（并发触控、重复按下或未按下时移动）。 |
+| `NO_GAME` / `PAUSED` / `NO_RENDERER` / `CAPTURE_SAVE_FAILED` | 模拟器未加载游戏、处于暂停态、渲染器未就绪或临时截图写入失败。 |
+| `NO_TEXT_INPUT` | Ryubing 当前无可见的系统键盘输入框。 |
+| `UNKNOWN_COMMAND` | 未知的操作指令。 |
+
+Provider 将所有 `ERROR` 响应转化为结构化异常；而由 `STOP` 或 `DISOWN` 引起的 `OK\tinterrupted` 则作为正常中断终态处理（对应 `ExecutionResult.status = "interrupted"`，`exitCode = 130`）。
 
 ## 与 provider 的分工
 
-- provider（TS）拥有：timeline 编译、span 编码、参数校验、epoch 持有者记录、临时文件生命周期。
-- bridge（模拟器侧）拥有：输入注入时机（轮询点/帧边界/原生 read 回调）、截图执行、状态机（epoch/action/touch）。
-- 两边都不解释游戏语义：`STATE` 返回的是应用中的控制状态，不是游戏内存。
+- **Provider（TypeScript 侧）负责**：JSON Schema 生成与参数边界校验、`pad.play` 多通道时间表编译与切片编码、控制租约持有者记录、临时截图文件分配与清理。
+- **Bridge（模拟器原生侧）负责**：在正确的硬件时机（输入轮询点 / 模拟帧边界 / 渲染呈现回调）注入按键与触控、执行帧缓冲截图、维护底层的 `epoch / action / touch` 状态机并在断线或 `DISOWN` 时无条件归零输入。

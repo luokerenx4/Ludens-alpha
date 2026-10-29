@@ -1,67 +1,82 @@
 # Benchmark
 
-Ludens 使用 Harbor 的 Task、Verifier、Reward 和 Dataset 文件约定。Shiori 是唯一 runner：日常 Agent 和评测共用 Host 的控制、预算、取消与清理；执行程序记录事实，独立 verifier 从已保存产物评分。重新评分不会重新执行动作或被测模型。
+Ludens 评测系统遵循 [Harbor Framework](https://github.com/harbor-framework/harbor/tree/f3a5a923f6d722472c9e797af836ae4425fb215f)（固定参考版本 `f3a5a9`，Schema `1.4`）的 Task、Verifier、Reward 与 Dataset 文件约定，并针对本机实验环境实现 `ludens-native` Profile。
 
-Harbor 契约参考固定版本 [`f3a5a9`](https://github.com/harbor-framework/harbor/tree/f3a5a923f6d722472c9e797af836ae4425fb215f)。本实现采用 `ludens-native` profile，不引入 Harbor runner，也不承诺任意 Harbor 任务可以直接在 macOS 运行。
+核心架构原则是**执行内核唯一与评判解耦**：所有评测任务统一由 **Shiori** 调度执行、管理预算与取消清理；被测程序只负责在运行期产出客观事实（Artifacts），独立的 `tests/test.sh` Verifier 则从已落盘产物计算数值 Reward。重新评分（`verify`）只运行 Verifier，绝不重跑被测程序或模型。
 
 ## 入口与运行所有权
 
-在目标 workspace 执行 `rsa bench --help` 查看完整参数：
+### 1. `rsa bench` CLI 命令全集
+
+在目标工作区下执行 `rsa bench --help` 可查看全部子命令：
 
 ```sh
+# 发现、帮助与静态契约校验
 rsa bench list
-rsa bench schema task
-rsa bench validate task /path/to/task
-rsa bench validate reward /path/to/verifier
-rsa bench validate dataset /path/to/dataset.toml
 rsa bench help ludens/ws-recovery
-rsa bench run ludens/ws-recovery
-rsa bench history
-rsa bench get <run-id>
+rsa bench schema [task|reward|dataset]
+rsa bench validate task /path/to/task
+rsa bench validate reward /path/to/verifier-or-reward.json
+rsa bench validate dataset /path/to/dataset.toml
+
+# 执行评测与独立重评
+rsa bench run ludens/ws-recovery [--config run.json] [--args '{"k":"v"}'] [--seconds 60] [--repeat 3] [--no-verify]
 rsa bench verify <run-id> --reason "Regrade fixed measurements"
-rsa bench verify <run-id> --task <new-task-directory> --reason "Updated grading criteria"
-rsa bench compare <run-id@verification-id> <baseline-run-id@verification-id>
-rsa bench aggregate <dataset.toml> <run-id> <another-run-id> --policy all
+rsa bench verify <run-id> --task /path/to/updated-task --reason "Updated grading criteria"
+
+# 历史查询、单次详情、版本对比与数据集聚合
+rsa bench history [namespace/task] [--limit 20]
+rsa bench get <run-id[@verification-id]>
+rsa bench verifications <run-id>
+rsa bench compare <run-id[@verification-id]> <baseline-run-id[@verification-id]>
+rsa bench aggregate <dataset.toml> <run-id-1> <run-id-2> --policy all|graded
 ```
 
-`schema` 返回固定版本的契约说明（`guideOnly`），不是完整的官方 JSON Schema；`validate` 使用实际静态解析器校验，不执行任务或评分脚本。
+- **退出码语义**：`rsa bench run` 在执行完成且评分有效（含得分为 `0`）时返回 `0`；被测程序执行失败返回 `1`；执行成功但 Verifier 缺失或评分失败返回 `2`。
+- **静态校验**：`schema` 输出内置的 `ludens-native` 契约导引（`guideOnly: true`）；`validate` 使用静态解析器检查文件结构与字段，绝不执行任务代码或 Verifier 脚本。
 
-`run` 执行任务并安排 verifier；`verify` 只重评已保存事实，追加一个 verification。`get`、`history`、`compare` 和 Dashboard 只读记录。`aggregate` 消费指定 Dataset 与明确选择的 trial/verification，不发起测量。命令的选择和筛选参数以 CLI help 为准。
+### 2. 运行配置绑定（Run Bindings）
 
-执行绑定放在任务包以外的运行配置中。仓库 Task 从 `rsa/benchmarks/runs/` 发现绑定，工作区 Task 从 `<workspace>/benchmarks/runs/` 发现绑定，按 JSON 的 `task` 字段匹配，不要求配置文件与任务同名。唯一绑定可直接运行；没有绑定或存在多个绑定时，需要显式 `--config <path>`。Dashboard 为每个绑定提供包含配置路径的完整运行命令。
-
-配置明确指定 Task、argv、cwd、工作区方式、预算和参数，任务 metadata 不决定运行方式、权限或设备接管。例如，工作区的 `benchmarks/runs/local.json` 可以运行一个普通 Python 测量程序：
+Harbor 任务包只描述“测什么与怎么判分”，而“运行什么程序”由独立的 JSON 运行配置（Run Binding）声明。系统自动从仓库 `rsa/benchmarks/runs/` 与工作区 `<workspace>/benchmarks/runs/` 扫描配置，并按 JSON 内的 `"task"` 字段关联到对应 Task（若任务仅有唯一绑定则作为默认配置，否则需通过 `--config <path>` 指定）：
 
 ```json
 {
   "task": "my-org/example",
-  "argv": ["{python}", "{workspace}/benchmarks/measure.py"],
+  "argv": ["{python}", "{workspace}/benchmarks/measure.py", "--out", "{artifacts}"],
   "workspace": "isolated",
   "seconds": 30
 }
 ```
 
-argv 是参数数组，不经过 shell 拼接；支持 `{rsa}`、`{python}`、`{bun}`、`{workspace}`、`{workdir}`、`{artifacts}`、`{task}` 和 `{param.key}`。`{workspace}` 始终是作者的原工作区；`{workdir}` 是本次执行工作区，isolated 模式下为单独分配的目录。省略 `cwd` 时在执行工作区启动；显式相对 `cwd` 和相对 `--config` 都从原工作区解析，不受启动 CLI 的目录影响。
+运行配置支持的占位符与执行语义：
 
-Shiori 的 program 模式运行普通命令，不经过模型推理。需要 Agent 的任务仍使用 [公共 Host 装配](../../rsa/src/harness/host.ts)，包括 OMP、Controller、感知和控制周期，不另写一个 Agent loop。离线场景也通过同一个 Shiori 生命周期启动和取消。测量预算由外层 Runtime 统一计时，包含启动时间；内置 module 测量及其嵌套 Host 共享 `ctx.budget` 的截止时间，不重新获得一整段预算。预算到期允许测量停止并写出事实，沿用最多两秒的进程收尾期限；普通命令超时、程序失败或被强制终止仍是执行错误。用户取消通过独立的 `ctx.signal` 传递，不当作正常测量完成。场景内部的 `finally` 继续负责关闭自己创建的资源。
-
-先读任务说明和绑定确认副作用：`capability-reuse` 使用在线模型，其余内置场景使用合成设备、数据或传输。Native profile 是普通本机进程，不是权限沙盒。默认 verifier 不继承 live socket、控制 epoch 或模型凭据；脚本仍具有当前用户的普通系统权限。不要把环境变量清理等同于文件系统或网络隔离。
+| 占位符 / 字段 | 解析值与边界 |
+| --- | --- |
+| `{rsa}` / `{python}` / `{bun}` | 当前 RSA CLI、选定框架 Python 解释器（`RSA_PYTHON`）与 Bun 可执行文件的绝对路径。 |
+| `{workspace}` | 作者所在的原工作区绝对路径。 |
+| `{workdir}` | 本次试验的实际执行目录（`workspace: "isolated"` 时为每次试验独立创建的隔离目录）。 |
+| `{artifacts}` | 本次试验独占的产物输出目录（`logs/<run-id>/artifacts`）。 |
+| `{task}` / `{param.<key>}` | 本次固定后的 Task 目录路径，以及默认 `parameters` 与 CLI `--args` 合并后的参数值。 |
+| `Shiori 执行模式` | 普通命令运行于 Shiori `program` 模式，不启动模型；需要 Agent 参与的任务（如 `ludens/capability-reuse`）则通过公共 [host.ts](../../rsa/src/harness/host.ts) 挂载完整 OMP、Controller 与感知循环。预算由外层 Runtime 统一计时（含启动耗时），到期后给予最多 2 秒收尾期写出事实。 |
 
 ## Task 与 Dataset
 
-仓库任务在 `rsa/benchmarks/tasks/`；workspace 任务在 `benchmarks/tasks/`。一项任务由以下文件定义：
+### 1. Task 目录结构与内容摘要（Digest）
+
+仓库内置任务位于 `rsa/benchmarks/tasks/`，工作区自定义任务位于 `<workspace>/benchmarks/tasks/`：
 
 ```text
 benchmarks/tasks/example/
-  task.toml
-  instruction.md
-  environment/       输入材料、依赖声明或锁文件
-  tests/test.sh      独立评分入口
-  tests/verify.py    或 verify.ts
-  solution/          可选参考解，不作为被测程序
+├── task.toml          # Harbor 1.4 任务元数据（必填）
+├── instruction.md     # 任务说明与目标（必填）
+├── environment/       # 输入材料、固定夹具或依赖声明（必填）
+├── tests/
+│   ├── test.sh        # 独立评分唯一入口脚本（必填）
+│   └── verify.py      # 由 test.sh 调用的具体评分实现（可选，也可用 TS）
+└── solution/          # 可选参考解（不作为被测程序运行）
 ```
 
-最小配置示例：
+最小 `task.toml` 示例：
 
 ```toml
 schema_version = "1.4"
@@ -72,11 +87,12 @@ version = "1"
 description = "Measure a capability on fixed examples."
 ```
 
-Ludens 要求 `task.name` 使用 `org/name`，这是比 Harbor 默认值更明确的本地约束。`task.toml`、说明、tests、environment 等被纳入 package digest；任务名称/版本标签不能代替内容 digest。外部执行入口和依赖源码不自动进入 Task digest，执行版本应单独记录为 subject/provenance。Shiori 保留 Git commit/dirty 来源信息，并在 `input.json` 记录实际 argv、cwd、预算和参数，不扫描整个源码树或对 argv 指向的文件逐一计算 hash；需要的模型、权重等版本由作者显式登记。ROM、权重、既有视频和大日志保持引用，不打包复制。
+- **命名与内容寻址固定**：`ludens-native` 要求 `task.name` 必须采用 `org/name` 命名空间格式。Shiori 对任务包内的全部文件计算确定性 `sha256:<64位十六进制>` 内容摘要（Digest），并在运行前将任务包快照固定至 `<workspace>/.rsa/benchmarks/tasks/<digest>/`。
+- **执行溯源分离**：被测外部脚本或模型权重不纳入 Task 包摘要，而是由 Shiori 在 `input.json` 与 `manifest.json` 中自动记录 Git commit/dirty 状态、实际 `argv`、预算及模型标识，或由被测程序通过 `current_trial().subject(...)` 显式登记。
 
-Shiori 将实际任务包固定到 workspace 的 `.rsa/benchmarks/tasks/<digest>/`。执行和默认重评使用该固定版本。修改 verifier 后是新的 Task digest；显式选择新任务包重评时保留原执行的 Task 身份，并为新 verification 记录新的评分 Task 身份。
+### 2. Dataset 清单（`dataset.toml`）
 
-Dataset 使用 Harbor `dataset.toml` 格式：
+Dataset 采用 Harbor `1.0` 格式，通过任务名与精确的 `sha256` 摘要锁定任务集合（仓库内置清单见 [rsa/benchmarks/dataset.toml](../../rsa/benchmarks/dataset.toml)）：
 
 ```toml
 schema_version = "1.0"
@@ -87,19 +103,19 @@ version = "1"
 
 [[tasks]]
 name = "my-org/example"
-digest = "sha256:<64 位内容摘要>"
+digest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 ```
 
-引用按名称和完整 digest 匹配本地任务；缺少精确版本时报告错误，不自动换成同名最新版本。仓库 [dataset.toml](../../rsa/benchmarks/dataset.toml) 列出当前内置任务。修改任务内容后必须同步它的 digest。
+修改任何内置任务文件后，必须同步更新 `dataset.toml` 中对应的 `digest`，系统绝不静默使用摘要不匹配的同名任务。
 
 ## Python 辅助登记是可选的
 
-Python 使用普通函数和 import，可以直接向 `RSA_BENCH_ARTIFACTS` 写测量产物，不必 import `rsa_tools` 或生成 `context.json`。`current_trial()` 是可选的登记辅助；`@capability`/`@record` 仍用于能力和时空轴，评测没有额外的生命周期装饰器。
+被测 Python 程序只需直接读取环境变量 `RSA_BENCH_ARTIFACTS` 并写入测量文件（如 `measurements.json`）即可完成试验，无需强制导入任何框架包。若需结构化登记实验条件、被测模型版本或自动收集进程内 `@capability` 调用统计，可选用 `rsa_tools.current_trial()`（完整示例见 [clamp.py](../../rsa/benchmarks/examples/clamp.py)）：
 
 ```python
 from rsa_tools import current_trial
 
-trial = current_trial()  # 身份和目录由 Shiori 分配；普通 REPL 中会报错
+trial = current_trial()  # 读取 RSA_BENCH_* 环境变量；非 Shiori 试验环境调用会直接报错
 trial.conditions(dataset_revision="v3", seed=7)
 trial.subject("model", path="weights.pt", revision="epoch-12")
 samples = measure(already_loaded_model, dataset)
@@ -108,80 +124,72 @@ trial.limitations("Only daylight samples were measured.")
 trial.flush()
 ```
 
-`current_trial()` 读取 `RSA_BENCH_TRIAL_ID`、`RSA_BENCH_RUN_DIR`、`RSA_BENCH_ARTIFACTS`、`RSA_BENCH_TASK_DIR` 和 `RSA_BENCH_INPUT`，缺少上下文直接报错。它不创建 run、不接管设备、不提交终态、不写 Shiori 的事件流。同一受管 Python 程序内可以复用已加载的对象；没有任意外部 REPL 或其他进程的自动纳管。每个 trial 的 context.json 由一个测量程序写入；作者启动的子进程应把测量交回父程序汇总，不应各自调用 current_trial() 争写同一清单。
-
-Python 只写 `artifacts/context.json` 和作者明确生成的产物。context 记录 trialId、workspace 以及 conditions、subjects、artifacts、limitations 和实际 capability 调用统计，不是第二份 trial 或成绩。正常进程退出会 flush；常驻程序在交还结果前应显式 flush。被硬杀前尚未 flush 的内存统计不完整，不能推断成功。
-
-本地 observer 收集实际调用的 capability 和加载时 codeSHA，覆盖顶层函数及实例方法，且不要求逐次调用进入持久日志。统计证明该版本在本进程参与执行，不证明另一常驻进程的效果，也不自动证明任务成功。普通 Python 调用保留对象，不强制序列化模型参数或返回对象。完整示例见 [clamp.py](../../rsa/benchmarks/examples/clamp.py)。
-
-`artifact("samples.json", value)` 新建 JSON 产物，不覆盖已有文件；`artifact(path)` 按内容 hash 命名并复制外部文件，已位于产物目录内的文件直接登记。这些操作不保证文件之后不可修改。已录制媒体用 `artifact(media)` 或 `artifact(media["timeline"])`，核对 canonical record 身份、片段与 PTS 后保持引用，不复制图片或视频。视频仍是近似重建帧；gap、丢失和未收尾按原件状态报告，不补取当前画面。
+- **职责边界**：`current_trial()` 仅负责在产物目录生成 `artifacts/context.json`（含 `conditions`、`subjects`、`artifacts`、`limitations` 以及本地 observer 捕获的进程内 `@capability` 调用次数与 `codeSHA`），不接管设备、不写 Shiori 事件流。
+- **产物与媒体引用**：`trial.artifact("name.json", value)` 写入新 JSON 文件（禁止覆盖同名文件）；`trial.artifact(external_path)` 按内容哈希复制外部文件；对于已录制的 `.rsa/timeline/` 媒体，传入 `trial.artifact(media)` 即可核验并登记原件引用与视频 PTS，无需重复复制图片或视频字节。
 
 ## 事实、评分与重评
 
-执行程序输出任务自己定义的最小事实，例如输入输出样本、真实动作终态、RSS 时间序列、冷解码误差或 capability 调用链。内置程序通常写 `artifacts/measurements.json`；这是任务私有结构，不是全系统通用 report schema。
+### 1. Verifier 环境变量与 `reward.json` 契约
 
-Verifier 的 native 路径约定是：
+Shiori 在启动 `tests/test.sh` 时清理实时设备 socket、控制 `epoch` 与模型凭据环境变量，并注入以下四个路径变量：
 
-| 环境变量 | 含义 |
+| 环境变量 | 指向路径与用途 |
 | --- | --- |
-| `RSA_BENCH_TASK_DIR` | 本次固定任务包 |
-| `RSA_BENCH_INPUT` | 本次评分输入清单，含 trial 和证据引用 |
-| `RSA_BENCH_ARTIFACTS` | 本次执行的产物目录 |
-| `RSA_BENCH_VERIFIER_DIR` | 本次 verification 独占的输出目录 |
+| `RSA_BENCH_TASK_DIR` | 本次评分使用的固定任务包目录（`.rsa/benchmarks/tasks/<digest>/`）。 |
+| `RSA_BENCH_INPUT` | 本次评分输入清单 JSON（含 trial 元数据与证据路径引用）。 |
+| `RSA_BENCH_ARTIFACTS` | 被测程序产出的 `logs/<run-id>/artifacts/` 目录（只读消费）。 |
+| `RSA_BENCH_VERIFIER_DIR` | 本次评分独占的输出目录（`logs/<run-id>/verifier/<verification-id>/`）。 |
 
-`tests/test.sh` 读取原始事实，把成绩写入 `$RSA_BENCH_VERIFIER_DIR/reward.json`，丰富解释可写 `details.json`。不写全局 `/logs/verifier`、`/tests` 或 `/solution`。Native 环境并未实现 Harbor 默认 Linux/container、云资源、skills 安装等全部执行语义；不支持的要求应在开始前报告。
+`tests/test.sh` 将最终数值评分写入 `$RSA_BENCH_VERIFIER_DIR/reward.json`（可选将详细诊断写入同目录的 `details.json`）：
 
 ```json
 {"accuracy": 0.94, "latency_ms": 12.3, "success": 1}
 ```
 
-reward 唯一公共结构是扁平的 `string -> 有限数字` 对象，没有通用 checks、passed、单位或方向字段，也不要求分数在 0 到 1 之间。可读取 Harbor `reward.txt` 的一个有限数值；同时存在时 JSON 优先。缺测维度省略并在 details 解释，不能写 null、NaN 或假零。整个评分不可用时，读取投影的 `verifier_result.rewards` 为 null；磁盘不写 `reward.json: null`。空对象不证明任务成功。
+- **扁平有限数值映射**：`reward.json` 必须是非空的扁平 `Record<string, number>`，所有值均为有限数字（`finite number`，不限制在 `0..1` 区间，也不预设统一的 `passed` 字段）；兼容读取单值 `reward.txt`，但当 `reward.json` 存在时以 JSON 为准。
+- **缺失维度处理**：无法测量的指标维度应直接从对象中省略并在 `details.json` 说明原因，严禁写入 `null`、`NaN` 或用假 `0` 填充。当整个 Verifier 失败或未产出合法文件时，投影结果的 `verifier_result.rewards` 为 `null`。
 
-执行状态与评分状态各自记录。正常执行得到低 reward 不算执行错误；verifier 失败也不会改写原执行状态。缺失或无效 reward 应修复 verifier 后重评，不能为此自动再跑动作。
+### 2. 多版本重评、对比与数据集聚合
 
-普通文件保存 run 内的路径引用，不要求 hash 封存；日志保留已记录前缀或明确事件的位置，timeline 保留 canonical 记录与媒体位置。重评读取当前保存的产物，开发时可以修正产物再重评，不重做动作，也不对全部文件做前后完整性扫描。缺失文件和不可用媒体照实报告，不从实时环境补取；数据是否足够评分由任务 verifier 决定。读取 reward 使用所选 verification 目录中的当前文件，不另验封存摘要；它不是不可变档案，需要保留评分修订时应使用 `verify` 追加版本，而不是覆盖旧 reward。
+- **无损重评（`rsa bench verify`）**：每次执行 `verify` 都会在 `verifier/<new-verification-id>/` 下追加一条独立评分记录，并在评分成功后原子更新当前默认 verification 指针，原执行状态（`trial.json`）与历史评分版本完整保留。若传入 `--task <new-task-dir>`，系统会将新任务包固定并记录新的评分 Task 摘要，同时保留试验原本的执行 Task 身份。
+- **双试验对比（`rsa bench compare`）**：对比两次试验（或同一试验的两个评分版本 `run-id@ver-id`）的任务摘要、参数、`conditions`、`subjects` 与数值维度差值。仅对双方均存在的指标计算差值，缺失维度保持缺失而不补零；当实验条件或被测版本不同时明确标注差异，不直接宣称能力提升。
+- **数据集聚合（`rsa bench aggregate`）**：对显式选定的一组 trial 执行统计。默认按 Task 分组输出 `byTask`（采用 Harbor 均值语义：缺失或 `null` 计为 `0`，同时输出 `total / valid / error` 计数）；若 Dataset 声明了自定义 `metric.py`（接收 `-i <JSONL> -o <JSON>`），则校验文件摘要后调用该脚本计算跨任务聚合指标。`--policy all` 保留全部选定试验，`--policy graded` 显式剔除无有效评分的试验并记录原因。
 
 ## 文件与展示
 
+单次 Benchmark 运行在 `workspace/logs/<run-id>/` 下的完整落盘结构：
+
 ```text
 workspace/logs/<run-id>/
-  manifest.json                  已有运行/设备来源登记
-  trial.json                     Shiori 提交执行状态与事实引用
-  events.jsonl                   Shiori 唯一写入的运行事件
-  input.json                     实际执行配置
-  stdout.log / stderr.log        执行程序输出
-  artifacts/                     measurements、可选 context 等产物
-  verifier/<verification-id>/
-    input.json                   本次评分输入
-    verification.json            评分版本、状态、错误与证据
-    reward.json                  唯一成绩原件
-    details.json                 可选诊断
-    stdout.log / stderr.log
+├── manifest.json                  # 运行环境、Git 来源与外部事件源登记
+├── input.json                     # 实际执行的 argv、cwd、预算与参数
+├── trial.json                     # Shiori 提交的执行终态与产物引用
+├── events.jsonl                   # Shiori 写入的运行与评分生命周期事件
+├── stdout.log / stderr.log        # 被测程序标准输出与错误输出
+├── artifacts/                     # 被测程序产出的 measurements.json、可选 context.json 等
+└── verifier/<verification-id>/    # 每次独立评分一个子目录
+    ├── input.json                 # 本次评分输入清单
+    ├── verification.json          # 评分 Task 摘要、状态、耗时与错误信息
+    ├── reward.json                # 唯一数值成绩原件
+    ├── details.json               # 可选任务私有诊断详情
+    └── stdout.log / stderr.log    # Verifier 脚本输出
 ```
 
-一个 trial 可有多个 verification。默认选择的 verification 指针在评分完成后原子更新，失败不会偷偷复用上次分数；旧版本保留，可明确选择。重新评分不是新试验。Dashboard/Electron 共同读取 Trial + Verification + Reward，不再保留另一份 outcome 列表。独立 CLI 重评的事件位于 verifier/<id>/，不会向原执行日志以新序号重复写入。Pet 沿既有活动来源消费生命周期，零 reward 不自动显示为系统故障；独立重评不会切换游戏关注来源，不保证额外弹出重评气泡。
-
-CLI 与 Dashboard 都展示执行附件，以及所选 verification 自己的 `details.json`、stdout 和 stderr。失败评分的诊断同样可读；details 是任务自己的 JSON 或文本，不增加统一 checks/report schema。
-
-`compare` 比较任务/评分口径、参数、conditions 与两次执行/评分状态。差异是解释信息，不是计算资格门禁：双方都具有的数值维度始终给出差值，缺失维度保持缺失，不补零。条件不同会明确列出，不把差值直接解释成能力提升。subject 变化独立展示；同一次执行的不同 verification 不是独立样本，Dashboard 可把指定评分版本设为基线。
-
-`aggregate` 记录 Dataset digest、trial 与 verification 选择、过滤策略和 metric 版本，不因选择了不同 verifier digest 而拒绝默认聚合；哪些评分应当一起统计由调用者决定，同一次执行不能用多个评分版本重复计数。自定义 `metric.py` 接收 `-i <JSONL> -o <JSON>`，每行是 reward map 或 null，输出有限数值 JSON map。内置默认按 Task 身份分组输出 `byTask`，各组使用 Harbor 的均值语义：缺失维度/null 计为零，同时展示 total/valid/error 计数。这个分组是 Ludens 的展示约定，避免把异构任务的同名维度默默合成一个分数；需要跨 Task 聚合时，Dataset 明确提供 `metric.py`。`--policy all` 保留所有选择；`--policy graded` 显式排除评分不可用项并记录原因。metric 输入本身没有执行异常信息，不能靠它猜测哪些行应当消失。
+CLI 与 Dashboard 的 Benchmark 视图直接读取 `Trial + Verification + Reward` 三元组，展示各维度的数值成绩、`details.json` 诊断以及执行/评分日志，并支持在界面中一键复制运行命令或切换基线版本进行对比。
 
 ## 内置任务与证据边界
 
-| Task | 测量范围 |
-| --- | --- |
-| `ludens/perception-lifecycle` | 真实 Python、合成模型/媒体：持续采样、reload、历史、修复、不可变归档；不测 PyTorch/设备 |
-| `ludens/control-handoff` | 真实 Runtime/Baseware/Python、模拟驱动：中断、释放、旧 epoch 拒绝；不测真实模拟器延迟 |
-| `ludens/ws-recovery` | 真实 provider、模拟 WS/HTTP 和虚拟冷却：回退、全量恢复、delta、工具不重放 |
-| `ludens/background-compaction` | 原生 OMP maintenance/V2、受控 SSE/token：候选复用、尾部保留、归属和取消；fixture 显式固定 256k 阈值 |
-| `ludens/capability-reuse` | 真实模型、隔离装配台：两批订单、自创函数、跨批有效复用；不证明长期泛化 |
-| `ludens/clamp` | 已加载 Python 函数的样本结果与调用时间；不采内存 |
-| `ludens/video-storage` | 双流合成图像的编码、冷查询与 RSS；名义 sample_hz 不等于有效采集率 |
-| `ludens/index-memory` | 隔离缓存重建、真实历史查询与索引释放；不代替在线 Next.js 内存测量 |
+仓库内置 8 个标准评测任务（定义于 `rsa/benchmarks/tasks/` 与 `rsa/src/benchmark/cases/`）：
 
-`capability-reuse` 使用新 session、空 skills/memory、空感知入口和公共 Host 装配，不预填解法。普通 import、本地 API 和 controller 调用都可形成证据，装饰器和查询目录不是学习的必要条件。完成订单须有环境接受和成功设备终态；复用须关联同一自主函数、两批、不同模型轮次与真实订单。
+| Task 名称 | 运行模式与被测对象 | 核心验证指标与证据边界 |
+| --- | --- | --- |
+| `ludens/perception-lifecycle` | 离线 · 真实 Python + 合成媒体 | 验证常驻采样、`reload` 热更新、历史查询、故障恢复与归档不可变性（不测真实模拟器与 GPU 模型）。 |
+| `ludens/control-handoff` | 离线 · 真实 Runtime / Baseware + 模拟驱动 | 验证人工交还中断延迟、输入归零释放与旧 `epoch` 严格拒绝。 |
+| `ludens/ws-recovery` | 离线 · 真实 Codex Provider + 模拟传输与虚拟时钟 | 验证连接制限到期、`1012` 断连退避、SSE 恢复、全量历史重连 WS 及已提交工具不重放。 |
+| `ludens/background-compaction` | 离线 · 原生 OMP Maintenance + 受控流 | 验证后台候选摘要在上下文增长后保留复用、尾部消息无损重放、Span 归属与取消打断（固定 256k 阈值夹具）。 |
+| `ludens/capability-reuse` | **在线模型** · 公共 Host 装配 + 隔离合成装配台 | 验证 Agent 在空技能/空感知初始状态下自主编写函数，并在跨批次订单与不同模型轮次间实现真实有效复用。 |
+| `ludens/clamp` | 离线 · 普通 Python 程序 | 测量已加载 Python `@capability` 函数的样本计算输出与单次调用耗时。 |
+| `ludens/video-storage` | 离线 · 双流合成图像 + PyAV 编码器 | 测量 MP4 视频分段编码吞吐、历史冷帧解码精度与进程 RSS 内存占用。 |
+| `ludens/index-memory` | 离线 · 隔离缓存目录 + Dashboard Builder | 测量冷历史索引构建子进程峰值内存、查询分页准确性与退出后缓存释放（不替代线上 Next.js 压测）。 |
 
-[该任务的 verifier](../../rsa/benchmarks/tasks/capability-reuse/tests/evaluate.ts) 从执行阶段已保存的必要事件判定，不重新运行 workspace 代码。直接 import 的静态分析覆盖简单 Python shell 调用，不覆盖任意动态控制流；证据不足的复用维度省略，不能等同“没学会”。后台命令仅提交成功、无关 helper、只 import、仅有文件或结束后 AST 盘点，都不算有效复用。实现与测试分别见 [cases](../../rsa/src/benchmark/cases/) 和 [开发文档](../tutorials/development.md)。
-
-Native `metric.py` 使用当前配置的 Python 环境，支持随 Dataset 声明并校验 digest 的同目录文件；不自动创建 Harbor 的 uv/PEP 723 依赖环境。模型名称也被记录为 subject，运行参数或模型配置不同会提示差异，但不阻止展示数值变化，也不自动宣称公平对照。
+**`ludens/capability-reuse` 复用证据判定规则**：其独立评分器 [evaluate.ts](../../rsa/benchmarks/tasks/capability-reuse/tests/evaluate.ts) 仅从执行期已记录的事件流与审计事实判定，绝不重跑工作区代码。有效复用要求同一自主创建的 Python 函数在**两个独立订单批次**、**不同模型推理轮次**中被真实调用并产生被环境接受的成功设备终态；仅创建文件、仅 `import` 而未调用、或仅在任务结束后做 AST 静态盘点，均不计入有效复用得分。

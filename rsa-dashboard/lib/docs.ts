@@ -25,6 +25,7 @@ const titles: Record<string, string> = {
   "reference/logging.md": "日志与调用链",
   "reference/benchmark.md": "Benchmark",
   "insights/omp-compaction.md": "OMP 后台压缩改造",
+  "insights/omp-injection.md": "注入收敛为纯感知通道",
   "insights/ws-recovery.md": "WS 恢复测试依据",
 };
 

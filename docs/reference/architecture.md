@@ -1,16 +1,16 @@
 # 架构与边界
 
-RSA（Recursive Self-Adaptation）让 Coding Agent 在 workspace 中探索设备、编写程序并验证能力。Baseware 提供设备接口，感知、操作和学习由工作区代码决定。
+Ludens（RSA，Recursive Self-Adaptation）将设备驱动、Agent 执行运行时与工作区自适应代码解耦：Baseware 负责硬件与模拟器接口，Shiori（基于 OMP）负责控制周期与会话调度，而具体的感知建模、动作组合与经验沉淀则完全由工作区代码（Workspace）定义与演进。
 
 ## 组件与进程
 
-| 组件 | 职责 |
+| 组件 | 进程形态与核心职责 |
 | --- | --- |
-| `baseware/` | 独立设备服务：装配 driver，提供能力目录、控制权、取消、媒体和设备日志；外放 CLI、TS/Python API 与 MCP。 |
-| `rsa/` | Harness：工作区、接管预算、统一能力入口、感知与动作进程、Benchmark，以及 Shiori 的装配与日志。 |
-| Shiori | 唯一执行内核的职责名：RSA Host Runtime 统一控制周期、预算、取消与清理。Agent 模式由 OMP 实现；普通程序、verifier 和 metric 使用同一 Runtime，不启动模型。 |
-| `rsa-dashboard/` | 归档读取 worker、HTTP API 与统一的运行、回放、Benchmark、Ludens Pet 界面，读取运行事实并提供人工交还入口。 |
-| `rsa-companion/` | Electron 壳与原生 Ludens Pet，复用同一 Dashboard 界面和日志来源。 |
+| `baseware/` | **独立设备服务**：加载内置或外部 Driver，提供统一 Controller 能力目录、控制权租约（`epoch`）仲裁、输入取消与设备事实日志，对外暴露 CLI、TS/Python API 与 MCP 接口。 |
+| `rsa/` | **自适应 Harness**：管理工作区配置与生命周期、能力发现与路由、常驻感知（`perception.py`）与常驻动作（`action.py`）Python 子进程、Harbor 评测以及运行日志归档。 |
+| **Shiori** | **唯一执行内核（职责名）**：由 RSA Host Runtime 实现，统一管控控制周期、时间/请求预算、信号取消与退出清理。Agent 模式挂载 **OMP 18.9.1**；普通评测程序、Verifier 与 Metric 共用同一生命周期而不启动模型。 |
+| `rsa-dashboard/` | **本地控制台服务**：通过独立 Node Worker 构建与查询日志索引，提供实时活动流、时空轴视频回放、运行统计、文档浏览、能力目录与人工交还入口。 |
+| `rsa-companion/` | **桌面伴侣（Ludens Pet）**：Electron 桌面壳，主窗口复用同一 Dashboard 视图，原生透明桌宠窗口与音频引擎增量消费同一套活动日志。 |
 
 ```mermaid
 flowchart LR
@@ -25,87 +25,91 @@ flowchart LR
     C --> B[Baseware 服务]
     B --> D[Driver]
     D --> E[模拟器 / 桌面 / 设备]
-    H --> L[workspace/logs]
+    H --> L[workspace/logs & .rsa]
     B --> L
-    L --> R[Dashboard 归档读取 worker]
-    R --> V[Dashboard 网页 / Electron 界面]
-    R --> A[Ludens Pet 增量展示]
+    L --> R[Dashboard 归档读取 Worker]
+    R --> V[Dashboard 网页 / Electron 主窗]
+    R --> A[Ludens Pet 桌宠增量气泡]
 ```
 
-Python 组合在自己的进程内完成，设备调用才进入 RSA/Baseware；执行方式见 [workspace](../tutorials/workspace.md)。
-
-各组件独立安装并使用自己的锁文件。RSA Harness 只依赖 Baseware 的客户端和契约，不导入具体 driver；`rsa up` 负责按配置装配本机进程。
+各组件拥有独立的 `package.json` / `pyproject.toml` 与锁文件。RSA Harness 仅依赖 Baseware 的客户端与类型契约，不直接导入任何具体 Driver 实现；`rsa up` 按工作区配置与驱动 Manifest 编排本机进程。
 
 ## 设备与统一能力
 
-Driver 暴露 **Controller**：既可操作设备，也可返回信息或媒体；传感器属于 Controller。能力采用 CUA 原生工具约定：名称、JSON Schema、注解与原生结果；Baseware 另记录控制要求、执行状态、时序和媒体。设计理由见 [Baseware](baseware.md)。以 [设备契约](../../baseware/src/contracts.ts) 和 [导出 schema](../../baseware/src/catalog.ts) 为准。
-
-Baseware 的 CLI/API/MCP 调用同一服务。RSA 把设备能力与工作区 `@capability` 合入 `rsa controller`，按需查询；它们及 MCP 不默认注入 OMP 工具列表。
-
-Driver 只解释设备接口：触屏提供原生坐标的 down/move/up，双屏返回独立图像。组合、融合和游戏策略留在 workspace。Cua driver 连接原装 Cua Driver 提供电脑能力，模拟器 driver 不混入桌面操作。
+1. **统一 Controller 抽象**：Driver 对外暴露的所有能力统称为 **Controller**（包括执行输入的控制器与采集画面/状态的传感器）。每项能力遵循 CUA 原生工具结构：`name`、`description`、`inputSchema`、可选 `outputSchema` / `annotations` 以及 MCP `CallToolResult` 返回值。设计依据见 [Baseware 设计理念与能力契约](baseware.md)，类型定义见 [baseware/src/contracts.ts](../../baseware/src/contracts.ts) 与 [baseware/src/catalog.ts](../../baseware/src/catalog.ts)。
+2. **双命名空间聚合与按需发现**：RSA 将设备能力（`controller/<id>`）与工作区 Python 装饰器能力（`python/<path>:<fn>`）合并至 `rsa controller` 目录。为避免撑爆模型上下文，所有设备能力与 MCP 工具**均不默认注入 OMP 的模型工具列表**，而是由 Agent 通过 `baseware.json`、`rsa controller` 或 `rsa_tools.Client` 按需发现与调用。
+3. **纯粹的硬件边界**：Driver 仅忠实映射硬件接口（如双屏独立截图 `screen.top.capture` / `screen.bottom.capture`、原生触屏坐标 `touch.down / move / up`），跨屏图像拼接、坐标转换与游戏策略一律留在工作区代码中实现。
 
 ## 控制权与生命周期
 
-每次 `rsa auto on` 产生一个 **epoch** 并重置本轮时间与请求预算。RSA 用持久连接向 Baseware 取得有期限的操作权，工作区调用携带同一 epoch。查询目录、help 不需要接管；每项能力独立声明 requiresControl，部分只读状态查询也要求有效 epoch。通过 CLI 启动的 Python 能力也需要当前接管周期。
+### 1. 控制租约（`epoch`）与权限校验
 
-Baseware 负责唯一拥有者、旧 epoch 拒绝、动作取消和设备释放。拥有者断线、预算到期、设备断连或人工撤销都会结束操作权。普通短连接关闭只取消自身在途请求或等待，不取消已经提交的手柄动作；动作归控制 epoch 持有。动作时长由调用方决定，不设统一两秒上限。
+- 每次执行 `rsa auto on` 会开启一个新的控制周期，生成唯一 **`epoch`** 并重置本轮秒数（`seconds`）与模型请求数（`requests`）预算。
+- RSA Host 通过持久连接向 Baseware 持有该 `epoch`，并将 `BASEWARE_EPOCH` 注入工作区进程环境。
+- 查询能力目录与 `--help` 无需控制权；具体能力是否要求控制权由其 `requiresControl` 属性声明（部分只读状态查询同样要求有效 `epoch`）。通过 CLI 调用工作区 `python/...` 能力同样要求处于活跃控制周期。
+- 当发生人工交还（`rsa auto off`）、预算耗尽、宿主断线或设备断开时，Baseware 立即废止旧 `epoch`、中断在途动作并执行设备释放（清零按键与触点），清理完毕后回到 `manual` 状态。
 
-手柄统一使用 `play`，输入为相对时间表，每项 `{atMs, durationMs, state}` 只影响声明的通道。不同通道可重叠，同一通道的时间段不能重叠；相邻时间段在边界直接更新合成状态，整段结束回到中立。例：
+### 2. 手柄异步时间表（`pad.play`）
+
+模拟器手柄统一采用相对时间表指令 `pad.play`，参数 `inputs` 为 `{atMs, durationMs, state}` 数组：
 
 ```sh
 rsa controller controller/pad.play --args '{"inputs":[{"atMs":0,"durationMs":500,"state":{"LEFT":1}},{"atMs":0,"durationMs":300,"state":{"B":1}}]}'
 ```
 
-`--args` 或 `--file /absolute/path/action.json` 接收完整参数对象。默认提交后返回动作 ID 和状态；参数中加 `"wait": true` 等到终态，或之后调用 `pad.wait/status/cancel` 并传 `{"actionId":"<id>"}`。取消等待不取消动作，显式取消、`release` 或交还控制权才释放输入。一次设备只执行一张时间表，新提交遇到已有动作会返回 `BUSY`；不隐式合并或覆盖。
+- **通道合成规则**：不同按键/摇杆通道的时间段允许自由重叠；同一通道的时间段禁止重叠。相邻时间段在边界直接切换合成状态，整张时间表结束时自动归位中立状态。
+- **异步生命周期**：`pad.play` 默认提交后立即返回 `actionId`（动作归当前控制 `epoch` 所有，短连接 CLI 退出不会中断已提交动作）；传入 `"wait": true` 或调用 `pad.wait / status / cancel`（传 `{"actionId": "<id>"}`）可等待、查询或取消该动作。同一设备同时只执行一张时间表，并发提交新时间表会返回 `BUSY`。
+- **硬件时钟语义**：时间参数单位为毫秒；Azahar（3DS）与 Ryubing（Switch）按输入轮询时的单调墙钟推进（最小跨度 16ms），mGBA（GBA）按模拟帧率向上取整换算为帧数。
 
-时间单位为毫秒，具体采样语义由 driver 声明：3DS/Switch 按输入轮询时的单调墙钟推进，mGBA 按模拟帧取整。提交完成不代表游戏已处理所有输入；动作终态、实际耗时和采样数见设备日志。
+### 3. 常驻动作进程与输入重置
 
-人工交还同时停止 RSA 的自动循环、取消其管理的在途能力调用，并阻止新的模型请求。设备释放不等待模型推理结束；driver 完成清理后才报告 manual，已经进入底层的调用可能先收尾。OMP 原生 shell、后台任务和命名服务遵循上游生命周期；进程即使仍存活，旧 epoch 也不能再控制设备。详见 [Runtime](../../rsa/src/harness/runtime.ts)。
-
-动作 worker 固定绑定 epoch 和 inputGeneration。动作 stop/reload/故障通过 Baseware 重置本 workspace 的全部当前输入（包括并发 CLI），不重置 epoch、预算或 OMP 会话；旧 generation 被拒绝，释放失败则交还控制。manual 不运行动作 worker，下一次接管新建实例；动作重载不重启感知。
-
-工作区隔离文件、会话和服务地址，不是 OS 沙箱；多个工作区可能共享真实桌面。
+工作区 `action.py` 的常驻动作 worker 固定绑定启动时的 `epoch` 与 `inputGeneration`。当在 `auto` 周期内执行 `rsa action stop`、`rsa action reload` 或 `Action.step()` 抛出异常时，系统通过 Baseware 立即取消并释放本工作区的全部当前输入（包含并发 CLI 输入），递进 `inputGeneration` 拒绝旧实例残余调用，同时保留当前 `epoch`、剩余预算与 OMP 会话。详见 [rsa/src/harness/runtime.ts](../../rsa/src/harness/runtime.ts)。
 
 ## 会话与 Loop
 
-同一 Host 复用 OMP 会话，重启默认恢复本 workspace 的当前会话；新 workspace 有独立索引，见 [workspace](../tutorials/workspace.md)。
+### 1. OMP 超集装配与外层续轮
 
-当前使用 **OMP 原生系统提示词**。可选的 workspace 根 `AGENTS.md` 通过原生 `contextFiles` 加载；没有独立 `explore.md` 或自定义系统提示词替换。RSA 显式启用 OMP 的 `read/write/edit/bash/wait`，额外提供 `observe`。命令、后台任务、命名服务和 `proc://` 都复用 OMP。
+RSA Host 在单工作区内复用同一个 OMP 会话（持久化于 `.rsa/shiori/sessions/`），并在 `Settings.isolated()` 基础上采用**最小覆盖原则（Superset Shell）**：
 
-外层续轮仍由 RSA 控制：
+- 保留 OMP 原生系统提示词（若工作区存在 `AGENTS.md`，通过原生 `contextFiles` 注入）。
+- 显式启用 OMP 原生工具 `read`、`write`、`edit`、`bash`、`wait`，并注册自定义工具 `observe`。
+- 仅覆盖宿主契约必需项：关闭 `retry.modelFallback`（保证所选视觉模型粘性）、关闭 `title.refreshOnReplan` 与 `cacheWarming`（确保每次模型请求严格归属控制周期）、将 `PROVIDER_IMAGE_BUDGETS` 设为 `Infinity`（在压缩前保留历史图像，避免中途丢图破坏 Prompt Cache 前缀），以及应用可选的 `compactionThreshold`。详见 [rsa/src/harness/omp/session.ts](../../rsa/src/harness/omp/session.ts)。
 
-1. 在控制周期内用 [continue.md](../../rsa/prompts/continue.md) 发起 OMP prompt；`auto on --message` 的补充消息只用于首次。
-2. 工作区感知进程持续调用 `sample()`，把能力结果写入 workspace 时空轴。查询只选择已有记录；模型交付独立决定哪些内容需要追加到会话。插件在 prompt 开始及整批工具结束时使用同一交付策略：自动追加新感知记录及采样器的 `state/codeSHA/error` 变化；控制状态、技能与记忆由模型按需通过工具读取。显式 `observe` 始终完整响应指定记录、时刻或范围，同批已交付的观察不再自动追加。`rsa perception inject off/on` 单独控制自动读取与附加，不改变采样、留档、录像及显式查询。
-3. OMP 执行自己的推理与工具循环；一次 prompt 结束后，RSA 在预算内继续下一次。
+在 `auto` 控制周期内，外层循环按以下步骤运转：
 
-独立的 `action.py:Action` 进程在 auto 期间按 `step_hz`（默认 30 Hz）调用 `step()`，可读取感知历史、执行设备输入并保留跨轮状态。两个进程共用 `@capability` 和可选 `@record`，调度入口分别是 `Perception.sample()` 与 `Action.step()`；不把每个能力都变成调度任务。感知入口要求记录，动作入口可只执行。工作区实现策略，Harness 提供生命周期与输入收尾。
+1. **发起轮次**：使用 [continue.md](../../rsa/prompts/continue.md) 发起 OMP `prompt`（首次接管若带 `auto on --message` 则附加一次性提醒）。
+2. **感知与动作并行运转**：模型推理期间环境持续运行——常驻 `Perception.sample()` 按 `sample_hz` 持续采样写入 `.rsa/timeline/`，常驻 `Action.step()` 按 `step_hz` 持续读取时空轴并执行高频控制。
+3. **自动上下文交付**：RSA 扩展挂载 OMP 的 `before_agent_start` 与 `tool_result` 钩子（见 [extension.ts](../../rsa/src/harness/omp/extension.ts)）。当自动注入开启（默认 `inject on`）时，自动追加尚未交付的最新主通道感知记录以及采样器状态变迁（`state / codeSHA / error`）；若同批工具已执行显式 `observe`，则跳过重复附加。
+4. **续轮或交还**：单次 `prompt` 结束且预算未耗尽时自动发起下一轮；一旦人工交还或预算耗尽，`addBeforeModelCall` 门禁立即阻断新模型请求，释放设备控制权。
 
-环境在模型思考时继续运行。工作区可改感知和控制程序，不能改外层调度；见 [OMP 装配](../../rsa/src/harness/omp/session.ts) 与 [扩展](../../rsa/src/harness/omp/extension.ts)。装配是 OMP 的超集壳：只覆盖 host 自有契约（`retry.modelFallback` 关闭保持所选模型粘性、`title`/`cacheWarming` 关闭保证请求可归属控制周期、显式传入的压缩阈值），与 OMP 默认相同的键一律不设，模型行为参数跟随 OMP 与模型目录。
+### 2. 上下文压缩与传输恢复
 
-装配使用 `Settings.isolated()` 的内存默认值，不读取用户全局或 workspace 的 OMP 设置文件。原生重试保持启用，继续受请求预算与控制周期取消约束。新会话的思考等级按模型目录与 OMP 默认值选择；恢复已有会话时，OMP 优先沿用会话中保存的思考等级，不自动覆盖为新模型默认值。
-
-压缩复用 OMP，触发阈值默认跟随所选模型的原生 OMP 设置（context window − reserve），可经 `rsa.json`/`--compaction-threshold` 显式覆盖，图片数量预算 Infinity，入历史时按 OMP 压图；后台压缩的行为改动与验收见 [OMP 后台压缩改造](../insights/omp-compaction.md)。Codex 使用 WebSocket auto；见 [WS 测试依据](../insights/ws-recovery.md)。
-
-交付使用 OMP 的 `before_agent_start` 和 `tool_result` 持久化入口，共用查询、内容格式和批次收据；`context` 只检查请求与原生后台结果，不在此改写历史或补图。普通续轮保留交付游标，恢复会话的新 Host 和成功压缩等上下文替换后重新交付必要信息。去重按时空轴记录身份，不按像素相同判断时间证据；显式重读不被自动去重吞掉。已有消息保持原样随会话前缀复用，直到 OMP 原生压缩。
+- **后台预测压缩**：复用 OMP 原生两段式压缩，触发阈值默认跟随模型目录（可通过 `rsa.json` 或 `--compaction-threshold` 覆盖）。针对 30Hz 实时控制循环的补丁改造见 [OMP 后台压缩改造](../insights/omp-compaction.md)。
+- **WebSocket 增量传输与恢复**：OpenAI Codex 默认使用 WebSocket `auto` 模式，断连分类、冷却退避与未完成工具调用的 SSE 恢复策略见 [WS 恢复测试依据](../insights/ws-recovery.md)。
 
 ## 可核查的运行事实
 
-Baseware 记录设备事实，RSA 保存模型、工具、能力和感知记录，Shiori 的 Agent 模式接入 OMP 原生 telemetry。Dashboard 与 Pet 消费日志，不另起推理循环。来源与调用链见 [日志契约](logging.md)，评测见 [Benchmark](benchmark.md)。调用成功、文件增长或帧数增加不等于任务成功。
-
-Dashboard 将归档读取放在独立的 Node worker 线程中，Next 路由负责请求和响应。worker 共享一份可重建目录：原始事件位置、身份关系、展示所需的位置与截止点，以及小型统计；正文仍从原始 events、streams、archive 按需读取。Activity、运行概览和回放共用这个目录，Pet 只消费 Activity 增量。冷目录由查询 worker 按需启动一个临时子进程，固定输入截止、顺序聚合并批量写入新 generation；完成后原子发布，子进程退出释放工作集。全局只同时构建一个 run，查询仍使用已有可读目录。HTTP 取消只结束读取，构建独立继续；显式取消/失败保留状态，用户重试才重新开始。默认产品入口使用生产构建，开发热更新与归档消费分开。细节见 [日志消费](logging.md#消费与指标解释)。
+- **多源事实解耦**：Baseware 独立持久化设备控制与执行事实（`logs/baseware/`），RSA 记录模型调用、工具执行、能力调用与感知交付（`logs/<run-id>/`），Shiori 挂载局部 OpenTelemetry provider 记录 `agentLoop` 遥测。
+- **Dashboard 隔离读取**：Dashboard 将归档解析与索引维护放在独立的 Node Worker 线程中，冷历史目录由限流为全局单实例的临时 Builder 子进程构建并原子发布至 `.dashboard-index/`；Next.js 路由与 Ludens Pet 仅通过有界 RPC 读取投影结果。详见 [日志与调用链](logging.md#消费与指标解释)。
 
 ## TypeScript 与 Python
 
-RSA 的 `src/` 与 `python/` 都是正式组件。TypeScript 管理 Shiori、控制权、跨进程协议和产品接口；Python 包 `rsa_tools` 管理常驻感知与动作、时空轴媒体写入与按需解码。Python 使用独立的 pyproject/锁文件、可安装包和测试/类型检查，统一检查入口见 [开发指南](../tutorials/development.md)。workspace 中 AI 编写的 Python 与框架代码分别维护；能力函数执行工作并按需标记 `@record`，框架负责视频编码与文件生命周期。
+RSA 由 TypeScript 宿主（`rsa/src/`）与 Python 工具包（`rsa/python/rsa_tools/`）共同组成：
 
-PyAV 在现有常驻 worker 内按需加载，编码线程和队列受限，不新增录像服务。TS 和 Dashboard 通过同一时空轴引用消费媒体，历史解码可离线执行，不依赖活着的采样进程。
+- **TypeScript 侧**：负责 Shiori 运行时、控制权租约、OMP 会话扩展、跨进程 RPC 与 CLI / Benchmark 编排。
+- **Python 侧**：负责 `@capability` 静态发现与动态执行、常驻 `Perception` / `Action` 循环、PyAV 视频段编码、冷帧按需解码以及 `current_trial()` 评测证据登记。视频编解码直接在常驻感知进程内按需完成，不额外引入独立的流媒体服务。
 
 ## 能力持久化边界
 
-workspace 的 `.rsa/timeline/` 是显式记录能力结果的唯一原件归属。`@capability` 统一声明感知和动作能力，`@record` 将结果写入时空轴；已有感知进程负责单写入者与连续采样，用户函数仍在调用方 Python 进程执行。Baseware 返回原生数据，只使用调用临时文件；RSA run 记录引用，Dashboard 解析引用和可重建索引。RSA 额外保存的模型、工具与传输正文通过 `.rsa/archive/` 共享，媒体引用时空轴；OMP 自身的原生 session/blob 继续由上游管理。契约与生命周期见 [Workspace](../tutorials/workspace.md#能力留档与-workspace-时空轴)。
+工作区内的四类状态存储各司其职，互不冗余复制：
+
+| 存储位置 | 归属与内容 |
+| --- | --- |
+| `.rsa/timeline/` | **能力观测与媒体唯一原件**：由常驻感知进程单一写入者维护，存放 `@record` 记录元数据、10 秒分段 MP4 视频（`video/`）与 SHA-256 去重非视频媒体（`objects/`）。 |
+| `.rsa/archive/` | **模型与工具结构化文本归档**：跨请求、跨 run 按内容哈希去重存储 `objects/<sha256>.json.gz` 与流式载荷，内含媒体一律通过引用指向 `.rsa/timeline/`。 |
+| `logs/<run-id>/` | **单次运行事件流**：存放 `manifest.json`、`events.jsonl`、`streams/` 与 Benchmark `trial.json` / `verifier/`，通过 `eventSources` 与内容引用关联 Baseware、Archive 与 Timeline。 |
+| `.rsa/shiori/` | **OMP 原生会话存储**：存放 `sessions/*.jsonl` 与当前续接指针，由 OMP SessionManager 管理。 |
 
 ## 统一时空轴与回放
 
-感知记录、动作、模型调用和日志共享 workspace 的绝对时间坐标。原始内容仍留在各自存储，通过 recordId、事件序号、模型/工具/动作 ID 和 trace 关联。Dashboard 按需投影为时间点或区间；对齐采用现有时间戳，不额外做硬件同步。
-
-回放读取感知层实际留档的连续采样，包括未被模型读取的帧。模型输入详情按明确引用追到当时交付的观测。播放器在同一游标下展示画面、动作、模型调用与日志，复用已有文件索引和媒体原件；播放历史不执行操作、不启动采样，也不修改 Ludens Pet 关注目标。
+感知采样、常驻动作、模型推理与设备执行共享工作区的绝对墙钟时间坐标，并通过 `recordId`、事件序号、`modelCallId`、`toolCallId`、`actionId` 及 `trace` 树精确关联。Dashboard 回放器在同一时间游标下同步渲染 `.rsa/timeline/` 中的全量连续采样画面（包含未被模型采纳的中间帧）、动作时间跨度与模型调用详情；历史回放纯属只读投影，不会触发设备操作或改变 Ludens Pet 的实时跟随目标。

@@ -171,17 +171,21 @@ Follow [AGENTS.md](AGENTS.md) for development conventions and the [development g
 
 Current documentation lives in the root `docs/` directory, split into `tutorials/` (how to run), `reference/` (components and contracts), and `insights/` (why things are the way they are). Component READMEs only link here.
 
-| Guide | Contents |
-| --- | --- |
-| [Baseware](docs/reference/baseware.md) | CUA native capability contract, driver boundaries, control, media, and upstream snapshots. |
-| [Architecture](docs/reference/architecture.md) | Component boundaries, Shiori, control flow, and extension points. |
-| [Development](docs/tutorials/development.md) | Installation, device setup, service lifecycle, and verification. |
-| [Workspace](docs/tutorials/workspace.md) | Configuration, Python capabilities, perception, and agent-owned programs. |
-| [Logging](docs/reference/logging.md) | Events, model inputs, trace attribution, performance metrics, and console consumers. |
-| [Benchmark](docs/reference/benchmark.md) | Cases, execution records, reports, comparison, and workspace benchmarks. |
-| [Driver Bridge Protocol](docs/reference/driver-bridge-protocol.md) | Socket line protocol for simulator bridges. |
-| [OMP Compaction](docs/insights/omp-compaction.md) | Why and how OMP speculative compaction was patched. |
-| [WS Recovery](docs/insights/ws-recovery.md) | 2026-10-20 Codex WS recovery TDD rationale and behavior matrix. |
+| Guide | Category | Contents |
+| --- | --- | --- |
+| [Tutorials Overview](docs/tutorials/README.md) | Tutorials | End-to-end onboarding path and common operational workflows. |
+| [Development](docs/tutorials/development.md) | Tutorials | Installation, device setup (`mGBA` / `Ryubing` / `Azahar` / `Cua`), service lifecycle, and verification. |
+| [Workspace](docs/tutorials/workspace.md) | Tutorials | Configuration, `@capability` / `@record`, resident perception & action, and background programs. |
+| [Reference Overview](docs/reference/README.md) | Reference | System layers, contract index, and source-of-truth code map. |
+| [Architecture](docs/reference/architecture.md) | Reference | Component boundaries, Shiori, control leases, OMP session loop, and storage ownership. |
+| [Baseware](docs/reference/baseware.md) | Reference | CUA native capability contract, driver boundaries, control arbitration, media, and external driver packages. |
+| [Driver Bridge Protocol](docs/reference/driver-bridge-protocol.md) | Reference | TCP line protocol (`HELLO` / `OWN` / `APPLY` / `TOUCH` / `CAPTURE`) for emulator bridges. |
+| [Logging](docs/reference/logging.md) | Reference | Event envelopes, timeline/archive storage, trace attribution, Dashboard cold/hot indexing, and replay. |
+| [Benchmark](docs/reference/benchmark.md) | Reference | Harbor 1.4 native profile, run bindings, `current_trial()`, independent verifiers, and built-in tasks. |
+| [Insights Overview](docs/insights/README.md) | Insights | Index of engineering decisions, production postmortems, and empirical measurements. |
+| [OMP Compaction](docs/insights/omp-compaction.md) | Insights | Why and how OMP speculative compaction was patched for 30Hz real-time control loops. |
+| [OMP Injection](docs/insights/omp-injection.md) | Insights | Why automatic context injection was narrowed to perception records and sampler state transitions. |
+| [WS Recovery](docs/insights/ws-recovery.md) | Insights | 2026-10-20 Codex WebSocket recovery TDD rationale and 13-condition fault matrix. |
 
 The original [unified console](docs/history/unified-console/prd.html) and [benchmark](docs/history/benchmarks/prd.html) design records are archived under `docs/history/`; they describe past decisions, not the current API. Detailed guides are currently in Chinese. Runtime prompts, workspace templates, and license notices remain beside the files that consume them.
 

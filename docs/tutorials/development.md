@@ -1,100 +1,132 @@
 # 开发与运行
 
-本页负责安装、启动和验证；另见 [架构](../reference/architecture.md)、[workspace](workspace.md)、[日志](../reference/logging.md)及 [benchmark](../reference/benchmark.md)。
+本指南覆盖环境安装、设备准备、工作区启停、独立组件调试与验证流程。组件边界见 [架构与边界](../reference/architecture.md)，工作区代码编写见 [Workspace 与自适应代码](workspace.md)，事件与控制台消费见 [日志与调用链](../reference/logging.md)，评测运行见 [Benchmark](../reference/benchmark.md)。
 
-除显式 `cd` 外，以下命令都从仓库根目录执行。`../artifacts/` 是仓库外的本地构建和运行状态目录；workspace、ROM、固件、密钥与存档不进入源码仓库。
+除显式 `cd` 到目标工作区外，文内命令均在仓库根目录执行。`../artifacts/` 为仓库外的本地构建与运行状态目录；工作区、ROM、固件、密钥与游戏存档均保存在仓库外，不进入源码树。
 
 ## 安装
 
-整套后台启动目前需要 macOS launchd。准备 Bun 1.4、Python 3.12+、Node.js 22+、pnpm 11、uv，以及已配置的本机 OMP 模型登录。RSA 固定使用 OMP 18.9.1，复用其凭据；默认模型为 `openai-codex/gpt-6.1-sol`。各组件独立安装，保留各自锁文件：
+### 1. 环境前提与凭据
+
+- **操作系统**：完整后台服务编排（`rsa up` / `rsa down` / `rsa services`）依赖 **macOS launchd**。
+- **工具链**：准备 **Bun 1.4**、**Python 3.12+**、**Node.js 22+**、**pnpm 11** 与 **uv**。
+- **模型凭据**：启动 Agent 前需在本机完成 **OMP 模型登录**。RSA 固定使用 **OMP 18.9.1** 并直接复用其凭据存储，默认模型为 `openai-codex/gpt-6.1-sol`。
+
+### 2. 安装各组件依赖
+
+五个子目录各自维护独立锁文件。安装 `rsa` 时，Bun 会按 `package.json` 自动应用 [rsa/patches/](../../rsa/patches/) 下的 OMP 依赖补丁：
 
 ```sh
 (cd baseware && bun install --frozen-lockfile)
 (cd rsa && bun install --frozen-lockfile)
 uv sync --project rsa/python --frozen
-(cd rsa-dashboard && npm ci)
+(cd rsa-dashboard && npm ci && npm run build)
 (cd rsa-companion && pnpm install --frozen-lockfile && pnpm build)
+
 export PATH="$PWD/baseware/bin:$PWD/rsa/bin:$PWD/rsa-companion/bin:$PATH"
 ```
 
-[pyproject.toml](../../rsa/python/pyproject.toml) 和 `uv.lock` 管理正式 `ludens-rsa` 包（导入名 `rsa_tools`）、PyAV/Pillow 媒体处理及 jsonschema 校验依赖。框架解释器优先使用显式 `RSA_PYTHON`，其次项目 `rsa/python/.venv`，最后 PATH 中的 `python3`；指定外部解释器时需在该环境安装包及依赖。项目环境不替换用户全局训练环境。工作区自己的任务依赖由 AI 按需管理。正式 wheel 提供能力与证据 client，不包含独立评测 runner 或 report schema；Task、评分和执行生命周期由 Shiori 统一管理。
+`export PATH` 仅对当前终端生效；新开终端请同步配置 shell profile 或使用 `baseware/bin/baseware`、`rsa/bin/rsa` 绝对路径。
 
-OMP 原生 shell 也会获得 `RSA_PYTHON`。需要与感知/能力入口共用依赖时调用 `"$RSA_PYTHON" script.py`；裸 `python3` 仍遵循用户 login shell 配置，不能假定它就是项目环境。项目环境只安装框架依赖，PyTorch 等任务依赖需安装到选定解释器，或用已装好任务依赖的解释器并补齐框架包。
+### 3. Python 运行时解析规则
 
-其他终端也需配置 PATH 或使用绝对 CLI 路径。Bun 安装 RSA 时自动应用 [依赖补丁](../../rsa/patches/)。
+[rsa/python/pyproject.toml](../../rsa/python/pyproject.toml) 与 `uv.lock` 管理正式 `ludens-rsa` 包（导入名 `rsa_tools`）以及 PyAV、Pillow、jsonschema 等媒体与校验依赖。`rsa_tools` 仅提供能力声明、客户端与试验登记辅助，执行生命周期与评分由 Shiori 统一管理。
+
+框架按以下优先级选择 Python 解释器：
+
+1. 显式环境变量 `RSA_PYTHON`；
+2. 仓库内置虚拟环境 `rsa/python/.venv/bin/python`；
+3. 系统 `PATH` 中的 `python3`。
+
+OMP 原生 shell 会自动注入 `RSA_PYTHON`。在工作区脚本中若需复用 `rsa_tools` 及框架依赖，应调用 `"$RSA_PYTHON" script.py`；直接运行裸 `python3` 仍遵循用户 login shell，不等同于框架虚拟环境。若将 `RSA_PYTHON` 指向外部训练环境（如包含 PyTorch 的 conda/venv），需在该环境中预先安装 `rsa/python` 包及其依赖。
 
 ## 设备准备
 
+各 Driver 仅暴露设备的原生输入与采集能力，不包含游戏策略、坐标融合或自动存读档逻辑。
+
 ### mGBA
 
-已适配 mGBA 0.10.5，并实机验证官方开发版 `0.11-9161-1509d8602`（[固定下载](https://s3.amazonaws.com/mgba/build/mGBA-build-2026-10-25-macos-9161-1509d86028c7df2d844b590723a80b2978f49e7c.dmg)）的采集、输入、断线释放和重连。升级前退出模拟器，备份应用、配置与 `.sav`。打开游戏，在 **Tools → Scripting** 输入：
+已适配 mGBA `0.10.5`，并实机验证官方开发版 `0.11-9161-1509d8602`（[macOS 固定构建下载](https://s3.amazonaws.com/mgba/build/mGBA-build-2026-10-25-macos-9161-1509d86028c7df2d844b590723a80b2978f49e7c.dmg)）的采集、按键、断线释放与重连。升级前请先退出模拟器并备份应用、配置与 `.sav` 存档。
+
+1. 打开 mGBA 并加载 ROM（mGBA 始终手动加载游戏与桥，`rsa.json` 不接受 `game` 字段）。
+2. 打开菜单 **Tools → Scripting**，执行仓库内的 [bridge.lua](../../baseware/src/drivers/mgba/bridge.lua)（可用 `realpath baseware/src/drivers/mgba/bridge.lua` 获取绝对路径）：
 
 ```lua
 dofile("/absolute/path/to/repo/baseware/src/drivers/mgba/bridge.lua")
 ```
 
-路径可在仓库根用 `realpath baseware/src/drivers/mgba/bridge.lua` 获取。看到 `RSA bridge listening on 127.0.0.1:47653 (manual)` 后即可连接。重复执行会关闭旧桥并加载新代码；脚本窗口可关闭，游戏必须继续运行，模拟器暂停也会暂停帧回调、采集和交接。
+看到控制台输出 `RSA bridge listening on 127.0.0.1:47653 (manual)` 即表示就绪。重复执行 `dofile` 会安全关闭旧桥并热加载新脚本；加载后可关闭 Scripting 窗口，但模拟器本体不可暂停，否则帧回调、截图采集与控制权交接都会挂起。多开实例时，在 `dofile` 前先执行 `RSA_BRIDGE_PORT = 47654`，并将对应工作区 `rsa.json` 的 `port` 设为 `47654`；每个桥端口同一时刻只能由一个 Baseware 实例连接。
 
-mGBA 始终手动加载 ROM/桥，配置不接受 `game`。另开实例时先设置 `RSA_BRIDGE_PORT = 47654` 再加载脚本，workspace 的 `port` 同样改为 47654。同一桥只由一个 Baseware 持有。实现见 [bridge.lua](../../baseware/src/drivers/mgba/bridge.lua)。
-
-部分中文绿宝石改版使用 **SRAM 64 KiB**，自动识别为 Flash 1Mb 会导致游戏内保存失败。上述开发版包含[用户 override 优先级修复](https://github.com/mgba-emu/mgba/commit/5337ae7ae14daaf0aecd4d2c40429fc31440b245)；为确认使用此硬件的 ROM 保存 `savetype=SRAM512`，并用游戏内保存、完全退出、冷启动读档验证。macOS 配置在 `~/.config/mgba/config.ini`，对应节为 `[override.<四字节游戏编号>]`；空编号为 `[override.]`，所有空编号 ROM 会共用它，不能将该设置套到所有 GBA 游戏。
-
-已验证的一份中文改版能自动应用此配置并保存、冷启动读取最新进度，但仍显示“记录破损”。其存档布局与双槽在 64 KiB 地址空间内重叠一致；备用副本恢复能力未经保证，应保留独立备份。这个残留兼容限制不通过 Baseware 改写 ROM 或截断存档来掩盖。
+**GBA 存档类型注意事项**：部分中文绿宝石改版使用 **SRAM 64 KiB**，若被自动识别为 Flash 1Mb 会导致游戏内保存失败。上述 `0.11-9161` 开发版已包含[用户 override 优先级修复](https://github.com/mgba-emu/mgba/commit/5337ae7ae14daaf0aecd4d2c40429fc31440b245)。针对此类 ROM，可在 `~/.config/mgba/config.ini` 的 `[override.<四字节游戏编号>]` 节写入 `savetype=SRAM512`（空编号 ROM 对应 `[override.]`，会作用于所有无编号 ROM，勿全局滥用），配置后务必通过“游戏内保存 → 完全退出 → 冷启动读档”验证。部分改版因双存档槽在 64 KiB 地址空间内重叠，冷启动读档成功时仍可能提示“记录破损”，建议保留独立 `.sav` 备份。
 
 ### Ryubing
 
-Switch 桥基于 [Ryubing 源码归档](https://starforgejo.dev/archive/Ryubing)，固定标签 `Canary-1.3.351`、提交 `475615f0431b4995b03c930c5089d20f6f3570e0`；本地版本 `1.3.351-rsa.3` 是开发构建。准备 Apple Silicon macOS、.NET 10 SDK、Python 3、Xcode Command Line Tools：
+Nintendo Switch 原生桥基于 [Ryubing 源码归档](https://starforgejo.dev/archive/Ryubing)（固定标签 `Canary-1.3.351`，提交 `475615f0431b4995b03c930c5089d20f6f3570e0`，本地构建标识 `1.3.351-rsa.3`）。在 Apple Silicon macOS 上准备 **.NET 10 SDK**（已验证 `10.0.402`）、**Python 3** 与 **Xcode Command Line Tools**：
 
 ```sh
-# 默认 SDK 路径为 ../artifacts/switch/dotnet/dotnet；也可显式指定已有 SDK。
+# 默认使用 ../artifacts/switch/dotnet/dotnet；可通过 RSA_DOTNET 指定已有 SDK
 RSA_DOTNET=/absolute/path/to/dotnet baseware/src/drivers/ryubing/build.sh
 ```
 
-[build.sh](../../baseware/src/drivers/ryubing/build.sh) 检查提交、应用 [patch](../../baseware/src/drivers/ryubing/ryubing.patch)、复制 [RsaBridge.cs](../../baseware/src/drivers/ryubing/RsaBridge.cs)，通过上游工具和 JIT entitlements 做 ad-hoc 签名。补丁将 LibHac feed 改为 `https://nuget.ryulynx.org/v3/index.json`，保留依赖版本。源码在 `../artifacts/switch/ryubing-canary-source`，产物在 `../artifacts/switch/ryubing-build/Ryujinx.app`；已用 SDK 为 10.0.402。
+[build.sh](../../baseware/src/drivers/ryubing/build.sh) 会校验上游 commit、应用 [ryubing.patch](../../baseware/src/drivers/ryubing/ryubing.patch)（含 `https://nuget.ryulynx.org/v3/index.json` LibHac 源替换）、注入 [RsaBridge.cs](../../baseware/src/drivers/ryubing/RsaBridge.cs)，并附带 JIT entitlements 完成 ad-hoc 签名。源码位于 `../artifacts/switch/ryubing-canary-source`，构建产物位于 `../artifacts/switch/ryubing-build/Ryujinx.app`。
 
-构建不会替换应用。**退出正在运行的模拟器后**，将产物安装为 `/Applications/Ryubing.app`。Finder 显示 Ryubing，可执行文件及进程仍叫 `Ryujinx`。启动带桥应用：
+1. **安装**：构建脚本不会自动覆盖系统应用。先退出正在运行的模拟器，再将 `Ryujinx.app` 复制安装为 `/Applications/Ryubing.app`（Finder 显示为 Ryubing，内部可执行文件与进程名仍为 `Ryujinx`）。
+2. **启动**：通过 [launch.sh](../../baseware/src/drivers/ryubing/launch.sh) 或 `rsa up` 启动以注入 `RSA_BRIDGE_PORT`（默认 `47663`）；直接从 Finder 双击图标不会开启桥服务：
 
 ```sh
 baseware/src/drivers/ryubing/launch.sh /absolute/path/to/game.nsp
 ```
 
-[launch.sh](../../baseware/src/drivers/ryubing/launch.sh) 显式设置 `RSA_BRIDGE_PORT`（默认 47663）；从 Finder 正常打开不启用桥。固件、密钥、设置和存档沿用本机 Ryujinx 数据目录，不要并发启动两个使用同一数据目录的模拟器。重新构建后必须退出旧进程并启动新 bundle，运行中的模拟器不会加载新桥。
+固件、密钥与存档沿用本机 Ryujinx 数据目录，切勿并发启动两个共用同一数据目录的实例。暴露能力包括：
 
-能力包括 `pad.play/state/status/wait/cancel/release`、`screen.capture`、`touch.down/move/up` 和 `keyboard.type/press`。screen 采集游戏 framebuffer 或前台系统键盘的真实弹窗；touch 范围 x=0..1279、y=0..719。参数与状态契约见各 controller 的 help。没有游戏内存读取、音频或模拟器存读档命令；连通不等于游戏兼容。
+- `pad.play / state / status / wait / cancel / release`：手柄时间表与状态查询；
+- `screen.capture`：抓取游戏 framebuffer 或当前前台 Switch 系统键盘弹窗；
+- `touch.down / move / up`：触屏操作，坐标范围 `x = 0..1279`、`y = 0..719`（左上角为原点）；
+- `keyboard.type / press`：当 Switch 系统文本输入框可见时输入文本或功能键。
 
 ### Azahar
 
-3DS 原生桥固定 Azahar `2126.2`、提交 `219d743a1e698101fe1ab8bef43e6563126c3c27`。Apple Silicon macOS 上准备 Git、CMake 和 Xcode Command Line Tools；Qt 与 MoltenVK 由上游 CMake 获取：
+Nintendo 3DS 原生桥基于 Azahar `2126.2`（提交 `219d743a1e698101fe1ab8bef43e6563126c3c27`）。在 Apple Silicon macOS 上准备 **Git**、**CMake** 与 **Xcode Command Line Tools**（Qt 与 MoltenVK 由上游 CMake 自动拉取）：
 
 ```sh
 baseware/src/drivers/azahar/build.sh
 ```
 
-[build.sh](../../baseware/src/drivers/azahar/build.sh) 拉取源码和子模块、应用 [patch](../../baseware/src/drivers/azahar/azahar.patch)、复制 `rsa_bridge.cpp/.h`，生成 `../artifacts/3ds/azahar-build/bundle/azahar.app`。`RSA_AZAHAR_SOURCE` 指定源码目录，`RSA_BUILD_JOBS` 改变默认四个构建任务。**退出旧模拟器后**，另行安装到 `/Applications/Azahar.app`；脚本不替换安装或停止应用。
+[build.sh](../../baseware/src/drivers/azahar/build.sh) 拉取源码与子模块、应用 [azahar.patch](../../baseware/src/drivers/azahar/azahar.patch)、注入 [rsa_bridge.cpp](../../baseware/src/drivers/azahar/rsa_bridge.cpp)，输出 `../artifacts/3ds/azahar-build/bundle/azahar.app`（可通过 `RSA_AZAHAR_SOURCE` 指定源码路径、`RSA_BUILD_JOBS` 调整并发编译数）。
+
+1. **安装**：退出旧模拟器后，将产物安装至 `/Applications/Azahar.app`。
+2. **启动**：通过 [launch.sh](../../baseware/src/drivers/azahar/launch.sh) 或 `rsa up` 启动（默认端口 `47673`，独立脚本可用 `RSA_AZAHAR_APP` 覆盖应用路径）：
 
 ```sh
 baseware/src/drivers/azahar/launch.sh /absolute/path/to/game.3ds
 ```
 
-[launch.sh](../../baseware/src/drivers/azahar/launch.sh) 默认使用 `/Applications/Azahar.app`、桥端口 47673；独立启动时可用 `RSA_AZAHAR_APP` 选择 bundle。整套 `rsa up` 检查默认安装路径。所需系统数据由用户自行准备，空窗口或桥已连接不表示游戏能正常运行。
+原生能力由 [azahar/provider.ts](../../baseware/src/drivers/azahar/provider.ts) 定义，无需依赖桌面 Cua：
 
-原生能力为 `pad.*`、`touch.down/move/up`、`screen.top.capture`、`screen.bottom.capture`，无 Cua 依赖。独立屏幕输出为 400×240 左眼画面和 320×240 下屏；touch 范围 x=0..319、y=0..239。两种模拟器均只提供 down/move/up，坐标含端点、原点左上，点按/拖拽/融合/坐标转换由 workspace 实现。契约见 [provider.ts](../../baseware/src/drivers/azahar/provider.ts) 和 [原生桥](../../baseware/src/drivers/azahar/rsa_bridge.cpp)。
+- `pad.*`：手柄与摇杆时间表控制；
+- `screen.top.capture` / `screen.bottom.capture`：独立输出上屏（`400×240` 左眼画面）与下屏（`320×240`）；
+- `touch.down / move / up`：下屏触控，坐标范围 `x = 0..319`、`y = 0..239`（左上角原点，含端点）。点按、拖拽与跨屏坐标换算由工作区代码实现。
 
 ### Cua
 
-安装上游 [Cua Driver](https://github.com/trycua/cua/tree/main/libs/cua-driver)，macOS 为 CuaDriver.app 授予**辅助功能**和**屏幕录制**权限。Baseware 通过持久的 `cua-driver mcp` 子进程连接原装驱动，不改上游代码或应用设置。可用 `cuaCommand` / `--cua-command` 指定 CLI 绝对路径。
+桌面环境使用上游原装 [Cua Driver](https://github.com/trycua/cua/tree/main/libs/cua-driver)：
 
-Cua 不使用 `game` 或桥端口；原始工具保持上游名称，例如 `rsa controller controller/get_desktop_state --args '{}'`。参数看 `--help`；CLI 的 `--args/--file`、Python/API 和 MCP 共用原生 JSON 对象，不默认注入 OMP 工具列表。契约来源与边界见 [Baseware 设计](../reference/baseware.md)。
+1. 安装 Cua Driver，并在 macOS **系统设置 → 隐私与安全性**中为 `CuaDriver.app` 授予**辅助功能（Accessibility）**与**屏幕录制（Screen Recording）**权限。
+2. Baseware 通过持久 `cua-driver mcp` 子进程（stdio 传输）接入驱动，无需设置 `game` 或桥端口；若 `cua-driver` 不在 `PATH` 中，可在 `rsa init --cua-command` 或 `rsa.json` 的 `cuaCommand` 指定绝对路径。
+3. 所有工具保持上游原生命名与 JSON 参数结构（如 `rsa controller controller/get_desktop_state --args '{}'`），契约边界见 [Baseware 设计理念与能力契约](../reference/baseware.md)。
 
-交还控制会拒绝新输入并请求取消，已运行的原生调用可能先完成；清理结束后才报告 manual。`down` 不关闭共享 CuaDriver.app 或用户应用。不同 workspace 仍共享真实桌面，独立桌面需 OS session 或 VM。NDS/melonDS 当前走此桌面通道，没有独立 NDS driver。
+**桌面环境边界**：多个 Cua 工作区共享同一宿主机真实桌面（包括运行在桌面上的 melonDS 等尚未提供独立原生桥的模拟器），如需隔离桌面请使用独立 OS 会话或虚拟机。人工交还控制权会立即拒绝新输入并请求取消，但已进入操作系统底层的单次原生调用可能先执行完毕；`rsa down` 不会关闭共享的 `CuaDriver.app` 或用户的桌面应用。
 
 ## 工作区启动与停止
 
-准备设备后，从新 workspace 初始化。以下示例选 Azahar；其他选项为 `--driver mgba`、`--driver ryubing --game /absolute/path/to/game.nsp`、`--driver cua`：
+### 1. 初始化与生命周期命令
+
+在仓库外新建目录作为工作区（以 Azahar 为例，其他内置驱动可替换为 `--driver mgba`、`--driver ryubing --game /path/to/game.nsp` 或 `--driver cua`）：
 
 ```sh
 mkdir -p /absolute/path/to/workspace
 cd /absolute/path/to/workspace
+
 rsa init --driver azahar --game /absolute/path/to/game.3ds --seconds 1800
 rsa up --dry-run
 rsa up
@@ -103,106 +135,111 @@ rsa controller list
 rsa auto on
 ```
 
-`init` 生成配置和 workspace 模板，不覆盖已有文件；`up --dry-run` 只打印计划。`up` 启动或复用 Baseware、Host、Dashboard、Ludens Pet，新 Host 保持 manual，`auto on` 才请求模型和接管。复用中的 auto Host 继续原周期；感知初始化与会话约定见 [workspace.md](workspace.md)。
+常用工作区与控制命令说明：
 
-外部 driver 可用 `rsa init --driver <id> --driver-package <spec>` 初始化；包契约与缓存见 [Baseware](../reference/baseware.md#driver-包与启动描述)。相对 `file:` 路径以选定 workspace 为基准，初始化时保存绝对路径；手写配置中的相对路径在 `up` 时也按 workspace 解析，不受启动命令当前目录影响。
+| 命令 | 行为与边界 |
+| --- | --- |
+| `rsa init` | 生成 `rsa.json` 及缺失的 `AGENTS.md`、`perception.py`、`action.py` 模板，绝不覆盖已有文件。 |
+| `rsa up --dry-run` | 校验配置与 Dashboard 构建状态，打印完整进程启动计划而不实际拉起服务。 |
+| `rsa up` | 按需启动或复用模拟器、Baseware、Host、Dashboard 与 Ludens Pet。新启动的 Host 处于 `manual` 模式；若复用已在 `auto` 运行的 Host 则继续原控制周期。重复 `up` 不会热加载修改后的 `rsa.json`。 |
+| `rsa services` | 查询当前工作区关联的 launchd 任务 PID、状态与最近退出码。 |
+| `rsa auto on [--message '文本']` | 开启新控制周期（生成新 `epoch`，重置时间与请求预算）并向模型发起推理。`--message` 仅在该次接管的首轮附加一次，后续续轮不重复注入。 |
+| `rsa auto off` | 立即撤销设备操作权并取消 RSA 管理的在途调用，模拟器保持运行；需等待当前周期清理完毕后方可再次 `auto on`。 |
+| `rsa action status / reload / stop` | 管理工作区 `action.py` 常驻动作进程。`manual` 下 `reload` 仅标记就绪；`auto` 下 `stop` 或 `reload` 会清空本工作区全部当前设备输入（含并发 CLI 输入），但保留当前 `epoch`、OMP 会话与剩余预算。详见 [常驻动作](workspace.md#常驻动作)。 |
+| `rsa down --keep-emulator` | 交还控制权并停止 Host 与 Baseware，保留模拟器窗口与游戏现场；适合修改 `rsa.json`（如预算或模型）后重新 `rsa up`。 |
+| `rsa down [--dashboard] [--pet]` | 停止本工作区受管的 Host、Baseware 与模拟器（**执行前请先在游戏内保存进度**）。默认保留共享的 Dashboard 与 Ludens Pet；附加 `--dashboard`（仅限启动它的工作区）或 `--pet` 可一并关闭对应共享服务。 |
 
-动手前可先验证包的 registration 声明是否符合约定。验证可能下载包、运行依赖安装，并会导入包入口代码；只使用可信来源。Baseware 不调用 `load()`，但包入口本身仍能执行代码，验证通过也不表示设备或后端已可用：
+跨目录操作工作区时，可在任意命令前传入 `rsa --workspace /absolute/path/to/workspace <subcommand>` 或设置环境变量 `RSA_WORKSPACE`。
+
+### 2. 外部 Driver 包发现与接入
+
+除四个内置驱动外，可通过 `--driver-package` 接入第三方或本地驱动包（支持 npm 包名、`github:org/repo#rev` 或 `file:path`）。初始化前可用 `baseware driver discover` 校验包的 `DriverRegistration` 声明：
 
 ```sh
 baseware driver discover --package github:org/repo#rev
-# 输出 id/version/transport/defaultPort/needsGame/launchHint；非法包非零退出并说明原因
+rsa init --driver <id> --driver-package github:org/repo#rev
 ```
 
-Dashboard 能力页（`?view=caps`）的“外部驱动”区在尚无工作区时也可使用：粘贴可信包地址，通过后复制初始化命令，在目标 workspace 中执行 `rsa init`。Dashboard 的 `file:` 必须使用绝对路径；`baseware driver discover` 的相对 `file:` 按调用时当前目录解析。本仓不维护驱动清单，后端准备和设备连通仍需另行验证。
+- **路径解析**：`rsa init` 与 `rsa up` 中的相对 `file:` 路径均以目标工作区目录为基准解析并归一化；`baseware driver discover` 的相对 `file:` 按当前 shell 目录解析；Dashboard 网页端的外部驱动校验要求 `file:` 使用绝对路径。
+- **信任边界**：发现阶段虽不调用驱动的 `load()`，但会下载安装依赖并导入包入口代码；仅对可信来源执行发现与初始化。驱动包规范详见 [Driver 包与启动描述](../reference/baseware.md#driver-包与启动描述)。
 
-`rsa.json` 字段与默认值由 [workspace.ts](../../rsa/src/app/workspace.ts) 定义：
+### 3. `rsa.json` 配置参考
 
-| 字段 | 默认值与用途 |
-| --- | --- |
-| `driver` | 必选 driver ID；内置 `mgba` / `ryubing` / `azahar` / `cua`，外部 driver 与包导出的 ID 一致 |
-| `driverPackage` | 可选外部 driver：npm 包 spec、`github:org/repo#revision` 或 `file:path`；包会执行代码，只加载可信来源 |
-| `game` | 支持自动启动的 driver 可选；路径相对 workspace。省略则连接已准备的外部设备；mGBA 不接受此字段 |
-| `port` | 显式值优先，否则使用 driver manifest 默认端口；内置 mGBA 47653、Ryubing 47663、Azahar 47673；stdio driver 不使用 |
-| `cuaCommand` | stdio driver 的可执行命令；内置 Cua 默认从 PATH 查找 `cua-driver` |
-| `model` | `openai-codex/gpt-6.1-sol` |
-| `seconds` / `requests` | 1800 / 1000；每次接管重置，任一预算用完即交还控制 |
-| `compactionThreshold` | 不设，跟随 OMP 对所选模型的原生触发点 |
-| `dashboard` / `pet` | 均为 true；Pet 需要 Dashboard |
+`rsa.json` 由 [rsa/src/app/workspace.ts](../../rsa/src/app/workspace.ts) 解析校验，未知字段会直接报错：
 
-旧版 `rsa init` 生成的 `rsa.json` 可能已包含 `compactionThreshold: 256000`，升级后仍视为显式覆盖。希望跟随模型原生阈值时，删除该字段；升级不会自动修改已有 workspace 配置。
+| 字段 | 默认值 | 说明 |
+| --- | --- | --- |
+| `driver` | 必填 | 驱动 ID；内置为 `mgba` / `ryubing` / `azahar` / `cua`，外部驱动须与包导出的 `id` 一致。 |
+| `driverPackage` | 无 | 可选外部驱动包地址（npm spec、`github:org/repo#rev` 或 `file:path`）。 |
+| `game` | 无 | 支持自动启动的 bridge 驱动可选（路径相对工作区）；省略时连接已手动启动的模拟器。`mgba` 与 stdio 驱动不接受此字段。 |
+| `port` | 随驱动 | 显式端口优先，否则取驱动 manifest 的 `defaultPort`（内置 mGBA `47653`、Ryubing `47663`、Azahar `47673`）；stdio 驱动不使用。 |
+| `cuaCommand` | `"cua-driver"` | 仅 stdio 驱动有效，指定后端可执行文件路径或命令名。 |
+| `model` | `"openai-codex/gpt-6.1-sol"` | 具备图像输入能力的 OMP `provider/model` 标识。 |
+| `seconds` | `1800` | 单次 `auto on` 控制周期的时长预算（秒），每次接管重置。 |
+| `requests` | `1000` | 单次 `auto on` 控制周期的模型请求次数上限，与 `seconds` 先到即交还控制。 |
+| `compactionThreshold` | 不设 | OMP 上下文压缩触发阈值（token 数）；省略时跟随所选模型的 OMP 原生阈值（`contextWindow - reserve`）。 |
+| `dashboard` | `true` | `rsa up` 时是否确保本地 Dashboard 服务运行。 |
+| `pet` | `true` | `rsa up` 时是否拉起共享 Ludens Pet 桌宠（依赖 `dashboard: true`）。 |
+| `logging.diagnostics` | `"normal"` | 日志详细度，可选 `"normal"` 或 `"full"`；详见 [记录模式](../reference/logging.md#记录模式)。 |
 
-从其他目录管理用 `rsa --workspace /absolute/path/to/workspace status` 或 `RSA_WORKSPACE`。workspace 隔离会话和默认 socket；真实设备仍需独立实例/端口，同一 workspace 不能有两个 Host。
+### 4. 会话续接与后台服务目录
 
-- `rsa auto on --message '本轮的一次提醒'`：附言只在接管开始发送，不是运行中插话接口；之后续轮不重复注入。
-- `rsa auto off`：撤销设备操作权并请求取消在途工作，游戏保持运行；等周期清理结束后才能再次接管。OMP 管理后台进程，活着不等于仍有设备输入权限。
-- `rsa action status/reload/stop`：查看、重载或禁用 `action.py` 常驻动作。manual 下 reload 只启用待加载入口；auto 下 stop/reload 会取消本 workspace 的全部当前输入（包括并发 CLI），不重启 OMP、感知或接管预算。步骤异常需修复后 reload；详见 [workspace](workspace.md#常驻动作)。
-- `rsa down`：先交还控制、等清理，再停止本 workspace 管理的 Host、Baseware 和模拟器。外部手动启动的进程不归它关闭；先保存游戏。
-- `rsa down --keep-emulator`：保留模拟器现场，用于修改预算、模型或加载 Host/Baseware 代码；随后 `rsa up`、`rsa services`、`rsa auto on`。
-- `down` 默认保留共享 Dashboard/Ludens Pet；`--pet` 关闭受管理的共享 Pet，单独打开的实例仍由应用退出；`--dashboard` 只关闭本 workspace 启动的 Dashboard，会影响其他消费者。
-
-重复 `up` 不加载新配置。重启默认续接原 workspace 的 OMP 会话，日志另写新 run。会话默认存放于 `.rsa/shiori/sessions/`，当前路径见 `.rsa/shiori/current-session.json` 或 run 的 `session` 事件。`rsa run --new-session` 按原生语义开新上下文并保留工作区文件；`--resume /absolute/path/to/session.jsonl` 选择同一 workspace 的已有会话，经 realpath 规范化并校验归属。
-
-新 Host 取得 workspace socket 独占权后，会一次性迁移旧 managed sessions 整目录和当前指针，保留旧目录符号链接以维持历史绝对资源引用，不清空会话。历史技能版本与 workspace 注册信息仍保留在 `../artifacts/rsa/ws-<name>-<hash>/`；OMP 全局 blob 不迁移，workspace 尚非独立导出包。存储边界见 [workspace](workspace.md#文件与会话)。
-
-[launch-background.py](../../rsa/scripts/launch-background.py) 将工作区日志/job 写到 `logs/background/`；共享 Ludens Pet 在 `../artifacts/rsa/alice/background/`，label 为 `dev.ludens.pet`。服务脱离终端，不自动重启/开机启动。故障先看 `rsa services` 和对应日志，避免重复启动。
+- **会话续接**：工作区 OMP 会话保存在 `.rsa/shiori/sessions/`，当前默认续接指针位于 `.rsa/shiori/current-session.json`。重启 Host 默认续接原会话并开启新的 `logs/<run-id>/` 目录。前台 `rsa run` 可传 `--new-session` 开启全新上下文（保留工作区文件），或传 `--resume /absolute/path/to/session.jsonl` 切换到同工作区的指定历史会话。
+- **后台服务日志**：[launch-background.py](../../rsa/scripts/launch-background.py) 将工作区受管进程的标准输出与 launchd 状态写入 `<workspace>/logs/background/`；共享 Ludens Pet 的日志位于仓库同级的 `../artifacts/rsa/alice/background/`（launchd label 为 `dev.ludens.pet`）。所有后台服务均脱离终端运行，但不注册开机自启或崩溃死循环重启；排障时先查看 `rsa services` 与对应 `logs/background/` 日志。
 
 ## 独立组件与控制台
 
-单独调试 Host 时，先准备桥；在两个终端进入同一 workspace，分别运行：
+### 1. 前台分步调试 Baseware 与 Host
+
+不经过 launchd 单独调试时，先准备好设备桥，随后在两个终端进入同一工作区分别启动服务：
 
 ```sh
+# 终端 1：启动设备服务
 cd /absolute/path/to/workspace
 baseware serve --driver azahar --port 47673 --data-dir ./logs/baseware
 ```
 
 ```sh
+# 终端 2：启动前台 Host（不读取 rsa.json，默认 300s / 50 次请求）
 cd /absolute/path/to/workspace
 rsa run --model openai-codex/gpt-6.1-sol --seconds 300 --requests 50
 ```
 
-`rsa run` 是前台 Host，不读取 `rsa.json`，默认预算 300 秒 / 50 请求。等 `ready: true` 后从同一 workspace 执行 `auto on`；`--device-only` 不启动 OMP。`BASEWARE_SOCKET` / `--baseware-socket` 和 `RSA_SOCKET` 可覆盖默认设备/控制地址。参数见 CLI `--help`。
+看到终端 2 输出 `"ready": true` 后，即可在第三个终端进入该工作区执行 `rsa auto on`。若仅测试设备与工作区能力而不启动 OMP 模型会话，可传入 `rsa run --device-only`。默认情况下双方通过工作区路径派生 Unix socket 地址，也可通过 `BASEWARE_SOCKET` / `--baseware-socket` 与 `RSA_SOCKET` 显式覆盖。
 
-仅开发前端时无需模型或模拟器，空日志目录也能打开控制台：
+### 2. Dashboard 网页控制台
+
+仅开发或查看前端界面时无需启动模型与模拟器，空日志目录也可直接运行：
 
 ```sh
+# 开发模式（支持前端 HMR；修改 lib/ 或 worker/ 后需重启进程）
 (cd rsa-dashboard && npm run dev)
-# 常驻运行：先 npm run build，再 npm start（同一组件目录）。
+
+# 生产模式（rsa up 受管启动使用的模式）
+(cd rsa-dashboard && npm run build && npm run start)
 ```
 
-`rsa up` 的受管 Dashboard 使用 production。启动前会核对构建与当前源码的指纹；缺失或过期会明确要求在 `rsa-dashboard` 执行 `npm run build`，不会静默运行旧界面。检查发生在启动设备之前。
+`rsa up` 在拉起设备前会调用 `npm run check-build` 校验 `rsa-dashboard` 的构建产物与当前源码指纹；若未构建或源码已更新，会明确提示先执行 `npm run build`，绝不静默运行过期界面。停止或重启 Dashboard 不会影响正在运行的 Host、Baseware 与模拟器。
 
-档案读取在 Dashboard 自己的 Node worker 中运行，不进入 Next/React 的编译和异步调试环境。开发模式修改 `lib/` 后端或 `worker/` 时需要重启 Dashboard；前端仍使用 Next HMR。worker 没有独立服务或端口，随 Dashboard 退出。停止/重载 Dashboard 无需重启游戏 Host、Baseware 或模拟器。
+打开浏览器访问 `http://127.0.0.1:3015` 即可使用控制台：
 
-冷历史目录由临时 builder 子进程构建，全局同时一个。首次读取触发，HTTP `202 ARCHIVE_PREPARING` 带进度；浏览器和 Pet 继续读取，不能把它当作空历史。关闭页面只取消查询，有限构建继续；界面的“取消整理/重新整理”控制构建任务。取消和失败不会被轮询自动重启。Dashboard 关闭会终止 builder；成功后 builder 退出，新目录通过 `.dashboard-index/active.json` 发布，旧目录等在途读者结束后回收。未发布的中间目录不续建，重试从头开始。录像直接查现有时空轴，不等待完整统计。原日志、session 和录像不变。
+- **运行与回放**：实时查看模型推理流、工具调用、设备输入与感知画面，或在历史时间轴上同步回放采样帧与事件。归档 worker、冷索引构建子进程与内存预算详见 [消费与指标解释](../reference/logging.md#消费与指标解释)。
+- **站内文档（`?view=docs`）**：侧栏切至“文档”可直接在控制台内浏览 `docs/tutorials/`、`docs/reference/` 与 `docs/insights/`，支持跨篇与章节锚点跳转。
+- **能力与评测目录（`?view=caps`）**：静态展示当前选中工作区的设备目录快照（`baseware.json`）、Python `@capability` 声明及 Harbor 评测任务，并提供外部驱动包的在线校验与 `rsa init` 命令生成。
 
-查询页缓存默认 256 MiB（`RSA_DASHBOARD_INDEX_CACHE_BYTES`），冷构建共享工作集目标 2 GiB（`RSA_DASHBOARD_BUILD_BYTES`）；超过工作集时批量落盘。默认查询 worker 堆上限 1 GiB、builder 堆上限 4 GiB，随配置留出余量；这些不是 RSS 硬上限。构建中的内存与完成后的常驻内存分开衡量。
+### 3. Ludens Pet 桌面伴侣
 
-真实档案的离线压力检查使用独立缓存，避免改写正在使用的目录：
+在终端运行 `rsa-companion/bin/rsa-companion --show-window` 可启动 Electron 桌面端，其主窗口加载同一份 Dashboard 控制台，桌宠角色（卢登斯）与气泡消费同一套增量活动日志。
 
-```sh
-cd rsa-dashboard
-node --expose-gc --max-old-space-size=1024 --import tsx scripts/check-index-memory.ts \
-  --run /absolute/path/to/workspace/logs/run-id \
-  --cache-root /absolute/path/to/temporary-index \
-  --output /absolute/path/to/report.json --epoch epoch-id
-```
-
-该脚本记录子进程阶段、解析/页写工作量、父子进程采样 RSS、分页、目录体积和退出后缓存释放；`--cache-bytes` / `--build-bytes` 可覆盖工作预算，`--compare report.json` 对比事件、统计与历史结果。必须使用独立空目录测冷构建。Next HTTP 与实际播放仍需单独验证，不能用离线结果代替。
-
-Dashboard 共享日志客户端有变化时，重新构建 `rsa-companion` 并重启 Electron 主进程；只刷新窗口不会更新已打包的 Pet 消费器。
-
-打开 [本地控制台](http://127.0.0.1:3015)。另一个终端运行 `rsa-companion/bin/rsa-companion --show-window`，Electron 加载同一页面。关闭窗口只隐藏，双击卢登斯/点击托盘重开，Quit 才退出。
-
-侧栏“文档”可浏览当前教程、接口规范和设想，并跳转文档与章节。“能力”跟随顶部选择的工作区，已注册但尚无运行记录的工作区也可查看；它读取连接时保存的设备目录快照、静态解析 Python `@capability` 声明，并列出评测任务。读取不会执行工作区代码或连接设备，发现错误会显示在页面中。
-
-在共享界面选择“让 Ludens Pet 跟随此工作区”即可热切换；历史回放不改变关注目标，Pet 跟随该 workspace 最新非 Benchmark 运行。`--workspace PATH` / `RSA_WORKSPACE` 只提供首次默认选择，`--dashboard URL` 指定本地服务，`--profile PATH` 使用独立偏好目录。默认实例会复用已有窗口。
-
-控制台只监听 localhost；启动 Pet 不发模型请求或游戏输入。浏览器可切关注目标，音量、音频导入等原生设置需桌面端操作。日志消费、媒体和统计见 [logging](../reference/logging.md)。
+- **工作区跟随**：在 Dashboard 界面点击“让 Ludens Pet 跟随此工作区”即可实时热切换关注目标（状态保存在 `../artifacts/rsa/.pet-target.json`）；浏览历史回放不会改变桌宠当前跟随的活跃工作区。
+- **启动参数**：`--workspace PATH`（或 `RSA_WORKSPACE`）指定首次默认工作区，`--dashboard URL` 指定控制台地址，`--profile PATH` 指定独立偏好目录（默认位于 Electron `appData` 下的 `RSA Ludens Pet`），`LUDENS_DISABLE_COMPANION=1` 可禁用桌宠挂件。关闭主窗口仅隐藏到托盘，双击桌宠或通过系统托盘菜单可重新唤出，选择 Quit 才彻底退出进程。
+- **构建同步**：当修改了 Dashboard 供桌宠消费的共享日志客户端代码时，需重新执行 `(cd rsa-companion && pnpm build)` 并重启 Electron 主进程。
 
 ## 验证
 
-默认离线检查，不连接模型或操作游戏。动作层验收用真实 Python worker 与模拟 driver 覆盖持续执行、重载、异常、旧代拒绝和人工释放，不以 RPC 成功代替输入终态：
+### 1. 离线全量检查
+
+默认自动化检查完全离线，不连接外部模型或真实模拟器：
 
 ```sh
 (cd baseware && bun run check && bun test)
@@ -212,34 +249,36 @@ python3 baseware/scripts/sync-cua-contract.py --check
 (cd rsa-companion && pnpm typecheck && pnpm test)
 ```
 
-`(cd rsa-companion && pnpm smoke)` 用临时 profile 验证几何、点击、尺寸、音频和五类日志；`pnpm preview` 留下交互窗口。两者不连接模型或控制模拟器。
+需要针对真实大型运行日志单独压测 Dashboard 冷索引构建与内存回收时，可使用隔离缓存目录运行离线检查脚本：
 
-桌宠使用卢登斯的静态素材（`rsa-companion/ui/public/companion/ludens/manifest.json`）：
-24 个全身姿态、8 个特效、3 个头像与托盘图标，附生成提示词和 9 份 SVG。
-运行图为 512px 透明 WebP，托盘另带 PNG。无视频或逐帧动画。
-各姿态的 `display_scale` 以默认站立的头部大小做视觉校准，底部居中缩放角色和点击区域，气泡不缩放；修改 manifest 后同步 catalog.js。
-右键「姿态」选择全部姿态或恢复自动，「特效」选择叠加；选择仅在本次进程有效。
-自动状态在闲置 30/90/120 秒时依次托坐、犯困、睡觉，点击会短暂惊讶或开心，
-按住显示被拎起，拖动释放显示落地。现有吸边、左右翻转、尺寸和透明区域穿透保留。
-姿态优先级为互动、当前可见日志、手选姿态、闲置；日志隐藏后恢复原姿态。
-思考日志显示思考，工具运行显示操作，工具完成显示得意，错误显示吃瘪；
-这只表达当前日志块的状态，不代表整项任务成功。简略通知不读取私有日志字段。
-桌面端默认偏好目录为 Electron appData 下的 `RSA Ludens Pet`，可用 `--profile PATH` 指定独立目录。Dashboard 原生桥使用 `window.ludens`，桌宠 IPC 使用 `ludens:*`，禁用环境变量为 `LUDENS_DISABLE_COMPANION=1`；共享跟随状态保存在 Dashboard artifacts 根目录的 `.pet-target.json` / `.pet-consumer.json`。
+```sh
+cd rsa-dashboard
+node --expose-gc --max-old-space-size=1024 --import tsx scripts/check-index-memory.ts \
+  --run /absolute/path/to/workspace/logs/run-id \
+  --cache-root /absolute/path/to/temporary-index \
+  --output /absolute/path/to/report.json --epoch epoch-id
+```
 
+### 2. 桌宠交互冒烟与姿态规则
 
-评测统一用 `rsa bench`，先读 help。`ludens/capability-reuse` 调用真实模型，其他内置用例离线；自定义评测依其代码运行，见 [benchmark](../reference/benchmark.md)。
+執行 `(cd rsa-companion && pnpm smoke)` 会使用临时 profile 自动验证窗口几何、点击穿透、尺寸缩放、音频与五类日志气泡；执行 `pnpm preview` 则保留交互窗口供人工体验。
 
-实机测试需显式授权，会输入按键并改变控制权。以下是独立可选测试，**不要在 Agent 运行时执行**：
+卢登斯桌宠采用静态透明 WebP 素材（定义于 `rsa-companion/ui/public/companion/ludens/manifest.json`，含 24 个全身姿态、8 个叠加特效、3 个头像与托盘图标；修改 manifest 后需同步 `catalog.js`）：
 
-| 测试 | 前提 | 仓库根命令 |
+- **视觉校准**：各姿态通过 `display_scale` 以默认站立姿态的头部大小做底部居中缩放，气泡大小保持恒定。
+- **姿态优先级**：鼠标互动（点击惊讶/开心、按住拎起、拖拽落地） > 当前可见日志状态（思考→思考、工具运行→操作、工具完成→得意、错误→吃瘪） > 右键菜单手选姿态/特效（仅当次进程有效） > 闲置计时（30s 托坐 → 90s 犯困 → 120s 睡觉）。
+
+### 3. 实机与模拟器联调测试
+
+实机测试会真实发送按键并切换设备控制权，**切勿在 Agent 运行期间并发执行**：
+
+| 测试项 | 前置准备 | 仓库根目录执行命令 |
 | --- | --- | --- |
-| mGBA 完整交还 | 已加载桥；另开 Baseware 和 `rsa run --device-only`；指明同一 workspace | `RSA_MGBA=1 RSA_WORKSPACE=/absolute/path/to/workspace bun test rsa/tests/device.live.test.ts` |
-| mGBA 连续断线恢复 | 保留桥和游戏，停止占用桥的 Host/Baseware；默认端口 47653 | `RSA_BRIDGE_TEST=1 bun test baseware/tests/bridge.live.test.ts` |
-| Ryubing 按键/采样/长动作中断 | 停在可安全输入的场景，停止 Host/Baseware，桥保持运行 | `RSA_SWITCH_TEST=1 bun test rsa/tests/switch.live.test.ts` |
-| Ryubing 原生键盘 | 同上，火纹八字符命名框打开；测试取消而不提交名字 | `RSA_SWITCH_KEYBOARD_TEST=1 bun test rsa/tests/switch.live.test.ts` |
-
-Switch 测试可用 `RSA_BRIDGE_PORT` 指定非默认端口。这些验证覆盖控制与采样契约，不证明游戏兼容性、通关或长期稳定性。
+| mGBA 完整控制权交还 | 模拟器已加载 ROM 与 `bridge.lua`；另开终端运行该工作区的 Baseware 与 `rsa run --device-only` | `RSA_MGBA=1 RSA_WORKSPACE=/absolute/path/to/workspace bun test rsa/tests/device.live.test.ts` |
+| mGBA 连续断线恢复 | 模拟器与桥保持运行，停止占用该桥的 Host 与 Baseware（默认端口 `47653`） | `RSA_BRIDGE_TEST=1 bun test baseware/tests/bridge.live.test.ts` |
+| Ryubing 按键/采样/长动作中断 | 游戏停在安全可输入画面，停止 Host 与 Baseware，模拟器桥保持运行（可用 `RSA_BRIDGE_PORT` 覆盖端口） | `RSA_SWITCH_TEST=1 bun test rsa/tests/switch.live.test.ts` |
+| Ryubing 系统键盘框 | 同上，且游戏内已打开系统命名输入框（测试会输入并取消，不提交名字） | `RSA_SWITCH_KEYBOARD_TEST=1 bun test rsa/tests/switch.live.test.ts` |
 
 ## WS 恢复测试依据
 
-见 [WS 恢复测试依据](../insights/ws-recovery.md)。
+针对长周期运行中 OpenAI Codex WebSocket 到期、异常关闭码（如 `1012`）与未完成工具调用恢复的专项测试矩阵与设计复盘，见 [WS 恢复测试依据](../insights/ws-recovery.md)。
