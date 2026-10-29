@@ -1,25 +1,19 @@
 /* Domain-specific sidebar and desktop notification layout. Settings use shared UI primitives. */
 @layer components {
+/* Follow selection and the desktop acknowledgement are separate surfaces. */
 .pet-follow-card {
+  min-width: 0;
   margin-top: auto;
-  padding: 14px;
+  padding: 13px;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--card);
 }
-.pet-follow-heading {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  text-align: left;
-}
-.pet-follow-heading > span:last-child { margin-left: auto; color: var(--muted-foreground); }
+.pet-follow-heading { display: flex; align-items: center; gap: 9px; }
+.pet-follow-heading-copy { min-width: 0; }
 .pet-follow-avatar {
   display: grid;
+  flex-shrink: 0;
   place-items: center;
   width: 32px;
   height: 36px;
@@ -28,31 +22,71 @@
   color: var(--gold);
   font: 21px Georgia, serif;
 }
-.pet-follow-heading strong { font-size: 13px; font-weight: 550; }
-.pet-follow-heading small { display: block; color: var(--muted-foreground); font-size: 10px; margin-top: 3px; }
-.pet-follow-heading .status-dot { margin-right: 5px; }
-.pet-follow-card > p {
-  margin: 13px 0 10px;
-  font-size: 12px;
-  color: var(--muted-foreground);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.pet-follow-card .pet-follow-action { width: 100%; padding: 8px 5px; font-size: 11px; }
+.pet-follow-heading strong { font-size: 13px; font-weight: 600; }
+.pet-follow-heading small { display: block; color: var(--primary); font-size: 10px; margin-top: 3px; }
+.pet-follow-saved { margin: 11px 0 5px; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.pet-follow-saved > span { color: var(--muted-foreground); }
+.pet-follow-saved strong { font-weight: 500; }
+.pet-follow-consumer { display: flex; align-items: baseline; gap: 5px; color: var(--muted-foreground); font-size: 10px; line-height: 1.5; }
+.pet-follow-consumer .status-dot { flex-shrink: 0; }
+.pet-follow-card .pet-follow-action { width: 100%; margin-top: 10px; padding: 8px 5px; font-size: 11px; }
+.pet-follow-feedback { margin-top: 8px; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; color: var(--muted-foreground); }
+.pet-follow-feedback.is-error { color: var(--destructive); }
+.pet-follow-settings { min-width: 0; padding-block: 0; gap: 0; box-shadow: none; background: color-mix(in srgb, var(--background) 18%, var(--card)); }
+.pet-follow-settings-content { min-width: 0; display: grid; gap: 16px; padding: 18px; }
+.pet-follow-selection { display: grid; grid-template-columns: minmax(0, 1fr) minmax(230px, 1fr); align-items: center; gap: 18px; }
+.pet-follow-selection-label { min-width: 0; }
+.pet-follow-selection-label > p, .pet-follow-desktop > div > p { margin-top: 5px; color: var(--muted-foreground); font-size: 12px; line-height: 1.6; }
+.pet-follow-selection-control { min-width: 0; display: flex; align-items: center; gap: 10px; }
+.pet-follow-selection-control > [data-slot="native-select-wrapper"] { flex: 1 1 120px; }
+.pet-follow-save-badge { flex-shrink: 0; max-width: 45%; min-height: 32px; gap: 5px; color: var(--primary); white-space: normal; line-height: 1.4; }
+.pet-follow-save-badge > svg { width: 14px; height: 14px; flex-shrink: 0; }
+.pet-follow-saving, .pet-follow-empty { margin: 0; font-size: 12px; line-height: 1.6; color: var(--muted-foreground); overflow-wrap: anywhere; }
+.pet-follow-saving strong { color: var(--foreground); font-weight: 500; }
+.pet-follow-path { min-width: 0; border: 1px solid var(--border); border-radius: 7px; font-size: 12px; }
+.pet-follow-path > summary { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 10px 12px; cursor: pointer; list-style: none; }
+.pet-follow-path > summary::-webkit-details-marker { display: none; }
+.pet-follow-path > summary > svg { flex-shrink: 0; width: 14px; height: 14px; color: var(--muted-foreground); }
+.pet-follow-path[open] > summary > svg { transform: rotate(90deg); }
+.pet-follow-path > summary > span:first-of-type { flex-shrink: 0; }
+.pet-follow-path-preview { margin-left: auto; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted-foreground); }
+.pet-follow-path[open] .pet-follow-path-preview { visibility: hidden; }
+.pet-follow-path > p { margin: 0; padding: 0 12px 12px 34px; overflow-wrap: anywhere; color: var(--muted-foreground); line-height: 1.6; }
+.pet-follow-desktop { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 10px 18px; padding-top: 17px; border-top: 1px solid var(--border); }
+.pet-follow-desktop h3 { font-size: 13px; font-weight: 600; }
+.pet-follow-desktop-actions { display: flex; flex-wrap: wrap; justify-content: end; align-items: center; gap: 10px; min-width: 0; }
+.pet-follow-desktop-badge { gap: 7px; min-height: 30px; max-width: 100%; white-space: normal; line-height: 1.4; }
+.pet-follow-desktop-badge .status-dot { flex-shrink: 0; }
+.pet-follow-refresh { min-height: 32px; height: auto; white-space: normal; text-align: start; }
+.pet-follow-read-time { grid-column: 1 / -1; color: var(--muted-foreground); font-size: 11px; }
+.pet-follow-read-time time { margin-left: 4px; font-variant-numeric: tabular-nums; }
+.pet-follow-desktop-note { grid-column: 1 / -1; color: var(--muted-foreground); font-size: 12px; line-height: 1.6; }
+.pet-follow-desktop > [role="alert"] { grid-column: 1 / -1; }
+.pet-follow-comparison { display: grid; gap: 8px; margin: 12px 0; font-size: 12px; }
+.pet-follow-comparison > div { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 12px; }
+.pet-follow-comparison dt { color: var(--muted-foreground); }
+.pet-follow-comparison dd { margin: 0; overflow-wrap: anywhere; }
+.pet-follow-technical { margin-top: 8px; min-width: 0; font-size: 12px; }
+.pet-follow-technical summary { cursor: pointer; }
+.pet-follow-technical p { margin-top: 8px; overflow-wrap: anywhere; white-space: pre-wrap; max-height: 160px; overflow-y: auto; }
+.pet-availability-card { box-shadow: none; }
+.pet-availability-heading { display: flex; align-items: start; justify-content: space-between; gap: 20px; }
+.pet-availability-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.pet-availability-description { margin-top: 6px; }
+.pet-availability-actions { flex-shrink: 0; }
 @media (min-width: 681px) and (max-width: 950px) {
   .pet-follow-avatar { display: none; }
 }
-@media (max-width: 680px) {
-  .pet-follow-card {
-    grid-column: 1 / -1;
-    display: grid;
-    grid-template-columns: 1fr auto;
-    gap: 4px 16px;
-    padding: 12px;
-  }
-  .pet-follow-card > p { grid-column: 1; margin: 3px 0 0; }
-  .pet-follow-card .pet-follow-action { grid-column: 2; grid-row: 1 / 3; width: auto; align-self: center; padding: 9px 12px; }
+@media (max-width: 760px) {
+  .pet-follow-selection, .pet-follow-desktop { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .pet-follow-desktop-actions { justify-content: start; }
+  .pet-follow-path-preview { display: none; }
+  .pet-availability-heading { flex-direction: column; gap: 14px; }
+}
+@media (max-width: 480px) {
+  .pet-follow-settings-content { padding: 14px; gap: 14px; }
+  .pet-follow-save-badge { font-size: 10px; }
+  .pet-follow-comparison > div { grid-template-columns: 85px minmax(0, 1fr); gap: 8px; }
 }
 .desktop-notifications {
   position: fixed;

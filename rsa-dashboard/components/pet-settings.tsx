@@ -81,15 +81,19 @@ export function PetSettings({ follow, projects }: { follow: PetFollow; projects:
       <div className="min-w-0 space-y-1.5"><div className="flex flex-wrap items-center gap-2"><h2 id={titleId} className="text-base font-semibold">{t("title")}</h2><Badge variant="outline">{t("optionalBadge")}</Badge></div>
         <p className="text-sm leading-relaxed text-muted-foreground">{t("subtitle")}</p></div>
     </header>
-    <div className="grid min-w-0 items-start gap-4 min-[1000px]:grid-cols-2">
+    <div className="grid min-w-0 gap-4">
       <PetFollowSettings follow={follow} projects={projects} />
-      <Card data-pet-availability>
-        <CardHeader><div className="flex flex-wrap items-center justify-between gap-2">
-          <CardTitle role="heading" aria-level={3}>{t("desktopPreferences")}</CardTitle>
-          <Badge variant="outline">{t(!ready ? "checkingAvailability" : bridge ? "desktopWindowBadge" : "browserBadge")}</Badge>
-        </div><CardDescription>{t(bridge ? "desktopAvailableHint" : "desktopUnavailableHint")}</CardDescription></CardHeader>
-        <CardContent className="space-y-3">
-          <Button type="button" variant="outline" size="sm" onClick={() => { recheck(); setCheckedAvailability(true); }}>{t("checkAvailability")}</Button>
+      <Card data-pet-availability className="pet-availability-card shadow-none">
+        <CardHeader className="pet-availability-heading flex gap-5">
+          <div className="min-w-0">
+            <div className="pet-availability-title"><CardTitle role="heading" aria-level={3}>{t("desktopPreferences")}</CardTitle>
+              <Badge variant="outline">{t(!ready ? "checkingAvailability" : bridge ? "desktopWindowBadge" : "browserBadge")}</Badge>
+            </div>
+            <CardDescription className="pet-availability-description">{t(bridge ? "desktopAvailableHint" : "desktopUnavailableHint")}</CardDescription>
+          </div>
+          <Button type="button" variant="outline" size="sm" className="pet-availability-actions" onClick={() => { recheck(); setCheckedAvailability(true); }}>{t("checkAvailability")}</Button>
+        </CardHeader>
+        <CardContent className="pt-0">
           <p className="text-xs leading-relaxed text-muted-foreground" role={checkedAvailability ? "status" : undefined}>{t(checkedAvailability ? bridge ? "checkedAvailable" : "checkedUnavailable" : "availabilityScope")}</p>
         </CardContent>
       </Card>

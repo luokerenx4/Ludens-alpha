@@ -77,11 +77,14 @@ export class PetSessionCoordinator implements RsaActivitySource {
     if (this.stopped || this.targetBusy) return
     this.targetBusy = true
     try {
-      const state = await this.request('GET') as { target: PetTarget | null }
+      const state = await this.request('GET') as { target: PetTarget | null; targetUnavailable?: boolean }
       if (this.stopped) return
-      const next = state.target
+      let next = state.target
       if (next !== null && (!next || typeof next.project !== 'string' || typeof next.workspace !== 'string' || typeof next.revision !== 'string'))
         throw new Error('Ludens Pet 跟随目标无效')
+      // Keep the saved selection on the server, but never consume an offline,
+      // unregistered, or replaced directory as though it were that workspace.
+      if (state.targetUnavailable === true) next = null
       if (next?.revision !== this.target?.revision || next?.workspace !== this.target?.workspace || next?.project !== this.target?.project
         || (next && !this.source) || (!next && this.phase === 'error')) this.select(next)
     } catch (error) {
@@ -136,7 +139,8 @@ export class PetSessionCoordinator implements RsaActivitySource {
         this.heartbeatPending = false
         try {
           await this.request('POST', {
-            instanceId: this.instanceId, pid: process.pid, revision: this.loadedRevision, workspace: this.target?.workspace ?? null,
+            instanceId: this.instanceId, pid: process.pid, revision: this.loadedRevision,
+            targetRevision: this.target?.revision ?? null, workspace: this.target?.workspace ?? null,
             runId: this.current.runId, phase: this.phase, error: this.current.error,
           })
         } catch { /* The next independent heartbeat retries; log consumption must keep running. */ }
