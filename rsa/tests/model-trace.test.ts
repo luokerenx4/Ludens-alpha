@@ -385,8 +385,9 @@ test("real OMP preserves image prefixes and native tool traces while shell IPC r
     await session.prompt("Probe.");
     expect(received).toHaveLength(7);
     const bodies = received.map(body => JSON.parse(body));
+    // Images arrive from the prompt-start delivery and the explicit observe only.
     expect(bodies.map(body => body.messages.flatMap((message: {content: unknown}) => Array.isArray(message.content) ? message.content : [])
-      .filter((part: {type: string}) => part.type === "image_url").length)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+      .filter((part: {type: string}) => part.type === "image_url").length)).toEqual([1, 1, 1, 1, 1, 2, 2]);
     for (let i = 1; i < bodies.length; i++) {
       expect(bodies[i].messages.slice(0, bodies[i - 1].messages.length)).toEqual(bodies[i - 1].messages);
     }
@@ -464,41 +465,39 @@ test("real OMP preserves image prefixes and native tool traces while shell IPC r
         expect(event.trace.spanId, `${type} native parent`).toBe(tool.trace.spanId);
       }
     }
-    const firstBatchEnd = events.filter(e => e.type === "tool_end" && e.trace.modelCallId === firstCall).at(-1)!;
     const observations = events.flatMap(e => e.type === "execution"
       ? (e.data.observations ?? []).map((data: unknown) => ({...e, type: "observation", data}))
       : e.type === "observation" ? [e] : []);
-    expect(observations.filter(e => e.trace.modelCallId === firstCall)
-      .map(e => e.trace.toolCallId)).toEqual([firstBatchEnd.trace.toolCallId]);
-    expect(observations[0].data.origin).toBe("cli");
+    // Only two reads run: the prompt-start delivery and the explicit observe.
+    const perceptionReads = events.filter(e => e.type === "perception_observe_end");
+    expect(perceptionReads).toHaveLength(2);
+    expect(observations).toHaveLength(2);
+    expect(observations.map(e => e.data.origin)).toEqual(["cli", "cli"]);
     expect(observations[1].data).toMatchObject({origin: "cli", sourceSequenceDelta: 100,
       previousObservationId: "observation-1"});
-    const perceptionReads = events.filter(e => e.type === "perception_observe_end");
-    expect(perceptionReads).toHaveLength(7);
     const deliveries = events.filter(e => e.type === "observation_context");
     const deliveryStarts = events.filter(e => e.type === "model_start");
     expect(deliveryStarts.flatMap(start => start.data.deliveryIds)).toEqual(deliveries.map(delivery => delivery.data.id));
     expect(deliveries.flatMap(delivery => delivery.data.queries)).toEqual(perceptionReads.map(read => read.data.queryId));
 
-    expect(perceptionReads[1].trace).toMatchObject({epoch, modelCallId: firstCall, toolCallId: firstBatchEnd.trace.toolCallId});
+    const explicitObserve = nativeTools.find(e => e.trace.toolCallId === "round-5")!;
+    expect(perceptionReads[1].trace).toMatchObject({ epoch, modelCallId: requests[4].trace.modelCallId,
+      toolCallId: "round-5", traceId: explicitObserve.trace.traceId });
     expect(perceptionReads[1].data.records.flatMap((record: {media: {id: string}[]}) => record.media.map(value => value.id))).toEqual(["observation-2"]);
     expect(perceptionReads[1].data.durationMs).toBeGreaterThanOrEqual(0);
-    const explicitObserve = nativeTools.find(e => e.trace.toolCallId === "round-5");
-    expect(perceptionReads[5].trace).toMatchObject({ epoch, modelCallId: requests[4].trace.modelCallId,
-      toolCallId: "round-5", traceId: explicitObserve.trace.traceId });
-    expect(observations[5].trace).toMatchObject({ modelCallId: requests[4].trace.modelCallId,
+    expect(observations[1].trace).toMatchObject({ modelCallId: requests[4].trace.modelCallId,
       toolCallId: "round-5", traceId: explicitObserve.trace.traceId });
     // This fixture's sampling uses no control lease; Runtime does not propagate
     // an epoch to the raw device call, but keeps its explicit native ancestry.
-    expect(observations[5].trace).not.toHaveProperty("epoch");
-    expect(events.filter(e => e.type === "observation_media")).toHaveLength(7);
+    expect(observations[1].trace).not.toHaveProperty("epoch");
+    expect(events.filter(e => e.type === "observation_media")).toHaveLength(2);
     expect(events.find(e => e.type === "read").data).toMatchObject({
       requestedPath: "skills/notes.md:2-3", path: notes, isError: false,
       hash: new Bun.SHA256().update(await Bun.file(notes).arrayBuffer()).digest("hex"),
     });
     const commands = events.filter(e => e.type === "command" && e.data.requiresControl);
     expect(commands.map(e => e.trace.operationId)).toHaveLength(2);
-    expect(events.filter(e => e.type === "command" && e.data.requiresControl === false)).toHaveLength(7);
+    expect(events.filter(e => e.type === "command" && e.data.requiresControl === false)).toHaveLength(2);
     expect(new Set(commands.map(e => e.trace.traceId)).size).toBe(2);
     expect(commands.map(e => e.data.arguments).sort((a, b) => a.distance - b.distance)).toEqual([{distance: 1}, {distance: 2}]);
     for (const command of commands) {
@@ -516,11 +515,11 @@ test("real OMP preserves image prefixes and native tool traces while shell IPC r
     expect(events.filter(e => e.type === "execution").map(e => e.trace.operationId))
       .toEqual(events.filter(e => e.type === "command").map(e => e.trace.operationId));
     const starts = events.filter(e => e.type === "model_start");
-    expect(starts[1].data.observations).toEqual(["observation-2"]);
+    expect(starts[5].data.observations).toEqual(["observation-2"]);
     const contexts = events.filter(e => e.type === "context");
-    expect(contexts[1].data.observations).toEqual(starts[1].data.observations);
-    expect(contexts[1].data.deliveryIds).toEqual(starts[1].data.deliveryIds);
-    expect(deliveries.find(delivery => delivery.data.id === starts[1].data.deliveryIds[0])?.data.queries)
+    expect(contexts[5].data.observations).toEqual(starts[5].data.observations);
+    expect(contexts[5].data.deliveryIds).toEqual(starts[5].data.deliveryIds);
+    expect(deliveries.find(delivery => delivery.data.id === starts[5].data.deliveryIds[0])?.data.queries)
       .toEqual([perceptionReads[1].data.queryId]);
     const raw = await readFile(join(directory, starts[0].data.streamPath), "utf8");
     expect(raw).toContain("kept-raw");

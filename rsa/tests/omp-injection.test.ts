@@ -146,7 +146,7 @@ class Perception:
     expect(secondPage.images).toHaveLength(4);
     expect(continuation.hasMore).toBe(false);
     expect([...page.records, ...continuation.records].map(record => record.id)).toEqual(history.map(record => record.id));
-    expect(snapshots[7]!.images).toHaveLength(1);
+    expect(snapshots[7]!.images).toHaveLength(0); // re-enabling injection speaks at the next prompt, not on the batch
     expect(snapshots[7]!.json.some(value => value.control || value.skills)).toBe(false);
     expect(runtime.perceptionInjectionEnabled()).toBe(true);
     expect(runtime.perception.status()).toMatchObject({ state: "ready", generation });
@@ -156,8 +156,8 @@ class Perception:
     expect(explicit).toHaveLength(3);
     const details = explicit[0]!.details as any;
     expect(details).toEqual({ queryId: expect.any(String), ok: true });
-    // Only the two enabled automatic reads and the three explicit queries ran.
-    expect(events.filter(event => event.type === "perception_observe_end")).toHaveLength(5);
+    // Only the prompt-start automatic read and the three explicit queries ran.
+    expect(events.filter(event => event.type === "perception_observe_end")).toHaveLength(4);
     const recordedRead = events.find(event => event.type === "perception_observe_end" && event.data.query?.id === history[0].id);
     expect(recordedRead?.data).toMatchObject({ queryId: details.queryId, ok: true,
       records: [{ id: history[0].id, media: [{ timeline: { video: history[0].media[0].timeline.video } }] }] });

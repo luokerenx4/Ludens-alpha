@@ -148,18 +148,14 @@ class Perception:
     const persisted = JSON.stringify(first);
     expect(persisted).toContain("Window 1");
     await handlers.assistant_message({});
-    await handlers.tool_call({ toolCallId: "explicit" });
-    await handlers.tool_call({ toolCallId: "sibling" });
     const observe = customToolToDefinition(extension.tools[0]);
     const result = await observe.execute("explicit", {}, control.signal, () => {}, {} as ExtensionContext);
     expect(await handlers.tool_result({ toolCallId: "explicit", toolName: "observe", input: {}, ...result })).toBeUndefined();
-    const enriched = await handlers.tool_result({ toolCallId: "sibling", toolName: "bash", input: {}, content: [{ type: "text", text: "done" }] });
+    // Tool batches no longer carry perception; unrelated results pass through untouched.
+    expect(await handlers.tool_result({ toolCallId: "sibling", toolName: "bash", input: {}, content: [{ type: "text", text: "done" }] })).toBeUndefined();
     expect(calls).toBe(0);
     expect(JSON.parse(result.content.find(part => part.type === "text")!.text).records[0].sequence).toBe(1);
     expect(result.details).not.toHaveProperty("records");
-    expect(enriched.content.filter((part: any) => part.type === "image")).toHaveLength(0);
-    expect(enriched.content).toEqual([{ type: "text", text: "done" }]);
-    expect(JSON.stringify(enriched.content)).not.toContain("Window 1");
     expect(extension.context().deliveryIds).toHaveLength(1);
     expect(JSON.stringify(first)).toBe(persisted);
   } finally { await runtime.close(); await rm(directory, { recursive: true }); }
@@ -224,49 +220,47 @@ test("automatic delivery stays bounded across fast tools, unavailable sampling a
     maxRequests: 2000, cycle: () => ({ epoch: "test", signal: abort.signal }) });
   const handlers: Record<string, (event: any) => any> = {};
   await extension.factory({ on(name: string, handler: (event: any) => any) { handlers[name] = handler; } } as ExtensionAPI);
-  const tool = async (content: any[] = [{ type: "text", text: "done" }]) => {
+  const tool = async (content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [{ type: "text", text: "done" }]) => {
     await handlers.assistant_message({});
-    await handlers.tool_call({ toolCallId: "work" });
     return handlers.tool_result({ toolCallId: "work", toolName: "bash", input: {}, content });
   };
   try {
     const first = await handlers.before_agent_start({});
     const before = JSON.stringify(first);
-    for (let i = 0; i < 1000; i++) expect((await tool()).content).toEqual([{ type: "text", text: "done" }]);
+    for (let i = 0; i < 1000; i++) expect(await tool()).toBeUndefined();
     expect(events.filter(event => event.type === "observation_media")).toHaveLength(1);
     expect(events.filter(event => event.type === "observation_context")).toHaveLength(1);
     expect(extension.context().deliveryIds).toEqual([]);
     expect(await handlers.before_agent_start({})).toBeUndefined(); // continuation is not a context reset
 
     sequence++;
-    // Same pixels at a new time are new information; an unrelated tool image is not perception.
-    const unrelated = await tool([{ type: "image", data: png, mimeType: "image/png" }]);
-    expect(unrelated.content.filter((part: any) => part.type === "image")).toHaveLength(2);
-    expect(extension.context().observations).toHaveLength(2);
+    // Same pixels at a new time are new information; an unrelated tool image no longer triggers perception.
+    expect(await tool([{ type: "image", data: png, mimeType: "image/png" }])).toBeUndefined();
+    expect(extension.context().observations).toHaveLength(1); // the recorded native tool image receipt
 
     const observe = customToolToDefinition(extension.tools[0]);
     await handlers.assistant_message({});
     for (const id of ["a", "b"]) {
-      await handlers.tool_call({ toolCallId: id });
       const result = await observe.execute(id, {}, abort.signal, () => {}, {} as ExtensionContext);
       expect(result.content.filter(part => part.type === "image")).toHaveLength(1); // explicit repetition is intentional
-      if (id === "a") await handlers.tool_call({ toolCallId: "b" });
-      await handlers.tool_result({ toolCallId: id, toolName: "observe", input: {}, ...result });
+      expect(await handlers.tool_result({ toolCallId: id, toolName: "observe", input: {}, ...result })).toBeUndefined();
     }
-    expect(events.findLast(event => event.type === "observation_context")!.data.queries).toHaveLength(2);
+    // Receipts: prompt-start(query), native tool image(none), then one per explicit read.
+    expect(events.filter(event => event.type === "observation_context").map(event => event.data.queries.length)).toEqual([1, 0, 1, 1]);
 
     status = { ...status, state: "stopped" };
     const readCount = reads;
-    expect(JSON.parse((await tool()).content.at(-1).text).perception.state).toBe("stopped");
-    for (let i = 0; i < 513; i++) expect((await tool()).content).toEqual([{ type: "text", text: "done" }]);
+    // A stopped sampler is announced at the next prompt, never on tool batches.
+    expect(JSON.parse((await handlers.before_agent_start({})).message.content[0].text).perception.state).toBe("stopped");
+    for (let i = 0; i < 513; i++) expect(await tool()).toBeUndefined();
     expect(reads).toBe(readCount);
     status = { ...status, state: "ready" };
-    await tool();
+    await handlers.before_agent_start({});
 
     const delivered = events.filter(event => event.type === "observation_media").length;
     await handlers.session_compact({});
-    expect((await tool()).content.filter((part: any) => part.type === "image")).toHaveLength(1);
-    expect(events.filter(event => event.type === "observation_media")).toHaveLength(delivered + 1);
+    const restart = await handlers.before_agent_start({});
+    expect(restart.message.content.filter((part: { type: string }) => part.type === "image")).toHaveLength(1);
     expect(JSON.stringify(first)).toBe(before);
     expect(events.filter(event => event.type === "observation_context").every(event =>
       !event.data.records && !event.data.snapshot && !event.data.executions)).toBe(true);
@@ -288,7 +282,7 @@ test("automatic delivery stays bounded across fast tools, unavailable sampling a
   }
 }, 20_000);
 
-test.each(["injection disabled", "explicit observe", "timeline image", "context replacement"])(
+test.each(["injection disabled", "explicit observe", "context replacement"])(
   "sampler state remains deliverable after %s",
   async (suppression) => {
     const directory = await mkdtemp(join(tmpdir(), "rsa-state-delivery-"));
@@ -321,18 +315,11 @@ test.each(["injection disabled", "explicit observe", "timeline image", "context 
           runtime.setPerceptionInjection(true);
         } else {
           await handlers.assistant_message({});
-          await handlers.tool_call({ toolCallId: "explicit" });
-          let result;
           if (suppression === "explicit observe") {
             const observe = customToolToDefinition(extension.tools[0]);
-            result = await observe.execute("explicit", {}, abort.signal, () => {}, {} as ExtensionContext);
-          } else {
-            perception.deliveredMediaReference = () => ({ sha256: "image-hash", asset: "image.bin", mediaType: "image/png",
-              bytes: 5, recordId: "retained-frame", sequence: 1, sourceAsset: "image.bin", transform: "identity" });
-            result = { content: [{ type: "image", data: Buffer.from("image").toString("base64"), mimeType: "image/png" }] };
+            const explicit = await observe.execute("explicit", {}, abort.signal, () => {}, {} as ExtensionContext);
+            expect(await handlers.tool_result({ toolCallId: "explicit", toolName: "observe", input: {}, ...explicit })).toBeUndefined();
           }
-          const enriched = await handlers.tool_result({ toolCallId: "explicit", toolName: suppression === "explicit observe" ? "observe" : "bash", input: {}, ...result });
-          expect(states(enriched.content)).toEqual([]);
         }
       }
       const delivered = await handlers.before_agent_start({});

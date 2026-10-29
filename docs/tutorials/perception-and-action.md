@@ -35,7 +35,7 @@ rsa observe --capability python/sensors.py:temperature
 rsa observe --capability '*' --start 2026-10-27T01:00:00Z --limit 8
 ```
 
-- **采样与自动注入解耦**：`rsa perception inject off` 仅停止在每轮 prompt 开始与工具批次结束时向模型自动追加新观测和采样器状态；后台 `sample()`、视频录制与显式 `observe` 查询均照常运行。`rsa perception stop` 则会彻底停止采样进程与时空轴 writer，直至下次 `reload`。
+- **采样与自动注入解耦**：`rsa perception inject off` 仅停止在每轮 prompt 开始时向模型自动追加新观测和采样器状态；后台 `sample()`、视频录制与显式 `observe` 查询均照常运行，轮内观察始终由模型显式 `observe` 完成，工具结果不会被追加任何观察。`rsa perception stop` 则会彻底停止采样进程与时空轴 writer，直至下次 `reload`。
 - **查询维度与分页**：默认读取主通道 `python/perception.py:Perception.sample` 的最新记录；`--capability` 可筛选其他 `@record` 能力或传 `'*'` 查询全轴；`--at` 查询 `recordedAt` 不晚于指定时刻的最后一条记录；`--start` / `--end` 按 `recordedAt` 闭区间升序分页（默认 `8` 条，上限 `64` 条，通过返回的 `nextAfter` 传给 `--after` 翻页）。
 - **终端图像交付**：在 Agent 的 `bash` 工具中加 `--images` 可通过 OMP 终端图像通道直接将图片送入模型（单页上限 32 张 / 40 MiB）。
 
