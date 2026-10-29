@@ -1352,7 +1352,11 @@
     "selectRunTitle": "选择一次运行，查看执行与评分",
     "selectRunDescription": "点击上方历史中的运行时间。任务筛选和比较基线与此选择相互独立。",
     "resultSelectionHint": "切换任务筛选时，仍会保留当前选定的运行。",
-    "catalogScopeChanged": "任务目录对应的工作区位置已变化。请刷新工作区列表后重试。"
+    "catalogScopeChanged": "任务目录对应的工作区位置已变化。请刷新工作区列表后重试。",
+    "taskPickerLabel": "选择任务",
+    "taskPickerAmbiguous": "请选择任务版本",
+    "taskPickerMissing": "选中的任务不可用",
+    "viewExecutionHistory": "查看执行历史"
   },
   "runVisuals": {
     "transport": {

@@ -1352,7 +1352,11 @@
     "selectRunTitle": "Select a run to inspect its execution and scoring",
     "selectRunDescription": "Choose a run time in the history above. Task filters and the comparison baseline are independent of this selection.",
     "resultSelectionHint": "This selected run stays visible when the task filter changes.",
-    "catalogScopeChanged": "This task catalog belongs to a different workspace location. Refresh the workspace list and try again."
+    "catalogScopeChanged": "This task catalog belongs to a different workspace location. Refresh the workspace list and try again.",
+    "taskPickerLabel": "Select task",
+    "taskPickerAmbiguous": "Choose a task version",
+    "taskPickerMissing": "Selected task unavailable",
+    "viewExecutionHistory": "View execution history"
   },
   "runVisuals": {
     "transport": {
