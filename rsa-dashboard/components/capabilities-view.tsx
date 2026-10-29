@@ -14,7 +14,6 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
 interface WorkspaceCatalogProps {
   project: string;
@@ -104,16 +103,21 @@ function DiscoverDriver({ project, onCreateWithDriver, onNavigate }: Pick<Worksp
   </Card>;
 }
 
-function CapabilityTable({ items }: { items: CapabilityEntry[] }) {
+function CapabilityDeclarations({ items, title }: { items: CapabilityEntry[]; title: string }) {
   const t = useTranslations("capabilitiesView");
-  return <Table className="text-xs [&_th]:px-3 [&_td]:px-3 [&_td]:py-3 [&_td]:align-top">
-    <TableHeader className="bg-muted/40"><TableRow><TableHead>{t("capabilityCol")}</TableHead><TableHead>{t("descriptionCol")}</TableHead><TableHead>{t("controlCol")}</TableHead></TableRow></TableHeader>
-    <TableBody>{items.map(item => <TableRow key={item.id}>
-      <TableCell className="min-w-40"><code>{item.id}</code></TableCell>
-      <TableCell className="min-w-64 whitespace-normal">{item.description || <span className="text-muted-foreground">{t("noDescription")}</span>}</TableCell>
-      <TableCell>{item.requiresControl === null ? "—" : t(item.requiresControl ? "needsControl" : "noControl")}{item.readOnly !== null && t(item.readOnly ? "readOnlySuffix" : "sideEffectsSuffix")}</TableCell>
-    </TableRow>)}</TableBody>
-  </Table>;
+  return <div className="capability-declarations">
+    <div className="capability-declaration-columns" aria-hidden="true"><span>{t("capabilityCol")}</span><span>{t("descriptionCol")}</span><span>{t("controlCol")}</span></div>
+    <ul className="capability-declaration-list" role="list" aria-label={title}>
+      {items.map(item => <li key={item.id} className="capability-declaration" data-capability-declaration={item.id}>
+        <h4 className="capability-declaration-name"><code>{item.id}</code></h4>
+        <p className="capability-declaration-description">{item.description || <span className="text-muted-foreground">{t("noDescription")}</span>}</p>
+        <dl className="capability-declaration-control"><dt>{t("controlCol")}</dt><dd>
+          <span data-capability-control>{item.requiresControl === null ? "—" : t(item.requiresControl ? "needsControl" : "noControl")}</span>
+          {item.readOnly !== null && <span data-capability-read-only>{t(item.readOnly ? "readOnlySuffix" : "sideEffectsSuffix")}</span>}
+        </dd></dl>
+      </li>)}
+    </ul>
+  </div>;
 }
 
 function EvalTasks({ tasks, project, onNavigate }: {
@@ -197,7 +201,7 @@ function WorkspaceCapabilities({ project, workspace, ready, catalogError, catalo
             <p>{caps.deviceSnapshot.generatedAt ? <>{t("snapshotAt")} <time dateTime={caps.deviceSnapshot.generatedAt}>{new Date(caps.deviceSnapshot.generatedAt).toLocaleString()}</time></> : t("snapshotTimeUnknown")}</p>
             {caps.deviceSnapshot.drivers.length > 0 && <p className="break-words">{t("recordedDrivers")}: {caps.deviceSnapshot.drivers.map(driver => `${driver.id}${driver.version ? ` (${driver.version})` : ""}`).join(", ")}</p>}</div>}
           {source.status === "error" ? <p className="text-sm text-destructive">{t("sourceFailure")}</p> : count === 0 ? <p className="text-sm text-muted-foreground">{t(`sourceEmpty.${id}`)}</p>
-            : id !== "tasks" ? <CapabilityTable items={items} /> : <EvalTasks tasks={caps.tasks} project={project} onNavigate={onNavigate} />}
+            : id !== "tasks" ? <CapabilityDeclarations items={items} title={t(`groupTitles.${id}`)} /> : <EvalTasks tasks={caps.tasks} project={project} onNavigate={onNavigate} />}
           {source.issueCount > 0 && <p className="text-xs text-muted-foreground">{t("diagnosticsTitle")}: {source.issueCount}</p>}
           {id === "tasks" && <NavigationLink href={"/?" + new URLSearchParams({ view: "benchmark", bench: "cases", project })} onNavigate={onNavigate}>{t("viewBenchmark")}<ArrowUpRight /></NavigationLink>}
         </CardContent></Card>;
