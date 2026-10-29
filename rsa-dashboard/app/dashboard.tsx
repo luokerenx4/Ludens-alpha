@@ -107,7 +107,10 @@ export default function Dashboard() {
   const [latestRequest, setLatestRequest] = useState<{ revision: number; location: string } | null>(null);
   const returnButton = useRef<HTMLButtonElement>(null);
   const returnFocus = useRef(false);
-  const runPoller = useRef<ReadPoller | null>(null);
+  const runPoller = useRef<{ reader: ReadPoller; key: string } | null>(null);
+  const [runReading, setRunReading] = useState<{ reader: ReadPoller; key: string } | null>(null);
+  const runRetryFocus = useRef<{ control: HTMLButtonElement; key: string } | null>(null);
+  const runContent = useRef<HTMLElement>(null);
   const automatic = useRef(refresh);
   automatic.current = refresh;
   const pet = usePetFollow();
@@ -232,6 +235,7 @@ export default function Dashboard() {
       ...(selectedImage ? { image: selectedImage } : {}),
     });
     const reader = new ReadPoller(async signal => {
+      setRunReading({ reader, key });
       try {
         const next = await json<RunData>(
           "/api/run?" + params,
@@ -244,14 +248,16 @@ export default function Dashboard() {
         setRunFailure(null);
       } catch (e) {
         if (!signal.aborted) setRunFailure({ key, message: String(e) });
+      } finally {
+        if (!signal.aborted && runPoller.current?.reader === reader) setRunReading(null);
       }
       return 2500;
     }, automatic.current);
-    runPoller.current = reader;
+    runPoller.current = { reader, key };
     void reader.readOnce();
     return () => {
       reader.dispose();
-      if (runPoller.current === reader) runPoller.current = null;
+      if (runPoller.current?.reader === reader) runPoller.current = null;
     };
   }, [
     selection.project,
@@ -266,7 +272,31 @@ export default function Dashboard() {
     followed.archiveRevision,
     snapshotRevision,
   ]);
-  useEffect(() => { runPoller.current?.setEnabled(refresh); }, [refresh]);
+  useEffect(() => { runPoller.current?.reader.setEnabled(refresh); }, [refresh]);
+  const retryingRun = runReading?.key === key && runReading.reader === runPoller.current?.reader;
+  const retryRun = (control: HTMLButtonElement) => {
+    const pending = runPoller.current;
+    if (!pending || pending.key !== key || retryingRun) return;
+    runRetryFocus.current = document.activeElement === control ? { control, key } : null;
+    void pending.reader.readOnce();
+  };
+  useEffect(() => {
+    const release = (event: Event) => {
+      if (!(event.target instanceof Node) || !runRetryFocus.current?.control.contains(event.target)) runRetryFocus.current = null;
+    };
+    document.addEventListener("focusin", release);
+    document.addEventListener("pointerdown", release);
+    return () => { document.removeEventListener("focusin", release); document.removeEventListener("pointerdown", release); };
+  }, []);
+  useEffect(() => {
+    const pending = runRetryFocus.current;
+    if (!pending) return;
+    if (view !== "live" || pending.key !== key) { runRetryFocus.current = null; return; }
+    if (retryingRun) return;
+    runRetryFocus.current = null;
+    if (!error && !pending.control.isConnected && document.activeElement === document.body)
+      runContent.current?.focus({ preventScroll: true });
+  }, [view, key, error, retryingRun]);
   const live = data?.live;
   const isCurrent =
     !!data && live?.runId === data.run && data.selectedEpoch === live?.epoch;
@@ -379,6 +409,15 @@ export default function Dashboard() {
   const hasTelemetry = data?.telemetry.sources.some(
     (source) => source.component !== "unlabelled",
   );
+  const metrics = data ? (
+    <section className={view === "live" ? "metrics live-metrics" : "metrics"} aria-label={dt("roundSummary")}>
+      <Metric label={dt("metric.completed")} value={String(s!.completed)} detail={dt("metric.totalPrefix") + data.paging.totalCalls + dt("requestsUnit")} />
+      {view === "live" ? <Metric label={dt("metric.actions")} value={String(s!.actions)} detail={s!.explicitObserves + dt("metric.observes")} />
+        : <Metric label={dt("metric.p95")} value={seconds(s!.p95Ms)} detail={dt("metric.nearestRank")} />}
+      <Metric label={dt("metric.median")} value={seconds(s!.medianMs)} detail={waitSummary || dt("metric.noWait")} />
+      <Metric label={dt("metric.cache")} value={percent(s!.cacheHit)} detail={dt("metric.afterFirst") + percent(s!.warmCacheHit)} />
+    </section>
+  ) : null;
   return (
     <div className="console-shell">
       <DesktopBridge onNavigate={navigateUrl} />
@@ -386,7 +425,7 @@ export default function Dashboard() {
         petProject={benchmarkCases || view === "docs" || view === "settings" || view === "workspaces" ? undefined : project}
         onPetSettings={() => navigate({ view: "settings" })} />
       <div className="console-main">
-        <header className="context-bar">
+        <header className={"context-bar" + (view === "live" ? " live-context-bar" : "")}>
           <div className="context-workspace">
             <WorkspacePicker projects={projects} value={selection.project} loading={!catalogReady} error={catalogError}
               onChange={id => navigate({ project: id, workspace: null, run: null, epoch: null,
@@ -478,8 +517,8 @@ export default function Dashboard() {
             </Button>}
           </div>
         </header>
-        <main className="page-content">
-          {view !== "workspaces" && view !== "docs" && view !== "perception" && view !== "caps" && (view !== "replay" || entry !== "ready") && <div className={"page-heading" + (view === "settings" ? " mx-auto w-full max-w-5xl" : "")}>
+        <main ref={runContent} tabIndex={view === "live" ? -1 : undefined} className={"page-content" + (view === "live" ? " live-page" : "")}>
+          {view !== "workspaces" && view !== "docs" && view !== "perception" && view !== "caps" && (view !== "replay" || entry !== "ready") && <div className={"page-heading" + (view === "live" ? " live-page-heading" : view === "settings" ? " mx-auto w-full max-w-5xl" : "")}>
             <div>
               <h1>{benchmarkCases ? t("benchmark.casesTitle") : t(`views.${view}.title`)}</h1>
               <p>
@@ -527,22 +566,29 @@ export default function Dashboard() {
               {data && (
                 <small>{dt("keepLast")} · {clockTime(data.updatedAt)}</small>
               )}</span>
-              {catalogError && <Button type="button" size="sm" variant="outline" disabled={catalogLoading} onClick={refreshCatalog}>
-                {t(catalogLoading ? "workspaceRunEmpty.retrying" : "workspaceRunEmpty.retry")}
-              </Button>}
+              <div className="flex flex-wrap gap-2">
+                {catalogError && <Button type="button" size="sm" variant="outline" disabled={catalogLoading} onClick={refreshCatalog}>
+                  {t(catalogLoading ? "workspaceRunEmpty.retrying" : "workspaceRunEmpty.retry")}
+                </Button>}
+                {view === "live" && error && <Button type="button" size="sm" variant="outline" aria-disabled={retryingRun}
+                  className="aria-disabled:opacity-50" onClick={event => retryRun(event.currentTarget)}>
+                  {lt(retryingRun ? "readingRun" : "retryRun")}
+                </Button>}
+              </div>
             </AlertDescription></Alert>
           )}
           {view === "live" && entry === "ready" && (context || latestRequested) && <section
-            className={"mb-4 flex flex-wrap items-center gap-3 rounded-lg border px-4 py-3 "
+            className={"live-context-banner "
               + ((context?.kind ?? "latest") === "latest" ? "border-border bg-card" : "border-primary/40 bg-primary/5")}
             aria-labelledby="live-context-title"
           >
-            <History className="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
-            <div className="min-w-0 flex-1 basis-64">
+            <History className="live-context-icon size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
+            <div className="live-context-copy">
               <h2 id="live-context-title" className="text-sm font-semibold" aria-live="polite">
                 {returningLatest ? lt("returning") : lt(contextTitles[(context?.kind ?? "latest")])}
               </h2>
-              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              {data && <p className="live-context-checked">{lt("lastChecked")} {clockTime(data.updatedAt)}</p>}
+              <p className={(latestScopeChanged || latestFailed ? "live-context-error" : "live-context-description")}>
                 {latestScopeChanged ? lt("scopeChanged") : latestFailed ? lt("refreshFailed") : lt("detail")}
               </p>
             </div>
@@ -599,7 +645,7 @@ export default function Dashboard() {
                   : preparing?.key === key ? dt("empty.archiving") : dt("empty.loadingRun")}
               </h2>
               <p>
-                {error ? dt("emptyHint.checkService")
+                {error ? view === "live" ? lt("readFailureHint") : dt("emptyHint.checkService")
                       : preparing?.key === key
                         ? `${dt("archive.read")} ${bytes(preparing.progress.bytes)} / ${bytes(preparing.progress.totalBytes)}${preparing.progress.projection ? ` · ${dt("archive.organizedPrefix")}${preparing.progress.projection.position.toLocaleString()} / ${preparing.progress.projection.total.toLocaleString()}${dt("archive.organizedSuffix")}` : ""}${dt("archive.replayNote")}`
                         : dt("emptyHint.loadingObs")}
@@ -607,72 +653,33 @@ export default function Dashboard() {
             </section>
           ) : (
             <>
-              <div className="run-status">
+              <div className={"run-status" + (view === "live" ? " live-host-status" : "")}>
                 <span className={"status-dot " + (auto && !staleStatus ? "online" : "")} />
                 <strong>{view === "live" ? <>{staleStatus && `${lt("hostSnapshot")}: `}{observedStatus}</> : status}</strong>
                 {view === "live" && phase?.label && !staleStatus && <span>{phase.label}</span>}
-                {view === "live" && <span>{lt("lastChecked")} {clockTime(data.updatedAt)}</span>}
                 {phase?.elapsedMs != null && !staleStatus && (
                   <span>{dt("elapsed")} {seconds(phase.elapsedMs)}</span>
                 )}
-                <i />
+                {view !== "live" && <><i />
                 <span>{data.manifest.model ?? dt("deviceOnly")}</span>
                 <span className="run-time">
                   {Math.floor(s!.elapsedSeconds / 60)}{dt("min")}{" "}
                   {Math.floor(s!.elapsedSeconds % 60)}{dt("sec")} <b> / </b>{dt("budget")}{" "}
                   {Math.floor(data.manifest.seconds / 60)}{dt("minLong")}
-                </span>
+                </span></>}
               </div>
-              <section className={view === "live" ? "metrics live-metrics" : "metrics"} aria-label={dt("roundSummary")}>
-                <Metric
-                  label={dt("metric.completed")}
-                  value={String(s!.completed)}
-                  detail={dt("metric.totalPrefix") + data.paging.totalCalls + dt("requestsUnit")}
-                />
-                {view === "live" ? (
-                  <Metric
-                    label={dt("metric.actions")}
-                    value={String(s!.actions)}
-                    detail={s!.explicitObserves + dt("metric.observes")}
-                  />
-                ) : (
-                  <Metric
-                    label={dt("metric.p95")}
-                    value={seconds(s!.p95Ms)}
-                    detail={dt("metric.nearestRank")}
-                  />
-                )}
-                <Metric
-                  label={dt("metric.median")}
-                  value={seconds(s!.medianMs)}
-                  detail={waitSummary || dt("metric.noWait")}
-                />
-                <Metric
-                  label={dt("metric.cache")}
-                  value={percent(s!.cacheHit)}
-                  detail={dt("metric.afterFirst") + percent(s!.warmCacheHit)}
-                />
-              </section>
+              {view !== "live" && metrics}
               {view === "live" ? (
+                <>
                 <div className="live-grid">
                   <div className="live-observation">
                     <ObservationPanel
+                      priority
                       data={data}
                       call={call}
                       selectedImage={selectedImage}
                       onImage={(id) => navigate({ ...pinned, image: id })}
                     />
-                    <div className="run-context">
-                      <Button type="button" variant="ghost" size="xs"
-                        className="h-auto justify-start whitespace-normal text-left text-xs text-muted-foreground hover:text-foreground"
-                        onClick={() => navigate({ view: "benchmark" })}
-                      >
-                        {dt("checkPerf")} ↗
-                      </Button>
-                      <span>
-                        {data.manifest.drivers.map((d) => d.id).join(" · ")}
-                      </span>
-                    </div>
                   </div>
                   <ActivityFeed
                     key={scopeKey + "/" + data.selectedEpoch}
@@ -689,6 +696,24 @@ export default function Dashboard() {
                     }
                   />
                 </div>
+                <details className="surface live-run-details">
+                  <summary><span>{lt("runDetails")}</span><span className="live-run-summary">{s!.completed} {dt("requestsUnit")} · {seconds(s!.medianMs)}</span></summary>
+                  <div className="live-run-details-content">
+                    <p className="live-run-context-help">{lt("detail")}</p>
+                    <dl className="live-run-facts">
+                      <div><dt>{lt("model")}</dt><dd>{data.manifest.model ?? dt("deviceOnly")}</dd></div>
+                      <div><dt>{dt("elapsed")}</dt><dd>{Math.floor(s!.elapsedSeconds / 60)}{dt("min")} {Math.floor(s!.elapsedSeconds % 60)}{dt("sec")} / {dt("budget")} {Math.floor(data.manifest.seconds / 60)}{dt("minLong")}</dd></div>
+                      <div><dt>{lt("drivers")}</dt><dd>{data.manifest.drivers.map(driver => driver.id).join(" · ") || "—"}</dd></div>
+                    </dl>
+                    {metrics}
+                    <Button type="button" variant="ghost" size="xs"
+                      className="h-auto justify-start whitespace-normal text-left text-xs text-muted-foreground hover:text-foreground"
+                      onClick={() => navigate({ view: "benchmark" })}>
+                      {dt("checkPerf")} ↗
+                    </Button>
+                  </div>
+                </details>
+                </>
               ) : (
                 <>
                   <section className="charts">

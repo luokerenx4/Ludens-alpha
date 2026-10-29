@@ -1,13 +1,19 @@
 /** Decoded images owned by one viewer, never a global or whole-run cache. */
 import { mediaFailureMessage } from "./observation-model";
-export type BufferedImage = { src: string; width: number; height: number; bytes: number; error?: string; dispose(): void };
+export type BufferedImage = { src: string; width: number; height: number; bytes: number; error?: string; httpStatus?: number; dispose(): void };
 type Loader = (url: string, signal: AbortSignal) => Promise<BufferedImage>;
 const failure = (error: unknown): BufferedImage => ({ src: "", width: 0, height: 0, bytes: 0,
-  error: error instanceof Error ? error.message : "无法读取画面", dispose() {} });
+  error: error instanceof Error ? error.message : "无法读取画面",
+  ...(typeof (error as { httpStatus?: unknown } | null)?.httpStatus === "number" ? { httpStatus: (error as { httpStatus: number }).httpStatus } : {}),
+  dispose() {} });
 
 async function loadImage(url: string, signal: AbortSignal): Promise<BufferedImage> {
   const response = await fetch(url, { signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]) });
-  if (!response.ok) throw new Error(mediaFailureMessage(response.status));
+  if (signal.aborted) { await response.body?.cancel().catch(() => {}); signal.throwIfAborted(); }
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => {});
+    throw Object.assign(new Error(mediaFailureMessage(response.status)), { httpStatus: response.status });
+  }
   const blob = await response.blob();
   signal.throwIfAborted();
   const src = URL.createObjectURL(blob), image = new Image();

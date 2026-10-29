@@ -57,3 +57,40 @@ test("prefetch memory is bounded without evicting displayed images; old frames a
   assert.deepEqual(f.released, ["next2", "displayed"]);
   f.buffer.clear(); assert.equal(f.released.length, 3);
 });
+
+test("same-URL failures are cached until an explicit new viewer buffer and retain HTTP status", async () => {
+  const savedFetch = globalThis.fetch;
+  let requests = 0, cancelled = 0;
+  globalThis.fetch = async () => {
+    requests++;
+    return new Response(new ReadableStream({ cancel() { cancelled++; } }), { status: 503 });
+  };
+  const first = new ImageBuffer();
+  try {
+    const result = await first.load("/recorded/frame");
+    assert.equal(result.httpStatus, 503);
+    assert.equal(result.error, "历史画面解码繁忙请稍后重试"); // Existing Replay fallback remains unchanged.
+    assert.equal(await first.load("/recorded/frame"), result);
+    assert.equal(requests, 1); assert.equal(cancelled, 1);
+    first.clear();
+    const retry = new ImageBuffer();
+    try {
+      await retry.load("/recorded/frame");
+      assert.equal(requests, 2); assert.equal(cancelled, 2);
+    } finally { retry.clear(); }
+  } finally { first.clear(); globalThis.fetch = savedFetch; }
+});
+
+test("a failed entry can be retried successfully after disposal without keeping the failure", async () => {
+  const f = controlled();
+  const initial = f.buffer.load("same");
+  f.jobs.get("same")!.reject(Object.assign(new Error("writing"), { httpStatus: 409 }));
+  assert.equal((await initial).httpStatus, 409);
+  f.buffer.clear();
+  const retried = f.buffer.load("same");
+  f.jobs.get("same")!.resolve(f.image("decoded-after-retry"));
+  const value = await retried;
+  assert.equal(value.error, undefined); assert.equal(value.httpStatus, undefined);
+  assert.equal(value.src, "decoded-after-retry");
+  f.buffer.clear(); assert.deepEqual(f.released, ["decoded-after-retry"]);
+});
