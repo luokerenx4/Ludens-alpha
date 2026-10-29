@@ -7,7 +7,7 @@ import { benchmarkAttachment, benchmarkCatalog, benchmarkEvidence } from "../lib
 import { capabilities } from "../lib/capabilities";
 import { discoverDriver } from "../lib/drivers";
 import { docGroups, readDoc } from "../lib/docs";
-import { aliceState, setAliceTarget, recordAliceConsumer } from "../lib/alice-state";
+import { petState, setPetTarget, recordPetConsumer } from "../lib/pet-state";
 import { closeLogIndexes, indexCacheStats } from "../lib/log-index";
 import { workerFailure, type DashboardMethods, type DashboardMethod, type WorkerRequest, type WorkerResponse } from "../lib/dashboard-protocol";
 import { perceptionSettings, updatePerceptionSettings, type PerceptionSettings } from "../lib/perception-config";
@@ -31,11 +31,11 @@ const handlers: { [K in DashboardMethod]: (args: DashboardMethods[K]["args"], si
   docGroups: () => docGroups(),
   readDoc: ([id]) => readDoc(id),
   stop: ([project, run, epoch]) => stopRun(project, run, epoch),
-  aliceState: () => aliceState(),
-  aliceTarget: ([project, ifUnset]) => setAliceTarget(project, ifUnset),
   perceptionSettings: ([project]) => perceptionSettings(project),
-  updatePerceptionSettings: ([project, patch]) => updatePerceptionSettings(project, patch as Partial<PerceptionSettings>),
-  aliceConsumer: ([input]) => recordAliceConsumer(input),
+  updatePerceptionSettings: ([project, patch]) => updatePerceptionSettings(project, patch as Parameters<typeof updatePerceptionSettings>[1]),
+  petState: () => petState(),
+  petTarget: ([project, ifUnset]) => setPetTarget(project, ifUnset),
+  petConsumer: ([input]) => recordPetConsumer(input),
 };
 const requests = new Map<number, { abort: AbortController; work: Promise<void> }>();
 let closing = false;

@@ -4,7 +4,7 @@ import { chmod, mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } fro
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { launchPlan, parseConfig, WorkspaceLauncher, type DriverManifest, type LaunchIO, type LaunchPlan } from "../src/app/workspace.ts";
-import { getDriver } from "@playness/baseware/drivers/registry.ts";
+import { getDriver } from "@ludens/baseware/drivers/registry.ts";
 
 const manifestFor = (id: string): DriverManifest => {
   const { load: _load, fallbackVersion: _fallback, ...manifest } = getDriver(id);
@@ -20,8 +20,8 @@ class FakeServices implements LaunchIO {
   externalEmulator = false;
   externalBaseware = false;
   externalHost = false;
-  externalAlice = false;
-  aliceReadyAfter = 0;
+  externalPet = false;
+  petReadyAfter = 0;
   basewareConnected = true;
   basewareMode = "manual";
   preparedBridgePid: number | null = null;
@@ -36,11 +36,11 @@ class FakeServices implements LaunchIO {
   constructor(readonly plan: LaunchPlan) { this.bridgePort = plan.config.port; }
   target(name: string) {
     const hash = createHash("sha256").update(this.plan.workspace).digest("hex").slice(0, 16);
-    return `gui/${process.getuid!()}/${name === "pet" ? "dev.playness.alice.pet" : `dev.playness.rsa.${hash}.${name}`}`;
+    return `gui/${process.getuid!()}/${name === "pet" ? "dev.ludens.pet" : `dev.ludens.rsa.${hash}.${name}`}`;
   }
   seed(name: string) { this.jobs.set(this.target(name), 100 + this.jobs.size); }
   dashboardReady = async () => this.dashboard;
-  aliceReady = async () => this.externalAlice || (this.jobs.has(this.target("pet")) && this.clock >= this.aliceReadyAfter);
+  petReady = async () => this.externalPet || (this.jobs.has(this.target("pet")) && this.clock >= this.petReadyAfter);
   sleep = async () => { this.clock += 500; };
   now = () => this.clock;
   note = () => {};
@@ -84,7 +84,7 @@ class FakeServices implements LaunchIO {
       const nameIndex = sharedPetLaunch ? 6 : 2;
       const name = argv[nameIndex]!;
       this.starts.push(name);
-      if (sharedPetLaunch) expect(argv.slice(2, 6)).toEqual(["--label", "dev.playness.alice.pet", "--log-dir", this.plan.sharedPet.background]);
+      if (sharedPetLaunch) expect(argv.slice(2, 6)).toEqual(["--label", "dev.ludens.pet", "--log-dir", this.plan.sharedPet.background]);
       expect(argv.slice(nameIndex + 1)).toEqual(this.plan.commands[name as keyof typeof this.plan.commands]!);
       if (name === this.failStart) return result("", 1, `${name} unavailable`);
       if (name === "host") expect(this.events).toContain("baseware:manual:true");
@@ -108,6 +108,26 @@ class FakeServices implements LaunchIO {
 
 const plan = () => launchPlan(parseConfig({ driver: "ryubing", game: "games/A game; $(touch BAD).nsp" }, manifestFor("ryubing")),
   "/tmp/Workspace with spaces", "/tmp/Source with spaces", "/tmp/baseware-test.sock", manifestFor("ryubing"));
+
+test("system Pet readiness uses the Dashboard pet endpoint", async () => {
+  const paths: string[] = [];
+  let connected = true, status = 200;
+  const server = Bun.serve({ port: 0, fetch(request) {
+    const path = new URL(request.url).pathname;
+    paths.push(path);
+    return path === "/api/pet" ? Response.json({ connected }, { status }) : new Response("missing", { status: 404 });
+  } });
+  // Exercise the real HTTP probe without running launchctl or any device command.
+  const io = new WorkspaceLauncher(await plan())["io"];
+  try {
+    expect(await io.petReady(server.url.origin)).toBe(true);
+    connected = false;
+    expect(await io.petReady(server.url.origin)).toBe(false);
+    connected = true; status = 503;
+    expect(await io.petReady(server.url.origin)).toBe(false);
+    expect(paths).toEqual(["/api/pet", "/api/pet", "/api/pet"]);
+  } finally { server.stop(true); }
+});
 
 test("managed Dashboard uses a current production build and fails before starting devices when stale", async () => {
   const value = await plan();
@@ -333,7 +353,7 @@ test("down waits for takeover cleanup, stops only owned jobs, and keeps the shar
   const value = await plan();
   const io = new FakeServices(value);
   for (const name of ["host", "baseware", "emulator", "pet", "dashboard"]) io.seed(name);
-  const foreign = "gui/501/dev.playness.rsa.another-workspace.host";
+  const foreign = "gui/501/dev.ludens.rsa.another-workspace.host";
   io.jobs.set(foreign, 999);
   io.dashboard = true;
   io.mode = "auto";
@@ -356,7 +376,7 @@ test("down waits for takeover cleanup, stops only owned jobs, and keeps the shar
   expect([...keep.jobs.keys()]).toEqual([keep.target("emulator"), keep.target("pet"), keep.target("dashboard")]);
 });
 
-test("two workspaces reuse one Alice process and either workspace can explicitly stop it", async () => {
+test("two workspaces reuse one Ludens Pet process and either workspace can explicitly stop it", async () => {
   const first = await launchPlan(parseConfig({ driver: "cua" }, manifestFor("cua")), "/tmp/First workspace", "/tmp/Source", "/tmp/first-baseware.sock", manifestFor("cua"));
   const second = await launchPlan(parseConfig({ driver: "cua" }, manifestFor("cua")), "/tmp/Second workspace", "/tmp/Source", "/tmp/second-baseware.sock", manifestFor("cua"));
   const firstIO = new FakeServices(first);
@@ -380,10 +400,10 @@ test("two workspaces reuse one Alice process and either workspace can explicitly
   expect(secondIO.jobs.has(firstIO.target("host"))).toBe(true);
 });
 
-test("up reuses an independently opened Alice and down never closes that app", async () => {
+test("up reuses an independently opened Ludens Pet and down never closes that app", async () => {
   const value = await plan();
   const io = new FakeServices(value);
-  io.externalAlice = true;
+  io.externalPet = true;
   const launcher = new WorkspaceLauncher(value, io);
   const status = await launcher.up();
   expect(status.pet.connected).toBe(true);
@@ -394,10 +414,10 @@ test("up reuses an independently opened Alice and down never closes that app", a
   expect((await launcher.status()).pet.connected).toBe(true);
 });
 
-test("managed Alice startup waits for its activity connection after the process appears", async () => {
+test("managed Ludens Pet startup waits for its activity connection after the process appears", async () => {
   const value = await plan();
   const io = new FakeServices(value);
-  io.aliceReadyAfter = 1500;
+  io.petReadyAfter = 1500;
   const status = await new WorkspaceLauncher(value, io).up();
   expect(io.clock).toBe(1500);
   expect(status.pet.connected).toBe(true);
@@ -416,7 +436,7 @@ test("shared launchd options write the chosen label and logs while preserving a 
     await writeFile(launchctl, '#!/bin/sh\nif [ "$1" = print ]; then exit 1; fi\nexit 0\n');
     await chmod(launchctl, 0o755);
     const script = resolve(import.meta.dir, "../scripts/launch-background.py");
-    const child = Bun.spawn(["/usr/bin/python3", script, "--label", "dev.playness.alice.pet", "--log-dir", logs, "pet", "/bin/echo", "--workspace", "/tmp/seed workspace"], {
+    const child = Bun.spawn(["/usr/bin/python3", script, "--label", "dev.ludens.pet", "--log-dir", logs, "pet", "/bin/echo", "--workspace", "/tmp/seed workspace"], {
       cwd: stableCwd, env: { ...process.env, PATH: bin, RSA_WORKSPACE: "/tmp/stale",
         RSA_PERCEPTION_PERSIST: "0", RSA_PERCEPTION_HOT_SECONDS: "600" }, stdout: "pipe", stderr: "pipe",
     });
@@ -426,11 +446,11 @@ test("shared launchd options write the chosen label and logs while preserving a 
     const canonicalCwd = await realpath(stableCwd);
     const canonicalLogs = await realpath(logs);
     expect(JSON.parse(stdout)).toMatchObject({
-      target: `gui/${process.getuid!()}/dev.playness.alice.pet`, workspace: canonicalCwd,
+      target: `gui/${process.getuid!()}/dev.ludens.pet`, workspace: canonicalCwd,
       log: join(canonicalLogs, "pet.log"), plist: join(canonicalLogs, "pet.plist"),
     });
     const plist = await readFile(join(logs, "pet.plist"), "utf8");
-    expect(plist).toContain("<string>dev.playness.alice.pet</string>");
+    expect(plist).toContain("<string>dev.ludens.pet</string>");
     expect(plist).toContain(`<key>WorkingDirectory</key>\n\t<string>${canonicalCwd}</string>`);
     expect(plist).toContain(`<string>${join(canonicalLogs, "pet.log")}</string>`);
     expect(plist).not.toContain("RSA_WORKSPACE");

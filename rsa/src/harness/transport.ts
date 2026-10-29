@@ -3,7 +3,7 @@ import { lstat, unlink } from "node:fs/promises";
 import type { Runtime } from "./runtime.ts";
 import { childTrace, type EventTrace, type EventMetadata } from "./events.ts";
 import { observationMetadata, type ObservationQuery, type TimelineAppend, type TimelineDerive } from "./perception.ts";
-import type { ExecutionResult } from "@playness/baseware/contracts";
+import type { ExecutionResult } from "@ludens/baseware/contracts";
 
 export interface Request {
   kind: string; argv: string[]; epoch?: string; runId?: string; expectedEpoch?: string | null;

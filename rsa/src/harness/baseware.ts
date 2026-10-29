@@ -1,6 +1,6 @@
-import { BasewareClient } from "@playness/baseware/client";
-import type { ExecutionResult } from "@playness/baseware/contracts";
-import type { Catalog } from "@playness/baseware/protocol";
+import { BasewareClient } from "@ludens/baseware/client";
+import type { ExecutionResult } from "@ludens/baseware/contracts";
+import type { Catalog } from "@ludens/baseware/protocol";
 import type { RecordEvent, EventTrace } from "./events.ts";
 import type { DeviceSession } from "./runtime.ts";
 import { readFileSync, renameSync, writeFileSync } from "node:fs";

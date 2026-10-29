@@ -1,15 +1,15 @@
-.alice-settings {
+.pet-settings {
   color: var(--text, #e9e9e2);
   max-width: 920px;
   margin: 0 auto;
   padding: 8px 0 32px;
 }
-.alice-follow-card {
+.pet-follow-card {
   margin-top: auto;
   padding: 18px 6px 0;
   border-top: 1px solid var(--line);
 }
-.alice-follow-heading {
+.pet-follow-heading {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -19,8 +19,8 @@
   background: transparent;
   text-align: left;
 }
-.alice-follow-heading > span:last-child { margin-left: auto; color: var(--muted); }
-.alice-follow-avatar {
+.pet-follow-heading > span:last-child { margin-left: auto; color: var(--muted); }
+.pet-follow-avatar {
   display: grid;
   place-items: center;
   width: 32px;
@@ -30,10 +30,10 @@
   color: var(--gold);
   font: 21px Georgia, serif;
 }
-.alice-follow-heading strong { font-size: 13px; font-weight: 550; }
-.alice-follow-heading small { display: block; color: var(--muted); font-size: 10px; margin-top: 3px; }
-.alice-follow-heading .status-dot { margin-right: 5px; }
-.alice-follow-card > p {
+.pet-follow-heading strong { font-size: 13px; font-weight: 550; }
+.pet-follow-heading small { display: block; color: var(--muted); font-size: 10px; margin-top: 3px; }
+.pet-follow-heading .status-dot { margin-right: 5px; }
+.pet-follow-card > p {
   margin: 13px 0 10px;
   font-size: 12px;
   color: var(--muted);
@@ -41,8 +41,8 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.alice-follow-card .alice-follow-action { width: 100%; padding: 8px 5px; font-size: 11px; }
-.alice-follow-status {
+.pet-follow-card .pet-follow-action { width: 100%; padding: 8px 5px; font-size: 11px; }
+.pet-follow-status {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -50,43 +50,43 @@
   margin: 20px 0 8px;
   font-size: 12px;
 }
-.alice-follow-status strong { font-weight: 500; color: var(--gold); }
-.alice-follow-status span { margin-left: auto; color: var(--muted); }
-.alice-follow-settings select { max-width: 55%; font-size: 12px; }
-.alice-target-path { margin: 12px 0 0; overflow-wrap: anywhere; }
+.pet-follow-status strong { font-weight: 500; color: var(--gold); }
+.pet-follow-status span { margin-left: auto; color: var(--muted); }
+.pet-follow-settings select { max-width: 55%; font-size: 12px; }
+.pet-target-path { margin: 12px 0 0; overflow-wrap: anywhere; }
 @media (min-width: 681px) and (max-width: 950px) {
-  .alice-follow-avatar { display: none; }
+  .pet-follow-avatar { display: none; }
 }
 @media (max-width: 680px) {
-  .alice-follow-card {
+  .pet-follow-card {
     grid-column: 1 / -1;
     display: grid;
     grid-template-columns: 1fr auto;
     gap: 4px 16px;
     padding: 12px 0;
   }
-  .alice-follow-card > p { grid-column: 1; margin: 3px 0 0; }
-  .alice-follow-card .alice-follow-action { grid-column: 2; grid-row: 1 / 3; width: auto; align-self: center; padding: 9px 12px; }
+  .pet-follow-card > p { grid-column: 1; margin: 3px 0 0; }
+  .pet-follow-card .pet-follow-action { grid-column: 2; grid-row: 1 / 3; width: auto; align-self: center; padding: 9px 12px; }
 }
-.alice-settings-intro {
+.pet-settings-intro {
   display: flex;
   align-items: center;
   gap: 18px;
   padding: 8px 0 28px;
 }
-.alice-settings-intro h2 {
+.pet-settings-intro h2 {
   margin: 0 0 6px;
   font-size: 24px;
   letter-spacing: -0.6px;
 }
-.alice-settings-intro p,
+.pet-settings-intro p,
 .setting-group header p {
   color: var(--muted, #a3aaa2);
   margin: 0;
   font-size: 13px;
   line-height: 1.6;
 }
-.alice-monogram {
+.pet-monogram {
   width: 58px;
   height: 58px;
   border-radius: 19px;
@@ -158,7 +158,7 @@
   margin-top: 5px;
   line-height: 1.5;
 }
-.alice-settings .switch {
+.pet-settings .switch {
   appearance: none;
   flex: 0 0 34px;
   width: 34px;
@@ -170,7 +170,7 @@
   cursor: pointer;
   transition: background 0.15s;
 }
-.alice-settings .switch::after {
+.pet-settings .switch::after {
   content: "";
   position: absolute;
   width: 14px;
@@ -182,17 +182,17 @@
   box-shadow: 0 1px 3px #00000030;
   transition: transform 0.15s;
 }
-.alice-settings .switch:checked {
+.pet-settings .switch:checked {
   background: var(--gold, #dbbc81);
 }
-.alice-settings .switch:checked::after {
+.pet-settings .switch:checked::after {
   transform: translateX(14px);
 }
-.alice-settings .switch:disabled {
+.pet-settings .switch:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
-.alice-settings .switch:focus-visible {
+.pet-settings .switch:focus-visible {
   outline: 3px solid #ad976d;
   outline-offset: 3px;
 }
@@ -209,7 +209,7 @@
   gap: 8px;
   margin-top: 18px;
 }
-.alice-settings .control-button,
+.pet-settings .control-button,
 .desktop-notifications .control-button {
   border: 1px solid var(--line, #343a35);
   background: var(--panel, #202321);
@@ -219,12 +219,12 @@
   font-size: 12px;
   cursor: pointer;
 }
-.alice-settings .control-button:hover:not(:disabled),
+.pet-settings .control-button:hover:not(:disabled),
 .desktop-notifications .control-button:hover {
   border-color: var(--gold, #dbbc81);
   color: var(--gold, #dbbc81);
 }
-.alice-settings .control-button:disabled {
+.pet-settings .control-button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }

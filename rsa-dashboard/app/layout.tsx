@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 export const metadata: Metadata = {
-  title: "Playness · 运行控制台",
+  title: "Ludens · 运行控制台",
   description: "画面、活动日志与运行性能，共用一个本地控制台。",
 };
 export default function RootLayout({

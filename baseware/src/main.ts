@@ -27,7 +27,7 @@ export async function main(args = process.argv.slice(2)) {
   const portValue = values.port ?? registration.defaultPort;
   const port = portValue === undefined ? undefined : Number(portValue);
   if (port !== undefined && (!Number.isInteger(port) || port < 1 || port > 65535)) throw new Error("--port must be between 1 and 65535");
-  const dataDir = resolve(values["data-dir"] ?? join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local/state"), "playness/baseware", basename(values.socket!, ".sock")));
+  const dataDir = resolve(values["data-dir"] ?? join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local/state"), "ludens/baseware", basename(values.socket!, ".sock")));
   let core: BasewareCore | undefined;
   let provider: DriverProvider | undefined;
   // Claim the address before touching a device; a second service must fail immediately.

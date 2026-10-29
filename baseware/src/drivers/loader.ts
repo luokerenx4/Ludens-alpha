@@ -91,5 +91,5 @@ export async function resolveDriver(id: string, packageSpec: string | undefined,
   return asRegistration(await import(entry), id);
 }
 export function defaultDriverCacheRoot(): string {
-  return join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local/state"), "playness/baseware/drivers");
+  return join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local/state"), "ludens/baseware/drivers");
 }

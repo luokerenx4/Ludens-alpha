@@ -2,11 +2,11 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { artifactRoot, catalog } from "./data";
-import type { AliceConsumer, AliceState, AliceTarget } from "./alice";
+import type { PetConsumer, PetState, PetTarget } from "./pet";
 
-const targetFile = ".alice-target.json";
-const consumerFile = ".alice-consumer.json";
-export const ALICE_HEARTBEAT_TTL_MS = 15_000;
+const targetFile = ".pet-target.json";
+const consumerFile = ".pet-consumer.json";
+export const PET_HEARTBEAT_TTL_MS = 15_000;
 const validPid = (pid: unknown): pid is number =>
   typeof pid === "number" && Number.isSafeInteger(pid) && pid > 0;
 
@@ -34,45 +34,45 @@ function write(root: string, name: string, value: unknown) {
   writeFileSync(temporary, JSON.stringify(value) + "\n");
   renameSync(temporary, join(root, name));
 }
-export function aliceState(root = artifactRoot, now = Date.now()): AliceState {
-  const target = read<AliceTarget | null>(root, targetFile) ?? null;
-  const consumer = read<AliceConsumer>(root, consumerFile) ?? null;
+export function petState(root = artifactRoot, now = Date.now()): PetState {
+  const target = read<PetTarget | null>(root, targetFile) ?? null;
+  const consumer = read<PetConsumer>(root, consumerFile) ?? null;
   return {
     target,
     consumer,
-    connected: !!consumer && now - Date.parse(consumer.seenAt) < ALICE_HEARTBEAT_TTL_MS &&
+    connected: !!consumer && now - Date.parse(consumer.seenAt) < PET_HEARTBEAT_TTL_MS &&
       processAlive(consumer.pid),
   };
 }
-export async function setAliceTarget(
+export async function setPetTarget(
   project: unknown,
   ifUnset = false,
   root = artifactRoot,
-): Promise<AliceState> {
+): Promise<PetState> {
   if (project !== null && typeof project !== "string")
     throw new Error("请选择已登记的工作区");
   const indexed = project === null ? null : (await catalog(root, true)).find((p) => p.id === project);
   if (project !== null && !indexed?.workspace)
     throw new Error("未找到已登记的工作区");
   // Null is an explicit choice to stop following. A startup default must not undo it.
-  const previous = read<AliceTarget | null>(root, targetFile);
-  if (ifUnset && previous !== undefined) return aliceState(root);
+  const previous = read<PetTarget | null>(root, targetFile);
+  if (ifUnset && previous !== undefined) return petState(root);
   if (previous?.project === project && previous.workspace === indexed?.workspace)
-    return aliceState(root);
+    return petState(root);
   write(root, targetFile, indexed ? {
     project: indexed.id,
     workspace: indexed.workspace!,
     revision: randomUUID(),
     updatedAt: new Date().toISOString(),
-  } satisfies AliceTarget : null);
-  return aliceState(root);
+  } satisfies PetTarget : null);
+  return petState(root);
 }
-export function recordAliceConsumer(input: unknown, root = artifactRoot): AliceState {
-  const value = input as Partial<AliceConsumer> | null;
+export function recordPetConsumer(input: unknown, root = artifactRoot): PetState {
+  const value = input as Partial<PetConsumer> | null;
   if (!value || typeof value.instanceId !== "string" || !value.instanceId || !validPid(value.pid) ||
       !["idle", "switching", "following", "error"].includes(value.phase ?? "") ||
       !["revision", "workspace", "runId", "error"].every((key) =>
-        value[key as keyof AliceConsumer] === null || typeof value[key as keyof AliceConsumer] === "string"))
+        value[key as keyof PetConsumer] === null || typeof value[key as keyof PetConsumer] === "string"))
     throw new Error("无效的 Ludens Pet 状态");
   write(root, consumerFile, {
     instanceId: value.instanceId,
@@ -84,5 +84,5 @@ export function recordAliceConsumer(input: unknown, root = artifactRoot): AliceS
     error: value.error,
     seenAt: new Date().toISOString(),
   });
-  return aliceState(root);
+  return petState(root);
 }

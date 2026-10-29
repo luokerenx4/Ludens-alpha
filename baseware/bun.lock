@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "@playness/baseware",
+      "name": "@ludens/baseware",
       "dependencies": {
         "@modelcontextprotocol/sdk": "1.32.1",
         "ajv": "8.20.0",

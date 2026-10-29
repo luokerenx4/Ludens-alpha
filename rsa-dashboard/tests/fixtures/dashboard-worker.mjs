@@ -10,7 +10,7 @@ parentPort.on("message", message => {
   }
   const reply = value => parentPort.postMessage({ type: "result", id: message.id, value });
   if (message.method === "catalog") { reply([]); return; }
-  if (message.method === "aliceState") { reply({ cancelled }); return; }
+  if (message.method === "petState") { reply({ cancelled }); return; }
   const input = message.args[0];
   if (input.crash) { appendFileSync(process.env.WORKER_MUTATIONS, "mutation\n"); process.exit(13); }
   if (input.error) {

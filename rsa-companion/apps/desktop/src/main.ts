@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { createCompanion } from './companion.js'
 import type { RsaPetSnapshot } from './rsa-source.js'
-import { AliceSessionCoordinator } from './alice-session.js'
+import { PetSessionCoordinator } from './pet-session.js'
 import { dashboardSender, isDashboardUrl } from './dashboard-window.js'
 
 const { values } = parseArgs({ args: process.argv.slice(2), options: {
@@ -24,7 +24,7 @@ if (values.help) {
   }
   const here = dirname(fileURLToPath(import.meta.url))
   app.setName('RSA Ludens Pet')
-  app.setPath('userData', resolve(values.profile ?? join(app.getPath('appData'), 'RSA Alice Pet')))
+  app.setPath('userData', resolve(values.profile ?? join(app.getPath('appData'), 'RSA Ludens Pet')))
   mkdirSync(app.getPath('userData'), { recursive: true })
   if (!app.requestSingleInstanceLock()) {
     app.exit(0)
@@ -32,7 +32,7 @@ if (values.help) {
     let quitting = false
     let owner: BrowserWindow | undefined
     let tray: Tray | undefined
-    let source: AliceSessionCoordinator | undefined
+    let source: PetSessionCoordinator | undefined
     let retryDashboard: (() => void) | undefined
     let dashboardTimer: ReturnType<typeof setInterval> | undefined
     let snapshot: RsaPetSnapshot = {
@@ -51,7 +51,7 @@ if (values.help) {
     app.on('window-all-closed', () => app.quit())
     void app.whenReady().then(async () => {
       owner = new BrowserWindow({
-        title: 'Playness · Console', width: 1440, height: 940, minWidth: 960, minHeight: 640,
+        title: 'Ludens · Console', width: 1440, height: 940, minWidth: 960, minHeight: 640,
         show: false, backgroundColor: '#202321',
         webPreferences: { preload: join(here, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: false },
       })
@@ -78,20 +78,20 @@ if (values.help) {
         if (!isMainFrame || code === -3 || !isDashboardUrl(url, dashboard.origin)) return
         dashboardTarget = url
         dashboardReady = false
-        console.error(`[alice-pet] dashboard load failed: ${description} (${code})`)
+        console.error(`[ludens-pet] dashboard load failed: ${description} (${code})`)
       })
       owner.webContents.on('render-process-gone', (_event, details) => {
         dashboardReady = false
-        console.error(`[alice-pet] dashboard renderer exited: ${details.reason}`)
+        console.error(`[ludens-pet] dashboard renderer exited: ${details.reason}`)
       })
       owner.on('close', event => { if (!quitting) { event.preventDefault(); owner?.hide() } })
       const trusted = (event: Electron.IpcMainInvokeEvent) => !!owner && dashboardSender(owner, dashboard.origin, event)
       const openDetails = (url: string) => {
         if (!owner || owner.isDestroyed() || !isDashboardUrl(url, dashboard.origin)) return
-        void owner.loadURL(url).catch(error => console.error('[alice-pet] dashboard navigation failed:', error))
+        void owner.loadURL(url).catch(error => console.error('[ludens-pet] dashboard navigation failed:', error))
       }
       const pet = createCompanion(owner, { trustedOwner: trusted, openDetails })
-      if (!pet) throw new Error('Ludens Pet is disabled by OPENALICE_DISABLE_COMPANION')
+      if (!pet) throw new Error('Ludens Pet is disabled by LUDENS_DISABLE_COMPANION')
       ipcMain.handle('rsa-pet:snapshot', event => {
         if (!trusted(event)) throw new Error('Unauthorized pet access')
         return snapshot
@@ -102,7 +102,7 @@ if (values.help) {
         showOwner()
       })
       owner.webContents.on('did-finish-load', () => owner?.webContents.send('rsa-pet:snapshot', snapshot))
-      source = new AliceSessionCoordinator({ dashboardUrl: dashboard.href, onTargetChanged: () => {
+      source = new PetSessionCoordinator({ dashboardUrl: dashboard.href, onTargetChanged: () => {
         if (source) pet.configureActivity(source)
       }, onSnapshot: value => {
         snapshot = value
@@ -135,7 +135,7 @@ if (values.help) {
           const failure = error as { code?: string; errno?: number }
           if (failure.code === 'ERR_ABORTED' || failure.errno === -3) return
           if (owner && !owner.isDestroyed() && !quitting) {
-            const offline = '<!doctype html><html lang="zh"><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'"><title>Playness · 等待日志服务</title><body style="background:#202321;color:#f0f2ee;font:16px system-ui;padding:64px"><h1>等待本地日志服务</h1><p>卢登斯正在重新连接。服务恢复后，这个窗口会自动打开。</p></body></html>'
+            const offline = '<!doctype html><html lang="zh"><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'"><title>Ludens · 等待日志服务</title><body style="background:#202321;color:#f0f2ee;font:16px system-ui;padding:64px"><h1>等待本地日志服务</h1><p>卢登斯正在重新连接。服务恢复后，这个窗口会自动打开。</p></body></html>'
             await owner.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(offline)}`).catch(() => {})
           }
         } finally { loadingDashboard = false }
@@ -144,7 +144,7 @@ if (values.help) {
       dashboardTimer = setInterval(retryDashboard, 5_000)
       await loadDashboard()
       if (values['show-window'] || !workspace) showOwner()
-      console.log(`[alice-pet] dashboard=${dashboard.origin} profile=${app.getPath('userData')}`)
+      console.log(`[ludens-pet] dashboard=${dashboard.origin} profile=${app.getPath('userData')}`)
     }).catch(error => { console.error(error); app.exit(1) })
   }
 }

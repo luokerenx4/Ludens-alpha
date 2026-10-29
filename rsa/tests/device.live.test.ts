@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
 import { send } from "../src/harness/transport.ts";
-import { BasewareClient } from "@playness/baseware/client";
-import { defaultSocket } from "@playness/baseware/address";
-import type { ExecutionResult, ToolArguments, ToolExecutionResult } from "@playness/baseware/contracts";
+import { BasewareClient } from "@ludens/baseware/client";
+import { defaultSocket } from "@ludens/baseware/address";
+import type { ExecutionResult, ToolArguments, ToolExecutionResult } from "@ludens/baseware/contracts";
 import { rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { resolveWorkspaceState } from "../src/harness/workspace-state.ts";

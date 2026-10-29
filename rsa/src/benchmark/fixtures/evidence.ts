@@ -27,5 +27,5 @@ export const eventIds = (events: EvidenceEvent[], predicate: (event: EvidenceEve
   events.filter(predicate).flatMap(event => event.origin ? [event.origin.eventId] : []);
 
 export const syntheticKey = `aaa.${Buffer.from(JSON.stringify({
-  "https://api.openai.com/auth": { chatgpt_account_id: "playness-offline-benchmark" },
+  "https://api.openai.com/auth": { chatgpt_account_id: "ludens-offline-benchmark" },
 })).toString("base64url")}.bbb`;

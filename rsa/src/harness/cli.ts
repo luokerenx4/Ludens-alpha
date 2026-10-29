@@ -1,8 +1,8 @@
 import { send, type Request } from "./transport.ts";
 import { parseArgs } from "node:util";
 import type { ObservationQuery, PerceptionRead, TimelineMedia } from "./perception.ts";
-import { readToolArguments } from "@playness/baseware/tool-contract";
-import type { ExecutionResult } from "@playness/baseware/contracts";
+import { readToolArguments } from "@ludens/baseware/tool-contract";
+import type { ExecutionResult } from "@ludens/baseware/contracts";
 
 export const HELP = `rsa status
 rsa auto on [--message <text>]

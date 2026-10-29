@@ -2,10 +2,10 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSwitchProvider } from "@playness/baseware/drivers/ryubing/provider.ts";
-import { Bridge } from "@playness/baseware/drivers/bridge.ts";
+import { createSwitchProvider } from "@ludens/baseware/drivers/ryubing/provider.ts";
+import { Bridge } from "@ludens/baseware/drivers/bridge.ts";
 import { createTestDeviceSession } from "./runtime-fixture.ts";
-import type { ToolArguments, ControllerContext, ToolExecutionResult } from "@playness/baseware/contracts";
+import type { ToolArguments, ControllerContext, ToolExecutionResult } from "@ludens/baseware/contracts";
 import { Runtime } from "../src/harness/runtime.ts";
 
 function imageBytes(capture: ToolExecutionResult): Buffer {

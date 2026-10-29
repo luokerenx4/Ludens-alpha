@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type AddressInfo, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { BasewareClient } from "@playness/baseware/client";
+import { BasewareClient } from "@ludens/baseware/client";
 import { readRunEvents } from "../../shared/event-sources.ts";
 import { send } from "../src/harness/transport.ts";
 import { resolveWorkspaceState } from "../src/harness/workspace-state.ts";

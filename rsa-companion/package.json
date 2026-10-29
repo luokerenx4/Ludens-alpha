@@ -1,16 +1,15 @@
 {
-  "name": "rsa-alice-pet",
+  "name": "rsa-companion",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "main": "dist/electron/main.js",
   "scripts": {
-    "build:native": "node scripts/build-native.mjs",
-    "build": "npm run build:native",
+    "build": "node scripts/build-electron.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "preview": "npm run build:native && electron dist/electron/companion-preview.js",
-    "smoke": "npm run build:native && electron dist/electron/companion-preview.js --smoke",
+    "pet:preview": "npm run build && electron dist/electron/companion-preview.js",
+    "pet:smoke": "npm run build && electron dist/electron/companion-preview.js --smoke",
     "start": "electron dist/electron/main.js"
   },
   "dependencies": {

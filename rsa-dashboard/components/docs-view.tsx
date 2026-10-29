@@ -71,8 +71,20 @@ export function DocsView({ search, navigate }: {
       </div>)}
     </aside>
     <article ref={article} className="surface docs-article" onClick={followDoc}>
-      {!docId && <><div className="surface-heading"><h2>文档</h2></div>
-        <div className="docs-body"><p>左侧选择一篇。教程讲怎么跑起来，介绍讲组件与契约，洞见记录当时的取舍。</p></div></>}
+      {!docId && <><div className="surface-heading"><h2>文档导览</h2><span>docs/</span></div>
+        <div className="docs-body">
+          <p className="muted">选择左侧条目或下方卡片直接阅读。教程聚焦上手与工作区编程，契约定义组件与协议边界，洞见记录长跑实测背后的设计取舍。</p>
+          <div className="docs-overview-grid">
+            {groups.map(group => <section key={group.id} className="docs-overview-card">
+              <h3>{group.title}</h3>
+              <p>{group.blurb}</p>
+              <div className="docs-overview-links">
+                {group.docs.map(item => <button key={item.id} type="button" className="text-button"
+                  onClick={() => navigate({ doc: item.id, docAnchor: null })}>{item.title} →</button>)}
+              </div>
+            </section>)}
+          </div>
+        </div></>}
       {docId && docLoad.error && <div className="error-banner" role="alert">{docLoad.error}</div>}
       {docId && !doc && !docLoad.error && <div className="docs-body"><p role="status">正在读取…</p></div>}
       {doc && <><div className="surface-heading"><h2>{doc.title}</h2><span>{doc.id}</span></div>

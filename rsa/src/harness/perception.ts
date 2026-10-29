@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, delimiter, join, resolve } from "node:path";
-import type { Clock, Observation } from "@playness/baseware/contracts";
+import type { Clock, Observation } from "@ludens/baseware/contracts";
 import { childTrace, type EventTrace, type RecordEvent, type RegisterMedia, type DiagnosticsMode, type EventMetadata } from "./events.ts";
 import { pythonModulePaths } from "./python-capabilities.ts";
 import { pythonExecutable } from "../../../shared/python.ts";

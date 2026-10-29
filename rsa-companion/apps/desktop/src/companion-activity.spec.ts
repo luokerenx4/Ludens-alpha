@@ -22,7 +22,7 @@ describe('companion notification IPC',()=>{
       phase:'等待模型',intent:blocks.at(-1)!.text,observationUrl:null,updatedAt:null,error:null,dashboardUrl:'http://127.0.0.1:3015'},
     })})
     await vi.advanceTimersByTimeAsync(0)
-    const displays=()=>pet.webContents.send.mock.calls.filter(([channel,event])=>channel==='openalice:activity:display'&&event.type==='show').length
+    const displays=()=>pet.webContents.send.mock.calls.filter(([channel,event])=>channel==='ludens:activity:display'&&event.type==='show').length
     expect(displays()).toBe(1)
     pet.isVisible=()=>false;pet.emit('hide')
     await vi.advanceTimersByTimeAsync(2500)
@@ -31,19 +31,19 @@ describe('companion notification IPC',()=>{
     blocks=[{...blocks[0],status:'complete'},{...blocks[0],id:'tool:2',at:'2',text:'Continue the conversation',status:'complete'}]
     await vi.advanceTimersByTimeAsync(8000)
     expect(displays()).toBeGreaterThan(hidden)
-    expect(pet.webContents.send.mock.calls.some(([channel,event])=>channel==='openalice:activity:display'
+    expect(pet.webContents.send.mock.calls.some(([channel,event])=>channel==='ludens:activity:display'
       &&event.type==='show'&&event.input.description==='Continue the conversation')).toBe(true)
     pet.emit('closed')
   })
   it('accepts only owning main frame settings and rejects subframes/other windows; no URL/code actions',async()=>{
     vi.useFakeTimers();state.home=mkdtempSync(join(tmpdir(),'oa-ipc-'));const owner=windowStub(),pet=windowStub();installCompanionActivity(owner as never,pet as never)
     const event={sender:owner.webContents,senderFrame:owner.webContents.mainFrame}
-    const get=handlers.get('openalice:activity:preferences')!;expect(get(event)).toMatchObject({events:{news:false,progress:true},brief:false})
+    const get=handlers.get('ludens:activity:preferences')!;expect(get(event)).toMatchObject({events:{news:false,progress:true},brief:false})
     expect(()=>get({...event,senderFrame:{}})).toThrow('Unauthorized')
     expect(()=>get({sender:pet.webContents,senderFrame:pet.webContents.mainFrame})).toThrow('Unauthorized')
-    const update=handlers.get('openalice:activity:update-preferences')!;await expect(update(event,{enabled:'yes'})).rejects.toThrow()
+    const update=handlers.get('ludens:activity:update-preferences')!;await expect(update(event,{enabled:'yes'})).rejects.toThrow()
     await expect(update(event,{events:{news:false}})).resolves.toMatchObject({events:{news:false}})
-    const open=handlers.get('openalice:activity:open')!;expect(open(event,{url:'javascript:evil'})).toBe(false)
+    const open=handlers.get('ludens:activity:open')!;expect(open(event,{url:'javascript:evil'})).toBe(false)
     expect(()=>open({...event,senderFrame:{}},'anything')).toThrow('Unauthorized')
     pet.emit('closed');expect(handlers.size).toBe(0)
   })
@@ -66,7 +66,7 @@ describe('companion notification IPC',()=>{
     let trustedOrigin = true
     installCompanionActivity(owner as never,pet as never,{trustedOwner:()=>trustedOrigin})
     const event={sender:owner.webContents,senderFrame:owner.webContents.mainFrame}
-    const get=handlers.get('openalice:activity:preferences')!
+    const get=handlers.get('ludens:activity:preferences')!
     expect(get(event)).toMatchObject({brief:false})
     trustedOrigin=false
     expect(()=>get(event)).toThrow('Unauthorized')

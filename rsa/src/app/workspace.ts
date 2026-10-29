@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { defaultSocket } from "@playness/baseware/address";
-import { resolveDriver, defaultDriverCacheRoot } from "@playness/baseware/drivers/loader.ts";
+import { defaultSocket } from "@ludens/baseware/address";
+import { resolveDriver, defaultDriverCacheRoot } from "@ludens/baseware/drivers/loader.ts";
 import workspaceGuide from "../../templates/AGENTS.md" with { type: "text" };
 import perceptionTemplate from "../../templates/perception.py" with { type: "text" };
 import actionTemplate from "../../templates/action.py" with { type: "text" };
@@ -114,7 +114,7 @@ export async function launchPlan(config: LaunchConfig, workspace: string, repo =
   const bridge = manifest ? manifest.transport !== "stdio" : true;
   return {
     workspace, config, manifest, dashboardUrl: "http://127.0.0.1:3015", background, sharedPet,
-    dashboardCheck: ["npm", "--prefix", join(repo, "rsa-dashboard"), "run", "check-build"],
+    dashboardCheck: ["npm", "--prefix", join(repo, "rsa-dashboard"), "run", "build:check"],
     launcher: join(repo, "rsa/scripts/launch-background.py"), rsa, baseware, basewareSocket,
     commands: {
       ...(config.game && bridge && manifest?.launchCommand ? { emulator: ["env",
@@ -146,7 +146,7 @@ type Job = { target: string; registered: boolean; pid: number | null; state: str
 export interface LaunchIO {
   run(argv: string[], cwd: string): Promise<CommandResult>;
   dashboardReady(url: string): Promise<boolean>;
-  aliceReady(url: string): Promise<boolean>;
+  petReady(url: string): Promise<boolean>;
   sleep(): Promise<void>;
   now(): number;
   note(message: string): void;
@@ -172,9 +172,9 @@ const systemIO: LaunchIO = {
       return response.ok && Array.isArray(await response.json());
     } catch { return false; }
   },
-  async aliceReady(url) {
+  async petReady(url) {
     try {
-      const response = await fetch(`${url}/api/alice`, { signal: AbortSignal.timeout(10_000) });
+      const response = await fetch(`${url}/api/pet`, { signal: AbortSignal.timeout(10_000) });
       return response.ok && (await response.json()).connected === true;
     } catch { return false; }
   },
@@ -193,7 +193,7 @@ export class WorkspaceLauncher {
   }
   async job(name: ServiceName): Promise<Job> {
     const hash = createHash("sha256").update(this.plan.workspace).digest("hex").slice(0, 16);
-    const label = name === "pet" ? "dev.playness.alice.pet" : `dev.playness.rsa.${hash}.${name}`;
+    const label = name === "pet" ? "dev.ludens.pet" : `dev.ludens.rsa.${hash}.${name}`;
     const target = `gui/${process.getuid!()}/${label}`;
     const result = await this.run(["launchctl", "print", target]);
     return { target, registered: result.code === 0,
@@ -210,11 +210,11 @@ export class WorkspaceLauncher {
     return result.code === 0 ? JSON.parse(result.stdout) : null;
   }
   async status() {
-    const [host, baseware, dashboard, alice, ...jobs] = await Promise.all([this.host(), this.baseware(), this.io.dashboardReady(this.plan.dashboardUrl), this.io.aliceReady(this.plan.dashboardUrl),
+    const [host, baseware, dashboard, pet, ...jobs] = await Promise.all([this.host(), this.baseware(), this.io.dashboardReady(this.plan.dashboardUrl), this.io.petReady(this.plan.dashboardUrl),
       ...(["emulator", "baseware", "host", "dashboard", "pet"] as const).map(async name => ({
         name, scope: name === "pet" ? "shared" : "workspace", ...await this.job(name), log: this.log(name),
       }))]);
-    return { workspace: this.plan.workspace, host, baseware, dashboard: { url: this.plan.dashboardUrl, ready: dashboard }, pet: { connected: alice }, jobs };
+    return { workspace: this.plan.workspace, host, baseware, dashboard: { url: this.plan.dashboardUrl, ready: dashboard }, pet: { connected: pet }, jobs };
   }
   private log(name: ServiceName) {
     return join(name === "pet" ? this.plan.sharedPet.background : this.plan.background, `${name}.log`);
@@ -235,7 +235,7 @@ export class WorkspaceLauncher {
     if (job.registered) await this.checked(["launchctl", "bootout", job.target]);
     this.io.note(`Starting ${name}; log: ${this.log(name)}`);
     await this.checked(["python3", this.plan.launcher,
-      ...(name === "pet" ? ["--label", "dev.playness.alice.pet", "--log-dir", this.plan.sharedPet.background] : []),
+      ...(name === "pet" ? ["--label", "dev.ludens.pet", "--log-dir", this.plan.sharedPet.background] : []),
       name, ...this.plan.commands[name]!], name === "pet" ? this.plan.sharedPet.cwd : this.plan.workspace);
   }
   private async alive(name: ServiceName) {
@@ -323,11 +323,11 @@ export class WorkspaceLauncher {
     }
     if (this.plan.config.pet) {
       if (!dashboard) throw new Error("Pet needs the Dashboard. Enable dashboard in rsa.json or start it separately.");
-      if (await this.io.aliceReady(this.plan.dashboardUrl)) this.io.note("Reusing Ludens Pet's connected desktop instance.");
+      if (await this.io.petReady(this.plan.dashboardUrl)) this.io.note("Reusing Ludens Pet's connected desktop instance.");
       else {
         await this.ensure("pet");
         await this.waitFor(`Ludens Pet activity connection (${this.log("pet")})`, async () => {
-          if (await this.io.aliceReady(this.plan.dashboardUrl)) return true;
+          if (await this.io.petReady(this.plan.dashboardUrl)) return true;
           const job = await this.job("pet");
           // Electron's single-instance lock can exit successfully while an existing app connects.
           if (!job.registered || (!job.pid && job.lastExitCode !== null && job.lastExitCode !== 0))

@@ -57,7 +57,7 @@ export interface DesktopSnapshot {
 }
 declare global {
   interface Window {
-    readonly openAlice?: { readonly companion?: DesktopCompanion };
+    readonly ludens?: { readonly companion?: DesktopCompanion };
     readonly rsaPet?: {
       getSnapshot(): Promise<DesktopSnapshot>;
       onSnapshot(callback: (snapshot: DesktopSnapshot) => void): () => void;
