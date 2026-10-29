@@ -25,6 +25,7 @@ import { CapabilitiesView } from "@/components/capabilities-view";
 import { SettingsView } from "@/components/settings-view";
 import { DevPanel } from "@/components/dev-panel";
 import { TimelinePlayer } from "@/components/timeline-player";
+import { replayEvidenceFromSearch, replayEvidencePatch } from "@/components/replay-navigation";
 import { ArchiveBuild } from "@/components/archive-build";
 import { WorkspacesView } from "@/components/workspaces-view";
 import {
@@ -371,7 +372,7 @@ export default function Dashboard() {
           <div className="context-workspace">
             <WorkspacePicker projects={projects} value={selection.project} loading={!catalogReady} error={catalogError}
               onChange={id => navigate({ project: id, workspace: null, run: null, epoch: null,
-                beforeCall: null, call: null, block: null, image: null, at: null,
+                beforeCall: null, call: null, block: null, image: null, at: null, ...replayEvidencePatch(null),
                 case: null, caseDigest: null, result: null, baseline: null, verification: null,
                 baselineVerification: null, report: null, baselineReport: null,
                 verificationCursor: null, evidenceCursor: null, benchCursor: null })} />
@@ -393,7 +394,7 @@ export default function Dashboard() {
                       call: null,
                       block: null,
                       image: null,
-                      at: null,
+                      at: null, ...replayEvidencePatch(null),
                     })
                   }
                 >
@@ -426,7 +427,7 @@ export default function Dashboard() {
                       call: null,
                       block: null,
                       image: null,
-                      at: null,
+                      at: null, ...replayEvidencePatch(null),
                     });
                   }}
                 >
@@ -460,7 +461,7 @@ export default function Dashboard() {
           </div>
         </header>
         <main className="page-content">
-          {view !== "workspaces" && view !== "docs" && <div className="page-heading">
+          {view !== "workspaces" && view !== "docs" && (view !== "replay" || entry !== "ready") && <div className="page-heading">
             <div>
               <h1>{benchmarkCases ? t("benchmark.casesTitle") : t(`views.${view}.title`)}</h1>
               <p>
@@ -553,7 +554,9 @@ export default function Dashboard() {
           ) : view === "replay" ? (
             <TimelinePlayer key={scopeKey} project={selection.project} run={run} epoch={selection.epoch || "latest"}
               onOverview={onReplayOverview} archiveRevision={archiveRevision}
-              position={query.get("at")} onPosition={at => navigate({ project: selection.project, run, at: String(at) })} />
+              position={query.get("at")} evidence={replayEvidenceFromSearch(search)}
+              onPosition={(at, evidence = null) => navigate({ project: selection.project, run, at: String(at), ...replayEvidencePatch(evidence) })}
+              onEvidence={evidence => navigate(replayEvidencePatch(evidence))} />
           ) : benchmarkCases ? (
             <BenchmarkCases
               workspace={selection.project}

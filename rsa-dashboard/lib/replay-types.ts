@@ -61,15 +61,45 @@ export interface ReplayWindow {
   coverage?: ReplayCoverage;
 }
 
+/** Search progress is over a fixed source snapshot, separate from archive coverage. */
+export interface ReplaySearchResult {
+  project: string;
+  run: string;
+  epoch: string | null;
+  query: string;
+  track: ReplayTrack | "all";
+  items: ReplayItem[];
+  nextCursor?: string;
+  scan: { throughPosition: number; totalPositions: number; complete: boolean };
+  coverage: ReplayCoverage;
+}
+
+export interface ReplaySummary {
+  kind: ReplayTrack | "frame";
+  startAt: number;
+  endAt?: number | null;
+  status?: string;
+  source: Partial<ReplayItem["source"]> & { recordId?: string; sequence?: number };
+  text?: string;
+  textTruncated?: boolean;
+}
+
 export interface ReplayDetail {
   title: string;
   data: unknown;
+  /** Directly recorded context for URL restoration; never a nearest-record guess. */
+  summary: ReplaySummary;
+  item?: ReplayItem;
+  frame?: ReplayFrame;
   /** Exact known model inputs; never inferred from the nearest frame. */
   observations?: { id: string; url?: string; recordId?: string; sequence?: number; approximate?: boolean }[];
 }
 
-// GET /api/replay?project=&run=&epoch=&mode=overview|frames|events|detail|media|segment
+// GET /api/replay?project=&run=&epoch=&mode=overview|frames|events|search|detail|media|segment
 // frames/events have independent cursors and return only their own track in ReplayWindow.
+// frames spans at most 60 seconds; events at most 15 minutes, both with bounded pages.
+// search: q=<literal title/status/ID query>&track=all|action|model|tool|log&cursor=.
+// An empty search page may still have nextCursor; scan.complete describes only its fixed snapshot.
 // detail: id = ReplayItem.id, or record=ReplayFrame.id&sequence=.
 // media: record=&sequence=&media=<index>; image bytes, no caller-supplied file path.
 // segment: record=&sequence=&media=; optional bytes= bounds an immutable published fMP4 snapshot.

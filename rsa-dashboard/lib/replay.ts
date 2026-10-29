@@ -8,14 +8,16 @@ import { eventObservations, modelInputEvents } from "./observation-events";
 import { aggregate } from "./aggregate";
 import { readArtifact } from "../../shared/log-archive";
 import type { Event } from "./types";
-import type { ReplayCoverage, ReplayDetail, ReplayFrame, ReplayItem, ReplayOverview, ReplayOverviewResult, ReplayPreparing, ReplayWindow } from "./replay-types";
+import type { ReplayCoverage, ReplayDetail, ReplayFrame, ReplayItem, ReplayOverview, ReplayOverviewResult, ReplayPreparing, ReplaySearchResult, ReplaySummary, ReplayTrack, ReplayWindow } from "./replay-types";
 import { decodeTimelineFrame, type VideoFrameReference } from "../../shared/timeline-media";
 import { archiveBuildState } from "./cold-build";
 import type { FileMedia } from "./file-response";
 
-const PAGE = 500, MAX_WINDOW = 60_000, INDEX_BATCH = 4 * 1024 * 1024;
-export interface ReplayQuery { mode: "overview" | "frames" | "events" | "detail" | "media" | "segment"; epoch?: string;
-  start?: number; end?: number; cursor?: string; id?: string; record?: string; sequence?: number; media?: number; asset?: string; bytes?: number }
+const PAGE = 500, MAX_FRAME_WINDOW = 60_000, MAX_EVENT_WINDOW = 15 * 60_000, INDEX_BATCH = 4 * 1024 * 1024;
+const SEARCH_PAGE = 100, SEARCH_SCAN = 500, SEARCH_BYTES = 4 * 1024 * 1024;
+export interface ReplayQuery { mode: "overview" | "frames" | "events" | "search" | "detail" | "media" | "segment"; epoch?: string;
+  start?: number; end?: number; cursor?: string; id?: string; record?: string; sequence?: number; media?: number; asset?: string; bytes?: number;
+  q?: string; track?: ReplayTrack | "all" }
 type Scope = ReplayOverview & { index: LogIndex; signal?: AbortSignal };
 function fail(message: string, status = 400): never { throw Object.assign(new Error(message), { status }); }
 function expired(): never { return fail("记录已过期、未持久化或已移除", 410); }
@@ -132,8 +134,9 @@ interface Cursor { scope: [string, string, string | null, number, number, string
   events: number; verifiedEnd: number; frames?: number; after: number | TimelineCursor }
 function cursorFor(scope: Scope, query: ReplayQuery): Cursor {
   const start = query.start!, end = query.end!;
-  if (![start, end].every(Number.isSafeInteger) || start < 0 || end < start || end - start > MAX_WINDOW)
-    fail("时间窗须为 UTC 毫秒，跨度不超过 60 秒");
+  const maxWindow = query.mode === "events" ? MAX_EVENT_WINDOW : MAX_FRAME_WINDOW;
+  if (![start, end].every(Number.isSafeInteger) || start < 0 || end < start || end - start > maxWindow)
+    fail(query.mode === "events" ? "事件时间窗须为 UTC 毫秒，跨度不超过 15 分钟" : "画面时间窗须为 UTC 毫秒，跨度不超过 60 秒");
   const identity: Cursor["scope"] = [scope.project, scope.run, scope.epoch, start, end, query.mode];
   if (!query.cursor) return { scope: identity, generation: scope.index.generation, events: scope.index.eventRevision,
     verifiedEnd: scope.endAt, after: query.mode === "frames" ? [-1, -1] : 0 };
@@ -180,7 +183,7 @@ function item(position: number, event: Event, operation?: OperationRef): ReplayI
 async function eventsWindow(scope: Scope, query: ReplayQuery): Promise<ReplayWindow> {
   const cursor = cursorFor(scope, query), startAt = query.start!, endAt = query.end!, low = Math.max(startAt, scope.startAt), high = Math.min(endAt, scope.endAt, cursor.verifiedEnd);
   if (low > high) return { startAt, endAt, frames: [], items: [], coverage: scope.coverage };
-  await prepareOperations(scope);
+  await prepareOperations(scope, cursor.events);
   const epoch = scope.epoch === null ? {} : { epoch: scope.epoch };
   const refs = await scope.index.queryEventRefs({ ...epoch, fromAt: low, toAt: high, afterPosition: cursor.after as number,
     beforePosition: cursor.events + 1, limit: PAGE + 1, signal: scope.signal });
@@ -198,16 +201,88 @@ async function eventsWindow(scope: Scope, query: ReplayQuery): Promise<ReplayWin
   return { startAt, endAt, frames: [], items, coverage: scope.coverage,
     ...(positions.length > PAGE ? { nextCursor: encodeCursor({ ...cursor, after: selected.at(-1)! }) } : {}) };
 }
-async function prepareOperations(scope: Scope) {
+
+interface SearchCursor {
+  scope: [string, string, string | null, string, ReplayTrack | "all"];
+  generation: string;
+  events: number;
+  startAt: number;
+  endAt: number;
+  after: number;
+  coverage: ReplayCoverage;
+}
+function searchCursor(scope: Scope, query: ReplayQuery): SearchCursor {
+  if (typeof (query.q ?? "") !== "string" || (query.q?.length ?? 0) > 200) fail("搜索文字不得超过 200 个字符");
+  const text = (query.q ?? "").trim(), track = query.track ?? "all";
+  if (!["all", "action", "model", "tool", "log"].includes(track)) fail("无效的回放搜索轨道");
+  const identity: SearchCursor["scope"] = [scope.project, scope.run, scope.epoch, text, track];
+  if (!query.cursor) return { scope: identity, generation: scope.index.generation, events: scope.index.eventRevision,
+    startAt: scope.startAt, endAt: scope.endAt, after: 0, coverage: { ...scope.coverage! } };
+  try {
+    if (query.cursor.length > 4096) throw new Error();
+    const value = JSON.parse(Buffer.from(query.cursor, "base64url").toString("utf8"));
+    if (JSON.stringify(value.scope) !== JSON.stringify(identity) || value.generation !== scope.index.generation
+      || !Number.isSafeInteger(value.events) || value.events < 0 || value.events > scope.index.eventRevision
+      || !Number.isSafeInteger(value.after) || value.after < 0 || value.after > value.events
+      || !Number.isSafeInteger(value.startAt) || !Number.isSafeInteger(value.endAt) || value.endAt < value.startAt
+      || !value.coverage || typeof value.coverage.complete !== "boolean"
+      || !Number.isSafeInteger(value.coverage.bytes) || value.coverage.bytes < 0
+      || !Number.isSafeInteger(value.coverage.totalBytes) || value.coverage.totalBytes < value.coverage.bytes
+      || value.coverage.throughAt !== undefined && !Number.isSafeInteger(value.coverage.throughAt)) throw new Error();
+    return value;
+  } catch { return fail("回放搜索游标已失效，请重新搜索"); }
+}
+/** Scan a bounded source page, never expand artifacts or collect a whole run in memory. */
+async function searchEvents(scope: Scope, query: ReplayQuery): Promise<ReplaySearchResult> {
+  const cursor = searchCursor(scope, query), text = cursor.scope[3], track = cursor.scope[4];
+  await prepareOperations(scope, cursor.events);
+  // Do not filter this directory read: a rare epoch/track/query must still yield
+  // after bounded work, with a cursor even when this page has no matching rows.
+  const refs = await scope.index.queryEventRefs({ afterPosition: cursor.after, beforePosition: cursor.events + 1,
+    limit: SEARCH_SCAN + 1, signal: scope.signal });
+  const needle = text.toLowerCase(), items: ReplayItem[] = [];
+  let after = cursor.after, examined = 0, bytes = 0;
+  for (const ref of refs.slice(0, SEARCH_SCAN)) {
+    scope.signal?.throwIfAborted();
+    if (items.length >= SEARCH_PAGE || bytes > 0 && bytes + ref.length > SEARCH_BYTES) break;
+    after = ref.position; examined++;
+    if (scope.epoch !== null && ref.epoch !== scope.epoch) continue;
+    let operation = await getOperation(scope.index, ref.position);
+    // A finish appended after the first page cannot change pending status or
+    // interval membership in this search snapshot.
+    if (operation?.endPosition !== undefined && operation.endPosition > cursor.events)
+      operation = { ...operation, endPosition: undefined, endAt: undefined, status: "pending" };
+    const kind = operation?.track ?? "log";
+    if (track !== "all" && track !== kind) continue;
+    if (operation ? Date.parse(operation.startAt) > cursor.endAt || !!operation.endAt && Date.parse(operation.endAt) < cursor.startAt
+      : ref.timeMs < cursor.startAt || ref.timeMs > cursor.endAt) continue;
+    // Source records are indivisible, as in event-window reads. A single record
+    // may exceed the byte target; all later records wait for the next page.
+    bytes += ref.length;
+    const event = await scope.index.readEvent(ref);
+    if (!event) continue;
+    const projected = item(ref.position, event, operation);
+    const searchable = [projected.label, projected.status, projected.id, event.type, ...Object.values(projected.source)].join("\n").toLowerCase();
+    if (!needle || searchable.includes(needle)) items.push(projected);
+  }
+  const complete = after >= cursor.events || examined === refs.length;
+  if (complete) after = cursor.events;
+  return { project: scope.project, run: scope.run, epoch: scope.epoch, query: text, track, items,
+    scan: { throughPosition: after, totalPositions: cursor.events, complete }, coverage: cursor.coverage,
+    ...(!complete ? { nextCursor: Buffer.from(JSON.stringify({ ...cursor, after })).toString("base64url") } : {}) };
+}
+
+async function prepareOperations(scope: Scope, through = scope.index.eventRevision) {
   if (scope.index.frozen) {
     if (scope.index.meta("cold:ready") === "1") return;
     throw Object.assign(new Error("正在整理动作与调用目录"), {
       status: 202, code: "ARCHIVE_PREPARING", progress: archiveBuildState(scope.index),
     });
   }
+  if (Number(scope.index.meta("operations:position") ?? 0) >= through) return;
   const progress = await refreshOperationIndex(scope.index, { maxEvents: 5000, signal: scope.signal });
-  if (!progress.complete) throw Object.assign(new Error("正在整理动作与调用目录"), {
-    status: 202, code: "ARCHIVE_PREPARING", progress: { kind: "operations", ...progress, total: scope.index.eventRevision },
+  if (progress.position < through) throw Object.assign(new Error("正在整理动作与调用目录"), {
+    status: 202, code: "ARCHIVE_PREPARING", progress: { kind: "operations", ...progress, total: through },
   });
 }
 async function storedRecord(scope: Scope, id: string | undefined, sequence: number | undefined) {
@@ -227,6 +302,9 @@ async function expandEvent(event: Event, index: LogIndex) {
   for (const name of ["argsRef", "result", "payload", "response"])
     if (data[name]?.encoding) data[name] = await readArtifact(index.path, data[name], { media: "reference", workspace: index.archiveWorkspace });
   return { ...event, data };
+}
+function summaryText(value: unknown): Pick<ReplaySummary, "text" | "textTruncated"> {
+  return typeof value === "string" ? { text: value.slice(0, 2000), ...(value.length > 2000 ? { textTruncated: true } : {}) } : {};
 }
 async function itemDetail(scope: Scope, id: string | undefined): Promise<ReplayDetail> {
   if (!id || !/^event:\d+$/.test(id)) fail("无效的回放事件引用");
@@ -272,7 +350,10 @@ async function itemDetail(scope: Scope, id: string | undefined): Promise<ReplayD
           observations.push({ id: snapshot.id, recordId: snapshot.timeline.recordId, sequence: snapshot.timeline.sequence });
     }
   }
-  return { title: projected.label, data: { item: projected, events: await Promise.all(events.map(event => expandEvent(event, index))) }, ...(observations ? { observations } : {}) };
+  return { title: projected.label, item: projected,
+    summary: { kind: projected.track, startAt: projected.startAt, endAt: projected.endAt, status: projected.status,
+      source: projected.source, ...summaryText(start.data.text) },
+    data: { item: projected, events: await Promise.all(events.map(event => expandEvent(event, index))) }, ...(observations ? { observations } : {}) };
 }
 async function assetMedia(root: string, asset: string, mediaType: string, video?: VideoFrameReference, signal?: AbortSignal): Promise<FileMedia | { bytes: Buffer; mediaType: string }> {
   if (video) return { bytes: await decodeTimelineFrame(root, { asset, video }, { signal }), mediaType: "image/png" };
@@ -321,7 +402,7 @@ export async function getReplay(project: string, run: string, query: ReplayQuery
   const { index, release } = await openRun(project, run, root);
   try {
     signal?.throwIfAborted();
-    const result = await scopeFor(index, project, run, query.epoch, query.mode === "overview" || query.mode === "events" || query.mode === "detail", signal);
+    const result = await scopeFor(index, project, run, query.epoch, query.mode === "overview" || query.mode === "events" || query.mode === "detail" || query.mode === "search", signal);
     if (query.mode === "overview") {
       if (result.startAt === null) return result satisfies ReplayOverviewResult;
       const { index: _, signal: __, ...overview } = result; return overview;
@@ -329,12 +410,16 @@ export async function getReplay(project: string, run: string, query: ReplayQuery
     const scope = ready(result);
     if (query.mode === "frames") return await framesWindow(scope, query);
     if (query.mode === "events") return await eventsWindow(scope, query);
+    if (query.mode === "search") return await searchEvents(scope, query);
     if (query.mode === "segment") return await segmentMedia(scope, query);
     if (query.mode === "media" && query.id) return await modelMedia(scope, query.id);
     if (query.mode === "detail" && !query.record) return await itemDetail(scope, query.id);
     if (query.mode === "detail" || query.mode === "media") {
       const { root: timelineRoot, record } = await storedRecord(scope, query.record, query.sequence);
-      return query.mode === "media" ? await recordMedia(timelineRoot, record, query.media, signal) : { title: record.capability, data: record } satisfies ReplayDetail;
+      return query.mode === "media" ? await recordMedia(timelineRoot, record, query.media, signal) : { title: record.capability, data: record,
+        summary: { kind: "frame", startAt: Date.parse(record.recordedAt), source: { recordId: record.id, sequence: record.sequence }, ...summaryText(record.text) },
+        frame: await frame(record, scope, new Map()),
+      } satisfies ReplayDetail;
     }
     return fail("无效的回放查询模式");
   } finally { release(); }

@@ -6,8 +6,8 @@ import { mkdtemp, mkdir, writeFile, appendFile, realpath, rm, symlink, readFile,
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { getReplay } from "../lib/replay";
-import { closeLogIndexes, getLogIndex, indexCacheStats } from "../lib/log-index";
-import type { ReplayWindow, ReplayOverview, ReplayDetail } from "../lib/replay-types";
+import { closeLogIndexes, getLogIndex, indexCacheStats, resetStorageMetrics, storageMetrics } from "../lib/log-index";
+import type { ReplayWindow, ReplayOverview, ReplayDetail, ReplaySearchResult } from "../lib/replay-types";
 import type { FileMedia } from "../lib/file-response";
 
 const start = Date.parse("2026-10-27T00:00:00Z");
@@ -344,6 +344,8 @@ test("record media and details are offline, scoped, canonical and do not copy so
     const before = await readFile(join(f.run, "events.jsonl"));
     const detail = await f.query({ mode: "detail", epoch: "one", record: "record-5", sequence: 5 }) as ReplayDetail;
     assert.deepEqual((detail.data as { data: unknown }).data, { sample: 5 });
+    assert.deepEqual(detail.summary, { kind: "frame", startAt: start + 11000, source: { recordId: "record-5", sequence: 5 }, text: "sample 5" });
+    assert.equal(detail.frame?.id, "record-5"); assert.equal(detail.frame?.sequence, 5); assert.equal(detail.frame?.media.length, 2);
     const image = await f.query({ mode: "media", epoch: "one", record: "record-5", sequence: 5, media: 1 }) as { bytes: Buffer };
     assert.equal(image.bytes.toString(), "image:5:1");
     await assert.rejects(f.query({ mode: "media", epoch: "one", record: "record-8", sequence: 8, media: 0 }), /不属于/);
@@ -442,5 +444,172 @@ test("replay retains delivery failure evidence without turning successful query 
     const detail = await f.query({ mode: "detail", epoch: "two", id: "event:14" }) as ReplayDetail;
     assert.deepEqual(detail.observations, []);
     assert.equal((detail.data as any).events.find((event: any) => event.type === "perception_input_error")?.data.error, "cannot encode");
+  } finally { await f.close(); }
+});
+
+test("event windows span fifteen minutes while frames remain bounded to one minute", async () => {
+  const f = await fixture();
+  try {
+    const twoHours = 2 * 60 * 60_000;
+    await appendFile(join(f.run, "events.jsonl"), [
+      event(11, twoHours - 1000, "action_start", { actionId: "long-action", controllerId: "robot.turn" }, { traceId: "long", spanId: "span" }, "long"),
+      event(12, twoHours + 5000, "action_end", { actionId: "long-action" }, { traceId: "long", spanId: "span" }, "long"),
+      event(13, 4 * 60 * 60_000, "control", { mode: "manual" }, {}, "long"),
+    ].map(row => JSON.stringify(row)).join("\n") + "\n");
+    for (const duration of [5 * 60_000, 15 * 60_000]) {
+      const window = await f.query({ mode: "events", epoch: "all", start: start + twoHours, end: start + twoHours + duration }) as ReplayWindow;
+      assert(window.items.some(item => item.source.actionId === "long-action" && item.track === "action"));
+      assert.deepEqual(window.frames, []);
+    }
+    await assert.rejects(f.query({ mode: "events", start, end: start + 15 * 60_000 + 1 }), /15 分钟/);
+    await assert.rejects(f.query({ mode: "frames", start, end: start + 60_001 }), /60 秒/);
+    const found = await f.query({ mode: "search", q: "  ROBOT.TURN  ", track: "action" }) as ReplaySearchResult;
+    assert.equal(found.query, "ROBOT.TURN"); assert.equal(found.items.length, 1);
+    assert.equal(found.items[0].startAt, start + twoHours - 1000);
+    assert.equal(found.scan.complete, true); assert.equal(found.coverage.complete, true);
+  } finally { await f.close(); }
+});
+
+test("search matches titles, status and identities without expanding or searching arbitrary artifact bodies", async () => {
+  const f = await fixture();
+  try {
+    const failed = await f.query({ mode: "search", epoch: "one", q: "ERROR", track: "tool" }) as ReplaySearchResult;
+    assert.deepEqual(failed.items.map(item => [item.id, item.status, item.source.toolCallId]), [["event:4", "error", "c"]]);
+    const byId = await f.query({ mode: "search", q: "event:3", track: "model" }) as ReplaySearchResult;
+    assert.deepEqual(byId.items.map(item => item.id), ["event:3"]);
+    await appendFile(join(f.run, "events.jsonl"), JSON.stringify(event(11, 15000, "private_payload", {
+      payload: { encoding: "json", path: "nonexistent-file", content: "hidden-artifact-needle" }, text: "hidden-artifact-needle",
+    })) + "\n");
+    const absent = await f.query({ mode: "search", q: "hidden-artifact-needle" }) as ReplaySearchResult;
+    assert.deepEqual(absent.items, []); assert.equal(absent.scan.complete, true);
+    const literal = await f.query({ mode: "search", q: ".*|[", track: "all" }) as ReplaySearchResult;
+    assert.deepEqual(literal.items, []);
+    await assert.rejects(f.query({ mode: "search", q: "x".repeat(201) }), /200/);
+    await assert.rejects(f.query({ mode: "search", track: "video" as never }), /轨道/);
+  } finally { await f.close(); }
+});
+
+test("a sparse full-run search returns an empty bounded page with continuation", async () => {
+  const f = await fixture();
+  try {
+    await appendFile(join(f.run, "events.jsonl"), Array.from({ length: 1200 }, (_, i) => JSON.stringify(event(i + 11, 16000,
+      i === 1100 ? "needle-at-the-end" : "diagnostic"))).join("\n") + "\n");
+    await f.query({ mode: "events", start, end: start + 60000 });
+    resetStorageMetrics();
+    const query = { mode: "search" as const, q: "needle-at-the-end", track: "log" as const };
+    let page = await f.query(query) as ReplaySearchResult;
+    assert.deepEqual(page.items, []); assert(page.nextCursor); assert.equal(page.scan.complete, false);
+    assert.equal(page.scan.throughPosition, 500); assert.equal(page.scan.totalPositions, 1210);
+    assert(storageMetrics.sourceReadCalls <= 520, "bounded candidate bodies plus small scope metadata");
+    const found: ReplaySearchResult["items"] = [...page.items];
+    while (page.nextCursor) { page = await f.query({ ...query, cursor: page.nextCursor }) as ReplaySearchResult; found.push(...page.items); }
+    assert.deepEqual(found.map(item => item.id), ["event:1111"]); assert.equal(page.scan.complete, true);
+  } finally { await f.close(); }
+});
+
+test("search cursors bind query, track, epoch and generation and exclude later appended matches", async () => {
+  const f = await fixture();
+  try {
+    await appendFile(join(f.run, "events.jsonl"), Array.from({ length: 230 }, (_, i) => JSON.stringify(event(i + 11, 16000, "search_marker"))).join("\n") + "\n");
+    const query = { mode: "search" as const, epoch: "one", q: "search_marker", track: "log" as const };
+    const first = await f.query(query) as ReplaySearchResult;
+    assert.equal(first.items.length, 100); assert(first.nextCursor);
+    for (const patch of [{ q: "other" }, { track: "model" as const }, { epoch: "two" }])
+      await assert.rejects(f.query({ ...query, ...patch, cursor: first.nextCursor }), /搜索游标/);
+    await appendFile(join(f.run, "events.jsonl"), JSON.stringify(event(241, 16000, "search_marker")) + "\n");
+    let page = first; const found = [...first.items];
+    while (page.nextCursor) { page = await f.query({ ...query, cursor: page.nextCursor }) as ReplaySearchResult; found.push(...page.items); }
+    assert.equal(found.length, 230); assert.equal(new Set(found.map(item => item.id)).size, 230);
+    assert.equal(page.scan.totalPositions, 240); assert.equal(page.scan.throughPosition, 240);
+    const fresh = await f.query(query) as ReplaySearchResult; assert.equal(fresh.scan.totalPositions, 241);
+    await writeFile(join(f.run, "events.jsonl"), [event(1, 0, "control", { mode: "auto" }), event(2, 20000, "control", { mode: "manual" })].map(row => JSON.stringify(row)).join("\n") + "\n");
+    await assert.rejects(f.query({ ...query, cursor: first.nextCursor }), /搜索游标/);
+  } finally { await f.close(); }
+});
+
+test("search snapshot retains pending operations when a later finish changes current status", async () => {
+  const f = await fixture();
+  try {
+    await appendFile(join(f.run, "events.jsonl"), Array.from({ length: 500 }, (_, i) => JSON.stringify(event(i + 11, 16000, "diagnostic"))).join("\n") + "\n"
+      + JSON.stringify(event(511, 10000, "action_start", { actionId: "late-finish" }, { traceId: "late", spanId: "span" })) + "\n");
+    const query = { mode: "search" as const, epoch: "one", track: "action" as const, q: "pending" };
+    const first = await f.query(query) as ReplaySearchResult; assert(first.nextCursor); assert.equal(first.items.length, 0);
+    await appendFile(join(f.run, "events.jsonl"), JSON.stringify(event(512, 14000, "action_end", { actionId: "late-finish", status: "completed" }, { traceId: "late", spanId: "span" })) + "\n");
+    const next = await f.query({ ...query, cursor: first.nextCursor }) as ReplaySearchResult;
+    assert.equal(next.items.length, 1); assert.equal(next.items[0].status, "pending"); assert.equal(next.items[0].endAt, null);
+    let current = await f.query({ ...query, q: "completed" }) as ReplaySearchResult;
+    const completed = [...current.items];
+    while (current.nextCursor) { current = await f.query({ ...query, q: "completed", cursor: current.nextCursor }) as ReplaySearchResult; completed.push(...current.items); }
+    assert(completed.some(item => item.source.actionId === "late-finish"));
+  } finally { await f.close(); }
+});
+
+test("a completed search over an indexed prefix never claims the whole archive was searched", async () => {
+  const f = await fixture();
+  try {
+    await appendFile(join(f.run, "events.jsonl"), Array.from({ length: 3000 }, (_, i) => JSON.stringify(event(i + 11, 16000, "diagnostic", { payload: "x".repeat(2100) }))).join("\n") + "\n");
+    const query = { mode: "search" as const, epoch: "one", q: "no-matches" };
+    const first = await f.query(query) as ReplaySearchResult;
+    assert.equal(first.coverage.complete, false); assert(first.coverage.bytes < first.coverage.totalBytes); assert(first.nextCursor);
+    let page = first;
+    while (page.nextCursor) {
+      page = await f.query({ ...query, cursor: page.nextCursor }) as ReplaySearchResult;
+      assert.deepEqual(page.coverage, first.coverage); assert.equal(page.scan.totalPositions, first.scan.totalPositions);
+    }
+    assert.equal(page.scan.complete, true); assert.equal(page.coverage.complete, false);
+    const fresh = await f.query(query) as ReplaySearchResult;
+    assert.equal(fresh.coverage.complete, true); assert(fresh.scan.totalPositions > first.scan.totalPositions);
+  } finally { await f.close(); }
+});
+
+test("typed event details expose bounded explicit text while retaining original evidence", async () => {
+  const f = await fixture();
+  try {
+    const detail = await f.query({ mode: "detail", epoch: "one", id: "event:4" }) as ReplayDetail;
+    assert.equal(detail.item?.id, "event:4"); assert.equal(detail.summary?.kind, "tool");
+    assert.equal(detail.summary?.status, "error"); assert.equal(detail.summary?.source.toolCallId, "c");
+    assert.equal(detail.summary?.text, undefined);
+    const text = "sample ".repeat(400);
+    await appendFile(join(f.run, "events.jsonl"), JSON.stringify(event(11, 15000, "text", { text })) + "\n");
+    const message = await f.query({ mode: "detail", epoch: "one", id: "event:11" }) as ReplayDetail;
+    assert.equal(message.summary?.text, text.slice(0, 2000)); assert.equal(message.summary?.textTruncated, true);
+    assert.equal((message.data as { events: { data: { text: string } }[] }).events[0].data.text, text);
+  } finally { await f.close(); }
+});
+
+test("search refuses a continuation in a different run or workspace and validates cursor positions", async () => {
+  const f = await fixture();
+  try {
+    await appendFile(join(f.run, "events.jsonl"), Array.from({ length: 120 }, (_, i) => JSON.stringify(event(i + 11, 16000, "marker"))).join("\n") + "\n");
+    const query = { mode: "search" as const, q: "marker" };
+    const first = await f.query(query) as ReplaySearchResult; assert(first.nextCursor);
+    const otherRun = join(f.workspace, "logs/other"); await mkdir(otherRun);
+    await writeFile(join(otherRun, "manifest.json"), JSON.stringify({ workspace: f.workspace, workspaceId: "project", runId: "other" }));
+    await writeFile(join(otherRun, "events.jsonl"), await readFile(join(f.run, "events.jsonl")));
+    await assert.rejects(getReplay("project", "other", { ...query, cursor: first.nextCursor }, f.root), /搜索游标/);
+    const otherWorkspace = join(f.root, "other-workspace"), other = join(otherWorkspace, "logs/run");
+    await mkdir(other, { recursive: true }); await registerFixture(f.root, "other-project", otherWorkspace);
+    await writeFile(join(other, "manifest.json"), JSON.stringify({ workspace: otherWorkspace, workspaceId: "other-project", runId: "run" }));
+    await writeFile(join(other, "events.jsonl"), await readFile(join(f.run, "events.jsonl")));
+    await assert.rejects(getReplay("other-project", "run", { ...query, cursor: first.nextCursor }, f.root), /搜索游标/);
+    const cursor = JSON.parse(Buffer.from(first.nextCursor, "base64url").toString("utf8"));
+    for (const after of [-1, cursor.events + 1, 1.5])
+      await assert.rejects(f.query({ ...query, cursor: Buffer.from(JSON.stringify({ ...cursor, after })).toString("base64url") }), /搜索游标/);
+    const controller = new AbortController(); controller.abort();
+    await assert.rejects(getReplay("project", "run", query, f.root, controller.signal), { name: "AbortError" });
+  } finally { await f.close(); }
+});
+
+test("search reports operation preparation explicitly without blocking recorded frame reads", async () => {
+  const f = await fixture();
+  try {
+    await appendFile(join(f.run, "events.jsonl"), Array.from({ length: 5100 }, (_, i) => JSON.stringify(event(i + 11, 10000, "model_start", { model: "sol" }, { modelCallId: `pending-${i}` }))).join("\n") + "\n");
+    const query = { mode: "search" as const, epoch: "one", q: "sol", track: "model" as const };
+    await assert.rejects(f.query(query), { status: 202, code: "ARCHIVE_PREPARING" });
+    const frames = await f.query({ mode: "frames", epoch: "one", start, end: start + 20000 }) as ReplayWindow;
+    assert(frames.frames.length > 0);
+    const page = await f.query(query) as ReplaySearchResult;
+    assert.equal(page.items.length, 100); assert(page.nextCursor);
+    assert(page.items.every(item => item.track === "model"));
   } finally { await f.close(); }
 });
