@@ -891,7 +891,7 @@
     "requestInvalid": "Choose a whole request number from 1 to {count}.",
     "inspectorTitle": "Selected request breakdown",
     "comparisonTitle": "Compare scenarios",
-    "comparisonHint": "All five scenarios use the same applied parameters. Select a row to use its layers.",
+    "comparisonHint": "All five scenarios use the same applied parameters. Choose a scenario to use its layers.",
     "anatomyTitle": "Loop anatomy",
     "anatomyHint": "Schematic of the current layer choices.",
     "historyTitle": "Simulated message history",
