@@ -39,3 +39,23 @@ test("desktop workspace paths resolve through the catalog while explicit project
     project: "first", run: "", epoch: "",
   });
 });
+
+test("an explicitly selected new workspace stays selected before its first run", () => {
+  const empty: Project = { id: "new-workspace", workspace: "/work/new", runs: [] };
+  assert.deepEqual(initialSelection("?view=live&project=new-workspace", [...projects, empty]), {
+    project: empty.id, run: "", epoch: "",
+  });
+  assert.deepEqual(initialSelection("?view=replay&workspace=%2Fwork%2Fnew", [empty, ...projects]), {
+    project: empty.id, run: "", epoch: "",
+  });
+});
+
+test("benchmark-only workspaces retain explicit result links without treating them as latest game runs", () => {
+  const benchmark: Project = { id: "bench", runs: [{ id: "evaluation", kind: "benchmark", model: null, seconds: 60, drivers: [] }] };
+  assert.deepEqual(initialSelection("?view=replay&project=bench&run=evaluation&epoch=all", [benchmark]), {
+    project: "bench", run: "evaluation", epoch: "all",
+  });
+  assert.deepEqual(initialSelection("?view=live&project=bench", [benchmark]), {
+    project: "bench", run: "", epoch: "",
+  });
+});
