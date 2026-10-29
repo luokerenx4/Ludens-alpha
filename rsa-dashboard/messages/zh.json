@@ -1310,7 +1310,30 @@
         "title": "需要检查任务发现结果",
         "description": "当前未列出运行；添加或运行任务前，请先处理任务诊断。"
       }
-    }
+    },
+    "taskCatalogTitle": "任务包",
+    "taskCatalogDescription": "从仓库和工作区发现的任务。选择任务只筛选历史，不会执行评测。",
+    "taskChoiceHint": "任务筛选会保留已选运行和比较基线。",
+    "taskMetadataPending": "正在读取当前历史页，保留上次载入的任务包。",
+    "taskMetadataStale": "当前历史页读取失败，任务包显示的是上次载入的记录。",
+    "selectedTaskTitle": "所选任务",
+    "taskNameLabel": "任务标识",
+    "taskSourceLabel": "来源",
+    "taskVersionLabel": "声明版本",
+    "taskSchemaLabel": "任务格式版本",
+    "taskVersionMissing": "未声明",
+    "taskPathLabel": "任务包路径",
+    "taskDigestLabel": "完整版本摘要",
+    "taskAmbiguousTitle": "请选择任务版本",
+    "taskAmbiguousDescription": "当前任务名对应多个已发现版本。请在任务包中选择具体版本以查看其配置；历史仍包含这个任务的所有版本。",
+    "taskMissingTitle": "所选任务包不可用",
+    "taskMissingDescription": "已载入目录中没有找到这个任务名或版本。已保存的运行和独立选择的证据仍可查看。",
+    "historyLoadingTitle": "正在读取当前历史页…",
+    "historyLoadingDescription": "筛选记录读取期间，仍可继续选择任务。",
+    "selectRunTitle": "选择一次运行，查看执行与评分",
+    "selectRunDescription": "点击上方历史中的运行时间。任务筛选和比较基线与此选择相互独立。",
+    "resultSelectionHint": "切换任务筛选时，仍会保留当前选定的运行。",
+    "catalogScopeChanged": "任务目录对应的工作区位置已变化。请刷新工作区列表后重试。"
   },
   "runVisuals": {
     "transport": {
