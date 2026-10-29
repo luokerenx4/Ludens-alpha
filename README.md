@@ -24,10 +24,10 @@ These are mechanisms for experimenting with adaptation, not a claim that an agen
 
 | Driver | Environment | Setup |
 | --- | --- | --- |
-| mGBA | Game Boy Advance emulator | Open a ROM and load the optional driver package's Lua bridge. See [mGBA setup](docs/tutorials/development.md#mgba). |
-| Ryubing | Nintendo Switch emulator | Build and install the patched emulator. See the [Ryubing guide](docs/tutorials/development.md#ryubing). |
-| Azahar | Nintendo 3DS emulator | Build and install the patched emulator. Native pad, touch, and separate top/bottom screen capture. See the [Azahar guide](docs/tutorials/development.md#azahar). |
-| Cua | Local desktop applications | Install the upstream Cua Driver and grant its required OS permissions. See [Cua setup](docs/tutorials/development.md#cua). |
+| mGBA | Game Boy Advance emulator | Open a ROM and load the optional driver package's Lua bridge. See [mGBA setup](docs/tutorials/devices.md#mgba). |
+| Ryubing | Nintendo Switch emulator | Build and install the patched emulator. See the [Ryubing guide](docs/tutorials/devices.md#ryubing). |
+| Azahar | Nintendo 3DS emulator | Build and install the patched emulator. Native pad, touch, and separate top/bottom screen capture. See the [Azahar guide](docs/tutorials/devices.md#azahar). |
+| Cua | Local desktop applications | Install the upstream Cua Driver and grant its required OS permissions. See [Cua setup](docs/tutorials/devices.md#cua). |
 
 Emulator drivers are optional packages maintained in [ludens-gba-driver](https://github.com/luokerenx4/ludens-gba-driver), [ludens-3ds-driver](https://github.com/luokerenx4/ludens-3ds-driver), and [ludens-switch-driver](https://github.com/luokerenx4/ludens-switch-driver). Only the Cua desktop adapter is built in.
 
@@ -42,7 +42,7 @@ Drivers expose device capabilities, not game strategies. Screen processing, coor
 - Local **OMP model credentials** configured before starting the agent. RSA reuses OMP authentication; the default model is `openai-codex/gpt-6.1-sol`.
 - One prepared environment from the table above. ROMs, firmware, keys, and saves are not included.
 
-For device preparation and model configuration, see the [development guide](docs/tutorials/development.md).
+For device preparation and model configuration, see [Devices & Drivers](docs/tutorials/devices.md) and [Installation & Quickstart](docs/tutorials/quickstart.md).
 
 ### 2. Install the components
 
@@ -112,7 +112,7 @@ rsa down --keep-emulator  # Stop the host and Baseware; keep the game open
 rsa down                  # Also stop the workspace-managed emulator
 ```
 
-Save your game before closing its emulator. Shared Dashboard and Ludens Pet processes remain running by default; see the [lifecycle guide](docs/tutorials/development.md#工作区启动与停止) for shutdown options and configuration changes.
+Save your game before closing its emulator. Shared Dashboard and Ludens Pet processes remain running by default; see the [lifecycle guide](docs/tutorials/quickstart.md#工作区启动与停止) for shutdown options and configuration changes.
 
 ## How it works
 
@@ -143,7 +143,7 @@ my-task/
 └── logs/             # Run records, model inputs, and diagnostics
 ```
 
-The agent can compose Python functions, retain models in its separate perception and action processes, and manage background programs with OMP's native tools. Workspace files and sessions persist across runs; separate CLI invocations do not share memory. See the [workspace contract](docs/tutorials/workspace.md) for unified `@capability` functions, optional `@record`, resident lifecycle, and storage locations.
+The agent can compose Python functions, retain models in its separate perception and action processes, and manage background programs with OMP's native tools. Workspace files and sessions persist across runs; separate CLI invocations do not share memory. See [Workspace & Capabilities](docs/tutorials/workspace.md) and [Resident Perception & Action](docs/tutorials/perception-and-action.md) for unified `@capability` functions, optional `@record`, resident lifecycle, and storage locations.
 
 ### Benchmarks
 
@@ -161,7 +161,7 @@ Harbor Task packages describe the evaluation; separate run configurations select
 
 ## Development
 
-Follow [AGENTS.md](AGENTS.md) for development conventions and the [development guide](docs/tutorials/development.md) for component startup and checks. Each component retains its own lockfile. Default checks are offline; live model and device tests are explicit.
+Follow [AGENTS.md](AGENTS.md) for development conventions and [Console, Debugging & Verification](docs/tutorials/debugging-and-verification.md) for component startup and checks. Each component retains its own lockfile. Default checks are offline; live model and device tests are explicit.
 
 ## Boundaries and safety
 
@@ -178,8 +178,11 @@ Current documentation lives in the root `docs/` directory, split into `tutorials
 | Guide | Category | Contents |
 | --- | --- | --- |
 | [Tutorials Overview](docs/tutorials/index.md) | Tutorials | End-to-end onboarding path and common operational workflows. |
-| [Development](docs/tutorials/development.md) | Tutorials | Installation, device setup (`mGBA` / `Ryubing` / `Azahar` / `Cua`), service lifecycle, and verification. |
-| [Workspace](docs/tutorials/workspace.md) | Tutorials | Configuration, `@capability` / `@record`, resident perception & action, and background programs. |
+| [Quickstart](docs/tutorials/quickstart.md) | Tutorials | Installation, `RSA_PYTHON` runtime, `rsa.json`, and workspace lifecycle (`init / up / auto / down`). |
+| [Devices & Drivers](docs/tutorials/devices.md) | Tutorials | Preparing `mGBA`, `Ryubing`, `Azahar`, `Cua`, and external driver packages. |
+| [Workspace & Capabilities](docs/tutorials/workspace.md) | Tutorials | Workspace layout, `@capability` / `@record`, `.rsa/timeline/`, and background programs. |
+| [Perception & Action](docs/tutorials/perception-and-action.md) | Tutorials | Resident `perception.py` & `action.py` loops, `rsa observe`, and context injection. |
+| [Debugging & Verification](docs/tutorials/debugging-and-verification.md) | Tutorials | Standalone component debugging, Dashboard & Ludens Pet, and offline/live test suites. |
 | [Reference Overview](docs/reference/index.md) | Reference | System layers, contract index, and source-of-truth code map. |
 | [Architecture](docs/reference/architecture.md) | Reference | Component boundaries, Shiori, control leases, OMP session loop, and storage ownership. |
 | [Baseware](docs/reference/baseware.md) | Reference | CUA native capability contract, driver boundaries, control arbitration, media, and external driver packages. |
