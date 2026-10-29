@@ -209,5 +209,5 @@ Detailed guides in `docs/` are currently in Chinese. Runtime prompts, workspace 
 
 ## License and attribution
 
-A repository-wide license has not yet been declared. Ludens Pet's retained [license](rsa-companion/LICENSE), [provenance record](rsa-companion/upstream.json), and [asset notices](rsa-companion/ui/public/companion/NOTICE.md) document the companion's existing licensing and sources; they are not a repository-wide license declaration.
+Ludens is licensed under the [MIT License](LICENSE), including the OpenAlice-derived code used with the copyright holder's authorization. See [third-party notices and provenance](THIRD_PARTY_NOTICES.md) for retained attributions and licenses. Dependencies and optional community drivers retain their own licenses.
 

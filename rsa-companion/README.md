@@ -11,4 +11,6 @@
 - [日志消费与跟随工作区](../docs/en/reference/logging.md)
 - [组件边界](../docs/en/reference/architecture.md)
 
-来源与授权保留在 [LICENSE](LICENSE)、[upstream.json](upstream.json) 和 [素材说明](ui/public/companion/NOTICE.md)。`upstream.json` 记录移植时的上游路径与哈希，不是当前目录清单。
+本组件采用仓库的 [MIT License](../LICENSE)，包含已获版权所有者授权的 OpenAlice 移植代码。第三方声明见 [许可与来源索引](../THIRD_PARTY_NOTICES.md) 和 [素材说明](ui/public/companion/NOTICE.md)。[upstream.json](upstream.json) 记录移植时的上游路径与哈希，不是当前目录清单或许可证声明。
+
+This component uses the repository's [MIT License](../LICENSE), including the OpenAlice-derived code authorized by its copyright holder. See the [notice index](../THIRD_PARTY_NOTICES.md) and [asset notices](ui/public/companion/NOTICE.md) for third-party attributions. [upstream.json](upstream.json) records import-time paths and hashes, not the current file list or license.
