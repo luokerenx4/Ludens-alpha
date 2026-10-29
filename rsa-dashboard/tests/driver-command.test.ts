@@ -23,7 +23,7 @@ test("external driver discovery remains visible without a usable workspace catal
     { project: "", ready: true },
     { project: "missing", ready: true, catalogError: "catalog unavailable" },
   ]) {
-    const html = renderToStaticMarkup(createElement(CapabilitiesView, props));
+    const html = renderToStaticMarkup(createElement(CapabilitiesView, { ...props, onRetryCatalog() {} }));
     assert.match(html, /aria-label="capabilitiesView\.driverSectionLabel"/);
     assert.match(html, /aria-label="capabilitiesView\.specAriaLabel"/);
     assert.match(html, /<form/);

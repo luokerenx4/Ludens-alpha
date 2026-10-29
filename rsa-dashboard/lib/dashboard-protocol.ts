@@ -34,7 +34,7 @@ export interface DashboardMethods {
   benchmarkAttachment: { args: [project: string, run: string, index: number, verification?: string]; result: Awaited<ReturnType<typeof benchmarkAttachment>> };
   capabilities: { args: [project?: string]; result: Awaited<ReturnType<typeof capabilities>> };
   discoverDriver: { args: [spec: string]; result: Awaited<ReturnType<typeof discoverDriver>> };
-  docGroups: { args: []; result: Awaited<ReturnType<typeof docGroups>> };
+  docGroups: { args: [root?: string, lang?: "en" | "zh"]; result: Awaited<ReturnType<typeof docGroups>> };
   readDoc: { args: [id: string, root?: string, lang?: "en" | "zh"]; result: Awaited<ReturnType<typeof readDoc>> };
   stop: { args: [project: string, run: string, epoch: string | null]; result: Awaited<ReturnType<typeof stopRun>> };
   perceptionSettings: { args: [project: string]; result: Partial<PerceptionSettings> };

@@ -4,34 +4,21 @@ import type { CapabilityEntry, CapabilitiesResult } from "@/lib/capabilities";
 import type { DiscoveredDriver } from "@/lib/drivers";
 import { driverInitCommand } from "@/lib/driver-command";
 import { useTranslations } from "@/lib/locale";
+import { useReadResource } from "./use-read-resource";
+import { useRetryFocus } from "./use-retry-focus";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
-function useJson<T>(url: string | null): { value?: T; error?: string } {
-  const t = useTranslations("capabilitiesView");
-  const [loaded, setLoaded] = useState<{ url: string; value?: T; error?: string } | null>(null);
-  useEffect(() => {
-    if (!url) return;
-    const controller = new AbortController();
-    const load = async () => {
-      try {
-        const response = await fetch(url, { cache: "no-store", signal: controller.signal });
-        const value = await response.json();
-        if (!response.ok) throw new Error(value.error ?? t("readFailed"));
-        if (!controller.signal.aborted) setLoaded({ url, value });
-      } catch (error) {
-        if (!controller.signal.aborted) setLoaded(previous => ({ url, value: previous?.url === url ? previous.value : undefined, error: String(error) }));
-      }
-    };
-    void load();
-    return () => controller.abort();
-  }, [url]);
-  return loaded?.url === url ? loaded : {};
+interface WorkspaceCatalogProps {
+  project: string;
+  ready: boolean;
+  catalogError?: string;
+  catalogLoading?: boolean;
+  onRetryCatalog(): void;
 }
-
 
 function DiscoverDriver() {
   const t = useTranslations("capabilitiesView");
@@ -99,23 +86,42 @@ function DiscoverDriver() {
     </div>
   </section>;
 }
-function WorkspaceCapabilities({ project, ready, catalogError }: { project: string; ready: boolean; catalogError?: string }) {
+function WorkspaceCapabilities({ project, ready, catalogError, catalogLoading, onRetryCatalog }: WorkspaceCatalogProps) {
   const t = useTranslations("capabilitiesView");
   const controlLabel = (item: CapabilityEntry) => item.requiresControl === null ? "—"
     : item.requiresControl ? t("needsControl") : t("noControl");
   const readOnlyLabel = (item: CapabilityEntry) => item.readOnly === null ? ""
     : item.readOnly ? t("readOnlySuffix") : t("sideEffectsSuffix");
-  const capsLoad = useJson<CapabilitiesResult>(project ? `/api/capabilities?project=${encodeURIComponent(project)}` : null);
+  const capsLoad = useReadResource<CapabilitiesResult>(project ? `/api/capabilities?project=${encodeURIComponent(project)}` : null, t("readFailed"));
   const caps = capsLoad.value;
-  const error = catalogError || capsLoad.error;
-  if (error || !ready || (project && !caps)) return <section className="surface empty-state" aria-live="polite">
-    <h2>{error ? t("loadErrorTitle") : t("loadingTitle")}</h2>
-    <p>{error ?? t("loadingDesc")}</p>
-  </section>;
-  if (!caps?.project) return <section className="surface empty-state">
-    <h2>{t("emptyTitle")}</h2><p>{t("emptyDesc")}</p>
-  </section>;
-  return <div className="caps-layout">
+  const catalogFocus = useRetryFocus(!!catalogLoading, catalogError);
+  return <div ref={catalogFocus.target} className="caps-layout" tabIndex={-1} role="region" aria-label={t("overviewLabel")} aria-busy={capsLoad.loading}>
+    {catalogError && <Alert variant="destructive"><AlertDescription className="flex flex-wrap items-center justify-between gap-3">
+      <div className="min-w-0 flex-1"><p>{t("catalogFailed")}</p><details className="mt-1 text-xs">
+        <summary className="cursor-pointer">{t("errorDetails")}</summary><pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all">{catalogError}</pre>
+      </details></div>
+      <Button type="button" variant="outline" size="sm" aria-disabled={catalogLoading} className="aria-disabled:opacity-50"
+        onClick={event => { if (!catalogLoading) { catalogFocus.remember(event.currentTarget); onRetryCatalog(); } }}>{t(catalogLoading ? "retrying" : "retryCatalog")}</Button>
+    </AlertDescription></Alert>}
+    {project && <div className="flex flex-wrap items-center justify-between gap-3">
+      <p className="text-xs text-muted-foreground">{t("readOnlyRefreshHint")}</p>
+      <Button type="button" size="sm" variant="outline" aria-disabled={capsLoad.loading} className="aria-disabled:opacity-50"
+        onClick={() => { if (!capsLoad.loading) capsLoad.retry(); }}>
+        {t(capsLoad.loading ? "retrying" : capsLoad.error ? "retryRead" : "refresh")}
+      </Button>
+    </div>}
+    {capsLoad.error && <Alert variant="destructive"><AlertDescription>
+      <p>{t("loadErrorTitle")}</p><details className="mt-1 text-xs">
+        <summary className="cursor-pointer">{t("errorDetails")}</summary><pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all">{capsLoad.error}</pre>
+      </details>
+      {caps && <p className="mt-1">{t("showingCached")}</p>}
+    </AlertDescription></Alert>}
+    {!caps?.project ? !ready || (project && capsLoad.loading) ? <section className="surface empty-state" role="status">
+      <h2>{t(!ready && !project ? "loadingWorkspaces" : "loadingTitle")}</h2>
+      {project && <p>{t("loadingDesc")}</p>}
+    </section> : !catalogError && !capsLoad.error ? <section className="surface empty-state">
+      <h2>{t("emptyTitle")}</h2><p>{t("emptyDesc")}</p>
+    </section> : null : <>
     {caps.issues.length > 0 && <details className="bench-warning"><summary>{t("diagnosticsTitle")}</summary>
       {caps.issues.map((issue, index) => <p key={index}>{issue.error}</p>)}
     </details>}
@@ -147,10 +153,11 @@ function WorkspaceCapabilities({ project, ready, catalogError }: { project: stri
         </TableRow>)}</TableBody>
       </Table> : <p className="bench-note">{t("noTasksHint")}</p>}
     </section>
+  </>}
   </div>;
 }
 
-export function CapabilitiesView(props: { project: string; ready: boolean; catalogError?: string }) {
+export function CapabilitiesView(props: WorkspaceCatalogProps) {
   return <div className="caps-layout">
     <WorkspaceCapabilities {...props} />
     <DiscoverDriver />
