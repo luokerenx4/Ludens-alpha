@@ -2,6 +2,7 @@
 import { Button } from "@/components/ui/button";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { useLocale, useTranslations } from "@/lib/locale";
 import type { Project, RunData } from "@/lib/types";
 import type { ReplayOverviewResult } from "@/lib/replay-types";
 import { initialSelection, latestGameRun } from "@/lib/initial-selection";
@@ -38,25 +39,15 @@ const subscribeLocation = (listener: () => void) => {
 };
 const getLocation = () => window.location.search;
 const serverLocation = () => "";
-const views = {
-  live: ["运行", "运行现场", "实时观察模型输入画面、活动日志与控制状态。"],
-  replay: ["回放", "经历回放", "在同一条时间轴上对齐感知画面、设备动作与模型调用。"],
-  benchmark: ["Benchmark", "运行性能", "追踪单次请求的传输等待、缓存命中与显式调用链。"],
-  caps: ["能力", "能力与评测", "查看当前工作区的设备接口快照、Python @capability 与评测任务。"],
-  perception: ["感知", "感知录制设置", "调整当前工作区的录像分段与内存加速窗口。"],
-  workspaces: ["工作区", "工作区管理", "设置新建目录、登记已有工作区，并管理本机工作区列表。"],
-  docs: ["文档", "项目文档", "教程、架构契约与设计洞见（从仓库 docs/ 实时读取）。"],
-  settings: ["设置", "全局设置", "Ludens Pet 陪伴偏好与控制台全局设置；工作区自身的设置在各自页面。"],
-  dev: ["开发者面板", "原理展示", "讲解循环与注入原理的实验工具，不影响任何真实运行。"],
-} as const;
-type View = keyof typeof views;
+const viewIds = ["live", "replay", "benchmark", "caps", "perception", "workspaces", "docs", "settings", "dev"] as const;
+type View = typeof viewIds[number];
 const navSections: Array<{ label: string; ids: View[] }> = [
-  { label: "工作区", ids: ["live", "replay", "benchmark", "caps", "perception"] },
-  { label: "全局", ids: ["workspaces", "docs", "settings"] },
-  { label: "开发者", ids: ["dev"] },
+  { label: "navSectionWorkspace", ids: ["live", "replay", "benchmark", "caps", "perception"] },
+  { label: "navSectionGlobal", ids: ["workspaces", "docs", "settings"] },
+  { label: "navSectionDev", ids: ["dev"] },
 ];
-function workspaceName(project?: Project) {
-  if (!project) return "选择工作区";
+function workspaceName(project?: Project, fallback = "") {
+  if (!project) return fallback;
   if (project.name) return project.name;
   if (project.workspace) {
     const parts = project.workspace.split("/").filter(Boolean);
@@ -133,6 +124,8 @@ function NavIcon({ kind }: { kind: View | "logo" }) {
 }
 
 export default function Dashboard() {
+  const { t } = useLocale();
+  const dt = useTranslations("dashboard");
   const search = useSyncExternalStore(
     subscribeLocation,
     getLocation,
@@ -140,10 +133,10 @@ export default function Dashboard() {
   );
   const query = new URLSearchParams(search);
   const requestedView = query.get("view");
-  const view: View = requestedView && Object.hasOwn(views, requestedView) ? requestedView as View : "live";
+  const view: View = requestedView && (viewIds as readonly string[]).includes(requestedView) ? requestedView as View : "live";
   const benchmarkCases = view === "benchmark" && query.get("bench") === "cases";
   const includeEmptyProjects = ["caps", "perception", "settings", "workspaces"].includes(view);
-  // 需要运行/周期上下文的视图:运行、回放与基准剖析;其余视图不加载运行数据。
+  // Views needing run/epoch context: live, replay and benchmark profiling; other views skip run data.
   const runControls = view === "live" || view === "replay" || (view === "benchmark" && !benchmarkCases);
   const [catalogRevision, setCatalogRevision] = useState(0);
   const refreshCatalog = useCallback(() => setCatalogRevision(value => value + 1), []);
@@ -295,12 +288,12 @@ export default function Dashboard() {
   const status =
     phase?.label ??
     (auto
-      ? "AI 正在接管"
+      ? dt("statusTakingOver")
       : data
         ? returned || (isCurrent && live?.connected)
-          ? "控制权已交还"
-          : "历史运行回放"
-        : "等待运行");
+          ? dt("statusReturned")
+          : dt("statusReplay")
+        : dt("statusWaiting"));
   const stop = async () => {
     if (!data?.controlAllowed || !auto) return;
     setStopping(true);
@@ -316,7 +309,7 @@ export default function Dashboard() {
         }),
       });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "交还失败");
+      if (!response.ok) throw new Error(result.error ?? dt("handoverFailed"));
       const next = await json<RunData>(
         "/api/run?" +
           new URLSearchParams({
@@ -338,10 +331,10 @@ export default function Dashboard() {
   };
   const s = data?.summary;
   const waitSummary = [
-    s?.medianHttpHeadersMs != null ? "HTTP 响应头等待 " + seconds(s.medianHttpHeadersMs) : "",
-    s?.medianWsWaitMs != null ? "WS 首事件等待 " + seconds(s.medianWsWaitMs) : "",
+    s?.medianHttpHeadersMs != null ? dt("waitHttp") + " " + seconds(s.medianHttpHeadersMs) : "",
+    s?.medianWsWaitMs != null ? dt("waitWs") + " " + seconds(s.medianWsWaitMs) : "",
   ].filter(Boolean).join(" · ");
-  const pageRange = data?.calls.length ? `本页 #${data.paging.firstIndex}–#${data.paging.lastIndex} · 共 ${data.paging.totalCalls} 个请求` : "本页无请求";
+  const pageRange = data?.calls.length ? `Page #${data.paging.firstIndex}–#${data.paging.lastIndex} · ${data.paging.totalCalls} ${dt("requestsUnit")}` : dt("pageEmpty");
   const hasTelemetry = data?.telemetry.sources.some(
     (source) => source.component !== "unlabelled",
   );
@@ -362,16 +355,16 @@ export default function Dashboard() {
         </a>
         <div className="workspace-picker">
           <label htmlFor="workspace">
-            {benchmarkCases ? "评测目录 · 跨工作区" : view === "docs" ? "文档来源" : view === "settings" ? "全局设置" : view === "workspaces" ? "工作区管理" : "工作区"}
+            {benchmarkCases ? dt("picker.benchAcross") : view === "docs" ? dt("picker.docsSource") : view === "settings" ? dt("picker.globalSettings") : view === "workspaces" ? dt("picker.workspacesAdmin") : dt("picker.workspace")}
           </label>
           {view === "workspaces" ? (
-            <div className="bench-global-workspace">本机工作区</div>
+            <div className="bench-global-workspace">{dt("picker.localWorkspaces")}</div>
           ) : benchmarkCases ? (
-            <div className="bench-global-workspace">所有工作区</div>
+            <div className="bench-global-workspace">{dt("picker.allWorkspaces")}</div>
           ) : view === "docs" ? (
-            <div className="bench-global-workspace">仓库 docs/</div>
+            <div className="bench-global-workspace">{dt("picker.repoDocs")}</div>
           ) : view === "settings" ? (
-            <div className="bench-global-workspace">桌面与网页共享</div>
+            <div className="bench-global-workspace">{dt("picker.sharedDesktopWeb")}</div>
           ) : (
             <NativeSelect
               id="workspace"
@@ -392,19 +385,19 @@ export default function Dashboard() {
                 })
               }
             >
-              {!projects.length && <NativeSelectOption value="">暂无工作区</NativeSelectOption>}
+              {!projects.length && <NativeSelectOption value="">{dt("picker.noWorkspace")}</NativeSelectOption>}
               {projects.map((p) => (
                 <NativeSelectOption key={p.id} value={p.id}>
-                  {workspaceName(p)}{p.available === false ? " · 不可用" : ""}
+                  {workspaceName(p)}{p.available === false ? dt("picker.unavailable") : ""}
                 </NativeSelectOption>
               ))}
             </NativeSelect>
           )}
         </div>
-        <nav aria-label="控制台导航">
+        <nav aria-label={dt("consoleNav")}>
           {navSections.map(section => (
             <div key={section.label} className="nav-section">
-              <small>{section.label}</small>
+              <small>{t(section.label)}</small>
               {section.ids.map(id => (
                 <a
                   key={id}
@@ -417,7 +410,7 @@ export default function Dashboard() {
                   }}
                 >
                   <NavIcon kind={id} />
-                  <span>{views[id][0]}</span>
+                  <span>{t(`nav.${id}`)}</span>
                 </a>
               ))}
             </div>
@@ -430,16 +423,16 @@ export default function Dashboard() {
         <header className="context-bar">
           <div className="breadcrumb">
             <span>
-              {benchmarkCases ? "所有工作区" : view === "docs" || view === "settings" || view === "workspaces" ? "Ludens" : workspaceName(project)}
+              {benchmarkCases ? dt("picker.allWorkspaces") : view === "docs" || view === "settings" || view === "workspaces" ? "Ludens" : workspaceName(project, dt("workspacePlaceholder"))}
             </span>
             <i>/</i>
-            <strong>{views[view][0]}</strong>
+            <strong>{t(`nav.${view}`)}</strong>
           </div>
           <div className="context-controls">
             {runControls && (
               <>
                 <NativeSelect
-                  aria-label="运行记录"
+                  aria-label={dt("runHistoryLabel")}
                   className="max-w-60 text-xs"
                   value={selection.run}
                   onChange={(e) =>
@@ -455,7 +448,7 @@ export default function Dashboard() {
                   }
                 >
                   <NativeSelectOption value="">
-                    最新运行
+                    {dt("latestRun")}
                     {latest
                       ? " · " + runDate(latest.id)
                       : ""}
@@ -463,12 +456,12 @@ export default function Dashboard() {
                   {project?.runs.map((r) => (
                     <NativeSelectOption key={r.id} value={r.id}>
                       {runDate(r.id)}
-                      {r.kind === "benchmark" ? " · 评测" : ""}
+                      {r.kind === "benchmark" ? dt("benchSuffix") : ""}
                     </NativeSelectOption>
                   ))}
                 </NativeSelect>
                 <NativeSelect
-                  aria-label="接管周期"
+                  aria-label={dt("epochLabel")}
                   className="max-w-48 text-xs"
                   value={selection.epoch}
                   onChange={(e) =>
@@ -486,11 +479,11 @@ export default function Dashboard() {
                 >
                   <NativeSelectOption value="">
                     {data?.manifest.kind === "benchmark" && !cycles.length
-                      ? "完整基准运行"
-                      : "最新周期"}
+                      ? dt("fullBenchRun")
+                      : dt("latestEpoch")}
                     {cycles.length ? " · #" + cycles.length : ""}
                   </NativeSelectOption>
-                  {view === "replay" && <NativeSelectOption value="all">全部周期</NativeSelectOption>}
+                  {view === "replay" && <NativeSelectOption value="all">{dt("allEpochs")}</NativeSelectOption>}
                   {[...cycles].reverse().map((c, i) => (
                     <NativeSelectOption key={c.epoch} value={c.epoch}>
                       #{cycles.length - i} · {clockTime(c.startedAt)}
@@ -505,20 +498,20 @@ export default function Dashboard() {
               variant="outline"
               className={refresh ? "border-success/40 text-success" : "text-muted-foreground"}
               aria-pressed={refresh}
-              title="只控制界面刷新，不影响 Agent"
+              title={dt("refreshHint")}
               onClick={() => setRefresh((v) => !v)}
             >
               <i className={"status-dot" + (refresh ? " online" : "")} />
-              {refresh ? "实时" : "已暂停刷新"}
+              {refresh ? dt("live") : dt("paused")}
             </Button>}
           </div>
         </header>
         <main className="page-content">
           <div className="page-heading">
             <div>
-              <h1>{benchmarkCases ? "评测目录" : views[view][1]}</h1>
+              <h1>{benchmarkCases ? t("benchmark.casesTitle") : t(`views.${view}.title`)}</h1>
               <p>
-                {benchmarkCases ? "重复评测能力，查看指标、条件与原始证据。" : views[view][2]}
+                {benchmarkCases ? t("benchmark.casesDescription") : t(`views.${view}.description`)}
               </p>
             </div>
             {(view === "live" || (view === "benchmark" && !benchmarkCases)) && (
@@ -526,18 +519,18 @@ export default function Dashboard() {
                 type="button"
                 variant="outline"
                 disabled={!data?.controlAllowed || !auto || stopping}
-                title={data?.controlReason ?? "暂无运行"}
+                title={data?.controlReason ?? dt("noRun")}
                 onClick={stop}
               >
-                {stopping ? "正在交还…" : "交还控制权"}
+                {stopping ? dt("handingOver") : dt("handover")}
               </Button>
             )}
           </div>
           {view === "benchmark" && (
-            <nav className="mb-5 flex gap-2 border-b pb-3" aria-label="Benchmark 视图">
+            <nav className="mb-5 flex gap-2 border-b pb-3" aria-label={dt("benchNavLabel")}>
               {[
-                ["analysis", "运行剖析"],
-                ["cases", "评测目录"],
+                ["analysis", dt("benchAnalysis")],
+                ["cases", dt("benchCases")],
               ].map(([tab, title]) => (
                 <Button
                   type="button"
@@ -560,7 +553,7 @@ export default function Dashboard() {
             <div className="error-banner" role="alert">
               {catalogError || error}
               {data && (
-                <small>保留上次读取结果 · {clockTime(data.updatedAt)}</small>
+                <small>{dt("keepLast")} · {clockTime(data.updatedAt)}</small>
               )}
             </div>
           )}
@@ -592,25 +585,25 @@ export default function Dashboard() {
               <span className="empty-symbol">◫</span>
               <h2>
                 {!catalogReady
-                  ? "正在发现工作区"
+                  ? dt("empty.discovering")
                   : !projects.length
-                    ? "还没有运行记录"
+                    ? dt("empty.noRuns")
                     : error
-                      ? "暂时无法读取运行"
-                      : preparing?.key === key ? "正在整理历史目录" : "正在读取运行日志"}
+                      ? dt("empty.readFailed")
+                      : preparing?.key === key ? dt("empty.archiving") : dt("empty.loadingRun")}
               </h2>
               <p>
                 {!catalogReady
-                  ? "正在连接本地日志服务…"
+                  ? dt("emptyHint.connecting")
                   : !projects.length
-                    ? "在工作区启动 RSA 后，实时画面、活动日志与性能统计会显示在这里。"
+                    ? dt("emptyHint.startRsa")
                     : error
-                      ? "请检查本地日志服务，恢复连接后会自动更新。"
+                      ? dt("emptyHint.checkService")
                       : preparing?.key === key
-                        ? `已读取 ${bytes(preparing.progress.bytes)} / ${bytes(preparing.progress.totalBytes)}${preparing.progress.projection ? `，已整理 ${preparing.progress.projection.position.toLocaleString()} / ${preparing.progress.projection.total.toLocaleString()} 条已知事件` : ""}。录像可在回放页直接播放。`
-                        : "正在加载当前工作区的观察与行动记录…"}
+                        ? `${dt("archive.read")} ${bytes(preparing.progress.bytes)} / ${bytes(preparing.progress.totalBytes)}${preparing.progress.projection ? ` · ${dt("archive.organizedPrefix")}${preparing.progress.projection.position.toLocaleString()} / ${preparing.progress.projection.total.toLocaleString()}${dt("archive.organizedSuffix")}` : ""}${dt("archive.replayNote")}`
+                        : dt("emptyHint.loadingObs")}
               </p>
-              {!projects.length && <Button type="button" onClick={() => navigate({ view: "workspaces" })}>管理工作区</Button>}
+              {!projects.length && <Button type="button" onClick={() => navigate({ view: "workspaces" })}>{dt("manageWorkspaces")}</Button>}
             </section>
           ) : (
             <>
@@ -618,44 +611,44 @@ export default function Dashboard() {
                 <span className={"status-dot " + (auto ? "online" : "")} />
                 <strong>{status}</strong>
                 {phase?.elapsedMs != null && (
-                  <span>已持续 {seconds(phase.elapsedMs)}</span>
+                  <span>{dt("elapsed")} {seconds(phase.elapsedMs)}</span>
                 )}
                 <i />
-                <span>{data.manifest.model ?? "仅设备"}</span>
+                <span>{data.manifest.model ?? dt("deviceOnly")}</span>
                 <span className="run-time">
-                  {Math.floor(s!.elapsedSeconds / 60)}分{" "}
-                  {Math.floor(s!.elapsedSeconds % 60)}秒 <b> / </b>预算{" "}
-                  {Math.floor(data.manifest.seconds / 60)}分钟
+                  {Math.floor(s!.elapsedSeconds / 60)}{dt("min")}{" "}
+                  {Math.floor(s!.elapsedSeconds % 60)}{dt("sec")} <b> / </b>{dt("budget")}{" "}
+                  {Math.floor(data.manifest.seconds / 60)}{dt("minLong")}
                 </span>
               </div>
-              <section className="metrics" aria-label="本轮概况">
+              <section className="metrics" aria-label={dt("roundSummary")}>
                 <Metric
-                  label="完成请求"
+                  label={dt("metric.completed")}
                   value={String(s!.completed)}
-                  detail={"共 " + data.paging.totalCalls + " 个请求"}
+                  detail={dt("metric.totalPrefix") + data.paging.totalCalls + dt("requestsUnit")}
                 />
                 {view === "live" ? (
                   <Metric
-                    label="控制动作"
+                    label={dt("metric.actions")}
                     value={String(s!.actions)}
-                    detail={s!.explicitObserves + " 次主动观测"}
+                    detail={s!.explicitObserves + dt("metric.observes")}
                   />
                 ) : (
                   <Metric
-                    label="P95 延迟"
+                    label={dt("metric.p95")}
                     value={seconds(s!.p95Ms)}
-                    detail="完成请求 · nearest-rank"
+                    detail={dt("metric.nearestRank")}
                   />
                 )}
                 <Metric
-                  label="请求中位数"
+                  label={dt("metric.median")}
                   value={seconds(s!.medianMs)}
-                  detail={waitSummary || "传输等待未记录"}
+                  detail={waitSummary || dt("metric.noWait")}
                 />
                 <Metric
-                  label="缓存命中"
+                  label={dt("metric.cache")}
                   value={percent(s!.cacheHit)}
-                  detail={"首请求后 " + percent(s!.warmCacheHit)}
+                  detail={dt("metric.afterFirst") + percent(s!.warmCacheHit)}
                 />
               </section>
               {view === "live" ? (
@@ -672,7 +665,7 @@ export default function Dashboard() {
                         className="text-button"
                         onClick={() => navigate({ view: "benchmark" })}
                       >
-                        检查本轮性能 ↗
+                        {dt("checkPerf")} ↗
                       </button>
                       {(query.has("call") || query.has("beforeCall")) && (
                         <button
@@ -681,7 +674,7 @@ export default function Dashboard() {
                             navigate({ beforeCall: null, call: null, image: null, block: null })
                           }
                         >
-                          回到最新请求 ↓
+                          {dt("backToLatest")} ↓
                         </button>
                       )}
                       <span>
@@ -712,17 +705,17 @@ export default function Dashboard() {
                         <div className="surface-heading">
                           <h2>
                             {type === "latency"
-                              ? "请求耗时"
+                              ? dt("chart.latency")
                               : type === "cache"
-                                ? "缓存命中"
-                                : "请求体大小"}
+                                ? dt("chart.cache")
+                                : dt("chart.body")}
                           </h2>
                           <span>
                             {type === "latency"
-                              ? "灰柱：HTTP 响应头 / WS 首事件 · 秒"
+                              ? dt("chart.latencyHint")
                               : type === "cache"
                                 ? "%"
-                                : "MB · HTTP / WS 构建帧"}
+                                : dt("chart.bodyHint")}
                           </span>
                         </div>
                         <RequestChart
@@ -737,14 +730,14 @@ export default function Dashboard() {
                   <div className="benchmark-grid">
                     <section className="surface request-timeline">
                       <div className="surface-heading">
-                        <h2>请求时间轴</h2>
+                        <h2>{dt("timeline")}</h2>
                         <button
                           className="text-button"
                           onClick={() =>
                             navigate({ beforeCall: null, call: null, image: null, block: null })
                           }
                         >
-                          跟随最新 ↓
+                          {dt("followLatest")} ↓
                         </button>
                       </div>
                       <p className="feed-notice">{pageRange}</p>
@@ -765,11 +758,11 @@ export default function Dashboard() {
                                 <b>#{String(c.index).padStart(3, "0")}</b>
                                 <span className={"request-state " + c.status}>
                                   {c.status === "pending"
-                                    ? "进行中"
+                                    ? dt("req.pending")
                                     : c.status === "error"
-                                      ? "失败"
+                                      ? dt("req.failed")
                                       : c.status === "aborted"
-                                        ? "已中止"
+                                        ? dt("req.aborted")
                                         : seconds(c.durationMs)}
                                 </span>
                               </div>
@@ -777,11 +770,11 @@ export default function Dashboard() {
                                 {c.tools[0]?.intent ||
                                   c.tools.map((t) => t.name).join(" · ") ||
                                   (c.status === "pending"
-                                    ? "等待模型响应"
-                                    : "文本回复")}
+                                    ? dt("req.waiting")
+                                    : dt("req.textReply"))}
                               </p>
                               <small>
-                                {clockTime(c.at)} <span>{transport(c)}</span>
+                                {clockTime(c.at)} <span>{transport(c, (key) => t(`runVisuals.${key}`))}</span>
                               </small>
                               <small>
                                 {bytes(requestBytes(c))}
@@ -792,19 +785,19 @@ export default function Dashboard() {
                         {data.paging.hasMore && data.paging.beforeCall !== null && (
                           <button className="text-button load-more"
                             onClick={() => navigate({ ...pinned, beforeCall: String(data.paging.beforeCall), call: null, image: null, block: null })}>
-                            上一页 · 更早的 100 个请求
+                            {dt("loadMore")}
                           </button>
                         )}
                         {!data.calls.length && (
                           <div className="empty-state">
                             <p>
                               {data.activeCompaction
-                                ? "正在压缩历史，等待主循环请求。"
+                                ? dt("callsEmpty.compacting")
                                 : data.selectedEpoch
-                                  ? "本周期尚无模型请求。"
+                                  ? dt("callsEmpty.noEpochCalls")
                                   : data.manifest.benchmark
-                                    ? "此基准没有主循环模型请求。"
-                                    : "尚未开启接管周期。"}
+                                    ? dt("callsEmpty.noBenchCalls")
+                                    : dt("callsEmpty.noTakeover")}
                             </p>
                           </div>
                         )}
@@ -827,8 +820,8 @@ export default function Dashboard() {
                   </div>
                   <section className="surface telemetry-summary">
                     <div>
-                      <h2>运行事件来源</h2>
-                      <p>按职责追踪同一次执行。</p>
+                      <h2>{dt("telemetry.title")}</h2>
+                      <p>{dt("telemetry.hint")}</p>
                     </div>
                     <div className="source-chips">
                       {data.telemetry.sources.map((source) => (
@@ -841,7 +834,7 @@ export default function Dashboard() {
                     </div>
                     <div className="telemetry-counts">
                       <span>
-                        原生循环{" "}
+                        {dt("telemetry.nativeLoops")}{" "}
                         <b>
                           {hasTelemetry
                             ? data.telemetry.shiori.nativeLoops.length
@@ -849,7 +842,7 @@ export default function Dashboard() {
                         </b>
                       </span>
                       <span>
-                        能力调用{" "}
+                        {dt("telemetry.capCalls")}{" "}
                         <b>
                           {hasTelemetry
                             ? data.telemetry.capabilities.stats.started
@@ -857,34 +850,34 @@ export default function Dashboard() {
                         </b>
                       </span>
                       <span>
-                        设备操作{" "}
+                        {dt("telemetry.devOps")}{" "}
                         <b>
                           {hasTelemetry ? data.telemetry.devices.started : "—"}
                         </b>
                       </span>
                       <span>
-                        错误事件 <b>{s!.errors}</b>
+                        {dt("telemetry.errors")} <b>{s!.errors}</b>
                       </span>
                       <span>
-                        自动压缩 <b>{s!.compactions}</b>
+                        {dt("telemetry.compactions")} <b>{s!.compactions}</b>
                       </span>
                     </div>
                   </section>
                   <details className="run-provenance">
-                    <summary>运行配置与指标口径</summary>
+                    <summary>{dt("provenance.title")}</summary>
                     <dl className="fact-grid">
                       <div>
                         <dt>Shiori</dt>
                         <dd>
-                          {data.manifest.shiori?.implementation ?? "未记录"}{" "}
+                          {data.manifest.shiori?.implementation ?? dt("provenance.unrecorded")}{" "}
                           {data.manifest.shiori?.implementationVersion}
                         </dd>
                       </div>
                       <div>
-                        <dt>压缩阈值</dt>
+                        <dt>{dt("provenance.compactThresh")}</dt>
                         <dd>
                           {data.manifest.compactionThreshold?.toLocaleString() ??
-                            "默认"}
+                            dt("provenance.default")}
                         </dd>
                       </div>
                       <div>
@@ -900,13 +893,13 @@ export default function Dashboard() {
                         <dd>
                           {data.selectedEpoch ??
                             (data.manifest.benchmark
-                              ? "完整运行 · 无接管周期"
-                              : "尚未接管")}
+                              ? dt("provenance.fullRun")
+                              : dt("provenance.notTaken"))}
                         </dd>
                       </div>
                     </dl>
                     <p>
-                      主循环请求统计不含后台独立压缩请求；Shiori、工具与嵌套能力的耗时呈包含关系，不重复累加。HTTP 等待计至响应头，WS 等待计至首个入站事件（请求体为构建帧大小）。图表与时间轴按请求分页（{pageRange}），完整历史可在运行页的活动日志中检索。
+                      {dt("provenance.notePrefix")}{pageRange}{dt("provenance.noteSuffix")}
                     </p>
                   </details>
                 </>
@@ -915,10 +908,10 @@ export default function Dashboard() {
                 <span>
                   ⓘ{" "}
                   {view === "live"
-                    ? "日志记录执行事实，任务进展以画面为准。"
-                    : "包含关系的耗时不相加 · 模型统计不含独立压缩请求"}
+                    ? dt("footer.live")
+                    : dt("footer.bench")}
                 </span>
-                <span>更新于 {clockTime(data.updatedAt)}</span>
+                <span>{dt("updatedAt")} {clockTime(data.updatedAt)}</span>
               </footer>
             </>
           )}

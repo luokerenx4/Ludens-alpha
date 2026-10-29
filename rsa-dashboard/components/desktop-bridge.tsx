@@ -6,6 +6,7 @@ import {
   type ActivityDisplay,
 } from "../lib/desktop";
 import "./pet-settings.css";
+import { useTranslations } from "@/lib/locale";
 
 /** Native affordances around the same Web console; no second run view. */
 export function DesktopBridge({
@@ -13,6 +14,7 @@ export function DesktopBridge({
 }: {
   onNavigate(url: string): void;
 }) {
+  const t = useTranslations("desktopBridge");
   const [messages, setMessages] = useState<
     Map<string, Extract<ActivityDisplay, { type: "show" }>["input"]>
   >(() => new Map());
@@ -53,7 +55,7 @@ export function DesktopBridge({
   return (
     <aside
       className="desktop-notifications"
-      aria-label="活动通知"
+      aria-label={t("notificationsLabel")}
       aria-live="polite"
     >
       {[...messages].map(([id, input]) => (
@@ -63,10 +65,10 @@ export function DesktopBridge({
         >
           <div>
             <span className="desktop-notification-label">
-              LUDENS PET · {input.block?.kind ?? "活动"}
+              LUDENS PET · {input.block?.kind ?? t("activityFallback")}
             </span>
             <button
-              aria-label="关闭通知"
+              aria-label={t("dismiss")}
               onClick={() => void action("dismiss", id)}
             >
               ×
@@ -78,13 +80,13 @@ export function DesktopBridge({
             className="control-button"
             onClick={() => void action("open", id)}
           >
-            查看详情 ↗
+            {t("viewDetails")} ↗
           </button>
         </article>
       ))}
       {error && (
         <p role="alert" className="setting-error">
-          无法处理通知，请重试。
+          {t("actionFailed")}
         </p>
       )}
     </aside>

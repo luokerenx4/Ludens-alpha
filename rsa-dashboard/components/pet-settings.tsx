@@ -16,14 +16,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
+import { useTranslations } from "@/lib/locale";
 
-const blockLabels: Record<BlockKind, string> = {
-  thinking: "思考",
-  text: "文本",
-  tool: "工具调用",
-  system: "运行状态",
-  diagnostic: "诊断详情",
-};
 function SettingSwitch({
   label,
   hint,
@@ -54,6 +48,14 @@ export function PetSettings({ follow, projects }: { follow: PetFollow; projects:
   const { bridge, ready } = useDesktopCompanion();
   const sound = usePetSound(bridge),
     prefs = useActivityPreferences(bridge);
+  const t = useTranslations("petSettings");
+  const blockLabels: Record<BlockKind, string> = {
+    thinking: t("blockThinking"),
+    text: t("blockText"),
+    tool: t("blockTool"),
+    system: t("blockSystem"),
+    diagnostic: t("blockDiagnostic"),
+  };
   const file = useRef<HTMLInputElement>(null);
   const [visible, setVisible] = useState<boolean | null>(null);
   const [visibilityError, setVisibilityError] = useState(false);
@@ -107,60 +109,59 @@ export function PetSettings({ follow, projects }: { follow: PetFollow; projects:
       <div className="flex flex-wrap items-center gap-4 py-2">
         <div className="grid size-14 shrink-0 place-items-center rounded-2xl bg-primary/10 font-serif text-3xl text-primary" aria-hidden="true">L</div>
         <div className="min-w-0 flex-1 space-y-1">
-          <h2 className="text-xl font-semibold tracking-tight">卢登斯 · 桌面伴侣</h2>
-          <p className="text-sm text-muted-foreground">让正在发生的事，轻轻出现在桌面上。</p>
+          <h2 className="text-xl font-semibold tracking-tight">{t("title")}</h2>
+          <p className="text-sm text-muted-foreground">{t("subtitle")}</p>
         </div>
-        <Badge variant="outline">{bridge ? "桌面端已连接" : "浏览器模式"}</Badge>
+        <Badge variant="outline">{bridge ? t("connectedBadge") : t("browserBadge")}</Badge>
       </div>
       <PetFollowSettings follow={follow} projects={projects} />
       {ready && !bridge && (
         <Alert role="note">
-          <AlertTitle>关注工作区可在这里切换</AlertTitle>
+          <AlertTitle>{t("followSwitchTitle")}</AlertTitle>
           <AlertDescription>
-            浏览器与桌面端共享 Ludens Pet 的关注目标。下方的外观、通知和声音偏好，需要从
-            Ludens Pet 托盘打开桌面窗口设置。
+            {t("followSwitchDesc")}
           </AlertDescription>
         </Alert>
       )}
       <Card>
         <CardHeader>
-          <CardTitle role="heading" aria-level={3}>桌面陪伴</CardTitle>
-          <CardDescription>浮窗继续使用 Ludens Pet 的外观、动作与音频。</CardDescription>
+          <CardTitle role="heading" aria-level={3}>{t("companionTitle")}</CardTitle>
+          <CardDescription>{t("companionDesc")}</CardDescription>
         </CardHeader>
         <CardContent>
           <SettingSwitch
-            label="显示 Ludens Pet"
-            hint="关闭主窗口后，Ludens Pet 和托盘仍会保留。"
+            label={t("showPetLabel")}
+            hint={t("showPetHint")}
             checked={visible ?? false}
             disabled={!bridge || visible === null || visibilityPending}
             onChange={() => void toggle()}
           />
           {visibilityError && (
             <Alert variant="destructive" className="mt-3">
-              <AlertDescription>无法切换桌宠，请重试。</AlertDescription>
+              <AlertDescription>{t("toggleFailed")}</AlertDescription>
             </Alert>
           )}
         </CardContent>
       </Card>
       <Card>
         <CardHeader>
-          <CardTitle role="heading" aria-level={3}>日志与气泡</CardTitle>
-          <CardDescription>决定哪些内容展示在气泡中。完整日志始终留在运行视图。</CardDescription>
+          <CardTitle role="heading" aria-level={3}>{t("logsTitle")}</CardTitle>
+          <CardDescription>{t("logsDesc")}</CardDescription>
         </CardHeader>
         <CardContent>
-          {prefs.loading && <p role="status" className="text-sm text-muted-foreground">正在读取偏好…</p>}
+          {prefs.loading && <p role="status" className="text-sm text-muted-foreground">{t("loadingPrefs")}</p>}
           {(["enabled", "pet", "main", "brief"] as const).map((key) => (
             <SettingSwitch
               key={key}
-              label={{ enabled: "活动通知", pet: "Ludens Pet 气泡", main: "窗口内通知", brief: "简洁模式" }[key]}
-              hint={key === "main" ? "Ludens Pet 隐藏时，在控制台内展示通知。"
-                : key === "brief" ? "隐藏日志正文，只显示活动状态。" : undefined}
+              label={{ enabled: t("prefEnabled"), pet: t("prefPet"), main: t("prefMain"), brief: t("prefBrief") }[key]}
+              hint={key === "main" ? t("mainHint")
+                : key === "brief" ? t("briefHint") : undefined}
               checked={settings?.[key] ?? false}
               disabled={!settings || prefs.pending}
               onChange={(value) => { void prefs.update({ [key]: value }); }}
             />
           ))}
-          <h3 className="mt-6 mb-1 text-xs font-medium text-muted-foreground">展示内容</h3>
+          <h3 className="mt-6 mb-1 text-xs font-medium text-muted-foreground">{t("contentHeading")}</h3>
           {(Object.keys(blockLabels) as BlockKind[]).map((kind) => (
             <SettingSwitch
               key={kind}
@@ -175,35 +176,35 @@ export function PetSettings({ follow, projects }: { follow: PetFollow; projects:
           <div className="mt-5 flex flex-wrap gap-2">
             <Button variant="outline" disabled={!settings || prefs.pending}
               onClick={() => { void prefs.update({ pausedUntil: settings && settings.pausedUntil > now ? 0 : Date.now() + 3_600_000 }); }}>
-              {settings && settings.pausedUntil > now ? "恢复通知" : "暂停一小时"}
+              {settings && settings.pausedUntil > now ? t("resumeNotifications") : t("pauseHour")}
             </Button>
             <Button variant="outline" disabled={!settings || prefs.pending} onClick={() => { void prefs.reset(); }}>
-              恢复通知默认值
+              {t("resetDefaults")}
             </Button>
           </div>
           {!!settings && settings.pausedUntil > now && (
             <p role="status" className="mt-3 text-xs leading-relaxed text-muted-foreground">
-              暂停至 {new Date(settings.pausedUntil).toLocaleTimeString()}，不会暂停 Agent。
+              {t("pausedPrefix")}{new Date(settings.pausedUntil).toLocaleTimeString()}{t("pausedSuffix")}
             </p>
           )}
           {prefs.error && (
             <Alert variant="destructive" className="mt-3">
-              <AlertDescription>无法保存通知偏好，请重试。</AlertDescription>
+              <AlertDescription>{t("savePrefsFailed")}</AlertDescription>
             </Alert>
           )}
         </CardContent>
       </Card>
       <Card>
         <CardHeader>
-          <CardTitle role="heading" aria-level={3}>声音</CardTitle>
-          <CardDescription>保留原有的轻触提示音，也可以换成自己的声音。</CardDescription>
+          <CardTitle role="heading" aria-level={3}>{t("soundTitle")}</CardTitle>
+          <CardDescription>{t("soundDesc")}</CardDescription>
         </CardHeader>
         <CardContent>
-          {sound.loading && <p role="status" className="text-sm text-muted-foreground">正在读取声音设置…</p>}
-          <SettingSwitch label="点击声音" checked={sound.settings?.enabled ?? false}
+          {sound.loading && <p role="status" className="text-sm text-muted-foreground">{t("loadingSound")}</p>}
+          <SettingSwitch label={t("clickSoundLabel")} checked={sound.settings?.enabled ?? false}
             disabled={!sound.settings || sound.pending} onChange={(enabled) => { void sound.update({ enabled }); }} />
           <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border py-4">
-            <span id="pet-volume-label" className="text-sm font-medium">音量</span>
+            <span id="pet-volume-label" className="text-sm font-medium">{t("volumeLabel")}</span>
             <div className="flex w-full max-w-64 items-center gap-4">
               <Slider min={0} max={100} step={1} value={[volume]} disabled={!sound.settings || sound.pending}
                 aria-labelledby="pet-volume-label" onValueChange={([value]) => setVolume(value)}
@@ -212,28 +213,28 @@ export function PetSettings({ follow, projects }: { follow: PetFollow; projects:
             </div>
           </div>
           <div className="mt-5 space-y-2">
-            <h3 className="text-sm font-medium">声音文件</h3>
-            <p className="text-sm break-all text-muted-foreground">{sound.settings?.source?.name ?? "桌面端加载后显示当前声音"}</p>
-            <p className="text-xs leading-relaxed text-muted-foreground">WAV、MP3 或 OGG，最多 2 MB、10 秒。文件保存在本机。</p>
-            <input ref={file} type="file" accept=".wav,.mp3,.ogg" hidden aria-label="选择声音文件"
+            <h3 className="text-sm font-medium">{t("soundFileHeading")}</h3>
+            <p className="text-sm break-all text-muted-foreground">{sound.settings?.source?.name ?? t("soundSourcePlaceholder")}</p>
+            <p className="text-xs leading-relaxed text-muted-foreground">{t("soundFormatHint")}</p>
+            <input ref={file} type="file" accept=".wav,.mp3,.ogg" hidden aria-label={t("selectFileAria")}
               onChange={(e) => {
                 const chosen = e.target.files?.[0];
                 e.target.value = "";
                 if (chosen) void sound.importFile(chosen);
               }} />
             <div className="flex flex-wrap gap-2 pt-2">
-              <Button variant="outline" disabled={!bridge || sound.pending} onClick={() => file.current?.click()}>选择文件</Button>
+              <Button variant="outline" disabled={!bridge || sound.pending} onClick={() => file.current?.click()}>{t("chooseFile")}</Button>
               <Button variant="outline" disabled={!sound.settings?.source || sound.pending || volume === 0}
-                onClick={() => { void sound.preview(); }}>试听</Button>
-              <Button variant="outline" disabled={!bridge || sound.pending} onClick={() => { void sound.reset(); }}>恢复默认声音</Button>
+                onClick={() => { void sound.preview(); }}>{t("previewLabel")}</Button>
+              <Button variant="outline" disabled={!bridge || sound.pending} onClick={() => { void sound.reset(); }}>{t("restoreDefaultSound")}</Button>
             </div>
           </div>
-          {sound.pending && <p role="status" className="mt-3 text-xs text-muted-foreground">正在保存…</p>}
+          {sound.pending && <p role="status" className="mt-3 text-xs text-muted-foreground">{t("savingLabel")}</p>}
           {sound.error && <Alert variant="destructive" className="mt-3"><AlertDescription>{sound.error}</AlertDescription></Alert>}
         </CardContent>
       </Card>
       <p className="text-xs leading-relaxed text-muted-foreground">
-        外观、通知与声音偏好保存在这台电脑的 Ludens Pet profile 中，不会修改工作区或 Agent 的行为。
+        {t("footerNote")}
       </p>
     </div>
   );

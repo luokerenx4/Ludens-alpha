@@ -4,11 +4,11 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { LogBlock } from "@/lib/activity";
 import {
   matchesActivity,
-  blockLabels,
   printable,
   type ActivityFilter,
 } from "./activity-feed-model";
 import type { ActivityFeedData } from "./use-activity-feed";
+import { useTranslations } from "@/lib/locale";
 import "./activity-feed.css";
 
 interface ActivityFeedProps {
@@ -33,7 +33,6 @@ const sourceNames: Record<string, string> = {
   pet: "Ludens Pet",
   dashboard: "Dashboard",
 };
-const statusNames = { running: "进行中", complete: "已完成", error: "失败" };
 
 function BlockIcon({ kind }: { kind: LogBlock["kind"] }) {
   return (
@@ -75,6 +74,7 @@ function BlockIcon({ kind }: { kind: LogBlock["kind"] }) {
 }
 
 function CopyButton({ text }: { text: string }) {
+  const t = useTranslations("activityFeed");
   const [copied, setCopied] = useState<"idle" | "done" | "error">("idle");
   useEffect(() => {
     if (copied === "idle") return;
@@ -85,7 +85,7 @@ function CopyButton({ text }: { text: string }) {
     <button
       type="button"
       className="block-copy"
-      aria-label="复制完整内容"
+      aria-label={t("copyAria")}
       onClick={async () => {
         try {
           await navigator.clipboard.writeText(text);
@@ -95,12 +95,13 @@ function CopyButton({ text }: { text: string }) {
         }
       }}
     >
-      {copied === "done" ? "已复制" : copied === "error" ? "复制失败" : "复制"}
+      {copied === "done" ? t("copyDone") : copied === "error" ? t("copyFailed") : t("copyLabel")}
     </button>
   );
 }
 
 function Content({ text, code = false }: { text: string; code?: boolean }) {
+  const t = useTranslations("activityFeed");
   const [expanded, setExpanded] = useState(false);
   const long = text.length > 420 || text.split("\n").length > 8;
   const preview = long
@@ -114,8 +115,8 @@ function Content({ text, code = false }: { text: string; code?: boolean }) {
           onToggle={(event) => setExpanded(event.currentTarget.open)}
         >
           <summary>
-            {expanded ? "收起完整内容" : "展开完整内容"}
-            <span>{text.length.toLocaleString()} 字符</span>
+            {expanded ? t("collapseLabel") : t("expandLabel")}
+            <span>{text.length.toLocaleString()}{t("charsUnit")}</span>
           </summary>
           {expanded && <pre className="block-body block-full">{text}</pre>}
         </details>
@@ -139,8 +140,9 @@ function ActivityBlock({
   selected: boolean;
   onSelect?: (block: LogBlock) => void;
 }) {
+  const t = useTranslations("activityFeed");
   const source = block.source?.component;
-  const sourceName = source ? (sourceNames[source] ?? source) : "来源未标注";
+  const sourceName = source ? (sourceNames[source] ?? source) : t("sourceUnknown");
   const time = new Date(block.at);
   const at = Number.isNaN(time.getTime())
     ? block.at
@@ -148,7 +150,7 @@ function ActivityBlock({
   return (
     <article
       className={`block-item block-${block.kind}${selected ? " block-selected" : ""}${block.status === "error" ? " block-error" : ""}`}
-      aria-label={`${blockLabels[block.kind]}：${block.title}`}
+      aria-label={`${t(`kind.${block.kind}`)}: ${block.title}`}
     >
       <div className="block-icon">
         <BlockIcon kind={block.kind} />
@@ -158,12 +160,12 @@ function ActivityBlock({
           <span className="block-source" title={block.source?.implementation}>
             {sourceName}
           </span>
-          <span className="block-kind">{blockLabels[block.kind]}</span>
+          <span className="block-kind">{t(`kind.${block.kind}`)}</span>
           <time dateTime={block.at} title={block.at}>
             {at}
           </time>
           <span className={`block-status block-status-${block.status}`}>
-            {block.outcome === "raised" ? "函数抛异常" : block.outcome === "unmet" ? "目标未达成" : statusNames[block.status]}
+            {block.outcome === "raised" ? t("outcomeRaised") : block.outcome === "unmet" ? t("outcomeUnmet") : t(`status.${block.status}`)}
           </span>
         </div>
         <div className="block-title-row">
@@ -172,7 +174,7 @@ function ActivityBlock({
               type="button"
               className="block-title"
               onClick={() => onSelect(block)}
-              title="定位此日志与关联请求"
+              title={t("locateTitle")}
             >
               {block.title}
             </button>
@@ -185,23 +187,23 @@ function ActivityBlock({
           <div className="block-tool-fields">
             {block.tool.intent && (
               <section className="block-field">
-                <h4>意图</h4>
+                <h4>{t("intentHeading")}</h4>
                 <Content text={block.tool.intent} />
               </section>
             )}
             {block.tool.args !== undefined && (
               <section className="block-field">
-                <h4>参数</h4>
+                <h4>{t("argsHeading")}</h4>
                 <Content text={printable(block.tool.args)} code />
               </section>
             )}
             {block.tool.result !== undefined ? (
               <section className="block-field">
-                <h4>结果</h4>
+                <h4>{t("resultHeading")}</h4>
                 <Content text={printable(block.tool.result)} code />
               </section>
             ) : block.status === "running" ? (
-              <p className="block-pending">等待工具结果…</p>
+              <p className="block-pending">{t("pendingResult")}</p>
             ) : null}
           </div>
         ) : (
@@ -209,11 +211,11 @@ function ActivityBlock({
         )}
         {(block.trace?.modelCallId || block.trace?.spanId || block.eventId) && (
           <details className="block-provenance">
-            <summary>来源与关联</summary>
+            <summary>{t("provenanceTitle")}</summary>
             <dl>
               {block.source?.implementation && (
                 <>
-                  <dt>实现</dt>
+                  <dt>{t("implTerm")}</dt>
                   <dd>
                     {block.source.implementation}
                     {block.source.implementationVersion &&
@@ -223,7 +225,7 @@ function ActivityBlock({
               )}
               {block.trace?.modelCallId && (
                 <>
-                  <dt>请求</dt>
+                  <dt>{t("requestTerm")}</dt>
                   <dd>{block.trace.modelCallId}</dd>
                 </>
               )}
@@ -241,7 +243,7 @@ function ActivityBlock({
               )}
               {block.eventId && (
                 <>
-                  <dt>事件</dt>
+                  <dt>{t("eventTerm")}</dt>
                   <dd>{block.eventId}</dd>
                 </>
               )}
@@ -255,6 +257,7 @@ function ActivityBlock({
 
 export function ActivityFeed({ feed, expectedEpoch, selectedBlock, onSelect }: ActivityFeedProps) {
   const { filter, query, setFilter, setQuery } = feed;
+  const t = useTranslations("activityFeed");
   const consistent = expectedEpoch === undefined || feed.scope?.epoch === expectedEpoch;
   const page = consistent ? feed.blocks.filter(block => matchesActivity(block, filter, query)) : [];
   const selected = consistent ? page.find(block => block.id === selectedBlock) ?? feed.selected : undefined;
@@ -294,19 +297,19 @@ export function ActivityFeed({ feed, expectedEpoch, selectedBlock, onSelect }: A
     </div>
   );
   return (
-    <section className="feed-panel" aria-label="活动日志">
+    <section className="feed-panel" aria-label={t("panelLabel")}>
       <header className="feed-heading">
-        <h2>活动日志</h2>
-        <span title="当前筛选最近一次历史查询的总数">
-          {loading ? "读取中…" : `${feed.total.toLocaleString()} 条`}
+        <h2>{t("feedTitle")}</h2>
+        <span title={t("totalTitle")}>
+          {loading ? t("loadingLabel") : `${feed.total.toLocaleString()}${t("itemsUnit")}`}
         </span>
       </header>
-      <div className="feed-filters" role="group" aria-label="日志类型">
+      <div className="feed-filters" role="group" aria-label={t("filtersLabel")}>
         {filters.map((kind) => (
           <button type="button" key={kind}
             className={`feed-filter${filter === kind ? " feed-filter-active" : ""}${kind === "diagnostic" ? " feed-filter-diagnostic" : ""}`}
             aria-pressed={filter === kind} onClick={() => setFilter(kind)}>
-            {kind === "all" ? "全部" : blockLabels[kind]}
+            {kind === "all" ? t("filterAll") : t(`kind.${kind}`)}
           </button>
         ))}
       </div>
@@ -315,20 +318,20 @@ export function ActivityFeed({ feed, expectedEpoch, selectedBlock, onSelect }: A
           <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" aria-hidden="true">
             <circle cx="8.5" cy="8.5" r="5.5" /><path d="m13 13 4 4" />
           </svg>
-          <input aria-label="搜索活动日志" type="search" placeholder="搜索内容、工具或来源"
+          <input aria-label={t("searchAria")} type="search" placeholder={t("searchPlaceholder")}
             value={query} onChange={(event) => setQuery(event.target.value)} />
         </label>
-        <button type="button" className="feed-latest" title="返回当前筛选下最新的 100 条"
+        <button type="button" className="feed-latest" title={t("latestTitle")}
           onClick={() => { positionLatest.current = true; feed.latest(); }}>
-          最新 <span aria-hidden="true">↓</span>
+          {t("latestLabel")} <span aria-hidden="true">↓</span>
         </button>
       </div>
-      {feed.error && <p className="feed-error" role="alert">日志读取失败：{feed.error}
-        {page.length > 0 ? "；以下为上次读取内容。" : ""}</p>}
-      {missingSelection && !loading && <p className="feed-notice">这条日志不在当前运行中，请检查运行与轮次选择。</p>}
+      {feed.error && <p className="feed-error" role="alert">{t("loadErrorPrefix")}{feed.error}
+        {page.length > 0 ? t("loadErrorCachedSuffix") : ""}</p>}
+      {missingSelection && !loading && <p className="feed-notice">{t("missingSelectionNotice")}</p>}
       <div ref={list} className="feed-list" aria-busy={loading || feed.loadingOlder}>
         {pinned && <div className="feed-pinned">
-          <p className="feed-notice">正在定位的日志 · 位于当前筛选或分页之外</p>{renderBlock(pinned)}
+          <p className="feed-notice">{t("pinnedNotice")}</p>{renderBlock(pinned)}
         </div>}
         {feed.hasMore && consistent && <button type="button" className="feed-earlier"
           disabled={loading || feed.loadingOlder} onClick={() => {
@@ -337,21 +340,21 @@ export function ActivityFeed({ feed, expectedEpoch, selectedBlock, onSelect }: A
             if (node) previousAnchor.current = { id: first.id, top: node.getBoundingClientRect().top };
             void feed.earlier();
           }}>
-          {feed.loadingOlder ? "读取更早记录…" : "加载更早的 100 条"}
-          <span>历史记录按页读取</span>
+          {feed.loadingOlder ? t("loadingEarlier") : t("loadEarlier")}
+          <span>{t("earlierHint")}</span>
         </button>}
         {page.map(renderBlock)}
         {page.length === 0 && !pinned && <div className="feed-empty">
           <BlockIcon kind={filter === "all" ? "text" : filter} />
-          <p>{loading ? "正在读取活动日志…" : feed.total === 0 && filter === "all" && !query
-            ? "这个运行还没有活动日志" : "没有符合筛选条件的日志"}</p>
-          <span>{!loading && !query ? "模型输出和工具调用会在这里显示。" : query ? "换个关键词，或选择其他日志类型。" : ""}</span>
+          <p>{loading ? t("emptyLoading") : feed.total === 0 && filter === "all" && !query
+            ? t("emptyNone") : t("emptyFiltered")}</p>
+          <span>{!loading && !query ? t("emptyHintDefault") : query ? t("emptyHintQuery") : ""}</span>
         </div>}
       </div>
       <footer className="feed-footer">
-        <span>窗口内 {page.length.toLocaleString()} 条 · 历史查询共 {feed.total.toLocaleString()} 条
-          {pinned ? " · 已保留定位日志" : ""}</span>
-        <span>{feed.historical ? "较早记录 · 点最新返回" : filter === "all" ? "诊断按需查看" : blockLabels[filter]}</span>
+        <span>{t("footerInWindow")} {page.length.toLocaleString()}{t("itemsUnit")} {t("footerHistoryTotal")} {feed.total.toLocaleString()}{t("itemsUnit")}
+          {pinned ? t("pinnedKept") : ""}</span>
+        <span>{feed.historical ? t("footerHistorical") : filter === "all" ? t("footerDiagnostic") : t(`kind.${filter}`)}</span>
       </footer>
     </section>
   );

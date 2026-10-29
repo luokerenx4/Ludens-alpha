@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReplayFrame } from "../lib/replay-types";
 import { selectVideoSource, videoResourceKey, videoSyncState } from "./replay-video-model";
+import { useTranslations } from "@/lib/locale";
 
 type Source = NonNullable<ReplayFrame["media"][number]["video"]>;
 type Ready = (slot: string, url: string, ready: boolean) => void;
@@ -51,6 +52,7 @@ function Surface({ source, at, sampledAt, playing, clockReady, speed, visible, c
 export function ReplayVideo({ source, at, sampledAt, playing, clockReady, speed, slot, onReady, label }: {
   source: Source; at: number; sampledAt: number; playing: boolean; clockReady: boolean; speed: number; slot: string; onReady: Ready; label: string;
 }) {
+  const t = useTranslations("replayVideo");
   const resource = useRef(source);
   const [shown, setShown] = useState<Source | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
@@ -84,8 +86,8 @@ export function ReplayVideo({ source, at, sampledAt, playing, clockReady, speed,
     {sources.map(value => <Surface key={value.url} source={value} at={at} sampledAt={sampledAt} playing={playing} clockReady={clockReady}
       speed={speed} current={playable && value.url === source.url} visible={shown?.url === value.url}
       onReady={report} onError={failed} label={label} />)}
-    {error ? <div className="replay-media-missing" role="status">{source.reason ?? "视频不可用"}<small>保留此处的录制缺口。</small></div>
-      : pending ? <span className="replay-video-status" role="status">{failedResource ? "暂时无法读取，等待片段更新…" : "片段正在写入…"}{shown && " · 保留上一画面"}</span>
-      : shown?.url !== source.url ? <span className="replay-video-status" role="status">正在缓冲视频…</span> : null}
+    {error ? <div className="replay-media-missing" role="status">{source.reason ?? t("unavailable")}<small>{t("gapKept")}</small></div>
+      : pending ? <span className="replay-video-status" role="status">{failedResource ? t("unreadableWaiting") : t("writingSegment")}{shown && ` · ${t("keepPrevious")}`}</span>
+      : shown?.url !== source.url ? <span className="replay-video-status" role="status">{t("buffering")}</span> : null}
   </div>;
 }

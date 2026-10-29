@@ -24,10 +24,10 @@ test("external driver discovery remains visible without a usable workspace catal
     { project: "missing", ready: true, catalogError: "catalog unavailable" },
   ]) {
     const html = renderToStaticMarkup(createElement(CapabilitiesView, props));
-    assert.match(html, /aria-label="外部驱动"/);
-    assert.match(html, /aria-label="驱动包地址"/);
+    assert.match(html, /aria-label="capabilitiesView\.driverSectionLabel"/);
+    assert.match(html, /aria-label="capabilitiesView\.specAriaLabel"/);
     assert.match(html, /<form/);
-    assert.match(html, /会导入包代码/);
-    assert.match(html, /不保证设备可连接/);
+    assert.match(html, /capabilitiesView\.discoverNote2a/);
+    assert.match(html, /capabilitiesView\.discoverNote2b/);
   }
 });
