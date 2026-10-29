@@ -8,5 +8,4 @@ Recursive Self-Adaptation Harness：连接 Shiori（当前为 OMP）、Baseware 
 - [日志与调用链](../docs/reference/logging.md)
 - [Benchmark](../docs/reference/benchmark.md)
 - [OMP 后台压缩改造](../docs/insights/omp-compaction.md)
-- [注入收敛为纯感知通道](../docs/insights/omp-injection.md)
 - [WS 恢复测试依据](../docs/insights/ws-recovery.md)

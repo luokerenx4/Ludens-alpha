@@ -77,7 +77,7 @@
 
 - **查询事件**：每次执行 `observe` 记录 `perception_observe_start / perception_observe_end`，以该次调用的 `spanId` 作为返回信封的 `queryId`。
 - **批次交付收据**：在 prompt 开始（`before_agent_start`）或工具批次结束（`tool_result`）向模型交付上下文时，写入一条 `observation_context` 事件，记录 `{id, origin, queries, observations, purpose?}`。随后发起的 `model_start` 通过 `deliveryIds` 引用本次新增的收据 ID（注：`deliveryIds` 仅标识本轮新追加的观测来源，模型完整历史上下文以请求归档 payload 为准）。
-- **自动交付去重游标**：自动注入开启时（`context_policy` 事件记录 `rsa perception inject on/off` 变更），扩展按时空轴 `recordId` 去重，同一条记录不会在后续工具批次重复追加；画面像素相同但 `recordId` 不同的新采样仍作为独立时间证据交付。只有当自动交付实际成功完成时才推进采样器状态游标，被抑制或取消的读取不会吞掉状态变迁通知（背景见 [感知注入通道收敛](../insights/omp-injection.md)）。
+- **自动交付去重游标**：自动注入开启时（`context_policy` 事件记录 `rsa perception inject on/off` 变更），扩展按时空轴 `recordId` 去重，同一条记录不会在后续工具批次重复追加；画面像素相同但 `recordId` 不同的新采样仍作为独立时间证据交付。只有当自动交付实际成功完成时才推进采样器状态游标，被抑制或取消的读取不会吞掉状态变迁通知。
 
 ### 2. 模型输入重编码与工具图片追踪
 
