@@ -39,7 +39,7 @@ The framework picks a Python interpreter with this priority:
 
 The OMP native shell injects `RSA_PYTHON` automatically. To reuse `rsa_tools` and the framework dependencies in workspace scripts, call `"$RSA_PYTHON" script.py`; running a bare `python3` follows the user's login shell and is not equivalent to the framework virtualenv. If you point `RSA_PYTHON` at an external training environment (e.g. a conda/venv with PyTorch), pre-install the `rsa/python` package and its dependencies there.
 
-`rsa up` preserves the `RSA_PYTHON` from the current environment when creating new background services. If services are already running, changing the terminal environment does not update them; stop and restart the relevant services before the new interpreter takes effect.
+`rsa up` preserves the `RSA_PYTHON` from the current environment when creating new background services. If services are already running, changing the terminal environment does not update them; stop and restart the relevant services before the new interpreter takes effect. After completing the installation above (and the optional pet below, if needed), prepare the target emulator or desktop driver via [Devices & driver setup](devices.md), then return to [Starting and stopping workspaces](#starting-and-stopping-workspaces).
 
 ## Optional pet
 

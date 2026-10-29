@@ -39,7 +39,7 @@ export PATH="$PWD/baseware/bin:$PWD/rsa/bin:$PATH"
 
 OMP 原生 shell 会自动注入 `RSA_PYTHON`。在工作区脚本中若需复用 `rsa_tools` 及框架依赖，应调用 `"$RSA_PYTHON" script.py`；直接运行裸 `python3` 仍遵循用户 login shell，不等同于框架虚拟环境。若将 `RSA_PYTHON` 指向外部训练环境（如包含 PyTorch 的 conda/venv），需在该环境中预先安装 `rsa/python` 包及其依赖。
 
-`rsa up` 新建后台服务时会保留当前环境中的 `RSA_PYTHON`。若服务已经运行，修改终端环境不会更新它；需停止并重新启动相关服务后才会使用新解释器。
+`rsa up` 新建后台服务时会保留当前环境中的 `RSA_PYTHON`。若服务已经运行，修改终端环境不会更新它；需停止并重新启动相关服务后才会使用新解释器。完成以上安装（及下方按需选配的桌宠）后，若尚未准备目标模拟器或桌面驱动，请先转入 [设备与驱动准备](devices.md)，准备就绪后再回到本页执行 [工作区启动与停止](#工作区启动与停止)。
 
 ## 可选桌宠
 

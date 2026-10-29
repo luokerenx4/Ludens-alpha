@@ -4,10 +4,12 @@ This directory splits the hands-on journey into five standalone topics, covering
 
 ## Five-step path
 
+For a first run, complete the [core installation](quickstart.md#install) in **1. Install & lifecycle**, prepare the target emulator or desktop driver in **2. Device preparation**, then return to [Starting and stopping workspaces](quickstart.md#starting-and-stopping-workspaces) to launch the workspace:
+
 | Stage | Topic | What it solves | Key commands / entry points |
 | --- | --- | --- | --- |
-| **1. Install & lifecycle** | [**Install & workspace lifecycle**](quickstart.md) | Install core components and the optional pet, pick `RSA_PYTHON`, run a workspace with `rsa init / up / auto / down` | `rsa init` · `rsa up` · `rsa auto on` · `rsa down` |
-| **2. Device preparation** | [**Devices & driver setup**](devices.md) | Install the optional mGBA, Ryubing, and Azahar driver packages, or prepare the built-in Cua desktop access | `dofile(...)` · `build.sh` · `launch.sh` · `baseware driver discover` |
+| **1. Install & lifecycle** | [**Install & workspace lifecycle**](quickstart.md) | Install components, configure the global default directory, then create/register/import workspaces and manage their lifecycle once devices are ready | `rsa config` · `rsa init --name` · `rsa workspace` · `rsa up` · `rsa auto on` · `rsa down` |
+| **2. Device preparation** | [**Devices & driver setup**](devices.md) | Connect optional emulator packages (mGBA / Ryubing / Azahar) and the built-in Cua desktop driver, or validate external driver packages | `--driver-package` · `baseware driver discover` · `cua-driver` |
 | **3. Capabilities & recording** | [**Workspaces & capability programming**](workspace.md) | Understand the workspace file layout, declare `@capability` and `@record`, call device and local Python capabilities | `rsa controller` · `rsa_tools.Client` · `.rsa/timeline/` |
 | **4. Perception & action** | [**Resident perception & action loop**](perception-and-action.md) | Write a 30Hz resident `perception.py` and `action.py`, query the historical timeline, and manage auto-injection and recording parameters | `rsa perception reload` · `rsa observe` · `rsa action reload` |
 | **5. Debugging & verification** | [**Console debugging & verification**](debugging-and-verification.md) | Debug a single component in the foreground, use the Dashboard and the Ludens Pet companion, follow script naming conventions, run offline and on-device tests | `baseware serve` · `rsa run` · `http://127.0.0.1:3015` |

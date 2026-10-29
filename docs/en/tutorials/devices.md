@@ -1,6 +1,6 @@
 # Devices & driver setup
 
-Each driver only exposes a device's native input and capture capabilities — no game strategy, cross-screen coordinate fusion, or automatic save/load logic. Once device setup on this page is done, create and start a workspace per [Install & workspace lifecycle](quickstart.md#starting-and-stopping-workspaces).
+Each driver only exposes a device's native input and capture capabilities — no game strategy, cross-screen coordinate fusion, or automatic save/load logic. This page follows the [core installation](quickstart.md#install); once device and driver setup is done, continue with [Starting and stopping workspaces](quickstart.md#starting-and-stopping-workspaces) to create and launch a workspace.
 
 Emulator drivers are all installed on demand; the main repo no longer ships emulator providers, native bridges, or build patches. Driver-package installation and emulator-binary builds are two separate steps: `--driver-package` installs the TypeScript package, while each satellite repo's build guide prepares a bridged emulator.
 
