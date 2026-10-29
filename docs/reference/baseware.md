@@ -88,6 +88,17 @@ Registration 的 `id` 以英文字母或数字开头，只含英文字母、数�
 
 端口以显式 `--port` 为先，其次为 manifest 默认值；stdio 不使用桥端口。RSA 的 bridge driver 必须由 `rsa.json.port` 或 manifest 提供合法端口，并将该端口用于后端和 Baseware，覆盖 `launchEnv` 中的 `RSA_BRIDGE_PORT`。运行目录中的 driver 版本依次采用 provider 实际版本、registration 声明版本、内置 fallback，最后才是 `unknown`。连接后的 `baseware driver list` 返回当前 driver 的描述，不是所有可安装包的目录。
 
+## Driver 发现：验证，不背书
+
+本仓不维护驱动清单。任何人按上述包约定发布 driver，用户粘贴 spec，系统只验证是否符合约定，不判断包的质量或来源可信度：
+
+```sh
+baseware driver discover --package github:org/repo#rev
+# 输出 manifest 子集 {id, version, transport, defaultPort, needsGame, launchHint}；非法包非零退出并说明原因
+```
+
+验证只 import 包的 registration（确认导出含 `id`/`load`），**不调用 `load()`**：不连设备、不执行 driver 逻辑。包入口代码在解析时仍会执行，验证通过不代表来源可信，只使用可信包。Dashboard 能力页的"外部驱动"区提供同样的验证，验证通过后复制 `rsa init` 命令自行安装；发现只读，不写配置。用法见 [开发指南](../tutorials/development.md)。
+
 ## 上游契约与升级
 
 [CUA 契约快照](../../baseware/contracts/cua-driver/) 固定上游版本、来源、许可证和哈希。它用于审计原子能力与发现回归，不用来筛选运行期 `tools/list`；平台或版本新增的工具可以自然暴露。原生通用 manifest 与本机平台目录的覆盖范围不同，不能把其中一份当成全部平台能力。
