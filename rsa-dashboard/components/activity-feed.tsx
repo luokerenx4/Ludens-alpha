@@ -3,6 +3,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { LogBlock } from "@/lib/activity";
 import {
+  activityContentView,
+  activityProvenance,
   matchesActivity,
   printable,
   type ActivityFilter,
@@ -79,63 +81,80 @@ function BlockIcon({ kind }: { kind: LogBlock["kind"] }) {
 
 function CopyButton({ text }: { text: string }) {
   const t = useTranslations("activityFeed");
-  const [copied, setCopied] = useState<"idle" | "done" | "error">("idle");
+  const [feedback, setFeedback] = useState<{ text: string; status: "pending" | "done" | "error" } | null>(null);
+  const attempt = useRef(0);
+  const pending = useRef(false);
+  const status = feedback?.text === text ? feedback.status : "idle";
+  useLayoutEffect(() => {
+    // A new streamed value owns its own feedback; old clipboard promises may still settle.
+    pending.current = false;
+    attempt.current += 1;
+    setFeedback(null);
+    return () => { attempt.current += 1; };
+  }, [text]);
   useEffect(() => {
-    if (copied === "idle") return;
-    const timer = window.setTimeout(() => setCopied("idle"), 1800);
+    if (status !== "done" && status !== "error") return;
+    const timer = window.setTimeout(() => setFeedback(null), 1800);
     return () => window.clearTimeout(timer);
-  }, [copied]);
+  }, [status, text]);
   return (
-    <Button
-      type="button"
-      variant="ghost"
-      size="xs"
-      className="ml-auto h-auto shrink-0 px-1 py-0.5 text-muted-foreground"
-      aria-label={t("copyAria")}
-      onClick={async () => {
-        try {
-          await navigator.clipboard.writeText(text);
-          setCopied("done");
-        } catch {
-          setCopied("error");
-        }
-      }}
-    >
-      {copied === "done" ? t("copyDone") : copied === "error" ? t("copyFailed") : t("copyLabel")}
-    </Button>
+    <div className="block-copy-action">
+      <Button type="button" variant="ghost" size="xs" className="block-copy-button"
+        data-activity-copy aria-label={t("copyAria")} aria-disabled={status === "pending"}
+        onClick={async () => {
+          if (pending.current) return;
+          pending.current = true;
+          const current = ++attempt.current;
+          setFeedback({ text, status: "pending" });
+          try {
+            await navigator.clipboard.writeText(text);
+            if (attempt.current === current) setFeedback({ text, status: "done" });
+          } catch {
+            if (attempt.current === current) setFeedback({ text, status: "error" });
+          } finally {
+            if (attempt.current === current) pending.current = false;
+          }
+        }}>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+          <rect x="8" y="8" width="12" height="12" rx="2" /><path d="M15 8V4H4v11h4" />
+        </svg>
+        {t("copyLabel")}
+      </Button>
+      <span className={`block-copy-feedback${status === "error" ? " block-copy-error" : ""}`}
+        role="status" aria-atomic="true" data-activity-copy-status={status}>
+        {status === "pending" ? t("copyPending") : status === "done" ? t("copyDone") : status === "error" ? t("copyFailed") : ""}
+      </span>
+    </div>
   );
 }
 
 function Content({ text, code = false }: { text: string; code?: boolean }) {
   const t = useTranslations("activityFeed");
-  const [expanded, setExpanded] = useState(false);
-  const long = text.length > 420 || text.split("\n").length > 8;
-  const preview = long
-    ? text.slice(0, 420).split("\n").slice(0, 8).join("\n")
-    : text;
+  const [requestedExpanded, setExpanded] = useState(false);
+  const { canExpand, expanded, text: visibleText, characters } = activityContentView(text, requestedExpanded);
   return (
-    <div className={`block-content${code ? " block-code" : ""}`}>
-      {long ? (
-        <details
-          open={expanded}
-          onToggle={(event) => setExpanded(event.currentTarget.open)}
-        >
-          <summary>
+    <div className={`block-content${code ? " block-code" : ""}`} data-activity-content>
+      {canExpand ? (
+        <details open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}>
+          <summary data-activity-expand>
             {expanded ? t("collapseLabel") : t("expandLabel")}
-            <span>{text.length.toLocaleString()}{t("charsUnit")}</span>
+            <span>{characters.toLocaleString()}{t("charsUnit")}</span>
           </summary>
-          {expanded && <pre className="block-body block-full">{text}</pre>}
+          {expanded && <pre className="block-body block-full" tabIndex={0} role="region" aria-label={t("fullContentLabel")}>{visibleText}</pre>}
         </details>
       ) : null}
-      {!expanded && (
-        <pre className="block-body">
-          {preview}
-          {long ? "…" : ""}
-        </pre>
-      )}
+      {!expanded && <pre className="block-body">{visibleText}{canExpand ? "…" : ""}</pre>}
     </div>
   );
 }
+
+const provenanceLabels: Record<string, string> = {
+  id: "id", at: "at", updatedAt: "updatedAt", eventId: "eventId", seq: "seq",
+  "source.component": "sourceComponent", "source.implementation": "sourceImplementation",
+  "source.implementationVersion": "sourceVersion", "trace.modelCallId": "modelCallId",
+  "trace.toolCallId": "toolCallId", "trace.actionId": "actionId", "trace.traceId": "traceId",
+  "trace.spanId": "spanId", "trace.parentSpanId": "parentSpanId", "trace.epoch": "epoch",
+};
 
 function ActivityBlock({
   block,
@@ -149,6 +168,7 @@ function ActivityBlock({
   const t = useTranslations("activityFeed");
   const source = block.source?.component;
   const sourceName = source ? (sourceNames[source] ?? source) : t("sourceUnknown");
+  const provenance = activityProvenance(block);
   const time = new Date(block.at);
   const at = Number.isNaN(time.getTime())
     ? block.at
@@ -157,13 +177,12 @@ function ActivityBlock({
     <article
       className={`block-item block-${block.kind}${selected ? " block-selected" : ""}${block.status === "error" ? " block-error" : ""}`}
       aria-label={`${t(`kind.${block.kind}`)}: ${block.title}`}
+      data-activity-block={block.id}
     >
-      <div className="block-icon">
-        <BlockIcon kind={block.kind} />
-      </div>
       <div className="block-main">
         <div className="block-heading">
-          <span className="block-source" title={block.source?.implementation}>
+          <div className="block-icon"><BlockIcon kind={block.kind} /></div>
+          <span className="block-source" title={source}>
             {sourceName}
           </span>
           <Badge variant="secondary" className="rounded px-1.5 py-0 text-[11px]">{t(`kind.${block.kind}`)}</Badge>
@@ -188,7 +207,6 @@ function ActivityBlock({
           ) : (
             <span className="block-title">{block.title}</span>
           )}
-          <CopyButton text={block.text} />
         </div>
         {block.kind === "tool" && block.tool ? (
           <div className="block-tool-fields">
@@ -216,47 +234,18 @@ function ActivityBlock({
         ) : (
           <Content text={block.text} code={block.kind === "diagnostic"} />
         )}
-        {(block.trace?.modelCallId || block.trace?.spanId || block.eventId) && (
-          <details className="block-provenance">
-            <summary>{t("provenanceTitle")}</summary>
-            <dl>
-              {block.source?.implementation && (
-                <>
-                  <dt>{t("implTerm")}</dt>
-                  <dd>
-                    {block.source.implementation}
-                    {block.source.implementationVersion &&
-                      ` · ${block.source.implementationVersion}`}
-                  </dd>
-                </>
-              )}
-              {block.trace?.modelCallId && (
-                <>
-                  <dt>{t("requestTerm")}</dt>
-                  <dd>{block.trace.modelCallId}</dd>
-                </>
-              )}
-              {block.trace?.traceId && (
-                <>
-                  <dt>Trace</dt>
-                  <dd>{block.trace.traceId}</dd>
-                </>
-              )}
-              {block.trace?.spanId && (
-                <>
-                  <dt>Span</dt>
-                  <dd>{block.trace.spanId}</dd>
-                </>
-              )}
-              {block.eventId && (
-                <>
-                  <dt>{t("eventTerm")}</dt>
-                  <dd>{block.eventId}</dd>
-                </>
-              )}
-            </dl>
-          </details>
-        )}
+        <div className="block-actions"><CopyButton text={block.text} /></div>
+        <details className="block-provenance" data-activity-provenance>
+          <summary>{t("provenanceTitle")}</summary>
+          <dl>
+            {provenance.map(({ field, value }) => (
+              <div className="block-provenance-row" key={field} data-activity-source={field}>
+                <dt title={field}>{provenanceLabels[field] ? t(`provenance.${provenanceLabels[field]}`) : field}</dt>
+                <dd>{value === "" ? '\"\"' : value}</dd>
+              </div>
+            ))}
+          </dl>
+        </details>
       </div>
     </article>
   );

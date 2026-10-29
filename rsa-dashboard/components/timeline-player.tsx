@@ -127,6 +127,8 @@ export function TimelinePlayer({ project, run, epoch, position, evidence = null,
   const evidenceOpener = useRef<HTMLElement | null>(null);
   const eventsTab = useRef<HTMLButtonElement>(null);
   const player = useRef<HTMLDivElement>(null);
+  const evidencePresentation = useRef({ wide, evidenceKey, inspectorTab });
+  evidencePresentation.current = { wide, evidenceKey, inspectorTab };
   const lastEvidence = useRef("");
   const restoreEvidenceFocus = () => {
     const opener = evidenceOpener.current;
@@ -501,7 +503,7 @@ export function TimelinePlayer({ project, run, epoch, position, evidence = null,
       <p className="replay-axis-note">{nt("frameWindowNote")} {t("axisNote")}</p>
     </section>
     </div>
-    <aside className="replay-inspector">
+    <aside className="replay-inspector" data-evidence-open={wide && !!evidence && inspectorTab === "details"}>
       <Tabs value={inspectorTab} onValueChange={setInspectorTab}>
         <TabsList variant="line" aria-label={nt("inspectorTabs")} className="w-full">
           <TabsTrigger ref={eventsTab} value="events">{nt("eventsTab")}</TabsTrigger>
@@ -512,7 +514,7 @@ export function TimelinePlayer({ project, run, epoch, position, evidence = null,
         </TabsContent>
         <TabsContent value="details">{wide ? evidenceView : evidence && <Button type="button" variant="outline" onClick={() => setInspectorTab("details")}>{nt("evidenceTab")}</Button>}</TabsContent>
       </Tabs>
-    </aside></div>
+    </aside>
     <div className="replay-context-grid">
       <section className="surface replay-context"><div className="surface-heading"><h2>{t("currentActions")}</h2><span>{activeItems.length} {t("items")}</span></div>
         {activeItems.length ? activeItems.map(item => <button type="button" key={item.id} className="replay-context-item focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring" onClick={event => selectItem(item, event.currentTarget)}>
@@ -525,10 +527,25 @@ export function TimelinePlayer({ project, run, epoch, position, evidence = null,
           <time className="mono">{wallTime(item.startAt)}</time><strong>{item.label}</strong>
         </button>) : <p className="replay-empty-context">{t("noLogs")}</p>}
       </section>
-    </div>
+    </div></div>
     <Dialog open={!wide && !!evidence && inspectorTab === "details"} onOpenChange={open => { if (!open) closeEvidence(); }}>
-      <DialogContent showCloseButton={false} className="replay-evidence-dialog max-h-[90dvh] overflow-y-auto p-0" onOpenAutoFocus={event => { event.preventDefault(); evidencePanel.current?.focus(); }}
-        onCloseAutoFocus={event => { event.preventDefault(); requestAnimationFrame(restoreEvidenceFocus); }}>
+      <DialogContent showCloseButton={false} className="replay-evidence-dialog p-0" onOpenAutoFocus={event => { event.preventDefault(); evidencePanel.current?.focus(); }}
+        onCloseAutoFocus={event => {
+          event.preventDefault();
+          const outgoing = event.target instanceof HTMLElement ? event.target : null;
+          requestAnimationFrame(() => {
+            const focused = document.activeElement;
+            // A newer navigation or a user's focus move takes precedence over late teardown.
+            if (focused instanceof HTMLElement && focused !== document.body && focused.isConnected
+              && focused.getClientRects().length && !outgoing?.contains(focused)) return;
+            const current = evidencePresentation.current;
+            // Leaving the Dialog for the inline inspector is relocation, not dismissal.
+            // Focusing its old Events opener here would reactivate that tab and hide evidence.
+            if (current.evidenceKey && (current.wide || current.inspectorTab === "details")) {
+              evidencePanel.current?.focus({ preventScroll: true });
+            } else restoreEvidenceFocus();
+          });
+        }}>
         <DialogHeader className="sr-only"><DialogTitle>{t("detailsTitle")}</DialogTitle><DialogDescription>{nt("evidenceDialogHint")}</DialogDescription></DialogHeader>
         {!wide && evidenceView}
       </DialogContent>

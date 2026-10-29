@@ -559,7 +559,26 @@
     "emptyReadFailed": "Activity could not be loaded.",
     "scopeMismatch": "The log belongs to a different cycle.",
     "retryLatestHint": "Use Return to latest to read observations and logs together.",
-    "scopeChangedError": "The log changed while this page was loading. Use Return to latest to read a consistent snapshot."
+    "scopeChangedError": "The log changed while this page was loading. Use Return to latest to read a consistent snapshot.",
+    "copyPending": "Copying…",
+    "fullContentLabel": "Full recorded content",
+    "provenance": {
+      "id": "Block ID",
+      "at": "Recorded at",
+      "updatedAt": "Updated at",
+      "sourceComponent": "Component",
+      "sourceImplementation": "Implementation",
+      "sourceVersion": "Implementation version",
+      "modelCallId": "Model request",
+      "toolCallId": "Tool call",
+      "actionId": "Action",
+      "traceId": "Trace",
+      "spanId": "Span",
+      "parentSpanId": "Parent span",
+      "epoch": "Cycle",
+      "eventId": "Event",
+      "seq": "Event sequence"
+    }
   },
   "workspacesView": {
     "operationFailed": "Workspace operation failed",
@@ -1750,6 +1769,9 @@
       "toolCallId": "Tool call",
       "actionId": "Action",
       "traceId": "Trace"
-    }
+    },
+    "panelTitle": "Recorded evidence",
+    "close": "Close",
+    "contentLabel": "Evidence content"
   }
 }

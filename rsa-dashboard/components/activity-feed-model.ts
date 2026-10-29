@@ -19,6 +19,33 @@ export function printable(value: unknown): string {
     : (JSON.stringify(value, null, 2) ?? "");
 }
 
+/** A preview is always a prefix; a streamed replacement may stop needing expansion. */
+export function activityContentView(text: string, requestedExpanded = false) {
+  const canExpand = text.length > 420 || text.split("\n", 9).length > 8;
+  const expanded = canExpand && requestedExpanded;
+  let preview = text.slice(0, 420).split("\n", 8).join("\n");
+  // Never display half of a Unicode surrogate pair at the preview boundary.
+  if (/[\uD800-\uDBFF]$/.test(preview)) preview = preview.slice(0, -1);
+  return { canExpand, expanded, text: expanded || !canExpand ? text : preview, characters: text.length };
+}
+
+export interface ActivityProvenanceRow { field: string; value: string }
+
+/** Display only recorded identity fields, including source-only records and sequence zero. */
+export function activityProvenance(block: LogBlock): ActivityProvenanceRow[] {
+  const rows: ActivityProvenanceRow[] = [{ field: "id", value: block.id }, { field: "at", value: block.at }];
+  if (block.updatedAt !== undefined) rows.push({ field: "updatedAt", value: block.updatedAt });
+  for (const [field, value] of Object.entries(block.source ?? {})) {
+    if (typeof value === "string") rows.push({ field: `source.${field}`, value });
+  }
+  for (const [field, value] of Object.entries(block.trace ?? {})) {
+    if (typeof value === "string") rows.push({ field: `trace.${field}`, value });
+  }
+  if (block.eventId !== undefined) rows.push({ field: "eventId", value: block.eventId });
+  if (block.seq !== undefined) rows.push({ field: "seq", value: String(block.seq) });
+  return rows;
+}
+
 /** Shared by the server projection and incremental UI, never a full-run filter. */
 export function activitySearchText(block: LogBlock): string {
   return [block.title, block.text, blockLabels[block.kind],

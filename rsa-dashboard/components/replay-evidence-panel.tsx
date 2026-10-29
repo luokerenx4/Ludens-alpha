@@ -109,11 +109,16 @@ export function ReplayEvidencePanel({ scope, selection, onClose, onLoaded, focus
     hour12: false, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", fractionalSecondDigits: 3,
   });
   return <section ref={focusRef} tabIndex={-1} aria-labelledby={headingId} aria-busy={loading}
-    className="replay-evidence-panel min-w-0 space-y-5 rounded-xl border bg-card p-5 outline-none focus-visible:ring-2 focus-visible:ring-ring">
-    <header className="flex items-start justify-between gap-3">
-      <div className="min-w-0 space-y-2">
-        <p className="text-xs font-medium text-muted-foreground">{timeline("detailsTitle")}</p>
-        <h2 id={headingId} className="break-words text-base font-semibold">{detail?.title || (selection.kind === "frame" ? selection.record : selection.id) || timeline("detailsTitle")}</h2>
+    className="replay-evidence-panel min-w-0 rounded-xl border bg-card outline-none focus-visible:ring-2 focus-visible:ring-ring">
+    <header className="replay-evidence-header">
+      <h2 id={headingId} className="min-w-0 text-sm font-semibold">{t("panelTitle")}</h2>
+      <Button type="button" variant="outline" size="sm" className="shrink-0" aria-label={timeline("closeDetails")} onClick={onClose}>
+        <X aria-hidden="true" />{t("close")}
+      </Button>
+    </header>
+    <div className="replay-evidence-body space-y-5" role="region" aria-label={t("contentLabel")} tabIndex={0}>
+      <div className="min-w-0 space-y-3">
+        <h3 className="break-words text-base font-semibold leading-relaxed">{detail?.title || (selection.kind === "frame" ? selection.record : selection.id) || timeline("detailsTitle")}</h3>
         {summary && <div className="flex flex-wrap gap-2">
           <Badge variant="outline">{t(`kind.${summary.kind}`)}</Badge>
           {summary.status && <Badge variant={statusKey === "failed" ? "destructive" : "secondary"}>
@@ -121,46 +126,45 @@ export function ReplayEvidencePanel({ scope, selection, onClose, onLoaded, focus
           </Badge>}
         </div>}
       </div>
-      <Button type="button" variant="ghost" size="icon-sm" aria-label={timeline("closeDetails")} onClick={onClose}><X aria-hidden="true" /></Button>
-    </header>
-    <div className="flex flex-wrap items-center justify-between gap-3">
-      <p className="text-xs text-muted-foreground">{t("recordedOnly")}</p>
-      <Button type="button" variant="outline" size="sm" aria-disabled={loading} className="aria-disabled:opacity-50" onClick={retry}>
-        {t(loading ? "loading" : error ? "retry" : "refresh")}
-      </Button>
-    </div>
-    {error && <Alert variant="destructive"><AlertDescription>
-      <p>{t("readFailed")}</p>
-      {detail && <p>{t("showingCached")}</p>}
-      <details className="mt-2 text-xs"><summary className="cursor-pointer">{t("technicalDetails")}</summary>
-        <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all">{error}</pre>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-xs text-muted-foreground">{t("recordedOnly")}</p>
+        <Button type="button" variant="outline" size="sm" aria-disabled={loading} className="aria-disabled:opacity-50" onClick={retry}>
+          {t(loading ? "loading" : error ? "retry" : "refresh")}
+        </Button>
+      </div>
+      {error && <Alert variant="destructive"><AlertDescription>
+        <p>{t("readFailed")}</p>
+        {detail && <p>{t("showingCached")}</p>}
+        <details className="mt-2 text-xs"><summary className="cursor-pointer">{t("technicalDetails")}</summary>
+          <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all">{error}</pre>
+        </details>
+      </AlertDescription></Alert>}
+      {!detail && loading && <p className="text-sm text-muted-foreground" role="status">{timeline("readingRecord")}</p>}
+      {summary && Number.isFinite(summary.startAt) && <dl className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 text-xs">
+        <dt className="text-muted-foreground">{t("startedAt")}</dt><dd className="break-words tabular-nums"><time dateTime={new Date(summary.startAt).toISOString()}>{time(summary.startAt)}</time></dd>
+        {summary.endAt !== undefined && summary.endAt !== null && Number.isFinite(summary.endAt) && <>
+          <dt className="text-muted-foreground">{t("endedAt")}</dt><dd className="break-words tabular-nums"><time dateTime={new Date(summary.endAt).toISOString()}>{time(summary.endAt)}</time></dd>
+        </>}
+      </dl>}
+      {summary?.text && <section className="space-y-2">
+        <h3 className="text-sm font-medium">{t(summary.textTruncated ? "recordedTextExcerpt" : "recordedText")}</h3>
+        <pre className="whitespace-pre-wrap break-words rounded-lg bg-muted/30 p-3 text-xs leading-relaxed">{summary.text}</pre>
+      </section>}
+      {detail && (!!detail.observations?.length || summary?.kind === "model") && <section className="space-y-3" aria-label={timeline("modelObservations")}>
+        <h3 className="text-sm font-medium">{timeline("modelObservations")}</h3>
+        <p className="text-xs leading-relaxed text-muted-foreground">{t("observationsHint")}</p>
+        {detail.observations?.length ? detail.observations.map(observation => <RecordedInput key={`${observation.id}:${observation.url ?? ""}`} observation={observation} />)
+          : <p className="text-sm text-muted-foreground">{t("noObservations")}</p>}
+      </section>}
+      <details className="rounded-lg border p-3 text-xs" key={`source:${url}`}>
+        <summary className="cursor-pointer font-medium">{t("sourceTitle")}</summary>
+        <dl className="mt-3 grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2">
+          {sourceKeys.map(key => source[key] !== undefined && <div key={key} className="contents">
+            <dt className="text-muted-foreground">{t(`source.${key}`)}</dt><dd className="break-all font-mono">{String(source[key])}</dd>
+          </div>)}
+        </dl>
       </details>
-    </AlertDescription></Alert>}
-    {!detail && loading && <p className="text-sm text-muted-foreground" role="status">{timeline("readingRecord")}</p>}
-    {summary && Number.isFinite(summary.startAt) && <dl className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 text-xs">
-      <dt className="text-muted-foreground">{t("startedAt")}</dt><dd className="break-words tabular-nums"><time dateTime={new Date(summary.startAt).toISOString()}>{time(summary.startAt)}</time></dd>
-      {summary.endAt !== undefined && summary.endAt !== null && Number.isFinite(summary.endAt) && <>
-        <dt className="text-muted-foreground">{t("endedAt")}</dt><dd className="break-words tabular-nums"><time dateTime={new Date(summary.endAt).toISOString()}>{time(summary.endAt)}</time></dd>
-      </>}
-    </dl>}
-    <details open className="rounded-lg border p-3 text-xs" key={`source:${url}`}>
-      <summary className="cursor-pointer font-medium">{t("sourceTitle")}</summary>
-      <dl className="mt-3 grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2">
-        {sourceKeys.map(key => source[key] !== undefined && <div key={key} className="contents">
-          <dt className="text-muted-foreground">{t(`source.${key}`)}</dt><dd className="break-all font-mono">{String(source[key])}</dd>
-        </div>)}
-      </dl>
-    </details>
-    {summary?.text && <section className="space-y-2">
-      <h3 className="text-sm font-medium">{t(summary.textTruncated ? "recordedTextExcerpt" : "recordedText")}</h3>
-      <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted/30 p-3 text-xs leading-relaxed">{summary.text}</pre>
-    </section>}
-    {detail && (!!detail.observations?.length || summary?.kind === "model") && <section className="space-y-3" aria-label={timeline("modelObservations")}>
-      <h3 className="text-sm font-medium">{timeline("modelObservations")}</h3>
-      <p className="text-xs leading-relaxed text-muted-foreground">{t("observationsHint")}</p>
-      {detail.observations?.length ? detail.observations.map(observation => <RecordedInput key={`${observation.id}:${observation.url ?? ""}`} observation={observation} />)
-        : <p className="text-sm text-muted-foreground">{t("noObservations")}</p>}
-    </section>}
-    {detail && <RawRecord key={url} data={detail.data} />}
+      {detail && <RawRecord key={url} data={detail.data} />}
+    </div>
   </section>;
 }
