@@ -187,7 +187,7 @@ Current documentation lives in the root `docs/` directory, split into `tutorials
 | [OMP Injection](docs/insights/omp-injection.md) | Insights | Why automatic context injection was narrowed to perception records and sampler state transitions. |
 | [WS Recovery](docs/insights/ws-recovery.md) | Insights | 2026-10-20 Codex WebSocket recovery TDD rationale and 13-condition fault matrix. |
 
-The original [unified console](docs/history/unified-console/prd.html) and [benchmark](docs/history/benchmarks/prd.html) design records are archived under `docs/history/`; they describe past decisions, not the current API. Detailed guides are currently in Chinese. Runtime prompts, workspace templates, and license notices remain beside the files that consume them.
+Detailed guides in `docs/` are currently in Chinese. Runtime prompts, workspace templates, and license notices remain beside the files that consume them.
 
 ## License and attribution
 
