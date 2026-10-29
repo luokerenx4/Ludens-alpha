@@ -40,3 +40,22 @@ test("asRegistration narrows module exports", () => {
   expect(asRegistration({ ...registration, launchEnv: { DOTNET_DefaultStackSize: "200000" } }).launchEnv).toEqual({ DOTNET_DefaultStackSize: "200000" });
   expect(() => asRegistration({ ...registration, launchEnv: { INVALID: 1 } })).toThrow("invalid launchEnv");
 });
+
+test("registration identifiers, versions and ports follow the manifest contract", () => {
+  const registration = { id: "fixture", load() {} };
+  for (const id of ["../escape", "bad name", "-leading", "bad;command"]) {
+    expect(() => asRegistration({ ...registration, id })).toThrow("Invalid driver id");
+  }
+  for (const field of ["version", "fallbackVersion"] as const) {
+    for (const value of [1, {}, null]) {
+      expect(() => asRegistration({ ...registration, [field]: value })).toThrow(`invalid ${field}`);
+    }
+    expect(asRegistration({ ...registration, [field]: "v1" })[field]).toBe("v1");
+  }
+  for (const defaultPort of [-1, 0, 65536, 1.5, NaN, Infinity, "1234"]) {
+    expect(() => asRegistration({ ...registration, defaultPort })).toThrow("invalid defaultPort");
+  }
+  for (const defaultPort of [1, 65535]) {
+    expect(asRegistration({ ...registration, defaultPort }).defaultPort).toBe(defaultPort);
+  }
+});

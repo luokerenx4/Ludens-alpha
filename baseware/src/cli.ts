@@ -10,6 +10,7 @@ baseware status
 baseware list
 baseware export [--output <path>]
 baseware driver list
+baseware driver discover --package <npm|github:org/repo#rev|https://github.com/org/repo#rev|file:path>
 baseware controller list | <id> --help | <name> [--args '<JSON object>' | --file <arguments.json>]
 baseware revoke
 baseware mcp
@@ -21,6 +22,22 @@ The CLI never acquires a lease; use the client API to hold a persistent owner co
 
 export async function cli(argv: string[], socket: string) {
   const [kind, id, ...args] = argv;
+  if (kind === "driver" && id === "discover") {
+    const { values } = parseArgs({ args, options: { package: { type: "string" } } });
+    if (!values.package) throw new Error("Usage: baseware driver discover --package <npm|github:org/repo#rev|https://github.com/org/repo#rev|file:path>");
+    // CLI plugin probe; the spec-selected entrypoint is only known at runtime.
+    const { defaultDriverCacheRoot, discoverDriver } = await import("./drivers/loader.ts");
+    const registration = await discoverDriver(values.package, defaultDriverCacheRoot());
+    const { id: driverId, version, fallbackVersion, transport, defaultPort, needsGame, launchHint, launchCommand, launchEnv } = registration;
+    console.log(JSON.stringify({ id: driverId, version: version ?? fallbackVersion ?? "unknown",
+      ...(transport ? { transport } : {}),
+      ...(defaultPort !== undefined ? { defaultPort } : {}),
+      ...(needsGame ? { needsGame: true } : {}),
+      ...(launchHint ? { launchHint } : {}),
+      ...(launchCommand ? { launchCommand } : {}),
+      ...(launchEnv ? { launchEnv } : {}) }));
+    return;
+  }
   let request: Request;
   let output: string | undefined;
   let select: "drivers" | "controllers" | undefined;

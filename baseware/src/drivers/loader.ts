@@ -76,13 +76,20 @@ async function resolvePackage(id: string, packageSpec: string, cacheRoot: string
   return { directory: path, entry };
 }
 
+/** Validate a community driver package without knowing its id. Never calls load(). */
+export async function discoverDriver(packageSpec: string, cacheRoot: string): Promise<DriverRegistration> {
+  const { entry } = await resolvePackage("discover", packageSpec, cacheRoot);
+  // Plugin entrypoint resolved at runtime from the package spec; static import cannot name it.
+  return asRegistration(await import(entry));
+}
+
 /** Resolve packages outside the workspace and import only the selected driver's entrypoint. */
 export async function resolveDriver(id: string, packageSpec: string | undefined, cacheRoot: string): Promise<DriverRegistration> {
   if (!packageSpec) return getDriver(id);
   const { entry } = await resolvePackage(id, packageSpec, cacheRoot);
+  // Plugin entrypoint resolved at runtime from the package spec; static import cannot name it.
   return asRegistration(await import(entry), id);
 }
-
 export function defaultDriverCacheRoot(): string {
   return join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local/state"), "ludens/baseware/drivers");
 }

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -57,6 +57,36 @@ test("GitHub caches distinguish real repositories and revisions and retry failed
     await rm(root, { recursive: true, force: true });
   }
 }, 30_000);
+
+test("discover CLI imports registration without loading devices and rejects invalid manifests", async () => {
+  const root = await mkdtemp(join(tmpdir(), "driver-discover-"));
+  const good = join(root, "good.ts");
+  const bad = join(root, "bad.ts");
+  const marker = join(root, "imported");
+  await writeFile(good, `await Bun.write(${JSON.stringify(marker)}, "import ran");
+    export default { id: "fixture", transport: "bridge", defaultPort: 47111, version: "1.0",
+    launchHint: "hint", async load() { throw new Error("discover must not call load()"); } };`);
+  await writeFile(bad, `export default { version: "1.0" };`);
+  const run = async (spec: string, expectedCode = 0) => {
+    const child = Bun.spawn([process.execPath, join(import.meta.dir, "../src/main.ts"), "driver", "discover", "--package", spec],
+      { stdout: "pipe", stderr: "pipe", env: { ...process.env, XDG_STATE_HOME: join(root, "state") } });
+    const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    expect(code, stderr).toBe(expectedCode);
+    return expectedCode === 0 ? JSON.parse(stdout) : stderr;
+  };
+  try {
+    expect(await run(`file:${good}`)).toEqual({ id: "fixture", transport: "bridge", defaultPort: 47111, version: "1.0", launchHint: "hint" });
+    expect(await readFile(marker, "utf8")).toBe("import ran");
+    expect(await run(`file:${bad}`, 1)).toContain("registration");
+    expect(await run(`file:${join(root, "missing.ts")}`, 1)).toContain("Driver path not found");
+    for (const [field, value] of [["id", "../escape"], ["version", {}], ["fallbackVersion", 42], ["defaultPort", 70000]] as const) {
+      await writeFile(bad, `export default { id: "fixture", load() {}, ${field}: ${JSON.stringify(value)} };`);
+      expect(await run(`file:${bad}`, 1)).toContain(field === "id" ? "Invalid driver id" : `invalid ${field}`);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("serve forwards explicit bridge ports without defaults and publishes registration version and launch environment", async () => {
   const root = await mkdtemp(join(tmpdir(), "driver-serve-"));

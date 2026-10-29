@@ -7,6 +7,7 @@ export type DriverSpec =
   | { kind: "file"; path: string };
 
 const NAME = "[A-Za-z0-9_.-]+";
+const DRIVER_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 
 function githubRepo(rest: string): { org: string; repo: string; rev: string } {
   const match = rest.match(new RegExp(`^(${NAME})/(${NAME})(?:\\.git)?(?:#(.+))?$`));
@@ -59,7 +60,7 @@ export function parseDriverSpec(text: string): DriverSpec {
 
 /** Driver ids double as cache directory names; reject traversal. */
 export function driverCacheDir(cacheRoot: string, id: string): string {
-  if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(id)) throw new Error(`Invalid driver id: ${JSON.stringify(id)}`);
+  if (!DRIVER_ID.test(id)) throw new Error(`Invalid driver id: ${JSON.stringify(id)}`);
   return `${cacheRoot.replace(/\/+$/, "")}/${id}`;
 }
 
@@ -69,17 +70,24 @@ export function asRegistration(value: unknown, expectedId?: string): DriverRegis
   const exported = root !== null && typeof root === "object" && !Array.isArray(root)
     ? (root.default ?? root.registration ?? root.driver ?? root)
     : undefined;
-  const candidate = exported as { id?: unknown; load?: unknown; transport?: unknown; defaultPort?: unknown; needsGame?: unknown; launchHint?: unknown; launchCommand?: unknown; launchEnv?: unknown } | undefined;
+  const candidate = exported as { id?: unknown; version?: unknown; fallbackVersion?: unknown; load?: unknown; transport?: unknown; defaultPort?: unknown; needsGame?: unknown; launchHint?: unknown; launchCommand?: unknown; launchEnv?: unknown } | undefined;
   if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)
     || typeof candidate.id !== "string" || !candidate.id) {
     throw new Error("Driver package must export a registration object with a string id (default, registration or driver export)");
   }
+  if (!DRIVER_ID.test(candidate.id)) throw new Error(`Invalid driver id: ${JSON.stringify(candidate.id)}`);
   if (expectedId && candidate.id !== expectedId) {
     throw new Error(`Driver package id ${JSON.stringify(candidate.id)} does not match --driver ${JSON.stringify(expectedId)}`);
   }
   if (typeof candidate.load !== "function") throw new Error(`Driver package ${JSON.stringify(candidate.id)} registration has no load() function`);
+  for (const field of ["version", "fallbackVersion"] as const) {
+    if (candidate[field] !== undefined && typeof candidate[field] !== "string") {
+      throw new Error(`Driver package ${JSON.stringify(candidate.id)} has an invalid ${field}`);
+    }
+  }
   if (candidate.defaultPort !== undefined
-    && (typeof candidate.defaultPort !== "number" || !Number.isInteger(candidate.defaultPort))) {
+    && (typeof candidate.defaultPort !== "number" || !Number.isInteger(candidate.defaultPort)
+      || candidate.defaultPort < 1 || candidate.defaultPort > 65535)) {
     throw new Error(`Driver package ${JSON.stringify(candidate.id)} has an invalid defaultPort`);
   }
   if (candidate.transport !== undefined && candidate.transport !== "bridge" && candidate.transport !== "stdio") {

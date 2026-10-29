@@ -84,6 +84,8 @@ Baseware 是设备事实的唯一持久来源。每个服务实例独立保存 `
 
 `DriverManifest` 描述 `transport`（`bridge` / `stdio`）、可选 `defaultPort`、`needsGame`、准备提示 `launchHint`，以及启动后端的 `launchCommand` argv 和 `launchEnv` 环境变量。RSA 按该描述装配进程，不按 driver ID 选择端口或应用路径。`launchCommand` 不包含游戏路径，由 launcher 追加；参数不是待检查的文件。Ryubing 的启动环境保留 `DOTNET_DefaultStackSize=200000`。
 
+Registration 的 `id` 以英文字母或数字开头，只含英文字母、数字、下划线和短横线；可选的 `version` / `fallbackVersion` 必须是字符串，`defaultPort` 必须是 1–65535 的整数。`baseware driver discover --package <spec>` 校验这些声明并输出 manifest，不调用 `load()`；包导入和依赖安装仍遵循上述执行与信任边界。
+
 端口以显式 `--port` 为先，其次为 manifest 默认值；stdio 不使用桥端口。RSA 的 bridge driver 必须由 `rsa.json.port` 或 manifest 提供合法端口，并将该端口用于后端和 Baseware，覆盖 `launchEnv` 中的 `RSA_BRIDGE_PORT`。运行目录中的 driver 版本依次采用 provider 实际版本、registration 声明版本、内置 fallback，最后才是 `unknown`。连接后的 `baseware driver list` 返回当前 driver 的描述，不是所有可安装包的目录。
 
 ## 上游契约与升级
