@@ -25,7 +25,9 @@ import uuid
 from ._sampling import DEFAULT_SAMPLE_HZ, validate_sample_hz
 
 
+
 TIME_BASE = (1, 1_000_000)
+KEYFRAME_SECONDS = 2
 
 
 def image_size(raw: bytes) -> tuple[int, int]:
@@ -67,15 +69,18 @@ def media_path(root: Path, asset: str) -> Path:
     return path
 
 
-def video_status(root: Path, asset: str) -> dict[str, Any]:
+def video_status(root: Path, asset: str, *, allow_pending: bool = False) -> dict[str, Any]:
     path = media_path(root, asset)
     status = media_path(root, asset + ".json")
     if not status.is_file():
         raise ValueError("Recorded video is unavailable: status is missing")
     value: dict[str, Any] = json.loads(status.read_text())
-    if value.get("status") != "ready":
-        raise ValueError(f"Recorded video is {value.get('status', 'unavailable')}: {value.get('error', 'encoding has not finished')}")
-    if not path.is_file():
+    state = value.get("status")
+    # Fragmented segments are readable while pending: their fragments and the
+    # empty moov are already on disk. Legacy +faststart segments are not.
+    if state != "ready" and not (allow_pending and state == "pending" and value.get("format") == "fmp4"):
+        raise ValueError(f"Recorded video is {state or 'unavailable'}: {value.get('error', 'encoding has not finished')}")
+    if state == "ready" and not path.is_file():
         raise ValueError("Recorded video is unavailable: segment is missing")
     return value
 
@@ -89,7 +94,7 @@ def decode_frame(root: Path, asset: str, video: dict[str, Any]) -> bytes:
         raise ValueError("Invalid video frame position")
     if any(type(value) is not int or value <= 0 for value in time_base):
         raise ValueError("Invalid video time base")
-    info = video_status(root, asset)
+    info = video_status(root, asset, allow_pending=True)
     path = media_path(root, asset)
     import av
 
@@ -118,6 +123,7 @@ def decode_frame(root: Path, asset: str, video: dict[str, Any]) -> bytes:
     raise ValueError("Recorded image is unavailable: exact frame is missing")
 
 
+
 @dataclass
 class _Segment:
     asset: str
@@ -142,14 +148,15 @@ class _Segment:
 class VideoRecorder:
     """A bounded producer queue and one encoding thread inside the writer."""
 
-    def __init__(self, root: Path, directory: Path) -> None:
+    def __init__(self, root: Path, directory: Path, *, segment_seconds: int | None = None, idle_seconds: int | None = None) -> None:
         self.root, self.directory = root, directory
         self.directory.mkdir(parents=True, exist_ok=True)
         if self.root.resolve() != self.root or self.directory.resolve() != self.directory:
             raise ValueError("Timeline video directory must not follow symlinks")
         self.queue_limit = _positive("RSA_VIDEO_QUEUE_BYTES", 32 * 1024 * 1024)
         self.queue_count = _positive("RSA_VIDEO_QUEUE_FRAMES", 64)
-        self.segment_seconds = _positive("RSA_VIDEO_SEGMENT_SECONDS", 10)
+        self.segment_seconds = segment_seconds if segment_seconds is not None else _positive("RSA_VIDEO_SEGMENT_SECONDS", 300)
+        self.idle_seconds = idle_seconds if idle_seconds is not None else _positive("RSA_VIDEO_IDLE_SECONDS", 10)
         self.max_streams = _positive("RSA_VIDEO_STREAMS", 16)
         self.condition = threading.Condition()
         self.queue: deque[tuple[_Segment, bytes, int, int]] = deque()
@@ -167,7 +174,7 @@ class VideoRecorder:
         self.thread.start()
 
     def _metadata(self, segment: _Segment, status: str) -> dict[str, Any]:
-        return {"status": status, "startedAt": _iso(segment.started), "durationSeconds": segment.duration,
+        return {"status": status, "format": "fmp4", "startedAt": _iso(segment.started), "durationSeconds": segment.duration,
                 "width": segment.width, "height": segment.height, "frames": segment.frames, "sample_hz": segment.sample_hz,
                 **({"error": segment.error} if segment.error else {})}
 
@@ -245,14 +252,21 @@ class VideoRecorder:
         if segment.error:
             return
         if segment.container is None:
-            segment.container = av.open(str(segment.path), mode="w", format="mp4", options={"movflags": "+faststart"})
+            # Fragmented MP4 with per-packet flush keeps complete fragments on
+            # disk, so an unsealed segment stays decodable up to its last
+            # flushed keyframe boundary. flush_packets is required: without it
+            # avio buffers everything until close.
+            segment.container = av.open(str(segment.path), mode="w", format="mp4",
+                options={"movflags": "+frag_keyframe+empty_moov", "flush_packets": "1"})
+            keyint = max(1, round(segment.sample_hz * KEYFRAME_SECONDS))
             stream = segment.container.add_stream("libx264", rate=Fraction(str(segment.sample_hz)).limit_denominator(1_000_000))
             stream.width = segment.width + segment.width % 2
             stream.height = segment.height + segment.height % 2
             stream.pix_fmt = "yuv420p"
             stream.codec_context.time_base = Fraction(*TIME_BASE)
             stream.time_base = Fraction(*TIME_BASE)
-            stream.options = {"crf": "18", "preset": "veryfast", "tune": "zerolatency", "bf": "0"}
+            stream.options = {"crf": "18", "preset": "veryfast", "tune": "zerolatency", "bf": "0",
+                "g": str(keyint), "keyint_min": str(keyint), "sc_threshold": "0"}
             segment.stream = stream
         with Image.open(BytesIO(raw)) as source:
             image = source.convert("RGB")
@@ -317,7 +331,7 @@ class VideoRecorder:
                     self.condition.wait(timeout=0.25)
                 now = time.monotonic()
                 for segment in self.channels.values():
-                    if self.closed or now - segment.updated >= self.segment_seconds:
+                    if self.closed or now - segment.updated >= self.idle_seconds:
                         segment.sealed = True
                 finished = [segment for segment in self.segments.values() if segment.sealed and not segment.queued]
                 task = self.queue.popleft() if self.queue else None

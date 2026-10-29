@@ -69,7 +69,8 @@ export function ReplayVideo({ source, at, sampledAt, playing, clockReady, speed,
     if (target.current.url === url) { setFailure(url); onReady(slot, target.current.assetId, true); }
   }, [slot, onReady]);
   const error = source.status === "gap" || source.status === "error" || failure === source.url;
-  const pending = source.status === "pending";
+  // Fragmented segments stream while pending; legacy ones stay paused until ready.
+  const pending = source.status === "pending" && !source.streaming;
   const playable = !error && !pending;
   // At most two decoders per channel, including a segment transition.
   const sources = [...(shown && shown.url !== source.url && !error ? [shown] : []), ...(playable ? [source] : [])];

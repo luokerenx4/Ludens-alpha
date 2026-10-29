@@ -327,3 +327,38 @@
     max-width: calc(100vw - 32px);
   }
 }
+
+/* Perception recording settings (shared with perception-settings.tsx). */
+.perception-settings .perception-slider {
+  padding: 12px 0;
+  border-bottom: 1px solid #303630;
+}
+.perception-settings .perception-slider:last-of-type {
+  border-bottom: none;
+}
+.perception-slider label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+.perception-slider .perception-value {
+  color: var(--gold, #dbbc81);
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.perception-slider input[type="range"] {
+  width: 100%;
+  accent-color: var(--gold, #dbbc81);
+}
+.perception-slider .setting-help {
+  display: block;
+  margin-top: 6px;
+}
+.perception-slider .perception-reset {
+  margin-top: 8px;
+  font-size: 12px;
+  padding: 4px 12px;
+}

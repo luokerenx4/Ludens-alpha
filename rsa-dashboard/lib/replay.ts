@@ -80,7 +80,7 @@ function ready(value: Scope | ReplayPreparing): Scope {
   return value;
 }
 
-interface VideoState { status: "pending" | "ready" | "error"; durationSeconds: number; error?: string }
+interface VideoState { status: "pending" | "ready" | "error"; format?: string; durationSeconds: number; error?: string }
 async function videoState(root: string, asset: string, signal?: AbortSignal): Promise<VideoState> {
   try {
     const state = JSON.parse(await readFile(await timelinePath(root, asset + ".json"), { encoding: "utf8", signal }));
@@ -110,7 +110,9 @@ async function frame(record: StoredTimelineRecord, scope: Scope, states: Map<str
       return { ...base, video: { assetId: reference.asset, url: url(scope, { mode: "segment", ...proof }),
         originAt: time - video.pts * video.timeBase[0] / video.timeBase[1] * 1000,
         width: video.width, height: video.height, durationSeconds: state.durationSeconds,
-        status: video.status === "gap" ? "gap" as const : state.status, ...(state.error ? { reason: state.error } : {}) } };
+        status: video.status === "gap" ? "gap" as const : state.status,
+        streaming: state.status === "pending" && state.format === "fmp4",
+        ...(state.error ? { reason: state.error } : {}) } };
     })) };
 }
 interface Cursor { scope: [string, string, string | null, number, number, string]; generation: string;
@@ -290,8 +292,9 @@ async function segmentMedia(scope: Scope, query: ReplayQuery): Promise<FileMedia
   if (query.asset !== undefined && query.asset !== asset) fail("视频片段不属于所选记录", 404);
   if (reference.recordId !== record.id || reference.sequence !== record.sequence) fail("媒体与记录引用不匹配");
   const state = await videoState(root, asset, scope.signal);
-  if (state.status === "pending") fail("视频片段正在写入，请稍后刷新", 409);
-  if (state.status !== "ready") fail(state.error ?? "视频片段未完成", 410);
+  // Fragmented segments stream while pending; legacy +faststart ones only after close.
+  if (state.status === "pending" && state.format !== "fmp4") fail("视频片段正在写入，请稍后刷新", 409);
+  if (state.status !== "ready" && state.format !== "fmp4") fail(state.error ?? "视频片段未完成", 410);
   return { file: await timelinePath(root, asset), mediaType: "video/mp4", cacheControl: "private, max-age=31536000, immutable" };
 }
 

@@ -35,6 +35,7 @@ export interface ReplayFrame {
     height: number;
     durationSeconds: number;
     status: "pending" | "ready" | "error" | "gap";
+    streaming?: boolean;
     reason?: string;
   } }[];
 }

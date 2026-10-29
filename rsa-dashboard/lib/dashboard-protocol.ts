@@ -10,6 +10,7 @@ import type { getReplay, ReplayQuery } from "./replay";
 import type { RunPage } from "./run-index";
 import type { diagnosticEvents, DiagnosticQuery } from "./diagnostic-events";
 import type { indexCacheStats } from "./log-index";
+import type { PerceptionSettings } from "./perception-config";
 
 /** Only existing Dashboard operations cross the worker boundary, never arbitrary code or paths. */
 export interface DashboardMethods {
@@ -32,6 +33,8 @@ export interface DashboardMethods {
   stop: { args: [project: string, run: string, epoch: string | null]; result: Awaited<ReturnType<typeof stopRun>> };
   aliceState: { args: []; result: ReturnType<typeof aliceState> };
   aliceTarget: { args: [project: unknown, ifUnset: boolean]; result: Awaited<ReturnType<typeof setAliceTarget>> };
+  perceptionSettings: { args: [project: string]; result: PerceptionSettings };
+  updatePerceptionSettings: { args: [project: string, patch: unknown]; result: PerceptionSettings };
   aliceConsumer: { args: [input: unknown]; result: ReturnType<typeof recordAliceConsumer> };
 }
 export type DashboardMethod = keyof DashboardMethods;

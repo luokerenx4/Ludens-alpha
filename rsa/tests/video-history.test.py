@@ -43,6 +43,27 @@ class VideoHistoryTests(unittest.TestCase):
         actual = image.getpixel((size[0] // 2, size[1] // 2))
         self.assertLess(max(abs(left - right) for left, right in zip(actual, color)), 8)
 
+    def test_unsealed_segment_is_readable_while_recording(self):
+        with tempfile.TemporaryDirectory() as directory:
+            history = ObservationHistory(directory, sample_hz=30)
+            rows = []
+            # 写过第二个关键帧: fMP4 的 fragment 在下一个关键帧 mux 时落盘,
+            # 所以第一周期 (60 帧) 已完整落盘, 第二周期仍在 muxer 缓冲。
+            for index in range(75):
+                at = f"00:{index // 30:02d}:{(index % 30) * 2:02d}.000"
+                rows.append(history.append(sample(png()), "one", SAMPLING, "2026-10-27T" + at + "Z"))
+            # 不 close: 段仍处于 pending。已落盘的帧应可解码。
+            mid = rows[30]["media"][0]["timeline"]
+            self.assert_picture(decode_frame(history.directory, mid["asset"], mid["video"]), (200, 40, 60))
+            # 未落盘的第二周期帧必须明确失败, 不许邻帧替代。
+            late = rows[70]["media"][0]["timeline"]
+            with self.assertRaisesRegex(ValueError, "unavailable|missing"):
+                decode_frame(history.directory, late["asset"], late["video"])
+            history.close()
+            for index in (0, 30, 70, 74):
+                reference = rows[index]["media"][0]["timeline"]
+                self.assert_picture(decode_frame(history.directory, reference["asset"], reference["video"]), (200, 40, 60))
+
     def test_sample_hz_preserves_actual_frame_times_and_cold_queries(self):
         colors = [(200, 40, 60), (40, 160, 90), (70, 80, 190)]
         for hz in (1, 12.5, 30, 60, 30000 / 1001, 1 / 3):
@@ -182,19 +203,17 @@ class VideoHistoryTests(unittest.TestCase):
             finally:
                 cold.close()
 
-    def test_rotation_dimensions_generation_backward_time_and_pending(self):
+    def test_rotation_dimensions_generation_and_backward_time(self):
         with tempfile.TemporaryDirectory() as directory:
             history = ObservationHistory(directory)
             rows = []
-            for at, generation, size in (("00:00:00", "one", (31, 25)), ("00:00:11", "one", (31, 25)),
-                                         ("00:00:12", "one", (33, 25)), ("00:00:13", "two", (33, 25)),
-                                         ("00:00:12", "two", (33, 25))):
+            for at, generation, size in (("00:00:00", "one", (31, 25)), ("00:05:01", "one", (31, 25)),
+                                         ("00:05:02", "one", (33, 25)), ("00:05:03", "two", (33, 25)),
+                                         ("00:05:02", "two", (33, 25))):
                 rows.append(history.append(sample(png(size=size)), generation, SAMPLING, "2026-10-27T" + at + "Z"))
             assets = [row["media"][0]["timeline"]["asset"] for row in rows]
             self.assertEqual(len(set(assets)), 5)
             latest = rows[-1]["media"][0]["timeline"]
-            with self.assertRaisesRegex(ValueError, "pending"):
-                decode_frame(history.directory, latest["asset"], latest["video"])
             history.close()
             self.assert_picture(decode_frame(history.directory, latest["asset"], latest["video"]), (200, 40, 60), (33, 25))
 

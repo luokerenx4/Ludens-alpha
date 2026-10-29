@@ -129,20 +129,21 @@ CLI、Python `Client().observe()` 与原生 observe 工具共用一个查询结�
 
 | 环境变量 | 默认值 | 含义 |
 | --- | --- | --- |
-| `RSA_PERCEPTION_HOT_SECONDS` | `600` | 热窗口秒数 |
+| `RSA_PERCEPTION_HOT_SECONDS` | `600` | 每通道热窗口秒数（可被工作区设置覆盖） |
 | `RSA_PERCEPTION_PERSIST` | `1` | `0` 仅保留短期窗口，接受 true/false |
 | `RSA_PERCEPTION_SEGMENT_SECONDS` | `3600` | UTC 时间分段长度 |
-| `RSA_PERCEPTION_HOT_BYTES` | `67108864` | 热层预算，64 MiB |
+| `RSA_PERCEPTION_HOT_BYTES` | `1073741824` | 热层全局硬预算，1 GiB；仅作安全阀，按通道公平收缩 |
 | `RSA_PERCEPTION_SEGMENT_BYTES` | `268435456` | 元数据及非视频媒体单段预算，256 MiB |
-| `RSA_VIDEO_SEGMENT_SECONDS` | `10` | 视频段时长；停采或停止进程时也会收尾 |
+| `RSA_VIDEO_SEGMENT_SECONDS` | `300` | 视频段时长（可被工作区设置覆盖） |
+| `RSA_VIDEO_IDLE_SECONDS` | `10` | 停采后空闲收尾超时（可被工作区设置覆盖） |
 | `RSA_VIDEO_QUEUE_BYTES` | `33554432` | 编码队列预算，包含压缩输入与 RGB 大小；也限制单帧解码尺寸 |
 | `RSA_VIDEO_QUEUE_FRAMES` | `64` | 编码队列帧数上限 |
 | `RSA_VIDEO_STREAMS` | `16` | 同时保持的图像流数上限；新流令最久未用流收尾 |
 | `RSA_VIDEO_QUERY_BYTES` | `33554432` | 单次历史查询媒体字节预算；超限需缩小分页 |
 
-持久模式采样完成提交记录元数据，图像由有界后台队列编码。时空轴元数据默认一小时分段，视频默认 10 秒分段；每个视频段的 `.mp4.json` 状态区分 pending/ready/error。热图像可在编码期间直接用于当前观测；冷查询需已完成的视频段，积压丢录制帧明确记为 gap。视频按实际 recordedAt 的间隔赋予 PTS，保留来源 sampledAt，不补造帧。历史解码是高质量有损复原，不声称还原当时模型输入的逐字节内容。冷记录按需查询，不常驻全量索引或图片。关闭持久化后只保留有限临时窗口，停止/reload 清空窗口；响应会携带选中媒体字节，防止读取后淘汰造成交付失效，不另建审计副本。过期由 `availability` 明确返回。持久化开关不删除旧持久档案或用户主动保存的文件，OMP 原生会话仍属独立范围；RSA 模型日志仅引用这些媒体，不让临时窗口变成永久档案。
+工作区可用 `.rsa/settings.json` 覆盖 `hotSeconds`、`videoSegmentSeconds`、`videoIdleSeconds`，优先级为设置文件 > 环境变量 > 内置默认；Dashboard「感知」页提供滑条，写入后 `rsa perception reload` 生效。字节类硬预算不进设置页，避免把安全阀变成常闸。
 
-编码器、Python 和图像库还会使用原生内存，上表不是进程 RSS 上限。冷视频解码在采样锁外执行；Dashboard 离线解码限制为 2 个并发、16 个等待请求，单次 20 秒／32 MiB 输出。MP4 末帧在没有下一次采样时使用 `1 / sample_hz` 秒尾长（按微秒取整，至少一微秒），回放随后保持最后画面，不代表补采了后续帧。
+持久模式采样完成提交记录元数据，图像由有界后台队列编码。时空轴元数据默认一小时分段，视频默认 5 分钟分段，停采后 10 秒收尾。视频使用 fragmented MP4（`+frag_keyframe+empty_moov`，约 2 秒一个关键帧），片段边写边可读：段未收尾时已落盘的帧即可解码，读取滞后约为一个关键帧间隔；`.mp4.json` 状态中的 `format: "fmp4"` 标记可流式读取。旧 `+faststart` 段仍只在收尾后可读。热图像仍直接用于当前观测；冷查询走视频解码，积压丢录制帧明确记为 gap。视频按实际 recordedAt 的间隔赋予 PTS，保留来源 sampledAt，不补造帧。历史解码是高质量有损复原，不声称还原当时模型输入的逐字节内容。冷记录按需查询，不常驻全量索引或图片。热层按通道独立保留最近 `hotSeconds` 的记录；字节预算触发时从最大通道开始收缩，一路高频流不会饿死其他通道，淘汰计数在 `policy().budgetEvictions` 中显式报告。关闭持久化后只保留有限临时窗口，停止/reload 清空窗口；响应会携带选中媒体字节，防止读取后淘汰造成交付失效，不另建审计副本。过期由 `availability` 明确返回。持久化开关不删除旧持久档案或用户主动保存的文件，OMP 原生会话仍属独立范围；RSA 模型日志仅引用这些媒体，不让临时窗口变成永久档案。
 
 CLI 默认返回 JSON，`--images` 用 OMP 原生终端图像通道交付所选图像，一页最多 32 张/40 MiB；超限需缩小分页，不静默丢图。时空轴可以保存音频/二进制等媒体，但当前模型适配仅直接消费图像及文本/JSON，不宣称支持所有模型模态。普通原生工具图片没有隐式永久归档；若字节与轴中已有媒体相同，Dashboard 可以复用其引用，不猜采集时间。
 

@@ -6,6 +6,7 @@ import { initialSelection, latestGameRun } from "@/lib/initial-selection";
 import { ActivityFeed } from "@/components/activity-feed";
 import { useActivityFeed } from "@/components/use-activity-feed";
 import { AliceSettings } from "@/components/alice-settings";
+import { PerceptionSettingsPanel } from "@/components/perception-settings";
 import { AliceFollowCard, useAliceFollow } from "@/components/alice-follow";
 import { DesktopBridge } from "@/components/desktop-bridge";
 import { BenchmarkCases } from "@/components/benchmark-cases";
@@ -40,6 +41,7 @@ const views = {
   docs: ["文档", "文档", "教程、介绍与洞见：从仓库实时读取。"],
   caps: ["能力", "能力与评测", "工作空间的能力目录与评测任务。"],
   alice: ["Ludens Pet", "与 Ludens Pet 一起工作", "按自己的习惯，调整她的陪伴方式。"],
+  perception: ["感知", "感知录制设置", "调整当前工作区的录像分段与内存加速窗口。"],
 } as const;
 type View = keyof typeof views;
 function workspaceName(project?: Project) {
@@ -125,7 +127,9 @@ export default function Dashboard() {
           ? "caps"
           : query.get("view") === "alice"
             ? "alice"
-            : "live";
+            : query.get("view") === "perception"
+              ? "perception"
+              : "live";
   const benchmarkCases = view === "benchmark" && query.get("bench") === "cases";
   const includeEmptyProjects = view === "caps";
   const [projects, setProjects] = useState<Project[]>([]);
@@ -214,7 +218,7 @@ export default function Dashboard() {
     };
   }, [includeEmptyProjects]);
   useEffect(() => {
-    if (benchmarkCases || view === "replay" || view === "docs" || view === "caps" || !selection.project || !run) return;
+    if (benchmarkCases || view === "replay" || view === "docs" || view === "caps" || view === "perception" || !selection.project || !run) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     const params = new URLSearchParams({
@@ -484,7 +488,7 @@ export default function Dashboard() {
                 {benchmarkCases ? "重复评测能力，查看指标、条件与原始证据。" : views[view][2]}
               </p>
             </div>
-            {view !== "alice" && view !== "replay" && view !== "docs" && view !== "caps" && !benchmarkCases && (
+            {view !== "alice" && view !== "replay" && view !== "docs" && view !== "caps" && view !== "perception" && !benchmarkCases && (
               <button
                 className="control-button handback"
                 disabled={!data?.controlAllowed || !auto || stopping}
@@ -516,7 +520,7 @@ export default function Dashboard() {
               ))}
             </nav>
           )}
-          {!benchmarkCases && view !== "alice" && view !== "docs" && view !== "caps" && <ArchiveBuild key={selection.project + "/" + run}
+          {!benchmarkCases && view !== "alice" && view !== "docs" && view !== "caps" && view !== "perception" && <ArchiveBuild key={selection.project + "/" + run}
             project={selection.project} run={run} onReady={archiveReady} />}
           {!benchmarkCases && view !== "docs" && view !== "caps" && (catalogError || (view !== "replay" && error)) && (
             <div className="error-banner" role="alert">
@@ -528,6 +532,8 @@ export default function Dashboard() {
           )}
           {view === "alice" ? (
             <AliceSettings follow={alice} projects={projects} />
+          ) : view === "perception" ? (
+            <PerceptionSettingsPanel project={selection.project} projects={projects} />
           ) : view === "docs" ? (
             <DocsView search={search} navigate={navigate} />
           ) : view === "caps" ? (

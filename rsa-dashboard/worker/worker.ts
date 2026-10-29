@@ -10,6 +10,7 @@ import { docGroups, readDoc } from "../lib/docs";
 import { aliceState, setAliceTarget, recordAliceConsumer } from "../lib/alice-state";
 import { closeLogIndexes, indexCacheStats } from "../lib/log-index";
 import { workerFailure, type DashboardMethods, type DashboardMethod, type WorkerRequest, type WorkerResponse } from "../lib/dashboard-protocol";
+import { perceptionSettings, updatePerceptionSettings, type PerceptionSettings } from "../lib/perception-config";
 import { closeArchiveBuilds } from "../lib/cold-build";
 const port = parentPort!;
 const handlers: { [K in DashboardMethod]: (args: DashboardMethods[K]["args"], signal: AbortSignal) => unknown } = {
@@ -32,6 +33,8 @@ const handlers: { [K in DashboardMethod]: (args: DashboardMethods[K]["args"], si
   stop: ([project, run, epoch]) => stopRun(project, run, epoch),
   aliceState: () => aliceState(),
   aliceTarget: ([project, ifUnset]) => setAliceTarget(project, ifUnset),
+  perceptionSettings: ([project]) => perceptionSettings(project),
+  updatePerceptionSettings: ([project, patch]) => updatePerceptionSettings(project, patch as Partial<PerceptionSettings>),
   aliceConsumer: ([input]) => recordAliceConsumer(input),
 };
 const requests = new Map<number, { abort: AbortController; work: Promise<void> }>();
