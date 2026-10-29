@@ -6,7 +6,7 @@ import { getReplay } from "../lib/replay";
 import { benchmarkAttachment, benchmarkCatalog, benchmarkEvidence } from "../lib/benchmark-data";
 import { capabilities } from "../lib/capabilities";
 import { docGroups, readDoc } from "../lib/docs";
-import { aliceState, setAliceTarget, recordAliceConsumer } from "../lib/alice-state";
+import { petState, setPetTarget, recordPetConsumer } from "../lib/pet-state";
 import { closeLogIndexes, indexCacheStats } from "../lib/log-index";
 import { workerFailure, type DashboardMethods, type DashboardMethod, type WorkerRequest, type WorkerResponse } from "../lib/dashboard-protocol";
 import { closeArchiveBuilds } from "../lib/cold-build";
@@ -28,9 +28,9 @@ const handlers: { [K in DashboardMethod]: (args: DashboardMethods[K]["args"], si
   docGroups: () => docGroups(),
   readDoc: ([id]) => readDoc(id),
   stop: ([project, run, epoch]) => stopRun(project, run, epoch),
-  aliceState: () => aliceState(),
-  aliceTarget: ([project, ifUnset]) => setAliceTarget(project, ifUnset),
-  aliceConsumer: ([input]) => recordAliceConsumer(input),
+  petState: () => petState(),
+  petTarget: ([project, ifUnset]) => setPetTarget(project, ifUnset),
+  petConsumer: ([input]) => recordPetConsumer(input),
 };
 const requests = new Map<number, { abort: AbortController; work: Promise<void> }>();
 let closing = false;

@@ -123,7 +123,7 @@ export class NotificationQueue {
   }
 
   private show(entry: Entry): void {
-    const displayId = entry.displayId ??= `openalice:${entry.id}:${++this.serial}`
+    const displayId = entry.displayId ??= `ludens:${entry.id}:${++this.serial}`
     this.transport.show(displayId, entry.input, () => {
       // A preempted toast's delayed Sonner callback cannot remove its redisplay.
       if (this.entries.get(entry.id)?.displayId === displayId) this.dismiss(entry.id)

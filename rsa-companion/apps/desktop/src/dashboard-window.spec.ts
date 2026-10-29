@@ -4,7 +4,7 @@ import { blockUrl, dashboardSender, isDashboardUrl } from './dashboard-window.js
 describe('shared Dashboard window', () => {
   const origin = 'http://127.0.0.1:3015'
   it('keeps native access on the exact configured main-frame origin', () => {
-    const frame = { url: origin + '/?view=alice' }, contents = { mainFrame: frame }
+    const frame = { url: origin + '/?view=pet' }, contents = { mainFrame: frame }
     const owner = { isDestroyed: () => false, webContents: contents }
     const event = { sender: contents, senderFrame: frame }
     expect(dashboardSender(owner as never, origin, event as never)).toBe(true)

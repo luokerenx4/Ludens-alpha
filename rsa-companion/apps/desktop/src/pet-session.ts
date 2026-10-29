@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { consumerRecorder, rsaProjectId, RsaSource, type RsaActivitySnapshot, type RsaActivitySource, type RsaPetSnapshot } from './rsa-source.js'
 
-export interface AliceTarget {
+export interface PetTarget {
   project: string
   workspace: string
   revision: string
@@ -11,8 +11,8 @@ type SourceFactory = (workspace: string, onSnapshot: (snapshot: RsaPetSnapshot) 
 type ConsumerPhase = 'idle' | 'switching' | 'following' | 'error'
 
 /** One desktop instance follows the Dashboard's selected workspace, independently of page navigation. */
-export class AliceSessionCoordinator implements RsaActivitySource {
-  private target: AliceTarget | null = null
+export class PetSessionCoordinator implements RsaActivitySource {
+  private target: PetTarget | null = null
   private source: RsaActivitySource | undefined
   private generation = 0
   private current: RsaPetSnapshot
@@ -42,7 +42,7 @@ export class AliceSessionCoordinator implements RsaActivitySource {
     }))
   }
 
-  identity() { return `${this.origin}:alice:${this.generation}` }
+  identity() { return `${this.origin}:pet:${this.generation}` }
   record: NonNullable<RsaActivitySource['record']> = (...args) => this.source?.record?.(...args)
   private empty(phase: string): RsaPetSnapshot {
     return { workspace: this.target?.workspace ?? null, runId: null, epoch: null, phase,
@@ -54,7 +54,7 @@ export class AliceSessionCoordinator implements RsaActivitySource {
     this.options.onSnapshot(snapshot)
   }
   private async request(method: string, body?: unknown) {
-    const response = await fetch(`${this.origin}/api/alice`, {
+    const response = await fetch(`${this.origin}/api/pet`, {
       method, cache: 'no-store', signal: AbortSignal.any([this.abort.signal, AbortSignal.timeout(2_000)]),
       headers: { Origin: this.origin, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -77,7 +77,7 @@ export class AliceSessionCoordinator implements RsaActivitySource {
     if (this.stopped || this.targetBusy) return
     this.targetBusy = true
     try {
-      const state = await this.request('GET') as { target: AliceTarget | null }
+      const state = await this.request('GET') as { target: PetTarget | null }
       if (this.stopped) return
       const next = state.target
       if (next !== null && (!next || typeof next.project !== 'string' || typeof next.workspace !== 'string' || typeof next.revision !== 'string'))
@@ -91,7 +91,7 @@ export class AliceSessionCoordinator implements RsaActivitySource {
       }
     } finally { this.targetBusy = false }
   }
-  private select(target: AliceTarget | null) {
+  private select(target: PetTarget | null) {
     this.source?.stop?.()
     this.source = undefined
     this.target = target

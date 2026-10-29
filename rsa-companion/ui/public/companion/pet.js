@@ -1,5 +1,5 @@
 /* Interaction model adapted from MeteorNOX / DeepSeek-Balance-Whale-Widget (MIT).
- * Native window movement is owned by OpenAlice's existing Electron main process. */
+ * Native window movement is owned by the Electron main process. */
 const bridge = window.companion;
 const pet = document.querySelector('#pet');
 const portrait = document.querySelector('#portrait');

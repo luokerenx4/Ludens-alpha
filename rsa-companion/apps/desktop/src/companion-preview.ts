@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 import { createCompanion, resizeCompanionWindow, setCompanionBounds } from './companion.js'
 import type { LogBlock } from './rsa-source.js'
 
-const home = mkdtempSync(join(tmpdir(), 'openalice-companion-'))
+const home = mkdtempSync(join(tmpdir(), 'ludens-companion-'))
 app.setPath('userData', home)
 app.on('window-all-closed', () => app.quit())
 void app.whenReady().then(async () => {
@@ -100,7 +100,7 @@ void app.whenReady().then(async () => {
   await pet.webContents.executeJavaScript(`document.documentElement.style.backgroundColor = '#f5f5f5'`)
   await new Promise(done => setTimeout(done, 50))
   writeFileSync(join(home, 'bubble-light.png'), (await pet.webContents.capturePage()).toPNG())
-  pet.webContents.send('openalice:companion:flip', true)
+  pet.webContents.send('ludens:companion:flip', true)
   await new Promise(done => setTimeout(done, 350))
   assert.equal(await pet.webContents.executeJavaScript(`mirror.classList.contains('flipped')`), true)
   writeFileSync(join(home, 'flipped.png'), (await pet.webContents.capturePage()).toPNG())
@@ -108,7 +108,7 @@ void app.whenReady().then(async () => {
   for (const size of [170, 220, 280]) {
     resizeCompanionWindow(pet, Math.round(size * 2.7), Math.round(size * 1.65))
     for (const flipped of [false, true]) {
-      pet.webContents.send('openalice:companion:flip', flipped)
+      pet.webContents.send('ludens:companion:flip', flipped)
       await new Promise(done => setTimeout(done, 350))
       const layout = await pet.webContents.executeJavaScript(`(() => {
         const b = bubble.getBoundingClientRect(), p = portrait.getBoundingClientRect();
@@ -119,7 +119,7 @@ void app.whenReady().then(async () => {
       assert.ok(layout.left >= -1 && layout.right <= layout.viewport + 1, 'Bubble clipped')
       assert.ok(Math.abs(layout.portrait - size * .9 * layout.scale) < 1, 'Portrait scale changed')
       assert.ok(Math.abs(layout.offset - size * .8 * (flipped ? 1 : -1)) < 1, 'Bubble offset changed')
-      assert.ok(Math.abs(layout.top - (layout.height * .26 - 55)) < 1, 'Bubble must sit above-left of Alice')
+      assert.ok(Math.abs(layout.top - (layout.height * .26 - 55)) < 1, 'Bubble must sit above-left of Pet')
       assert.ok(layout.top >= 0, 'Raised bubble must remain inside the window')
     }
   }
@@ -134,7 +134,7 @@ void app.whenReady().then(async () => {
   assert.ok(audio.duration > 0 && audio.duration <= 10)
   assert.equal(audio.volume, .5)
   // End-to-end RSA display acceptance uses a local fixture, never a model request.
-  // Keeping the owner visible must not redirect Alice's speech to a corner toast.
+  // Keeping the owner visible must not redirect Pet's speech to a corner toast.
   owner.showInactive()
   const blocks: LogBlock[] = [{ id: 'fixture:thinking', kind: 'thinking', at: new Date().toISOString(),
     title: '思考', text: 'Read the current screen', status: 'running' }]
@@ -158,7 +158,7 @@ void app.whenReady().then(async () => {
     { id: 'fixture:text', kind: 'text', at: new Date().toISOString(), title: '文本', text: 'I will inspect the evidence.', status: 'complete' },
     { id: 'fixture:tool', kind: 'tool', at: new Date().toISOString(), title: '工具 · exec', text: 'Inspect the selected evidence', status: 'complete' },
   )
-  // Both arriving together must reach Alice; the later tool cannot overwrite text.
+  // Both arriving together must reach Pet; the later tool cannot overwrite text.
   for (const [kind, expected] of [['text', 'I will inspect the evidence.'], ['tool', 'Inspect the selected evidence']]) {
     const deadline = Date.now() + 10_000
     while (!(await pet.webContents.executeJavaScript('message.textContent')).includes(expected) && Date.now() < deadline)
@@ -189,13 +189,13 @@ void app.whenReady().then(async () => {
     { id: 'design:diagnostic', kind: 'diagnostic', at: '', title: 'model_end', status: 'complete', text: '',
       data: { durationMs: 2410, cacheRead: '98.1%', transport: 'websocket' } },
   ]
-  const display = (block: LogBlock) => pet.webContents.send('openalice:activity:display', {
+  const display = (block: LogBlock) => pet.webContents.send('ludens:activity:display', {
     type: 'show', displayId: block.id,
     input: { id: block.id, title: block.title, description: block.text, block, status: block.status, duration: null, context: 'office' },
   })
   await pet.webContents.executeJavaScript(`document.documentElement.style.backgroundColor = '#18212b'`)
   resizeCompanionWindow(pet, 594, 363)
-  pet.webContents.send('openalice:companion:flip', false)
+  pet.webContents.send('ludens:companion:flip', false)
   for (const fixture of fixtures) {
     display(fixture)
     await new Promise(done => setTimeout(done, 350))
@@ -208,7 +208,7 @@ void app.whenReady().then(async () => {
   for (const size of [170, 220, 280]) {
     resizeCompanionWindow(pet, Math.round(size * 2.7), Math.round(size * 1.65))
     for (const flip of [false, true]) {
-      pet.webContents.send('openalice:companion:flip', flip)
+      pet.webContents.send('ludens:companion:flip', flip)
       await new Promise(done => setTimeout(done, 350))
       const layout = await pet.webContents.executeJavaScript(`(() => {
         const h = message.querySelector('.log-header').getBoundingClientRect();
@@ -229,7 +229,7 @@ void app.whenReady().then(async () => {
     }
   }
   resizeCompanionWindow(pet, 594, 363)
-  pet.webContents.send('openalice:companion:flip', false)
+  pet.webContents.send('ludens:companion:flip', false)
   display(fixtures[2])
   await new Promise(done => setTimeout(done, 350))
   await pet.webContents.executeJavaScript(`message.querySelector('summary').click()`)

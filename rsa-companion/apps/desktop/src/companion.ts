@@ -35,10 +35,10 @@ export interface CompanionHandle {
  * Thanks to MeteorNOX's DeepSeek Balance Whale Widget for the interaction model:
  * https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget
  * Press/release, mirroring, bubble timing and snapping follow that MIT project;
- * OpenAlice owns the native lifecycle/IPC adaptation. See companion/NOTICE.md.
+ * Native lifecycle/IPC adaptation originally ported from OpenAlice. See companion/NOTICE.md.
  */
 export function createCompanion(owner: BrowserWindow, access: OwnerAccess = {}): CompanionHandle | undefined {
-  if (process.env.OPENALICE_DISABLE_COMPANION === '1') return
+  if (process.env.LUDENS_DISABLE_COMPANION === '1') return
   const here = dirname(fileURLToPath(import.meta.url))
   const assets = app.isPackaged
     ? join(process.resourcesPath, 'runtime/ui/dist/companion')
@@ -120,7 +120,7 @@ export function createCompanion(owner: BrowserWindow, access: OwnerAccess = {}):
     const current = companionBounds(pet)
     const next = settleCompanion(current, screen.getDisplayMatching(current).workArea, snap)
     flipped = next.flipped
-    pet.webContents.send('openalice:companion:flip', flipped)
+    pet.webContents.send('ludens:companion:flip', flipped)
     if (!snap || reducedMotion) { if (moveTo(next.x, next.y)) save(); return }
     const start = performance.now()
     snapTimer = setInterval(() => {
@@ -136,27 +136,27 @@ export function createCompanion(owner: BrowserWindow, access: OwnerAccess = {}):
     enabled = !enabled
     if (enabled && ready) { settle(false); pet.showInactive() } else pet.hide()
     save()
-    if (!owner.isDestroyed()) owner.webContents.send('openalice:companion:visibility', enabled)
+    if (!owner.isDestroyed()) owner.webContents.send('ludens:companion:visibility', enabled)
   }
   const ownerTrusted = (event: Electron.IpcMainInvokeEvent) =>
     event.sender === owner.webContents && event.senderFrame === owner.webContents.mainFrame
       && (!access.trustedOwner || access.trustedOwner(event))
-  const visibilityChannel = 'openalice:companion:get-visible'
-  const toggleChannel = 'openalice:companion:toggle'
+  const visibilityChannel = 'ludens:companion:get-visible'
+  const toggleChannel = 'ludens:companion:toggle'
   const defaultSound: CompanionSound = {
     ...DEFAULT_SOUND,
     source: {
-      name: 'OpenAlice default (Soft double).wav',
+      name: 'Ludens default (Soft double).wav',
       dataUrl: `data:audio/wav;base64,${readFileSync(join(assets, 'click.wav')).toString('base64')}`,
     },
   }
   const sound = createCompanionSoundStore(join(app.getPath('userData'), 'companion-sound.json'), defaultSound)
-  const soundGet = 'openalice:companion:sound:get'
-  const soundUpdate = 'openalice:companion:sound:update'
-  const soundReset = 'openalice:companion:sound:reset'
+  const soundGet = 'ludens:companion:sound:get'
+  const soundUpdate = 'ludens:companion:sound:update'
+  const soundReset = 'ludens:companion:sound:reset'
   const publishSound = (settings: CompanionSound) => {
     for (const window of [owner, pet]) {
-      if (!window.isDestroyed()) window.webContents.send('openalice:companion:sound:changed', settings)
+      if (!window.isDestroyed()) window.webContents.send('ludens:companion:sound:changed', settings)
     }
   }
   ipcMain.handle(soundGet, event => {
@@ -232,19 +232,19 @@ export function createCompanion(owner: BrowserWindow, access: OwnerAccess = {}):
   ])
   const trusted = (event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent) => event.sender === pet.webContents && event.senderFrame === pet.webContents.mainFrame
   const listen = (action: string, callback: (input: unknown) => void) => {
-    const channel = 'openalice:companion:' + action
+    const channel = 'ludens:companion:' + action
     const handler = (event: Electron.IpcMainEvent, input: unknown) => { if (trusted(event)) callback(input) }
     ipcMain.on(channel, handler)
     pet.once('closed', () => ipcMain.removeListener(channel, handler))
   }
-  listen('ready', () => { ready = true; pet.webContents.send('openalice:companion:flip', flipped); if (enabled) pet.showInactive() })
+  listen('ready', () => { ready = true; pet.webContents.send('ludens:companion:flip', flipped); if (enabled) pet.showInactive() })
   listen('reduced-motion', value => { if (typeof value === 'boolean') reducedMotion = value })
   listen('interactive', value => { if (typeof value === 'boolean') pet.setIgnoreMouseEvents(drag ? false : !value, { forward: true }) })
   listen('begin-drag', () => { stopSnap(); drag = { start: screen.getCursorScreenPoint(), bounds: companionBounds(pet), moved: false }; pet.setIgnoreMouseEvents(false) })
   listen('move-drag', updateDrag)
   listen('menu', () => menu().popup({ window: pet }))
   listen('open', open)
-  const endChannel = 'openalice:companion:end-drag'
+  const endChannel = 'ludens:companion:end-drag'
   ipcMain.handle(endChannel, (event, cancelled) => {
     if (!trusted(event)) return false
     updateDrag()
@@ -263,7 +263,7 @@ export function createCompanion(owner: BrowserWindow, access: OwnerAccess = {}):
     const box = companionBounds(pet)
     const point = { x: cursor.x - box.x, y: cursor.y - box.y }
     const key = `${point.x},${point.y}`
-    if (key !== lastCursor) { lastCursor = key; pet.webContents.send('openalice:companion:cursor', point) }
+    if (key !== lastCursor) { lastCursor = key; pet.webContents.send('ludens:companion:cursor', point) }
   }, 50)
   const displayChanged = () => { if (!pet.isDestroyed()) { settle(false); save() } }
   screen.on('display-removed', displayChanged)
