@@ -15,18 +15,23 @@ const groups: { id: DocGroup; title: string; blurb: string }[] = [
 
 const titles: Record<string, string> = {
   "tutorials/index.md": "教程概览",
+  "tutorials/quickstart.md": "安装与工作区启停",
+  "tutorials/devices.md": "设备与驱动准备",
+  "tutorials/workspace.md": "工作区与能力编程",
+  "tutorials/perception-and-action.md": "常驻感知与动作循环",
+  "tutorials/debugging-and-verification.md": "控制台调试与验证",
   "reference/index.md": "组件与契约概览",
-  "insights/index.md": "洞见概览",
-  "tutorials/development.md": "开发与运行",
-  "tutorials/workspace.md": "Workspace 与自适应代码",
   "reference/architecture.md": "架构与边界",
   "reference/baseware.md": "Baseware 设计理念与能力契约",
   "reference/driver-bridge-protocol.md": "Driver Bridge 协议",
   "reference/logging.md": "日志与调用链",
   "reference/benchmark.md": "Benchmark",
+  "insights/index.md": "洞见概览",
   "insights/omp-compaction.md": "OMP 后台压缩改造",
   "insights/ws-recovery.md": "WS 恢复测试依据",
 };
+const order = Object.keys(titles);
+const rank = (key: string) => { const idx = order.indexOf(key); return idx < 0 ? 999 : idx; };
 
 const docIdPattern = /^(tutorials|reference|insights)\/[a-z0-9-]+$/;
 
@@ -35,7 +40,7 @@ async function listed(group: DocGroup, root: string): Promise<DocEntry[]> {
   let files: string[];
   try {
     files = (await readdir(dir)).filter(name => name.endsWith(".md") && docIdPattern.test(`${group}/${name.slice(0, -3)}`))
-      .sort((a, b) => (a === "index.md" ? -1 : b === "index.md" ? 1 : a.localeCompare(b)));
+      .sort((a, b) => rank(`${group}/${a}`) - rank(`${group}/${b}`) || a.localeCompare(b));
   } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
   return files.map(name => ({ id: `${group}/${name.replace(/\.md$/, "")}`, group,
     title: titles[`${group}/${name}`] ?? name.replace(/\.md$/, ""),

@@ -2,7 +2,8 @@
 
 从 OpenAlice 移植的原生桌宠与 Electron 壳（角色：卢登斯），保留角色、气泡、音频和窗口交互；主窗口加载同一份 RSA Dashboard，气泡消费同一套活动日志。
 
-- [安装、启动与验证](../docs/tutorials/development.md)
+- [安装与工作区启停](../docs/tutorials/quickstart.md)
+- [Ludens Pet 桌面伴侣与验证](../docs/tutorials/debugging-and-verification.md)
 - [日志消费与跟随工作区](../docs/reference/logging.md)
 - [组件边界](../docs/reference/architecture.md)
 
