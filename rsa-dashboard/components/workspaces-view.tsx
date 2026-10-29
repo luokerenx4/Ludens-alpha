@@ -49,6 +49,7 @@ export function WorkspacesView({ onChanged, onOpen, catalogError, catalogLoading
   const [actionError, setActionError] = useState("");
   const [pending, setPending] = useState("");
   const [filter, setFilter] = useState("");
+  const searchInput = useRef<HTMLInputElement>(null);
   const [existingPath, setExistingPath] = useState("");
   const [workspaceRoot, setWorkspaceRoot] = useState("");
   const [completion, setCompletion] = useState<Completion | null>(null);
@@ -261,7 +262,7 @@ export function WorkspacesView({ onChanged, onOpen, catalogError, catalogLoading
             {hasEntries ? <>
               <CardHeader className="flex flex-col gap-4 pb-5 sm:flex-row sm:items-center sm:justify-between">
                 <CardTitle className="flex items-center gap-3 text-base">{t("collectionTitle")}<Badge variant="secondary">{settings.workspaces.length}</Badge></CardTitle>
-                <div className="relative w-full sm:max-w-80"><Search aria-hidden="true" className="pointer-events-none absolute top-2.5 left-3 size-4 text-muted-foreground" /><Input className="pl-9" type="search" value={filter} onChange={event => setFilter(event.target.value)} placeholder={t("search")} aria-label={t("search")} /></div>
+                <div className="relative w-full sm:max-w-80"><Search aria-hidden="true" className="pointer-events-none absolute top-2.5 left-3 size-4 text-muted-foreground" /><Input ref={searchInput} className="pl-9" type="search" value={filter} onChange={event => setFilter(event.target.value)} placeholder={t("search")} aria-label={t("search")} /></div>
               </CardHeader>
               <CardContent>
                 <ul className="grid gap-3" aria-label={t("collectionTitle")}>
@@ -283,7 +284,7 @@ export function WorkspacesView({ onChanged, onOpen, catalogError, catalogLoading
                     {!entry.available && <p className="mt-3 text-xs leading-relaxed text-muted-foreground">{t("unavailableHint")}</p>}
                   </li>)}
                 </ul>
-                {!matches.length && <div className="space-y-3 py-10 text-center"><p className="text-sm text-muted-foreground">{t("noMatches")}</p><Button type="button" size="sm" variant="outline" onClick={() => setFilter("")}>{t("clearSearch")}</Button></div>}
+                {!matches.length && <div className="space-y-3 py-10 text-center"><p className="text-sm text-muted-foreground">{t("noMatches")}</p><Button type="button" size="sm" variant="outline" onClick={() => { setFilter(""); searchInput.current?.focus(); }}>{t("clearSearch")}</Button></div>}
                 <p className="mt-5 border-t pt-4 text-xs leading-relaxed text-muted-foreground">{t("removeHint")}</p>
               </CardContent>
             </> : <CardContent className="flex flex-col items-center py-10 text-center sm:py-16">

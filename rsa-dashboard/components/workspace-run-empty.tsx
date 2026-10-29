@@ -16,7 +16,7 @@ export function WorkspaceRunEmpty({ state, project, workspaceName, benchmarkRun,
   benchmarkRun?: string;
   error: string;
   retrying: boolean;
-  onRetry(): void;
+  onRetry(control: HTMLButtonElement): void;
   onNavigate(url: string): void;
 }) {
   const t = useTranslations("workspaceRunEmpty");
@@ -47,7 +47,8 @@ export function WorkspaceRunEmpty({ state, project, workspaceName, benchmarkRun,
         </div>
         {state === "catalog-error" && <Alert variant="destructive"><AlertDescription className="break-words">{error}</AlertDescription></Alert>}
         {!loading && <div className="flex flex-wrap gap-2 pt-1">
-          {state === "catalog-error" ? <Button type="button" disabled={retrying} onClick={onRetry}>
+          {state === "catalog-error" ? <Button type="button" aria-disabled={retrying} className="aria-disabled:opacity-50"
+            onClick={event => { if (!retrying) onRetry(event.currentTarget); }}>
             <RefreshCw className={retrying ? "animate-spin" : undefined} />{t(retrying ? "retrying" : "retry")}
           </Button> : state === "no-run" && links.capabilities
             ? action(links.capabilities, t("capabilities"), true)
