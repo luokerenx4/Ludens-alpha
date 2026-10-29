@@ -1,0 +1,21 @@
+@layer components {
+  .capability-declarations { min-width:0; container-type:inline-size; container-name:capability-declarations; }
+  .capability-declaration-columns { display:none; }
+  .capability-declaration-list { margin:0; padding:0; list-style:none; border-top:1px solid var(--border); }
+  .capability-declaration { display:grid; grid-template-columns:minmax(0,1fr); align-items:start; gap:8px; min-width:0; padding:14px 0; border-bottom:1px solid var(--border); }
+  .capability-declaration-name,.capability-declaration-description,.capability-declaration-control { min-width:0; margin:0; overflow-wrap:anywhere; }
+  .capability-declaration-name { font:500 13px/1.6 ui-monospace,monospace; }
+  .capability-declaration-name code { font:inherit; white-space:normal; }
+  .capability-declaration-description { font-size:13px; line-height:1.6; }
+  .capability-declaration-control { display:flex; flex-wrap:wrap; gap:4px 8px; font-size:12px; line-height:1.6; }
+  .capability-declaration-control dt { color:var(--muted-foreground); }
+  .capability-declaration-control dd { min-width:0; margin:0; }
+
+  @container capability-declarations (min-width:680px) {
+    .capability-declaration-columns,.capability-declaration { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.5fr) minmax(0,0.8fr); gap:20px; padding:12px 0; }
+    .capability-declaration-columns { border-top:1px solid var(--border); border-bottom:1px solid var(--border); color:var(--muted-foreground); font-size:12px; line-height:1.6; }
+    .capability-declaration-list { border-top:0; }
+    .capability-declaration-control { display:block; }
+    .capability-declaration-control dt { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+  }
+}

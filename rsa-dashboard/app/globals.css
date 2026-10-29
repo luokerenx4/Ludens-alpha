@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "../components/capabilities-tasks.css";
+@import "../components/capabilities-declarations.css";
 
 @custom-variant dark (&:is(.dark *));
 
