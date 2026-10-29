@@ -92,7 +92,13 @@ export function DocsView({ search, navigate }: {
   const languageChoice = query.get("docLang") === "zh" ? "zh" : query.get("docLang") === "en" ? "en" : "auto";
   const docLang = languageChoice === "auto" ? locale : languageChoice;
   const article = useRef<HTMLElement>(null);
+  const library = useRef<HTMLElement>(null);
+  const contents = useRef<HTMLElement>(null);
+  const docsTrigger = useRef<HTMLButtonElement>(null);
+  const headingsTrigger = useRef<HTMLButtonElement>(null);
   const menuContent = useRef<HTMLDivElement>(null);
+  const navigationFocus = useRef<{ control: HTMLElement; kind: "docs" | "headings" } | null>(null);
+  const closeFocusFrame = useRef(0);
   const initialDocument = useRef(docId);
   const previousPosition = useRef("");
   const navigatedFromDialog = useRef(false);
@@ -110,6 +116,50 @@ export function DocsView({ search, navigate }: {
   const resultCount = filteredGroups?.reduce((count, group) => count + group.docs.length, 0) ?? 0;
   const currentGroup = groups?.find(group => group.id === doc?.group);
   const missingAnchor = !!docAnchor && !!doc && !doc.headings.some(heading => heading.id === docAnchor);
+
+  const focusNavigation = (kind: "docs" | "headings", anchor?: string | null) => {
+    const trigger = kind === "docs" ? docsTrigger.current : headingsTrigger.current;
+    const rail = kind === "docs" ? library.current : contents.current;
+    const target = trigger?.getClientRects().length ? trigger
+      : kind === "docs" ? rail?.querySelector<HTMLElement>('input[type="search"]')
+      : (anchor ? rail?.querySelector<HTMLElement>(`[data-doc-anchor="${CSS.escape(anchor)}"]`) : null)
+        ?? rail?.querySelector<HTMLElement>("a");
+    if (target?.getClientRects().length) target.focus();
+    else article.current?.focus({ preventScroll: true });
+  };
+  useEffect(() => {
+    let frame = 0;
+    const kindOf = (target: Node) => library.current?.contains(target) || docsTrigger.current?.contains(target) ? "docs"
+      : contents.current?.contains(target) || headingsTrigger.current?.contains(target) ? "headings" : null;
+    const remember = (event: FocusEvent) => {
+      if (!(event.target instanceof HTMLElement) || event.target === document.body) return;
+      const kind = kindOf(event.target);
+      navigationFocus.current = kind ? { control: event.target, kind } : null;
+    };
+    const release = (event: PointerEvent) => {
+      if (!(event.target instanceof Node) || !kindOf(event.target)) navigationFocus.current = null;
+    };
+    const resize = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const intent = navigationFocus.current;
+        if (!intent?.control.isConnected || intent.control.getClientRects().length) return;
+        if (document.activeElement !== document.body && document.activeElement !== intent.control) return;
+        // CSS can blur the hidden rail or trigger before the resize callback runs.
+        focusNavigation(intent.kind, intent.control.dataset.docAnchor);
+      });
+    };
+    document.addEventListener("focusin", remember);
+    document.addEventListener("pointerdown", release, true);
+    window.addEventListener("resize", resize);
+    return () => {
+      cancelAnimationFrame(frame);
+      cancelAnimationFrame(closeFocusFrame.current);
+      document.removeEventListener("focusin", remember);
+      document.removeEventListener("pointerdown", release, true);
+      window.removeEventListener("resize", resize);
+    };
+  }, []);
 
   const retryRead = (resource: "index" | "article", control: HTMLButtonElement) => {
     if (document.activeElement === control) retryFocus.current = {
@@ -205,14 +255,27 @@ export function DocsView({ search, navigate }: {
       data-level={heading.level} aria-current={docAnchor === heading.id ? "location" : undefined}>{heading.text}</a>)}
   </nav>;
   const dialogMenu = (kind: "docs" | "headings") => <Dialog open={menu === kind} onOpenChange={open => { navigatedFromDialog.current = false; setMenu(open ? kind : null); }}>
-    <DialogTrigger asChild><Button type="button" variant="outline" size="sm" className={kind === "docs" ? "hidden max-[900px]:inline-flex" : "hidden max-[1300px]:inline-flex"}>
+    <span className={kind === "docs" ? "docs-menu-trigger" : "docs-headings-trigger"}><DialogTrigger asChild><Button ref={kind === "docs" ? docsTrigger : headingsTrigger} type="button" variant="outline" size="sm">
       {kind === "docs" ? <BookOpen aria-hidden="true" /> : <List aria-hidden="true" />}{t(kind === "docs" ? "docsMenu" : "onThisPage")}
-    </Button></DialogTrigger>
+    </Button></DialogTrigger></span>
     <DialogContent ref={menuContent} showCloseButton={false} className="docs-navigation-dialog max-h-[85dvh] overflow-y-auto" onOpenAutoFocus={event => {
       const target = menuContent.current?.querySelector<HTMLElement>(kind === "docs" ? 'input[type="search"]' : '.docs-heading-links a');
       if (target) { event.preventDefault(); target.focus(); }
     }} onCloseAutoFocus={event => {
-      if (navigatedFromDialog.current) event.preventDefault();
+      if (navigatedFromDialog.current) { event.preventDefault(); return; }
+      const trigger = kind === "docs" ? docsTrigger.current : headingsTrigger.current;
+      if (trigger?.getClientRects().length) return;
+      event.preventDefault();
+      const previous = document.activeElement;
+      const closingContent = menuContent.current;
+      const anchor = previous instanceof HTMLElement ? previous.dataset.docAnchor : null;
+      cancelAnimationFrame(closeFocusFrame.current);
+      closeFocusFrame.current = requestAnimationFrame(() => {
+        const active = document.activeElement;
+        if (active !== document.body && active !== previous && !closingContent?.contains(active)) return;
+        // Keep the modal open across resize; only replace its now-hidden return target.
+        focusNavigation(kind, anchor ?? docAnchor);
+      });
     }}>
       <DialogHeader className="pr-9 text-left"><DialogTitle>{t(kind === "docs" ? "docsMenu" : "onThisPage")}</DialogTitle>
         <DialogDescription>{kind === "docs" ? t("menuDescription") : doc?.title}</DialogDescription>
@@ -238,7 +301,7 @@ export function DocsView({ search, navigate }: {
           onClick={() => { if (!docLoad.loading) docLoad.retry(); }}><RefreshCw className={docLoad.loading ? "animate-spin" : ""} aria-hidden="true" /></Button>}
       </div>
     </div>
-    <aside className="docs-nav" aria-label={t("libraryLabel")}>{documentMenu}</aside>
+    <aside ref={library} className="docs-nav" aria-label={t("libraryLabel")}>{documentMenu}</aside>
     <article id="docs-article" ref={article} tabIndex={-1} className="surface docs-article" onClick={followDoc} aria-busy={docId ? docLoad.loading : groupsLoad.loading}>
       {!docId && <>
         <div className="docs-article-header"><h1>{t("overviewTitle")}</h1><p className="text-muted-foreground">{t("overviewBlurb")}</p></div>
@@ -270,6 +333,6 @@ export function DocsView({ search, navigate }: {
         <div lang={doc.lang}><DocBody key={`${doc.id}:${doc.lang}`} doc={doc} search={search} /></div>
       </>}
     </article>
-    {headings.length > 0 && <aside className="docs-toc"><h2>{t("onThisPage")}</h2>{headingMenu}</aside>}
+    {headings.length > 0 && <aside ref={contents} className="docs-toc"><h2>{t("onThisPage")}</h2>{headingMenu}</aside>}
   </div>;
 }
