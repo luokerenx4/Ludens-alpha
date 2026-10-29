@@ -350,6 +350,12 @@ test("request and link helpers preserve explicit verification selections and rej
     assert.equal(benchmarkSelection(result, result).verification, "verify-010");
     assert.equal(benchmarkSelection(result, result).baselineVerification, "verify-010");
     assert.equal(benchmarkSelection(result).report, null);
+    const otherWorkspaceBaseline = { ...result, trial: { ...trial, project: "another-workspace" } };
+    const pinned = benchmarkSelection(result, otherWorkspaceBaseline);
+    assert.equal(pinned.project, trial.project);
+    assert.equal(pinned.result, "ws-bench/run-010");
+    assert.equal(pinned.baseline, "another-workspace/run-010");
+    assert.equal("benchWorkspace" in pinned, false);
     const task = { ...f.task, bindings: [{ path: "/workspace/it's here/run.json", configuration: { task: f.task.name, argv: ["program"] } }] };
     assert.match(benchmarkCommand(task, "/workspace/it's here")!, /'\\''/);
     assert.ok(benchmarkCommand(task, f.workspace)!.includes(`--digest '${f.task.digest}'`));

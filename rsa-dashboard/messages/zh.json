@@ -16,7 +16,7 @@
   "views": {
     "live": {
       "title": "运行现场",
-      "description": "实时观察模型输入画面、活动日志与控制状态。"
+      "description": "查看模型观测、活动记录与最近一次读取的控制状态。"
     },
     "replay": {
       "title": "经历回放",
@@ -321,8 +321,8 @@
     "filterAll": "全部",
     "searchAria": "搜索活动日志",
     "searchPlaceholder": "搜索内容、工具或来源",
-    "latestTitle": "返回当前筛选下最新的 100 条",
-    "latestLabel": "最新",
+    "latestTitle": "在当前筛选下显示最新日志，不改变所选运行或观测画面。",
+    "latestLabel": "最新日志",
     "loadErrorPrefix": "日志读取失败：",
     "loadErrorCachedSuffix": "；以下为上次读取内容。",
     "missingSelectionNotice": "这条日志不在当前运行中，请检查运行与轮次选择。",
@@ -339,7 +339,11 @@
     "footerHistoryTotal": "· 历史查询共",
     "pinnedKept": " · 已保留定位日志",
     "footerHistorical": "较早记录 · 点最新返回",
-    "footerDiagnostic": "诊断按需查看"
+    "footerDiagnostic": "诊断按需查看",
+    "emptyReadFailed": "活动日志读取失败。",
+    "scopeMismatch": "日志属于另一个周期。",
+    "retryLatestHint": "点击“回到最新”，同时读取同一范围的观测和日志。",
+    "scopeChangedError": "读取期间日志范围或索引发生变化，请点击“回到最新”重新读取一致的快照。"
   },
   "workspacesView": {
     "operationFailed": "工作区操作失败",
@@ -818,8 +822,6 @@
     "catalogDescription": "读取任务目录和一页执行摘要。",
     "keepLastPage": "保留上次读取的这一页",
     "diagnostics": "目录或历史读取诊断",
-    "workspace": "工作区",
-    "workspaceAria": "评测工作区",
     "noWorkspace": "暂无工作区",
     "pageNote": "每页展示 25 次执行 · 浏览评测不影响 Agent 或 Ludens Pet 关注目标",
     "catalogAria": "评测目录",
@@ -882,7 +884,8 @@
     "viewParentRun": "查看发起评测的运行 ↗",
     "limitationsTitle": "适用范围与限制",
     "provenanceTitle": "条件、被测版本与来源",
-    "baselineTitle": "基线"
+    "baselineTitle": "基线",
+    "chooseWorkspace": "请创建或选择工作区，查看其中的评测。"
   },
   "runVisuals": {
     "transport": {
@@ -1161,5 +1164,39 @@
     "packageRequired": "请输入社区驱动包地址。",
     "verifyFirst": "创建工作区前，请先验证此驱动包。",
     "unsupportedBridge": "此驱动未声明默认桥接端口，暂时无法创建工作区。"
+  },
+  "workspacePicker": {
+    "choose": "选择工作区",
+    "loading": "正在读取工作区…",
+    "empty": "暂无工作区，请先添加",
+    "unavailable": "无法读取工作区列表",
+    "emptyHint": "前往工作区页面，新建工作区或添加已有工作区。",
+    "errorHint": "工作区列表读取失败，请前往工作区页面重试。"
+  },
+  "liveContext": {
+    "autoRefreshOn": "自动刷新：开",
+    "autoRefreshOff": "自动刷新：关",
+    "refreshHint": "仅自动刷新此页面，不会启动或控制智能体。",
+    "titleLatest": "最新记录",
+    "titleRun": "正在查看较早的运行",
+    "titleEpoch": "正在查看较早的周期",
+    "titleEvidence": "正在查看选定的记录",
+    "titleLog": "正在查看较早的日志",
+    "returnLatest": "回到最新",
+    "returning": "正在更新最新记录…",
+    "detail": "回到此工作区最新运行与周期，并保留自动刷新设置。",
+    "lastChecked": "上次检查",
+    "hostAuto": "智能体接管中",
+    "hostManual": "手动控制",
+    "hostDisconnected": "宿主未连接",
+    "hostUnavailable": "宿主状态未知",
+    "hostHistorical": "历史运行",
+    "hostSnapshot": "上次观测",
+    "refreshFailed": "最新记录更新失败。可再次回到最新，同时重试观测和日志。",
+    "scopeChanged": "载入期间运行范围发生变化，请再次回到最新以读取同一范围的记录。"
+  },
+  "consoleSidebar": {
+    "menuOpen": "展开菜单",
+    "menuClose": "收起菜单"
   }
 }

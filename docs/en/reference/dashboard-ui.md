@@ -39,6 +39,12 @@ The visual baseline is a warm charcoal canvas with restrained gold actions, quie
 
 Workspace entry uses a searchable library with creation, existing-folder registration, and default-location changes in separate dialogs. Keep advanced fields behind disclosure, derive community-driver fields from the verified manifest, and show a final location preview. Completing a write must remain successful even if later catalog refreshes fail; use the returned identity for confirmation and navigation.
 
+Workspace selection belongs in the shared top context bar. Settings stays in the sidebar footer below the optional pet panel; on narrow screens, navigation is disclosed from a menu so it does not push the workspace context below the fold.
+
+The Benchmark catalog uses that same workspace context. Changing workspaces clears the previous task, result and pagination selection. The selected history filter is independent of the task belonging to the displayed result.
+
+Live distinguishes the selected evidence, automatic page refresh, and the last observed host state. The global **Return to latest** action clears historical context and activity filters, then reads observations and logs together. **Latest logs** only updates the current log scope and filter. Pausing automatic refresh preserves the viewed workspace/run; intentional navigation and explicit refresh actions still read a snapshot without resuming polling.
+
 ## Interaction Conventions
 
 - Associate form controls with a `Label`, and help text via `aria-describedby`. Icon buttons must have an accessible name.

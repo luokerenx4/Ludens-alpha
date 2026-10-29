@@ -2,18 +2,22 @@
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { ArrowRight, History } from "lucide-react";
 import { useLocale, useTranslations } from "@/lib/locale";
 import type { Project, RunData } from "@/lib/types";
 import type { ReplayOverviewResult } from "@/lib/replay-types";
 import { initialSelection, latestGameRun } from "@/lib/initial-selection";
-import { isPlainNavigationClick } from "@/lib/dashboard-navigation";
 import { workspaceRunEntry } from "@/lib/workspace-run-entry";
+import { hasSelectedEvidence, latestLiveUrl, liveContext, resolveLiveSelection, type PausedLiveSelection } from "@/lib/live-follow";
+import { ReadPoller } from "@/lib/read-poller";
 import { WorkspaceRunEmpty } from "@/components/workspace-run-empty";
 import { ActivityFeed } from "@/components/activity-feed";
 import { useActivityFeed } from "@/components/use-activity-feed";
 import { PerceptionSettingsPanel } from "@/components/perception-settings";
-import { PetFollowCard, usePetFollow } from "@/components/pet-follow";
+import { usePetFollow } from "@/components/pet-follow";
+import { ConsoleSidebar, consoleViewIds as viewIds, type ConsoleView as View } from "@/components/console-sidebar";
+import { WorkspacePicker, workspaceName } from "@/components/workspace-picker";
 import { DesktopBridge } from "@/components/desktop-bridge";
 import { BenchmarkCases } from "@/components/benchmark-cases";
 import { DocsView } from "@/components/docs-view";
@@ -43,24 +47,6 @@ const subscribeLocation = (listener: () => void) => {
 };
 const getLocation = () => window.location.search;
 const serverLocation = () => "";
-const viewIds = ["live", "replay", "benchmark", "caps", "perception", "workspaces", "docs", "settings", "dev"] as const;
-type View = typeof viewIds[number];
-const navSections: Array<{ label: string; ids: View[] }> = [
-  { label: "navSectionWorkspace", ids: ["live", "replay", "benchmark", "caps", "perception"] },
-  { label: "navSectionGlobal", ids: ["workspaces", "docs", "settings"] },
-  { label: "navSectionDev", ids: ["dev"] },
-];
-function workspaceName(project?: Project, fallback = "") {
-  if (!project) return fallback;
-  if (project.name) return project.name;
-  if (project.workspace) {
-    const parts = project.workspace.split("/").filter(Boolean);
-    return (
-      (parts.at(-1) === "workspace" ? parts.at(-2) : parts.at(-1)) ?? project.id
-    );
-  }
-  return project.id;
-}
 const runDate = (id: string) => {
   const match = id.match(/^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})/);
   return match
@@ -76,60 +62,10 @@ const runDate = (id: string) => {
       })
     : id;
 };
-function NavIcon({ kind }: { kind: View | "logo" }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width="22"
-      height="22"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      aria-hidden="true"
-    >
-      {kind === "logo" ? (
-        <>
-          <path d="m12 2 9 5v10l-9 5-9-5V7Z" />
-          <path d="m3 7 9 5 9-5M12 12v10" />
-        </>
-      ) : kind === "live" ? (
-        <path d="m8 5 11 7-11 7Z" fill="currentColor" stroke="none" />
-      ) : kind === "replay" ? (
-        <><path d="M3 10a9 9 0 1 1 1 7M3 4v6h6" /><path d="m10 8 6 4-6 4Z" /></>
-      ) : kind === "workspaces" ? (
-        <><path d="M3 7h7l2-3h9v16H3Z" /><path d="M8 13h8M12 9v8" /></>
-      ) : kind === "docs" ? (
-        <>
-          <path d="M5 3h11l3 3v15H5Z" /><path d="M9 9h7M9 13h7M9 17h4" />
-        </>
-      ) : kind === "caps" ? (
-        <>
-          <path d="M9 3H5v18h14V3h-4" /><path d="M9 3h6v4H9Z" /><path d="m9 16 2 2 4-4" />
-        </>
-      ) : kind === "perception" ? (
-        <>
-          <circle cx="12" cy="12" r="3.4" /><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" />
-        </>
-      ) : kind === "benchmark" ? (
-        <>
-          <path d="M4 19V11M10 19V5M16 19V8M22 19V2" strokeWidth="3" />
-        </>
-      ) : kind === "dev" ? (
-        <>
-          <path d="m4 17 5-5-5-5" /><path d="M12 19h8" />
-        </>
-      ) : (
-        <>
-          <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.1-1.55 1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1.1 1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.01a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55h.01a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.01a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1Z" />
-        </>
-      )}
-    </svg>
-  );
-}
-
 export default function Dashboard() {
   const { t } = useLocale();
   const dt = useTranslations("dashboard");
+  const lt = useTranslations("liveContext");
   const search = useSyncExternalStore(
     subscribeLocation,
     getLocation,
@@ -147,7 +83,7 @@ export default function Dashboard() {
   const [catalogReady, setCatalogReady] = useState(false);
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [catalogError, setCatalogError] = useState("");
-  const [loaded, setLoaded] = useState<{ key: string; data: RunData } | null>(
+  const [loaded, setLoaded] = useState<{ key: string; revision: number; data: RunData } | null>(
     null,
   );
   const [replayCycles, setReplayCycles] = useState<{ key: string; cycles: RunData["cycles"] } | null>(null);
@@ -159,13 +95,30 @@ export default function Dashboard() {
   const [archiveRevision, setArchiveRevision] = useState(0);
   const archiveReady = useCallback(() => setArchiveRevision(value => value + 1), []);
   const [refresh, setRefresh] = useState(true);
+  const [pausedSelection, setPausedSelection] = useState<PausedLiveSelection | null>(null);
+  const [snapshotRevision, setSnapshotRevision] = useState(0);
+  const [latestRequest, setLatestRequest] = useState<{ revision: number; location: string } | null>(null);
+  const returnButton = useRef<HTMLButtonElement>(null);
+  const returnFocus = useRef(false);
+  const runPoller = useRef<ReadPoller | null>(null);
+  const automatic = useRef(refresh);
+  automatic.current = refresh;
   const pet = usePetFollow();
   const [stopping, setStopping] = useState(false);
   const [panel, setPanel] = useState("trace");
-  const selection = initialSelection(search, projects);
+  const requested = initialSelection(search, projects);
+  const requestedLatest = latestGameRun(projects.find(p => p.id === requested.project));
+  const followed = resolveLiveSelection({ location: search, project: requested.project, requestedRun: requested.run,
+    requestedEpoch: requested.epoch, latestRun: requestedLatest?.id ?? "", refresh, archiveRevision, paused: pausedSelection });
+  const selection = { project: followed.project, run: followed.requestedRun, epoch: followed.epoch };
   const project = projects.find((p) => p.id === selection.project);
   const latest = latestGameRun(project);
-  const run = selection.run || latest?.id || "";
+  const run = followed.run;
+  // A URL change is intentional navigation even while paused. Latch its new default
+  // before the next catalog poll can replace it; an empty workspace stays empty too.
+  if (!refresh && catalogReady && !followed.frozen) {
+    setPausedSelection({ location: search, project: selection.project, run, requestedRun: selection.run, epoch: selection.epoch, archiveRevision });
+  }
   const entry = workspaceRunEntry({ catalogReady, catalogError, project, run });
   const scopeKey = selection.project + "/" + run + "/" + selection.epoch;
   const beforeCall = query.get("beforeCall") ?? "";
@@ -178,7 +131,7 @@ export default function Dashboard() {
     ? replayCycles?.key === JSON.stringify([selection.project, run]) ? replayCycles.cycles : []
     : data?.cycles ?? [];
   const activity = useActivityFeed({ project: selection.project, run, epoch: selection.epoch || undefined,
-    enabled: view === "live", refresh, archiveRevision, selectedBlock: query.get("block") ?? undefined });
+    enabled: view === "live", refresh, archiveRevision, resetRevision: snapshotRevision, selectedBlock: query.get("block") ?? undefined });
   const call =
     data?.selectedCall ?? data?.calls.find((c) => c.id === requestedCall) ?? data?.calls.at(-1);
   const navigateUrl = useCallback((target: string) => {
@@ -194,6 +147,21 @@ export default function Dashboard() {
     for (const [name, value] of Object.entries(patch))
       value ? params.set(name, value) : params.delete(name);
     navigateUrl("/?" + params.toString());
+  };
+  const toggleRefresh = () => {
+    if (refresh) setPausedSelection({ location: search, project: selection.project, run, requestedRun: selection.run, epoch: selection.epoch, archiveRevision });
+    setRefresh(value => !value);
+  };
+  const returnToLatest = () => {
+    const target = latestLiveUrl(selection.project);
+    const revision = snapshotRevision + 1;
+    // The explicit revision matters when the URL is already clean and polling is off.
+    setSnapshotRevision(revision);
+    returnFocus.current = document.activeElement === returnButton.current;
+    setLatestRequest({ revision, location: target.slice(1) });
+    setRunFailure(null);
+    if (!refresh) setPausedSelection({ location: target.slice(1), project: selection.project, run: latest?.id ?? "", requestedRun: "", epoch: "", archiveRevision });
+    navigateUrl(target);
   };
   const viewLink = (id: View) => {
     const params = new URLSearchParams(query);
@@ -236,8 +204,6 @@ export default function Dashboard() {
   }, [catalogRevision]);
   useEffect(() => {
     if (view === "workspaces" || view === "settings" || view === "dev" || benchmarkCases || view === "replay" || view === "docs" || view === "caps" || view === "perception" || !selection.project || !run) return;
-    const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout>;
     const params = new URLSearchParams({
       project: selection.project,
       run,
@@ -246,29 +212,27 @@ export default function Dashboard() {
       ...(requestedCall ? { call: requestedCall } : {}),
       ...(selectedImage ? { image: selectedImage } : {}),
     });
-    const load = async () => {
+    const reader = new ReadPoller(async signal => {
       try {
         const next = await json<RunData>(
           "/api/run?" + params,
-          controller.signal,
+          signal,
           progress => setPreparing({ key, progress }),
         );
-        if (controller.signal.aborted) return;
-        setLoaded({ key, data: next });
+        if (signal.aborted) return 2500;
+        setLoaded({ key, revision: snapshotRevision, data: next });
         setPreparing(null);
         setRunFailure(null);
-
       } catch (e) {
-        if (!controller.signal.aborted) setRunFailure({ key, message: String(e) });
-      } finally {
-        if (!controller.signal.aborted && refresh)
-          timer = setTimeout(load, 2500);
+        if (!signal.aborted) setRunFailure({ key, message: String(e) });
       }
-    };
-    void load();
+      return 2500;
+    }, automatic.current);
+    runPoller.current = reader;
+    void reader.readOnce();
     return () => {
-      controller.abort();
-      clearTimeout(timer);
+      reader.dispose();
+      if (runPoller.current === reader) runPoller.current = null;
     };
   }, [
     selection.project,
@@ -278,11 +242,12 @@ export default function Dashboard() {
     requestedCall,
     selectedImage,
     key,
-    refresh,
     view,
     benchmarkCases,
-    archiveRevision,
+    followed.archiveRevision,
+    snapshotRevision,
   ]);
+  useEffect(() => { runPoller.current?.setEnabled(refresh); }, [refresh]);
   const live = data?.live;
   const isCurrent =
     !!data && live?.runId === data.run && data.selectedEpoch === live?.epoch;
@@ -303,6 +268,54 @@ export default function Dashboard() {
           ? dt("statusReturned")
           : dt("statusReplay")
         : dt("statusWaiting"));
+  const context = data ? liveContext({
+    run: data.run,
+    latestRun: latest?.id ?? "",
+    selectedEpoch: data.selectedEpoch,
+    latestEpoch: data.cycles.at(-1)?.epoch ?? null,
+    selectedEvidence: hasSelectedEvidence(search),
+    historicalLog: activity.historical,
+    live: data.live,
+  }) : null;
+  const latestReadsDone = loaded?.key === key && loaded.revision === snapshotRevision
+    && activity.loadedRevision === snapshotRevision && !activity.loading;
+  const latestScopeMatches = activity.scope?.project === selection.project && activity.scope?.runId === run
+    && activity.scope?.epoch === data?.selectedEpoch;
+  const latestReady = latestReadsDone && latestScopeMatches;
+  const latestRequested = latestRequest?.revision === snapshotRevision && latestRequest.location === search;
+  const latestScopeChanged = latestRequested && latestReadsDone && !latestScopeMatches
+    && !error && !activity.error;
+  const latestFailed = latestRequested && !!(error || activity.error || latestScopeChanged);
+  const returningLatest = latestRequested && !latestFailed
+    && !latestReady;
+  useEffect(() => {
+    if (latestRequest && !latestRequested) {
+      returnFocus.current = false;
+      setLatestRequest(null);
+    } else if (latestRequested && (latestReady || latestFailed)) {
+      if (returnFocus.current && (document.activeElement === document.body || document.activeElement === returnButton.current))
+        returnButton.current?.focus({ preventScroll: true });
+      returnFocus.current = false;
+      if (!latestFailed) setLatestRequest(null);
+    }
+  }, [latestRequest, latestRequested, latestReady, latestFailed]);
+  useEffect(() => {
+    if (!latestRequested) return;
+    const preserveUserFocus = (event: Event) => {
+      if (event.target !== returnButton.current && event.target !== document.body)
+        returnFocus.current = false;
+    };
+    document.addEventListener("focusin", preserveUserFocus);
+    document.addEventListener("pointerdown", preserveUserFocus);
+    return () => {
+      document.removeEventListener("focusin", preserveUserFocus);
+      document.removeEventListener("pointerdown", preserveUserFocus);
+    };
+  }, [latestRequested]);
+  const contextTitles = { latest: "titleLatest", run: "titleRun", epoch: "titleEpoch", evidence: "titleEvidence", log: "titleLog" };
+  const hostLabels = { auto: "hostAuto", manual: "hostManual", disconnected: "hostDisconnected", unavailable: "hostUnavailable", historical: "hostHistorical" };
+  const observedStatus = context ? lt(hostLabels[context.host]) : status;
+  const staleStatus = !refresh || !!error || returningLatest || latestFailed;
   const stop = async () => {
     if (!data?.controlAllowed || !auto) return;
     setStopping(true);
@@ -330,7 +343,7 @@ export default function Dashboard() {
             ...(selectedImage ? { image: selectedImage } : {}),
           }),
       );
-      setLoaded({ key, data: next });
+      setLoaded({ key, revision: snapshotRevision, data: next });
       setRunFailure(null);
     } catch (e) {
       setRunFailure({ key, message: String(e) });
@@ -350,84 +363,19 @@ export default function Dashboard() {
   return (
     <div className="console-shell">
       <DesktopBridge onNavigate={navigateUrl} />
-      <aside className="sidebar">
-        <a
-          className="brand"
-          href={viewLink("live")}
-          onClick={(e) => {
-            if (!isPlainNavigationClick(e)) return;
-            e.preventDefault();
-            navigateUrl(viewLink("live"));
-          }}
-        >
-          <NavIcon kind="logo" />
-          <span>Ludens</span>
-        </a>
-        {!["workspaces", "docs", "settings", "dev"].includes(view) && !benchmarkCases && <div className="workspace-picker">
-          <label htmlFor="workspace">
-            {dt("picker.workspace")}
-          </label>
-            <NativeSelect
-              id="workspace"
-              className="w-full text-xs"
-              wrapperClassName="w-full"
-              value={selection.project}
-              onChange={(e) =>
-                navigate({
-                  project: e.target.value,
-                  workspace: null,
-                  run: null,
-                  epoch: null,
-                  beforeCall: null,
-                  call: null,
-                  block: null,
-                  image: null,
-                  at: null,
-                })
-              }
-            >
-              {!projects.length && <NativeSelectOption value="">{dt("picker.noWorkspace")}</NativeSelectOption>}
-              {projects.map((p) => (
-                <NativeSelectOption key={p.id} value={p.id}>
-                  {workspaceName(p)}{p.available === false ? dt("picker.unavailable") : ""}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
-        </div>}
-        <nav aria-label={dt("consoleNav")}>
-          {navSections.map(section => (
-            <div key={section.label} className="nav-section">
-              <small>{t(section.label)}</small>
-              {section.ids.map(id => (
-                <a
-                  key={id}
-                  href={viewLink(id)}
-                  className={view === id ? "active" : ""}
-                  aria-current={view === id ? "page" : undefined}
-                  onClick={(e) => {
-                    if (!isPlainNavigationClick(e)) return;
-                    e.preventDefault();
-                    navigateUrl(viewLink(id));
-                  }}
-                >
-                  <NavIcon kind={id} />
-                  <span>{t(`nav.${id}`)}</span>
-                </a>
-              ))}
-            </div>
-          ))}
-        </nav>
-        <PetFollowCard follow={pet} project={benchmarkCases || view === "docs" || view === "settings" || view === "workspaces" ? undefined : project}
-          onSettings={() => navigate({ view: "settings" })} />
-      </aside>
+      <ConsoleSidebar view={view} viewLink={viewLink} onNavigate={navigateUrl} pet={pet}
+        petProject={benchmarkCases || view === "docs" || view === "settings" || view === "workspaces" ? undefined : project}
+        onPetSettings={() => navigate({ view: "settings" })} />
       <div className="console-main">
         <header className="context-bar">
-          <div className="breadcrumb">
-            <span>
-              {benchmarkCases ? dt("picker.allWorkspaces") : view === "docs" || view === "settings" || view === "workspaces" ? "Ludens" : workspaceName(project, dt("workspacePlaceholder"))}
-            </span>
-            <i>/</i>
-            <strong>{t(`nav.${view}`)}</strong>
+          <div className="context-workspace">
+            <WorkspacePicker projects={projects} value={selection.project} loading={!catalogReady} error={catalogError}
+              onChange={id => navigate({ project: id, workspace: null, run: null, epoch: null,
+                beforeCall: null, call: null, block: null, image: null, at: null,
+                case: null, caseDigest: null, result: null, baseline: null, verification: null,
+                baselineVerification: null, report: null, baselineReport: null,
+                verificationCursor: null, evidenceCursor: null, benchCursor: null })} />
+            <div className="breadcrumb"><i>/</i><strong>{t(`nav.${view}`)}</strong></div>
           </div>
           <div className="context-controls">
             {runControls && (
@@ -436,9 +384,9 @@ export default function Dashboard() {
                   aria-label={dt("runHistoryLabel")}
                   className="max-w-60 text-xs"
                   disabled={!project?.runs.length}
-                  value={selection.run}
+                  value={!refresh && !selection.run ? run : selection.run}
                   onChange={(e) =>
-                    navigate({
+                    !e.target.value && view === "live" ? returnToLatest() : navigate({
                       run: e.target.value,
                       epoch: null,
                       beforeCall: null,
@@ -466,8 +414,10 @@ export default function Dashboard() {
                   aria-label={dt("epochLabel")}
                   className="max-w-48 text-xs"
                   disabled={!run}
-                  value={selection.epoch}
-                  onChange={(e) =>
+                  value={!refresh && !selection.epoch ? data?.selectedEpoch ?? "" : selection.epoch}
+                  onChange={(e) => {
+                    setPausedSelection(null);
+                    if (!e.target.value && !selection.epoch) setSnapshotRevision(value => value + 1);
                     navigate({
                       project: selection.project,
                       run,
@@ -477,8 +427,8 @@ export default function Dashboard() {
                       block: null,
                       image: null,
                       at: null,
-                    })
-                  }
+                    });
+                  }}
                 >
                   <NativeSelectOption value="">
                     {data?.manifest.kind === "benchmark" && !cycles.length
@@ -499,13 +449,13 @@ export default function Dashboard() {
               type="button"
               size="sm"
               variant="outline"
-              className={refresh ? "border-success/40 text-success" : "text-muted-foreground"}
+              className="text-muted-foreground"
               aria-pressed={refresh}
-              title={dt("refreshHint")}
-              onClick={() => setRefresh((v) => !v)}
+              title={lt("refreshHint")}
+              onClick={toggleRefresh}
             >
-              <i className={"status-dot" + (refresh ? " online" : "")} />
-              {refresh ? dt("live") : dt("paused")}
+              <i className="status-dot" />
+              {lt(refresh ? "autoRefreshOn" : "autoRefreshOff")}
             </Button>}
           </div>
         </header>
@@ -563,6 +513,25 @@ export default function Dashboard() {
               </Button>}
             </AlertDescription></Alert>
           )}
+          {view === "live" && entry === "ready" && (context || latestRequested) && <section
+            className={"mb-4 flex flex-wrap items-center gap-3 rounded-lg border px-4 py-3 "
+              + ((context?.kind ?? "latest") === "latest" ? "border-border bg-card" : "border-primary/40 bg-primary/5")}
+            aria-labelledby="live-context-title"
+          >
+            <History className="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
+            <div className="min-w-0 flex-1 basis-64">
+              <h2 id="live-context-title" className="text-sm font-semibold" aria-live="polite">
+                {returningLatest ? lt("returning") : lt(contextTitles[(context?.kind ?? "latest")])}
+              </h2>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                {latestScopeChanged ? lt("scopeChanged") : latestFailed ? lt("refreshFailed") : lt("detail")}
+              </p>
+            </div>
+            <Button ref={returnButton} type="button" size="sm" variant={(context?.kind ?? "latest") === "latest" ? "outline" : "default"}
+              className="shrink-0" onClick={returnToLatest} disabled={returningLatest || !latest}>
+              {lt("returnLatest")} <ArrowRight className="size-4" aria-hidden="true" />
+            </Button>
+          </section>}
           {view === "workspaces" ? (
             <WorkspacesView onChanged={refreshCatalog} onOpen={id => navigateUrl("/?" + new URLSearchParams({ view: "caps", project: id }))} />
           ) : view === "settings" ? (
@@ -585,6 +554,8 @@ export default function Dashboard() {
               position={query.get("at")} onPosition={at => navigate({ project: selection.project, run, at: String(at) })} />
           ) : benchmarkCases ? (
             <BenchmarkCases
+              workspace={selection.project}
+              ready={catalogReady}
               search={search}
               refresh={refresh}
               navigate={navigate}
@@ -607,9 +578,11 @@ export default function Dashboard() {
           ) : (
             <>
               <div className="run-status">
-                <span className={"status-dot " + (auto ? "online" : "")} />
-                <strong>{status}</strong>
-                {phase?.elapsedMs != null && (
+                <span className={"status-dot " + (auto && !staleStatus ? "online" : "")} />
+                <strong>{view === "live" ? <>{staleStatus && `${lt("hostSnapshot")}: `}{observedStatus}</> : status}</strong>
+                {view === "live" && phase?.label && !staleStatus && <span>{phase.label}</span>}
+                {view === "live" && <span>{lt("lastChecked")} {clockTime(data.updatedAt)}</span>}
+                {phase?.elapsedMs != null && !staleStatus && (
                   <span>{dt("elapsed")} {seconds(phase.elapsedMs)}</span>
                 )}
                 <i />
@@ -620,7 +593,7 @@ export default function Dashboard() {
                   {Math.floor(data.manifest.seconds / 60)}{dt("minLong")}
                 </span>
               </div>
-              <section className="metrics" aria-label={dt("roundSummary")}>
+              <section className={view === "live" ? "metrics live-metrics" : "metrics"} aria-label={dt("roundSummary")}>
                 <Metric
                   label={dt("metric.completed")}
                   value={String(s!.completed)}
@@ -666,16 +639,6 @@ export default function Dashboard() {
                       >
                         {dt("checkPerf")} ↗
                       </Button>
-                      {(query.has("call") || query.has("beforeCall")) && (
-                        <Button type="button" variant="ghost" size="xs"
-                          className="h-auto justify-start whitespace-normal text-left text-xs text-muted-foreground hover:text-foreground"
-                          onClick={() =>
-                            navigate({ beforeCall: null, call: null, image: null, block: null })
-                          }
-                        >
-                          {dt("backToLatest")} ↓
-                        </Button>
-                      )}
                       <span>
                         {data.manifest.drivers.map((d) => d.id).join(" · ")}
                       </span>
