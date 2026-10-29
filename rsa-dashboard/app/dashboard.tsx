@@ -16,6 +16,7 @@ import { RunAnalysis } from "@/components/run-analysis";
 import { WorkspaceRunEmpty } from "@/components/workspace-run-empty";
 import { ActivityFeed } from "@/components/activity-feed";
 import { useActivityFeed } from "@/components/use-activity-feed";
+import { useRetryFocus } from "@/components/use-retry-focus";
 import { PerceptionSettingsPanel } from "@/components/perception-settings";
 import { usePetFollow } from "@/components/pet-follow";
 import { ConsoleSidebar, consoleViewIds as viewIds, type ConsoleView as View } from "@/components/console-sidebar";
@@ -70,6 +71,14 @@ export default function Dashboard() {
   const [catalogReady, setCatalogReady] = useState(false);
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [catalogError, setCatalogError] = useState("");
+  const catalogFocus = useRetryFocus<HTMLElement>(catalogLoading, catalogError, search);
+  const catalogRetryPending = useRef(false);
+  const retryCatalog = (control: HTMLButtonElement) => {
+    if (catalogLoading || catalogRetryPending.current) return;
+    catalogRetryPending.current = true;
+    catalogFocus.remember(control);
+    refreshCatalog();
+  };
   const [verifiedCreationDriver, setVerifiedCreationDriver] = useState<DiscoveredDriver | null>(null);
   useEffect(() => {
     if (view !== "workspaces") setVerifiedCreationDriver(null);
@@ -199,6 +208,7 @@ export default function Dashboard() {
         if (!controller.signal.aborted) setCatalogError(String(e));
       } finally {
         if (!controller.signal.aborted) {
+          catalogRetryPending.current = false;
           setCatalogReady(true);
           setCatalogLoading(false);
           timer = setTimeout(load, 10000);
@@ -490,7 +500,9 @@ export default function Dashboard() {
             </Button>}
           </div>
         </header>
-        <main ref={runContent} tabIndex={view === "live" || analysingRun ? -1 : undefined} className={"page-content" + (view === "live" ? " live-page" : "")}>
+        <main ref={element => { runContent.current = element; catalogFocus.target.current = element; }}
+          tabIndex={runControls ? -1 : undefined} aria-label={runControls ? t(`views.${view}.title`) : undefined}
+          className={"page-content outline-none focus-visible:ring-2 focus-visible:ring-ring" + (view === "live" ? " live-page" : "")}>
           {view !== "workspaces" && view !== "docs" && view !== "perception" && view !== "caps" && (view !== "replay" || entry !== "ready") && <div className={"page-heading" + (view === "live" ? " live-page-heading" : view === "settings" ? " mx-auto w-full max-w-5xl" : "")}>
             <div>
               <h1>{benchmarkCases ? t("benchmark.casesTitle") : t(`views.${view}.title`)}</h1>
@@ -540,7 +552,8 @@ export default function Dashboard() {
                 <small>{dt("keepLast")} · {clockTime(data.updatedAt)}</small>
               )}</span>
               <div className="flex flex-wrap gap-2">
-                {catalogError && <Button type="button" size="sm" variant="outline" disabled={catalogLoading} onClick={refreshCatalog}>
+                {catalogError && <Button type="button" size="sm" variant="outline" aria-disabled={catalogLoading}
+                  className="aria-disabled:opacity-50" onClick={event => retryCatalog(event.currentTarget)}>
                   {t(catalogLoading ? "workspaceRunEmpty.retrying" : "workspaceRunEmpty.retry")}
                 </Button>}
                 {(view === "live" || analysingRun) && error && <Button type="button" size="sm" variant="outline" aria-disabled={retryingRun}
@@ -592,7 +605,7 @@ export default function Dashboard() {
           ) : runControls && entry !== "ready" ? (
             <WorkspaceRunEmpty state={entry} project={project?.id} workspaceName={workspaceName(project)}
               benchmarkRun={project?.runs.find(r => r.kind === "benchmark" || r.benchmark)?.id}
-              error={catalogError} retrying={catalogLoading} onRetry={refreshCatalog} onNavigate={navigateUrl} />
+              error={catalogError} retrying={catalogLoading} onRetry={retryCatalog} onNavigate={navigateUrl} />
           ) : view === "replay" ? (
             <TimelinePlayer key={scopeKey} project={selection.project} run={run} epoch={selection.epoch || "latest"}
               onOverview={onReplayOverview} archiveRevision={archiveRevision}
