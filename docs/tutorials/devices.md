@@ -32,14 +32,15 @@
 
 ## 外部驱动包发现与接入
 
-mGBA、Azahar、Ryubing 必须通过 `--driver-package` 显式选择外部包；当前仅 `cua` 桌面接入内置。包地址支持 npm 包名、`github:org/repo#rev` 或 `file:path`。初始化工作区前，可用 `baseware driver discover` 或 Dashboard 能力页（`?view=caps`）校验包的 `DriverRegistration` 声明：
+mGBA、Azahar、Ryubing 必须通过 `--driver-package` 显式选择外部包；当前仅 `cua` 桌面接入内置。包地址支持 npm 包名、`github:org/repo#rev`、GitHub HTTPS URL、`git@github.com:org/repo.git#rev` 或 `file:path`。SSH 地址保留 SSH 传输，缓存按传输方式、仓库与 revision 区分。初始化工作区前，可用 `baseware driver discover` 或 Dashboard 能力页（`?view=caps`）校验包的 `DriverRegistration` 声明：
 
 ```sh
-baseware driver discover --package github:org/repo#rev
-rsa init --driver <id> --driver-package github:org/repo#rev
+baseware driver discover --package 'github:org/repo#rev'
+rsa init --driver <id> --driver-package 'github:org/repo#rev'
 ```
 
 - **路径解析**：`rsa init` 与 `rsa up` 中的相对 `file:` 路径均以目标工作区目录为基准解析并归一化；`baseware driver discover` 的相对 `file:` 按当前 shell 目录解析；Dashboard 网页端的外部驱动校验要求 `file:` 使用绝对路径。
+- **实际来源**：catalog 的 `drivers[].source`、Baseware `service_start.driverSource` 与 RSA `manifest.drivers[].source` 记录加载器实际解析的来源：GitHub `resolvedCommit`、npm `resolvedVersion` 或本地入口 `entrySha256`。入口哈希不覆盖依赖，`provider.version` 仍表示设备或协议版本；字段详见 [包地址与缓存机制](../reference/baseware.md#1-包地址与缓存机制)。
 - **信任边界**：发现阶段虽不调用驱动的 `load()`，但会下载安装依赖并导入包入口代码；仅对可信来源执行发现与初始化。驱动包规范详见 [Driver 包与启动描述](../reference/baseware.md#driver-包与启动描述) 与 [Driver Bridge 协议](../reference/driver-bridge-protocol.md)。
 
 **已有模拟器工作区迁移**：先执行 `rsa auto off`，再执行 `rsa down --keep-emulator`；在原 `rsa.json` 增加匹配驱动的 `driverPackage`，固定下面对应仓库的 commit SHA，然后 `rsa up --dry-run` / `rsa up`。不重新执行 `rsa init`，原工作区文件与存档继续保留。已经运行的服务不会因源码更新自动换包。

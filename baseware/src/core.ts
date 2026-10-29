@@ -6,7 +6,7 @@ import type { DriverManifest } from "./drivers/registry.ts";
 import type { EventSourceDescriptor } from "../../shared/event-sources.ts";
 import { SamplingStats } from "./sampling-stats.ts";
 
-export type DriverInfo = Pick<DriverManifest, "id" | "transport" | "defaultPort" | "needsGame" | "launchHint" | "launchCommand" | "launchEnv"> & { version: string };
+export type DriverInfo = Pick<DriverManifest, "id" | "transport" | "defaultPort" | "needsGame" | "launchHint" | "launchCommand" | "launchEnv" | "source"> & { version: string };
 export interface ClientContext { id: string; onEvent?(event: DeviceEvent): void }
 
 function operationTrace(parent: Trace, operationId: string): Trace {
@@ -36,6 +36,7 @@ export class BasewareCore {
   private writes = new Set<Promise<void>>();
   private readonly inputResetTimeoutMs: number;
   private opening?: Promise<void>;
+  private acquiring?: Capabilities["controllers"][number];
   private stopping?: Promise<ReturnType<BasewareCore["status"]>>;
   private acquired: Capabilities["controllers"] = [];
   private timer?: ReturnType<typeof setTimeout>;
@@ -128,20 +129,40 @@ export class BasewareCore {
     this.lastExecution = undefined;
     this.control = new AbortController();
     const control = this.control;
+    const acquired: Capabilities["controllers"] = this.acquired = [];
+    const controlTrace = this.controlTrace;
     this.mode = "acquiring";
     const cancel = () => { void this.release(epoch, "acquire cancelled"); };
     signal?.addEventListener("abort", cancel, { once: true });
-    this.opening = (async () => {
+    const work = (async () => {
       for (const controller of this.capabilities.controllers.filter(c => c.requiresControl)) {
-        await controller.acquire?.(epoch);
-        this.acquired.push(controller);
-        if (control.signal.aborted) return;
+        this.acquiring = controller;
+        try { await controller.acquire?.(epoch); }
+        catch (error) {
+          // A rejected native request can still have changed ownership.
+          await this.releaseControllers([controller], epoch, controlTrace);
+          throw error;
+        } finally {
+          if (this.control === control) this.acquiring = undefined;
+        }
+        if (control.signal.aborted || !this.connected || this.control !== control) {
+          // A timed-out request may grant native ownership after handback.
+          // Keep its compensation local to this epoch, never a later lease.
+          await this.releaseControllers([controller], epoch, controlTrace);
+          return;
+        }
+        acquired.push(controller);
       }
     })();
+    this.opening = this.withInputTimeout(work, "Control acquisition timed out; device state is uncertain").catch(error => {
+      this.connected = false;
+      this.record("error", String(error), controlTrace);
+      throw error;
+    });
     try { await this.opening; }
-    catch (error) { await this.release(epoch, String(error)); throw error; }
+    catch (error) { if (this.control === control) await this.release(epoch, String(error)); throw error; }
     finally { signal?.removeEventListener("abort", cancel); }
-    if (control.signal.aborted) return this.status();
+    if (control.signal.aborted || this.control !== control) return this.status();
     this.deadline = performance.now() + seconds * 1000;
     this.mode = "auto";
     this.reason = "acquired";
@@ -160,19 +181,16 @@ export class BasewareCore {
     this.control?.abort();
     clearTimeout(this.timer);
     this.stopping = (async () => {
-      // Acquisition may finish after revocation. Release whatever it actually acquired.
-      await this.opening?.catch(() => {});
+      // Try to unblock a pending native OWN now. Its late-success path also
+      // releases the same epoch if this early release preceded the grant.
+      const pendingRelease = this.acquiring
+        ? this.releaseControllers([this.acquiring], this.epoch!, this.controlTrace) : undefined;
+      await Promise.all([this.opening?.catch(() => {}), pendingRelease]);
       // A reset may already be reacquiring native ownership. It must finish or
       // fail before the final release, and can never resume after mode changed.
       await this.inputReset?.catch(() => {});
-      let outcomes: PromiseSettledResult<void | undefined>[];
-      try { outcomes = await this.withInputTimeout(Promise.allSettled(this.acquired.map(c => c.release?.(this.epoch!)))); }
-      catch (error) { outcomes = [{ status: "rejected", reason: error }]; }
+      await this.releaseControllers(this.acquired, this.epoch!, this.controlTrace);
       this.acquired = [];
-      for (const outcome of outcomes) if (outcome.status === "rejected") {
-        this.connected = false;
-        this.record("error", String(outcome.reason), this.controlTrace);
-      }
       this.mode = "manual";
       const status = this.status();
       this.record("baseware_control", status, this.controlTrace);
@@ -183,9 +201,21 @@ export class BasewareCore {
     return this.stopping;
   }
 
-  private withInputTimeout<T>(pending: Promise<T>): Promise<T> {
+  private async releaseControllers(controllers: Capabilities["controllers"], epoch: string, trace: Trace) {
+    let outcomes: PromiseSettledResult<void | undefined>[];
+    try {
+      outcomes = await this.withInputTimeout(Promise.allSettled(controllers.map(controller =>
+        Promise.resolve().then(() => controller.release?.(epoch)))));
+    } catch (error) { outcomes = [{ status: "rejected", reason: error }]; }
+    for (const outcome of outcomes) if (outcome.status === "rejected") {
+      this.connected = false;
+      this.record("error", String(outcome.reason), trace);
+    }
+  }
+
+  private withInputTimeout<T>(pending: Promise<T>, message = "Input cleanup timed out; device state is uncertain"): Promise<T> {
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("Input cleanup timed out; device state is uncertain")), this.inputResetTimeoutMs);
+      const timer = setTimeout(() => reject(new Error(message)), this.inputResetTimeoutMs);
       pending.then(value => { clearTimeout(timer); resolve(value); }, error => { clearTimeout(timer); reject(error); });
     });
   }

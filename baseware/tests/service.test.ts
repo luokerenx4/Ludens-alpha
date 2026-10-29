@@ -19,7 +19,7 @@ async function until(check: () => boolean) {
   }
 }
 
-async function fixture(execute?: Capabilities["controllers"][number]["execute"]) {
+async function fixture(execute?: Capabilities["controllers"][number]["execute"], timeoutMs?: number) {
   let owner: string | undefined;
   let actions = 0, cancelled = 0, sample = 0;
   const events: DeviceEvent[] = [];
@@ -40,7 +40,7 @@ async function fixture(execute?: Capabilities["controllers"][number]["execute"])
           observations: [{ id, controllerId: "thermal", path: "/tmp/fake-observation.txt", mediaType: "text/plain", timing, sourceSequence: sample }] };
       } }],
   };
-  const core = new BasewareCore({ capabilities, drivers: [{ id: "fake", version: "1" }], diagnostics: "full",
+  const core = new BasewareCore({ capabilities, drivers: [{ id: "fake", version: "1" }], diagnostics: "full", inputResetTimeoutMs: timeoutMs,
     record: (type, data, trace = {}, metadata) => events.push({ type, data, trace, ...metadata, source: metadata!.source!, origin: metadata!.origin! }) });
   const directory = await mkdtemp(join(tmpdir(), "baseware-test-"));
   const socket = join(directory, "service.sock");
@@ -167,6 +167,51 @@ test("owner disconnect during acquisition releases a late acquisition", async ()
   gate.resolve();
   await until(() => f.core.status().mode === "manual");
   expect(f.owner()).toBeUndefined();
+});
+
+test.each(["revoke", "timeout"])("%s bounds a stuck acquisition and compensates a late native grant", async trigger => {
+  const f = await fixture(undefined, 20);
+  const gate = Promise.withResolvers<void>();
+  const motor = f.capabilities.controllers[0]!;
+  const acquire = motor.acquire!, release = motor.release!;
+  let entered = false, releases = 0, nextAcquisitions = 0;
+  motor.acquire = async epoch => { entered = true; await gate.promise; await acquire(epoch); };
+  motor.release = async epoch => { releases++; await release(epoch); };
+  f.capabilities.controllers.push({ ...motor, tool: { ...motor.tool, name: "next-motor" },
+    acquire: async () => { nextAcquisitions++; } });
+  const pending = f.client.request({ kind: "acquire", epoch: f.epoch, seconds: 30 }).catch(error => error);
+  try {
+    await until(() => entered);
+    const stopped = trigger === "revoke" ? f.client.request({ kind: "revoke" }) : pending;
+    expect(await Promise.race([stopped.then(() => true), Bun.sleep(500).then(() => false)])).toBe(true);
+    expect(String(await pending)).toContain("acquisition timed out");
+    expect(f.core.status()).toMatchObject({ mode: "manual", connected: false, inputGeneration: null });
+    await expect(f.client.request({ kind: "acquire", epoch: "next", seconds: 30 })).rejects.toThrow("disconnected");
+    const beforeLateGrant = releases;
+    gate.resolve();
+    await until(() => releases > beforeLateGrant);
+    expect(f.owner()).toBeUndefined();
+    expect(nextAcquisitions).toBe(0);
+    expect(f.core.status()).toMatchObject({ mode: "manual", connected: false, epoch: null });
+  } finally { gate.resolve(); }
+});
+
+test("revocation can unblock acquisition through native release and retain a confirmed clean connection", async () => {
+  const f = await fixture();
+  const gate = Promise.withResolvers<void>();
+  const motor = f.capabilities.controllers[0]!;
+  const acquire = motor.acquire!, release = motor.release!;
+  let entered = false;
+  motor.acquire = async epoch => { entered = true; await gate.promise; await acquire(epoch); };
+  motor.release = async epoch => { gate.resolve(); await release(epoch); };
+  const pending = f.client.request({ kind: "acquire", epoch: f.epoch, seconds: 30 });
+  await until(() => entered);
+  expect(await f.client.request({ kind: "revoke" })).toMatchObject({ mode: "manual", connected: true });
+  expect((await pending as { mode: string }).mode).not.toBe("auto");
+  expect(f.core.status()).toMatchObject({ mode: "manual", connected: true });
+  expect(f.owner()).toBeUndefined();
+  await f.client.request({ kind: "acquire", epoch: "next", seconds: 30 });
+  expect(f.owner()).toBe("next");
 });
 
 test("duplicate capability IDs fail registration", () => {

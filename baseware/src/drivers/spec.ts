@@ -35,7 +35,7 @@ export function parseDriverSpec(text: string): DriverSpec {
   const ssh = spec.match(/^git@github\.com:([^/#]+)\/([^#]+?)(?:\.git)?#(.+)$/);
   if (ssh) {
     const [, org, repo, rev] = ssh;
-    return { kind: "github", org, repo, rev, url: `https://github.com/${org}/${repo}.git` };
+    return { kind: "github", org, repo, rev, url: `git@github.com:${org}/${repo}.git` };
   }
   if (spec.startsWith("github:")) {
     const { org, repo, rev } = githubRepo(spec.slice("github:".length));

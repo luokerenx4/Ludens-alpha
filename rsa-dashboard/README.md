@@ -1,6 +1,6 @@
 # RSA Dashboard
 
-浏览器与 Electron 共用的运行、回放、Benchmark 和 Ludens Pet 控制台，读取运行日志并提供统一的数据投影和工作区选择。
+默认通过浏览器使用的运行、回放、Benchmark 和 Ludens Pet 控制台，读取运行日志并提供统一的数据投影和工作区选择。网页运行无需 Electron；可选 Ludens Pet 桌面端加载同一份控制台。
 
 - [安装与工作区启停](../docs/tutorials/quickstart.md)
 - [控制台调试与验证](../docs/tutorials/debugging-and-verification.md#独立组件与控制台)：站内文档浏览（`?view=docs`），以及工作区能力、外部驱动验证和评测任务目录（`?view=caps`）

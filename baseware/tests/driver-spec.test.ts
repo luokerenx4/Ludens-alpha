@@ -19,6 +19,14 @@ test("parseDriverSpec requires pinned github revisions", () => {
   expect(() => parseDriverSpec("https://github.com/org/driver-foo")).toThrow("must pin a revision");
 });
 
+test("GitHub SSH input preserves its authentication transport", () => {
+  expect(parseDriverSpec("git@github.com:org/private-driver.git#v1")).toEqual({
+    kind: "github", org: "org", repo: "private-driver", rev: "v1", url: "git@github.com:org/private-driver.git",
+  });
+  expect(parseDriverSpec("git@github.com:org/private-driver#abc123")).toMatchObject({ url: "git@github.com:org/private-driver.git" });
+  expect(() => parseDriverSpec("https://user:secret@github.com/org/private-driver#v1")).toThrow();
+});
+
 test("parseDriverSpec accepts file paths for development", () => {
   expect(parseDriverSpec("file:../my-driver")).toEqual({ kind: "file", path: "../my-driver" });
   expect(() => parseDriverSpec("file:")).toThrow("Empty file:");

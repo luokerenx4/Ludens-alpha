@@ -44,6 +44,7 @@ export async function main(args = process.argv.slice(2)) {
     core = new BasewareCore({ capabilities: provider.capabilities, record: log.record, serviceId, source: log.source,
       diagnostics: values.diagnostics,
       drivers: [{ id: registration.id, version: provider.version ?? registration.version ?? registration.fallbackVersion ?? "unknown",
+        source: registration.source,
         ...(registration.transport ? { transport: registration.transport } : {}),
         ...(registration.defaultPort !== undefined ? { defaultPort: registration.defaultPort } : {}),
         ...(registration.needsGame ? { needsGame: true } : {}),
@@ -51,7 +52,8 @@ export async function main(args = process.argv.slice(2)) {
         ...(registration.launchCommand ? { launchCommand: registration.launchCommand } : {}),
         ...(registration.launchEnv ? { launchEnv: registration.launchEnv } : {}) }] });
     provider.onDisconnect(error => { void core!.disconnected(error); });
-    core.record("service_start", { driver: values.driver, ...(port !== undefined ? { port } : {}), socket: values.socket, dataDir });
+    core.record("service_start", { driver: values.driver, driverSource: registration.source,
+      ...(port !== undefined ? { port } : {}), socket: values.socket, dataDir });
     console.log(JSON.stringify({ ready: true, socket: values.socket, dataDir, ...core.status() }));
     await new Promise<void>(done => { process.once("SIGINT", done); process.once("SIGTERM", done); });
   } finally {

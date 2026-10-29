@@ -9,18 +9,21 @@ import perceptionTemplate from "../../templates/perception.py" with { type: "tex
 import actionTemplate from "../../templates/action.py" with { type: "text" };
 
 export const WORKSPACE_HELP = `Workspace startup (macOS):
-rsa init --driver <id> [--driver-package <npm|github:org/repo#rev|file:path>] [--game <path>] [--cua-command <path>] [--seconds <n>]
-rsa up [--dry-run]
+rsa init --driver <id> [--driver-package <npm|github:org/repo#rev|file:path>] [--game <path>] [--cua-command <path>] [--seconds <n>] [--pet]
+rsa up [--dry-run] [--pet | --no-pet]
 rsa services
 rsa down [--keep-emulator] [--dashboard] [--pet]
 
 These commands use <workspace>/rsa.json. Paths are relative to that workspace.
-up starts services in manual mode; use rsa auto on to let the agent act.
+New hosts start in manual mode; use rsa auto on to let the agent act.
+Ludens Pet is off by default. init --pet enables it in rsa.json.
+up --pet or --no-pet overrides that setting for this launch without changing rsa.json.
+--no-pet leaves any already running shared Pet open.
 Repeated up reuses running services; down then up applies configuration changes.
 down stops this workspace's managed host, Baseware and emulator (save your game first).
 Use down --keep-emulator before changing host settings to preserve the current game.
 The shared Dashboard stays up unless --dashboard is given by its owning workspace.
-Ludens Pet is shared across workspaces; --pet stops its managed background job.
+Ludens Pet is shared across workspaces; down --pet stops its managed background job.
 A Ludens Pet app opened separately is reused and stays open after down.
 Choose which workspace Ludens Pet follows in the Dashboard; up preserves that selection.
 The driver manifest decides the bridge port, backend startup and preparation hints; see baseware driver list.`;
@@ -72,7 +75,7 @@ export function parseConfig(value: unknown, manifest?: DriverManifest): LaunchCo
   }
   const result = { ...(bridge && manifest?.defaultPort !== undefined ? { port: manifest.defaultPort } : {}),
     model: "openai-codex/gpt-6.1-sol",
-    seconds: 1800, requests: 1000, dashboard: true, pet: true, logging: { diagnostics: "normal" }, ...config } as LaunchConfig;
+    seconds: 1800, requests: 1000, dashboard: true, pet: false, logging: { diagnostics: "normal" }, ...config } as LaunchConfig;
   if (!result.logging || typeof result.logging !== "object" || Array.isArray(result.logging)
     || Object.keys(result.logging).some(key => key !== "diagnostics")
     || !["normal", "full"].includes(result.logging.diagnostics)) throw new Error("logging must contain diagnostics: normal|full");
@@ -383,9 +386,10 @@ export async function workspaceCommand(command: string, args: string[], selected
   if (args.includes("--help")) { console.log(WORKSPACE_HELP); return; }
   const { values } = parseArgs({ args, options: command === "init" ? {
     driver: { type: "string" }, "driver-package": { type: "string" }, game: { type: "string" },
-    "cua-command": { type: "string" }, seconds: { type: "string" },
-  } : command === "up" ? { "dry-run": { type: "boolean" } }
+    "cua-command": { type: "string" }, seconds: { type: "string" }, pet: { type: "boolean" },
+  } : command === "up" ? { "dry-run": { type: "boolean" }, pet: { type: "boolean" }, "no-pet": { type: "boolean" } }
     : command === "down" ? { dashboard: { type: "boolean" }, pet: { type: "boolean" }, "keep-emulator": { type: "boolean" } } : {} });
+  if (values.pet && values["no-pet"]) throw new Error("Choose either --pet or --no-pet");
   if (command === "init") {
     await mkdir(selectedWorkspace, { recursive: true });
     const workspace = await realpath(selectedWorkspace);
@@ -393,7 +397,7 @@ export async function workspaceCommand(command: string, args: string[], selected
     const raw = { driver: values.driver,
       ...(packageSpec ? { driverPackage: packageSpec.startsWith("file:") ? `file:${resolve(workspace, packageSpec.slice(5))}` : packageSpec } : {}),
       ...(values.game ? { game: values.game } : {}), ...(values["cua-command"] ? { cuaCommand: values["cua-command"] } : {}),
-      ...(values.seconds ? { seconds: Number(values.seconds) } : {}) };
+      ...(values.seconds ? { seconds: Number(values.seconds) } : {}), ...(values.pet ? { pet: true } : {}) };
     const manifest = await resolveDriver(raw.driver as string, raw.driverPackage, defaultDriverCacheRoot());
     const config = parseConfig(raw, manifest);
     await writeFile(join(workspace, "rsa.json"), `${JSON.stringify(config, null, 2)}\n`, { flag: "wx" });
@@ -409,6 +413,7 @@ export async function workspaceCommand(command: string, args: string[], selected
   if (typeof raw.driverPackage === "string" && raw.driverPackage.startsWith("file:")) raw.driverPackage = `file:${resolve(workspace, raw.driverPackage.slice(5))}`;
   const manifest = await resolveDriver(raw.driver, raw.driverPackage, defaultDriverCacheRoot());
   const config = parseConfig(raw, manifest);
+  if (command === "up" && (values.pet || values["no-pet"])) config.pet = Boolean(values.pet);
   const plan = await launchPlan(config, workspace, resolve(import.meta.dir, "../../.."), undefined, manifest);
   if (values["dry-run"]) { console.log(JSON.stringify(plan, null, 2)); return; }
   if (process.platform !== "darwin") throw new Error("Workspace service commands currently use macOS launchd");

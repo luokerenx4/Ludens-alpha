@@ -17,6 +17,14 @@ export interface DriverCreateOptions {
 
 export type DriverTransport = "bridge" | "stdio";
 
+/** Loader-authored provenance, not a claim supplied by the package registration. */
+export type DriverSource =
+  | { kind: "builtin" }
+  | { kind: "github"; spec: string; repository: string; transport: "https" | "ssh"; requestedRevision: string; resolvedCommit: string }
+  | { kind: "npm"; spec: string; packageName: string; resolvedVersion: string }
+  // The digest identifies the imported entry file, not its transitive dependencies.
+  | { kind: "file"; spec: string; entry: string; entrySha256: string };
+
 /** Static self-description every driver publishes; launchers read this instead of hardcoding drivers. */
 export interface DriverManifest {
   id: string;
@@ -33,6 +41,8 @@ export interface DriverManifest {
   launchCommand?: string[];
   /** Environment overrides required by the backend executable. */
   launchEnv?: Record<string, string>;
+  /** Populated by resolveDriver; external registrations cannot override this. */
+  source?: DriverSource;
 }
 export interface DriverRegistration extends DriverManifest {
   /** Reported when the provider itself returns no version. */
