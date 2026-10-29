@@ -1666,6 +1666,10 @@
   },
   "workspacePicker": {
     "choose": "Choose a workspace",
+    "description": "Check the folder before switching.",
+    "close": "Close",
+    "current": "Current",
+    "directoryUnavailable": "Directory unavailable",
     "loading": "Loading workspaces…",
     "empty": "No workspaces — add one to begin",
     "unavailable": "Workspace list unavailable",

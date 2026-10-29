@@ -1666,6 +1666,10 @@
   },
   "workspacePicker": {
     "choose": "选择工作区",
+    "description": "切换前请确认工作区目录。",
+    "close": "关闭",
+    "current": "当前",
+    "directoryUnavailable": "目录不可用",
     "loading": "正在读取工作区…",
     "empty": "暂无工作区，请先添加",
     "unavailable": "无法读取工作区列表",
