@@ -47,8 +47,8 @@
       "description": "Preferences for this console, with optional desktop companion controls. Workspace options live on their own pages."
     },
     "dev": {
-      "title": "How It Works",
-      "description": "Lab tools explaining loop and injection mechanics; they never affect real runs."
+      "title": "Loop Lab",
+      "description": "Explore how delivery strategies change context usage. Local estimates; real runs stay untouched."
     }
   },
   "benchmark": {
@@ -626,7 +626,8 @@
       "asst": "Avg assistant message",
       "thresh": "Compaction threshold",
       "keep": "Keep recent",
-      "seed": "Random seed"
+      "seed": "Random seed",
+      "imgCap": "Native image cap"
     },
     "units": {
       "batches": "batches",
@@ -678,30 +679,36 @@
     "chart": {
       "empty": "No model requests yet (budget ran out before any fired)",
       "requests": "model requests",
-      "clickHint": "times · click to select"
+      "clickHint": "times · click to select",
+      "title": "Estimated tokens per request",
+      "keyboardHint": "Use the request number and previous or next controls below to inspect every value.",
+      "threshold": "History compaction threshold",
+      "noRequests": "No requests",
+      "compactedBefore": "Compacted before request",
+      "thresholdContext": "Compared with retained history; request totals can differ."
     },
     "stats": {
-      "requests": "Model requests / budget",
-      "rounds": "Takeover rounds",
+      "requests": "Requests / budget",
+      "rounds": "Rounds",
       "frames": "Injected frames",
-      "frameTok": "Frame tokens (delivered)",
-      "peak": "Peak wire",
-      "frameShare": "Frame share of peak",
-      "compactions": "compaction",
-      "decoPerReq": "Decorate / request",
+      "frameTok": "Delivered frame tokens",
+      "peak": "Peak request tokens",
+      "frameShare": "Perception share of peak",
+      "compactions": "Compactions",
+      "decoPerReq": "Decoration / request",
       "times": "times"
     },
     "presets": {
-      "legacyTag": "Removed · kept for reference"
+      "legacyTag": "Removed · reference only"
     },
     "cards": {
       "rsa": "RSA injection layers ①②",
       "omp": "OMP native layers",
       "imgCap": "Native image cap",
-      "anatomy": "Loop anatomy (purple=OMP native · amber=RSA injection · struck=off)",
-      "wire": "Wire makeup · tokens actually sent per model request (click chart to pick a request)",
-      "inspector": "Wire inspector",
-      "history": "Persistent message history (latest 250 · decorate layer never enters history, wire only)"
+      "anatomy": "Loop anatomy",
+      "wire": "Estimated tokens per request",
+      "inspector": "Request breakdown",
+      "history": "Simulated message history"
     },
     "legend": {
       "sys": "System (template+AGENTS)",
@@ -709,12 +716,18 @@
       "tools": "Tool results",
       "ptext": "Perception JSON",
       "pimg": "Perception images (wire)",
-      "deco": "─ per-request decorate (not in history)"
+      "deco": "─ per-request decorate (not in history)",
+      "total": "Request total (including temporary additions)"
     },
     "compare": {
-      "frames": "frames",
-      "peak": "peak",
-      "compactions": "compacted"
+      "frames": "Frames delivered",
+      "peak": "Peak tokens",
+      "compactions": "Compactions",
+      "scenario": "Scenario",
+      "requests": "Requests",
+      "delivered": "Delivered frame tokens",
+      "retained": "Retained perception tokens",
+      "select": "Use scenario"
     },
     "inspector": {
       "request": "Request"
@@ -743,14 +756,131 @@
       "toolBatch": "🖼 Perception inject ② batch end (removed)",
       "changed": "Screen changed",
       "unchanged": "Screen unchanged",
-      "hiddenSuffix": "older messages scrolled out of view"
+      "hiddenSuffix": "older messages scrolled out of view",
+      "continuation": "Continuation"
     },
     "foot": {
       "prefix": "Estimate for strategy comparison. Mechanism:",
       "outer": "outer loop ·",
       "roundStart": "round-start inject ·",
       "ch2removed": "channel ② (batch-end inject) removed 2026-10-29, see"
-    }
+    },
+    "presetNames": {
+      "now": {
+        "name": "Current delivery",
+        "desc": "Automatic delivery at round start; observe explicitly within the round."
+      },
+      "legacy": {
+        "name": "Batch-end delivery",
+        "desc": "Removed behavior: append a frame after each tool batch."
+      },
+      "gate": {
+        "name": "Semantic gating",
+        "desc": "Hypothetical: skip unchanged screens at frame delivery boundaries."
+      },
+      "pull": {
+        "name": "Explicit observe",
+        "desc": "No automatic frames; the model requests observations."
+      },
+      "bare": {
+        "name": "Bare OMP",
+        "desc": "One round with automatic RSA delivery and continuation disabled."
+      }
+    },
+    "rsaLayers": {
+      "ch1": {
+        "name": "Round-start frame",
+        "desc": "Deliver the latest frame at before_agent_start."
+      },
+      "ch2": {
+        "name": "Batch-end frame",
+        "desc": "Removed behavior, simulated only: append a frame to the final tool result."
+      },
+      "gate": {
+        "name": "Semantic gating",
+        "desc": "Hypothetical only; skipping unchanged screens is not implemented in the agent."
+      },
+      "state": {
+        "name": "Perception state notice",
+        "desc": "Small sampler-state messages, estimated at 120 tokens."
+      },
+      "cont": {
+        "name": "Outer continuation",
+        "desc": "Start another round after final; off means a single OMP round."
+      }
+    },
+    "ompLayers": {
+      "agents": {
+        "name": "AGENTS.md context",
+        "desc": "Include project context in the system prompt."
+      },
+      "dateCwd": {
+        "name": "Date and directory reminder",
+        "desc": "Added to each provider request; not stored in history."
+      },
+      "schemas": {
+        "name": "Tool schemas",
+        "desc": "Send six tool definitions, including the i field, with each request."
+      },
+      "pruning": {
+        "name": "Result pruning",
+        "desc": "Replace older reads and trim consumed tool results."
+      },
+      "compaction": {
+        "name": "Context compaction",
+        "desc": "Summarize above the threshold while keeping recent context."
+      },
+      "imgInf": {
+        "name": "Unlimited image budget",
+        "desc": "RSA override. Turn off to simulate the native image cap."
+      }
+    },
+    "localOnly": "Local simulation",
+    "scenario": "Scenario",
+    "custom": "Custom layers",
+    "customDescription": "Your layer choices differ from the presets. Results use the current choices.",
+    "controlsTitle": "Adjust simulation",
+    "controlsDescription": "Edit parameters, apply them, and compare the results.",
+    "apply": "Apply parameters",
+    "resetParams": "Reset parameters",
+    "unapplied": "Unapplied changes. Results still use the last applied parameters.",
+    "appliedStatus": "Parameters applied. Results updated.",
+    "resetStatus": "Default parameters restored. Layer choices are unchanged.",
+    "errorSummary": "Fix these parameters before applying. Previous results are kept.",
+    "resultsTitle": "Results overview",
+    "estimate": "Estimated",
+    "layersImmediate": "Layer changes update results immediately using the applied parameters.",
+    "rsaTitle": "RSA injection layers",
+    "ompTitle": "OMP native layers",
+    "rangeHint": "{min}–{max} · step {step}",
+    "validation": {
+      "required": "Enter a value.",
+      "finite": "Enter a finite number.",
+      "range": "Use a value from {min} to {max}.",
+      "integer": "Use a whole number.",
+      "step": "Use increments of {step} from {min}.",
+      "number": "Enter a decimal number."
+    },
+    "imageCapInactive": "Used when Unlimited image budget is off.",
+    "chartTitle": "Estimated tokens per request",
+    "chartDescription": "Select a request to inspect its recorded simulation values.",
+    "previousRequest": "Previous request",
+    "nextRequest": "Next request",
+    "goRequest": "Go",
+    "requestRange": "of {count}",
+    "requestInvalid": "Choose a whole request number from 1 to {count}.",
+    "inspectorTitle": "Selected request breakdown",
+    "comparisonTitle": "Compare scenarios",
+    "comparisonHint": "All five scenarios use the same applied parameters. Select a row to use its layers.",
+    "anatomyTitle": "Loop anatomy",
+    "anatomyHint": "Schematic of the current layer choices.",
+    "historyTitle": "Simulated message history",
+    "historyHint": "Latest 250 events. Per-request decoration does not enter history.",
+    "moreMetrics": "More estimates",
+    "simulationFoot": "This deterministic model estimates strategy differences; it does not measure a real run.",
+    "mechanismDocs": "Read the injection design",
+    "presetKindRemoved": "Removed",
+    "presetKindHypothetical": "Hypothetical"
   },
   "workspaceRunEmpty": {
     "loading-catalog": {

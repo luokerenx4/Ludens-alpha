@@ -27,10 +27,12 @@ Sounds reasonable. In practice, four flaws, each worse than the last.
 
 Once this mechanism was built into the Loop injection workbench (dashboard developer panel, `?view=dev&panel=loop`), the numbers spoke for themselves. Same parameters (300s budget, 30-request cap, 8 tool batches per turn, ~1.1k tokens per image):
 
-| Strategy | Injected frames | Frame tokens | Peak wire | Frames share of peak |
+| Strategy | Injected frames | Delivered frame tokens | Peak wire | Retained perception share of peak |
 | --- | --- | --- | --- | --- |
-| With end-of-batch channel (old behavior) | 31 | 43.6k | 70.2k | **60%** |
-| Turn-start channel only (current) | 4 | 5.8k | 33.8k | 17% |
+| With end-of-batch channel (old behavior) | 31 | 43.4k | 70.2k | **60%** |
+| Turn-start channel only (current) | 4 | 5.6k | 33.8k | 17% |
+
+These are estimates from the local simulator, not measurements of an agent run. Delivered frame tokens count image and frame-text payloads cumulatively; state notices are excluded. Retained perception includes state notices and can shrink after compaction. The chart marks compaction before the affected request.
 
 Sixty percent of context spent on screenshots the model never asked for, and whether those frames stayed or went depended on a sampling beat entirely unrelated to the task.
 
@@ -48,4 +50,4 @@ The "fresh frame before deciding" need has not gone away; it just changed hands:
 
 The cost is that the model may "forget to look": while focused on writing code it will not proactively `observe`, and it will not know the screen changed between turns. We accept this for three reasons: the turn-start channel guarantees every new turn starts from the latest state; state transitions are always delivered at turn boundaries; a policy that genuinely cares about the frame should observe explicitly rather than eat host-provided feed.
 
-The old behavior has not vanished from view — in the workbench it lives on as a control preset labeled "deleted · kept for flogging", running side by side with the current policy on the same parameters. If anyone wants to stuff things into tool results again, go look at that 60% number first.
+The old behavior has not vanished from view — in the workbench it lives on as a control preset labeled "Removed · reference only", running side by side with the current policy on the same parameters. If anyone wants to stuff things into tool results again, go look at that 60% number first.

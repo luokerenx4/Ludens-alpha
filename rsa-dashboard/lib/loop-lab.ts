@@ -1,4 +1,5 @@
 /** Loop 注入实验台的纯模拟核心:预设、参数与一次接管的上下文推演。 */
+import { assertLoopParams } from "./loop-params";
 
 export interface LoopParams {
   batches: number;
@@ -57,6 +58,7 @@ export interface SeriesPoint {
   imgShown: number;
   imgTotal: number;
   total: number;
+  /** Compaction ran immediately before this request's snapshot. */
   compacted: boolean;
   request: number;
 }
@@ -83,14 +85,16 @@ export interface LoopResult {
   rounds: number;
   log: LoopEvent[];
   peak: number;
+  /** Cumulative delivered frame payload; excludes state notices and is never reduced by compaction. */
   frameTok: number;
+  /** Perception text, state notices and images still retained in history at the end. */
+  retainedPerceptionTok: number;
   decoTok: number;
 }
 
+export type LoopPresetId = "now" | "legacy" | "gate" | "pull" | "bare";
 export interface LoopPreset {
-  id: string;
-  name: string;
-  desc: string;
+  id: LoopPresetId;
   /** 已删除的历史行为,仅供对照("鞭尸"),不再是现状。 */
   legacy?: boolean;
   cfg: LoopConfig;
@@ -98,42 +102,33 @@ export interface LoopPreset {
 
 export const PRESETS: LoopPreset[] = [
   {
-    id: "now", name: "现状", desc: "仅轮首自动交付,轮内靠显式 observe",
+    id: "now",
     cfg: { rsa: { ch1: true, ch2: false, gate: false, state: true, cont: true }, omp: { agents: true, dateCwd: true, schemas: true, pruning: true, compaction: true, imgInf: true } },
   },
   {
-    id: "legacy", name: "旧·批次末注入", desc: "每工具批次末追加最新帧(2026-10-29 已删)", legacy: true,
+    id: "legacy", legacy: true,
     cfg: { rsa: { ch1: true, ch2: true, gate: false, state: true, cont: true }, omp: { agents: true, dateCwd: true, schemas: true, pruning: true, compaction: true, imgInf: true } },
   },
   {
-    id: "gate", name: "语义门控", desc: "边界同旧,但屏幕没变不推(假想)",
+    id: "gate",
     cfg: { rsa: { ch1: true, ch2: true, gate: true, state: true, cont: true }, omp: { agents: true, dateCwd: true, schemas: true, pruning: true, compaction: true, imgInf: true } },
   },
   {
-    id: "pull", name: "纯拉取", desc: "关自动注入,模型按需 observe",
+    id: "pull",
     cfg: { rsa: { ch1: false, ch2: false, gate: false, state: true, cont: true }, omp: { agents: true, dateCwd: true, schemas: true, pruning: true, compaction: true, imgInf: true } },
   },
   {
-    id: "bare", name: "裸 OMP", desc: "无 RSA 接管的原始 OMP 单轮会话",
+    id: "bare",
     cfg: { rsa: { ch1: false, ch2: false, gate: false, state: false, cont: false }, omp: { agents: true, dateCwd: true, schemas: true, pruning: true, compaction: true, imgInf: false } },
   },
 ];
 
-export const RSA_LAYER_DEFS: Array<{ key: keyof RsaLayers; name: string; desc: string }> = [
-  { key: "ch1", name: "通道① · 轮首注入", desc: "before_agent_start:每轮 prompt 开始推最新帧" },
-  { key: "ch2", name: "通道② · 批次末注入", desc: "每个工具批次结束追加到最后一个 tool result(已删除,仅模拟)" },
-  { key: "gate", name: "语义门控(假想)", desc: "屏幕无变化则跳过——代码从未实现过此能力" },
-  { key: "state", name: "感知状态通知", desc: "sampler 状态变化时的小 JSON(约120 tok)" },
-  { key: "cont", name: "外层 continuation 循环", desc: "final 后再发一轮;关掉=普通单次 OMP 会话" },
+export const RSA_LAYER_DEFS: Array<{ key: keyof RsaLayers }> = [
+  { key: "ch1" }, { key: "ch2" }, { key: "gate" }, { key: "state" }, { key: "cont" },
 ];
 
-export const OMP_LAYER_DEFS: Array<{ key: keyof OmpLayers; name: string; desc: string }> = [
-  { key: "agents", name: "AGENTS.md → contextFiles", desc: "进系统提示 project block" },
-  { key: "dateCwd", name: "date/cwd 提醒", desc: "provider-only,每次请求临时加,不入历史" },
-  { key: "schemas", name: "工具 schema(含 i 字段)", desc: "provider-only,6 个工具定义每次请求都发" },
-  { key: "pruning", name: "原生 pruning", desc: "新 read 替换旧 read / elide 已消费结果" },
-  { key: "compaction", name: "自动 compaction", desc: "超阈值压成摘要+保留近期" },
-  { key: "imgInf", name: "图片预算 ∞(RSA 覆盖)", desc: "关掉=OMP 原生上限(如 DeepSeek 保留 5 张)" },
+export const OMP_LAYER_DEFS: Array<{ key: keyof OmpLayers }> = [
+  { key: "agents" }, { key: "dateCwd" }, { key: "schemas" }, { key: "pruning" }, { key: "compaction" }, { key: "imgInf" },
 ];
 
 export function defaultParams(): LoopParams {
@@ -157,6 +152,7 @@ export function mulberry32(seed: number) {
 
 /** 推演一次接管:返回每次模型请求的 wire 构成与注入事件日志。 */
 export function simulate(p: LoopParams, c: LoopConfig): LoopResult {
+  assertLoopParams(p);
   const rnd = mulberry32(p.seed * 1013);
   const changeTimes: number[] = [];
   let t = 0;
@@ -172,7 +168,7 @@ export function simulate(p: LoopParams, c: LoopConfig): LoopResult {
   const images: number[] = [];
   const series: SeriesPoint[] = [];
   const log: LoopEvent[] = [];
-  let frames = 0, gated = 0, compactions = 0, pruned = 0, requests = 0, rounds = 0;
+  let frames = 0, frameTok = 0, gated = 0, compactions = 0, pruned = 0, requests = 0, rounds = 0;
   let now = 0, lastBoundary = 0, lastMain = -1;
   const histTotal = () => sysTok + convo.tokens + tools.tokens + ptext.tokens + images.reduce((a, b) => a + b, 0);
   const injectFrame = (ch: LoopEventChannel, tB: number): boolean => {
@@ -183,6 +179,7 @@ export function simulate(p: LoopParams, c: LoopConfig): LoopResult {
       return false;
     }
     frames++;
+    frameTok += p.fText + p.fImg * p.iTok;
     ptext.tokens += p.fText;
     for (let i = 0; i < p.fImg; i++) images.push(p.iTok);
     log.push({ ch, tok: p.fText + p.fImg * p.iTok, changed, t: tB, omp: false });
@@ -201,7 +198,7 @@ export function simulate(p: LoopParams, c: LoopConfig): LoopResult {
     if (injectFrame(ch, tB)) lastMain = newest;
   };
   const compactIfNeeded = () => {
-    if (!c.omp.compaction || histTotal() < p.thresh) return;
+    if (!c.omp.compaction || histTotal() < p.thresh) return false;
     compactions++;
     const keepFrac = Math.min(1, p.keep / Math.max(1, histTotal() - sysTok));
     convo.tokens = Math.round(convo.tokens * keepFrac) + 1500;
@@ -209,9 +206,10 @@ export function simulate(p: LoopParams, c: LoopConfig): LoopResult {
     ptext.tokens = Math.round(ptext.tokens * keepFrac);
     images.length = Math.round(images.length * keepFrac);
     log.push({ ch: "compact", tok: 0, t: now, omp: true });
+    return true;
   };
   const request = () => {
-    compactIfNeeded();
+    const compacted = compactIfNeeded();
     requests++;
     const pimg = images.slice(-imgCap).reduce((a, b) => a + b, 0);
     series.push({
@@ -221,7 +219,7 @@ export function simulate(p: LoopParams, c: LoopConfig): LoopResult {
       imgTotal: images.length,
       hist: sysTok + convo.tokens + tools.tokens + ptext.tokens + images.reduce((a, b) => a + b, 0),
       total: sysTok + convo.tokens + tools.tokens + ptext.tokens + pimg + decoTok,
-      compacted: false, request: requests,
+      compacted, request: requests,
     });
   };
 
@@ -266,7 +264,8 @@ export function simulate(p: LoopParams, c: LoopConfig): LoopResult {
   return {
     series, frames, gated, compactions, pruned, requests, rounds, log,
     peak: Math.max(0, ...series.map(s => s.total)),
-    frameTok: ptext.tokens + images.reduce((a, b) => a + b, 0),
+    frameTok,
+    retainedPerceptionTok: ptext.tokens + images.reduce((a, b) => a + b, 0),
     decoTok,
   };
 }
