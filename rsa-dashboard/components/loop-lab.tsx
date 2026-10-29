@@ -13,7 +13,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Slider } from "@/components/ui/slider";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { LoopChart } from "./loop-chart";
 import { OMP_LAYER_DEFS, PRESETS, RSA_LAYER_DEFS, defaultParams, simulate, type LoopConfig, type LoopEvent, type LoopParams } from "@/lib/loop-lab";
 import { LOOP_PARAM_KEYS, PARAM_GROUPS, createLoopDraft, validateLoopDraft, validateLoopParams, type LoopDraft, type LoopParamError } from "@/lib/loop-params";
@@ -194,17 +193,16 @@ export function LoopLab({ navigate }: { navigate?: (patch: Record<string, string
         <Card className="shadow-none"><CardContent><div className="loop-inspector-heading"><h2 className="loop-section-title">{t("inspectorTitle")}</h2>{selectedPoint && <Badge variant="outline">#{selectedPoint.request} · {selectedPoint.total} tok</Badge>}{selectedPoint?.compacted && <Badge variant="outline">{t("chart.compactedBefore")}</Badge>}</div>
           {selectedPoint ? <dl className="loop-breakdown" data-loop-inspector-request={selectedPoint.request}>{breakdown.map(row => <div key={row.key}><dt><i aria-hidden="true" style={{ background: `var(--loop-${row.key})` }} />{row.label}</dt><dd data-loop-breakdown={row.key}>{row.value}<small>{selectedPoint.total ? Math.round(row.value / selectedPoint.total * 100) : 0}%</small></dd></div>)}</dl> : <p className="loop-section-description">{t("wire.empty")}</p>}
         </CardContent></Card>
-        <Card className="shadow-none"><CardContent><h2 className="loop-section-title">{t("comparisonTitle")}</h2><p className="loop-section-description">{t("comparisonHint")}</p>
-          <div className="loop-comparison-table"><Table className="loop-comparison"><TableHeader><TableRow><TableHead className="whitespace-normal">{t("compare.scenario")}</TableHead><TableHead className="whitespace-normal">{t("compare.requests")}</TableHead><TableHead className="whitespace-normal">{t("compare.peak")}</TableHead><TableHead className="whitespace-normal">{t("compare.frames")}</TableHead><TableHead className="whitespace-normal">{t("compare.compactions")}</TableHead><TableHead className="whitespace-normal">{t("compare.delivered")}</TableHead><TableHead className="whitespace-normal">{t("compare.retained")}</TableHead></TableRow></TableHeader>
-            <TableBody>{results.all.map(({ preset, result }) => <TableRow key={preset.id} data-loop-compare={preset.id} data-state={activePreset?.id === preset.id ? "selected" : undefined}>
-              <TableCell><Button type="button" variant="ghost" size="sm" className="h-auto flex-col items-start whitespace-normal text-left" aria-pressed={activePreset?.id === preset.id} onClick={() => applyPreset(preset.id)}>{t(`presetNames.${preset.id}.name`)}{presetKind(preset.id) && <small className="loop-preset-kind">{presetKind(preset.id)}</small>}</Button></TableCell>
-              {[result.requests, result.peak, result.frames, result.compactions, result.frameTok, result.retainedPerceptionTok].map((value, index) => <TableCell className="font-mono text-xs tabular-nums" key={index}>{value}</TableCell>)}
-            </TableRow>)}</TableBody>
-          </Table></div>
-          <div className="loop-comparison-mobile">{results.all.map(({ preset, result }) => <div key={preset.id} className="loop-comparison-card" data-loop-compare-mobile={preset.id} data-state={activePreset?.id === preset.id ? "selected" : undefined}>
-            <Button type="button" variant="ghost" size="sm" className="h-auto flex-col items-start whitespace-normal p-0 text-left" aria-pressed={activePreset?.id === preset.id} onClick={() => applyPreset(preset.id)}>{t(`presetNames.${preset.id}.name`)}{presetKind(preset.id) && <small className="loop-preset-kind">{presetKind(preset.id)}</small>}</Button>
-            <dl>{[result.requests, result.peak, result.frames, result.compactions, result.frameTok, result.retainedPerceptionTok].map((value, index) => <div key={comparisonKeys[index]}><dt>{t(`compare.${comparisonKeys[index]}`)}</dt><dd>{value}</dd></div>)}</dl>
-          </div>)}</div>
+        <Card className="shadow-none"><CardContent><h2 id={`${id}-comparison-title`} className="loop-section-title">{t("comparisonTitle")}</h2><p className="loop-section-description">{t("comparisonHint")}</p>
+          <div className="loop-comparison">
+            <div className="loop-comparison-header" aria-hidden="true"><span>{t("compare.scenario")}</span>{comparisonKeys.map(key => <span key={key}>{t(`compare.${key}`)}</span>)}</div>
+            <ul className="loop-comparison-list" role="list" aria-labelledby={`${id}-comparison-title`}>
+              {results.all.map(({ preset, result }) => <li key={preset.id} className="loop-comparison-row" data-loop-compare={preset.id} data-state={activePreset?.id === preset.id ? "selected" : undefined}>
+                <Button type="button" variant="ghost" size="sm" className="loop-comparison-choice h-auto min-h-9 min-w-0 w-full flex-col items-start whitespace-normal px-2 py-2 text-left" aria-pressed={activePreset?.id === preset.id} onClick={() => applyPreset(preset.id)}>{t(`presetNames.${preset.id}.name`)}{presetKind(preset.id) && <small className="loop-preset-kind">{presetKind(preset.id)}</small>}</Button>
+                <dl className="loop-comparison-metrics">{[result.requests, result.peak, result.frames, result.compactions, result.frameTok, result.retainedPerceptionTok].map((value, index) => <div key={comparisonKeys[index]}><dt>{t(`compare.${comparisonKeys[index]}`)}</dt><dd data-loop-compare-metric={comparisonKeys[index]}>{value}</dd></div>)}</dl>
+              </li>)}
+            </ul>
+          </div>
         </CardContent></Card>
         <details className="loop-secondary"><summary><div><strong>{t("anatomyTitle")}</strong><small>{t("anatomyHint")}</small></div><ChevronDownIcon className="loop-disclosure-icon" aria-hidden="true" /></summary><Anatomy config={config} /></details>
         <details className="loop-secondary"><summary><div><strong>{t("historyTitle")}</strong><small>{t("historyHint")}</small></div><ChevronDownIcon className="loop-disclosure-icon" aria-hidden="true" /></summary><div className="loop-history">

@@ -891,7 +891,7 @@
     "requestInvalid": "请输入 1 至 {count} 之间的整数请求编号。",
     "inspectorTitle": "所选请求明细",
     "comparisonTitle": "对比方案",
-    "comparisonHint": "五个方案使用相同的已应用参数。选择一行可使用该方案的层配置。",
+    "comparisonHint": "五个方案使用相同的已应用参数。选择方案可使用对应的层配置。",
     "anatomyTitle": "循环结构",
     "anatomyHint": "当前层配置的结构示意。",
     "historyTitle": "模拟消息历史",
