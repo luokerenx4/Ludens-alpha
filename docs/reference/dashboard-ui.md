@@ -1,0 +1,46 @@
+# Dashboard UI
+
+Dashboard 使用 Next.js App Router、React、Tailwind CSS 4 与 shadcn/ui（Radix / New York）。网页和可选 Electron 桌面端使用同一份组件，不需要启动 Electron 才能开发 UI。
+
+## 组件归属
+
+- `rsa-dashboard/components/ui/` 保存通过官方 shadcn CLI 引入的组件源码。按钮、表单、开关、滑块、卡片、反馈与页内标签应复用这里的原语。
+- shadcn/ui 源码采用 MIT License，许可文本保留在 [`licenses/shadcn-ui.txt`](../../licenses/shadcn-ui.txt)。
+- 业务组件仍放在 `components/`；运行时间轴、活动证据、图表和桌宠动画由业务组件实现，不往 UI 原语里加入工作区或 RSA 调用。
+- 类名合并使用 `import { cn } from "cn"`，变体用 `class-variance-authority`；它们与当前 shadcn 注册表生成的源码保持一致。
+
+`components.json` 记录注册表风格与路径。需要新组件时在 Dashboard 目录运行，例如：
+
+```bash
+cd rsa-dashboard
+npx shadcn@4.23.0 add dialog
+```
+
+只添加当前使用的组件。生成后审阅源码与锁文件，不用 `--overwrite` 覆盖本地修改。当前本地调整包括 `NativeSelect.wrapperClassName`（控制包装层宽度）以及 Slider 将可访问性名称与描述传给真正可聚焦的 Thumb。
+
+## 主题与样式
+
+`app/globals.css` 引入 Tailwind 和 `tw-animate-css`，通过 `@theme inline` 将现有 Ludens 深色配色映射到语义 token。根布局固定使用 `dark`，当前没有新增主题切换功能。
+
+| 用途 | 推荐类名 |
+| --- | --- |
+| 页面与主文字 | `bg-background text-foreground` |
+| 卡片和浮层 | `bg-card` / `bg-popover` |
+| 主操作 | Button 默认变体，使用 `primary` 金色 |
+| 次操作与弱背景 | Button `secondary` / `outline` / `ghost`；`bg-muted` |
+| 说明与状态 | `text-muted-foreground` / `text-success` / `text-destructive` |
+| 边框、键盘焦点 | `border-border` / `ring-ring` |
+
+注意 `--muted` 表示弱背景，文字使用 `--muted-foreground`。已有领域 CSS 放在 `@layer components`，允许 Tailwind 的 `utilities` 层覆盖；不要新增未分层的全局 `button` / `input` / `select` 样式，否则会压过共享控件的状态、尺寸和焦点样式。
+
+工作区管理、全局设置、感知设置和主界面选择器已使用共享原语。其余领域布局可继续保留 CSS，改动时逐步采用语义 token 和工具类。
+
+## 交互约定
+
+- 表单控件关联 `Label`，帮助信息通过 `aria-describedby` 关联。图标按钮必须有可访问名称。
+- 明确按钮的 `type`；原生表单的提交按钮用 `submit`，其他操作用 `button`。
+- `NativeSelect` 保留原生选项、空值和键盘行为；离散开关用 `Switch`，数值范围用 `Slider`。
+- 有后端写入的滑块用 `onValueChange` 更新本地值，`onValueCommit` 保存，避免拖动过程中连续请求。
+- 业务请求、等待态、错误反馈与桌面能力检测由页面维护，UI 原语只负责展示和交互。
+
+验收使用 `npm run typecheck`、`npm test`、`npm run build`，并在隔离的 `LUDENS_HOME` 下检查页面与表单操作。详见[控制台调试与验证](../tutorials/debugging-and-verification.md)。

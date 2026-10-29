@@ -3,7 +3,11 @@
 import { useEffect, useRef, useState } from "react";
 import type { Project } from "../lib/types";
 import type { PerceptionSettings, PerceptionSettingsPatch } from "../lib/perception-config";
-import "./pet-settings.css";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Slider } from "@/components/ui/slider";
 
 const LIMITS = {
   hotSeconds: { min: 10, max: 3600, fallback: 600, label: "热层加速窗口", help: "最近这段时长的原始帧优先留在内存里；实际保留量也受字节预算限制。持久化时，已落盘的录像可用于冷读取。" },
@@ -20,9 +24,12 @@ function formatSeconds(value: number): string {
 /** A new workspace gets its own draft and request lifetime. */
 export function PerceptionSettingsPanel({ project, projects }: { project: string; projects: Project[] }) {
   const target = projects.find((item) => item.id === project);
-  if (!target?.workspace) return <section className="surface empty-state">
-    <h2>选择已登记的工作区</h2><p>工作区启动后，可在这里调整感知录制参数。</p>
-  </section>;
+  if (!target?.workspace) return <Card>
+    <CardHeader>
+      <CardTitle role="heading" aria-level={2}>选择已登记的工作区</CardTitle>
+      <CardDescription>工作区启动后，可在这里调整感知录制参数。</CardDescription>
+    </CardHeader>
+  </Card>;
   return <WorkspacePerceptionSettings key={`${target.id}:${target.workspace}`} project={target.id} />;
 }
 
@@ -87,38 +94,44 @@ function WorkspacePerceptionSettings({ project }: { project: string }) {
   };
   const changed = Object.keys(draft).length > 0;
 
-  return <section className="setting-group perception-settings">
-    <header>
-      <h3>感知录制</h3>
-      <p>保存当前工作区的参数后，运行 <code>rsa perception reload</code> 生效。未覆盖的参数继承感知进程的环境变量，否则使用内置默认值。</p>
-    </header>
-    {error && <p className="setting-error" role="alert">{error}</p>}
-    {!settings ? !error && <p className="setting-help" role="status">正在读取设置…</p> : KEYS.map(key => {
-      const limit = LIMITS[key];
-      const value = Object.hasOwn(draft, key) ? draft[key] ?? undefined : settings[key];
-      const current = value ?? limit.fallback;
-      const custom = current < limit.min || current > limit.max || !Number.isInteger(current);
-      return <div key={key} className="perception-slider">
-        <label htmlFor={`perception-${key}`}>
-          <strong>{limit.label}</strong>
-          <span className="perception-value">{value === undefined ? "继承设置" : formatSeconds(value)}</span>
-        </label>
-        <input id={`perception-${key}`} type="range" min={limit.min} max={limit.max} step={1}
-          value={Math.max(limit.min, Math.min(limit.max, Math.round(current)))} disabled={pending}
-          aria-label={limit.label} aria-describedby={`perception-${key}-help`}
-          onChange={event => change(key, Number(event.target.value))} />
-        <small className="setting-help" id={`perception-${key}-help`}>
-          {limit.help}{value === undefined && ` 内置默认：${formatSeconds(limit.fallback)}；当前未写入工作区覆盖。`}
-          {custom && " 当前使用文件中的自定义值，只有调整滑条后才会覆盖。"}
-        </small>
-        {value !== undefined && <button type="button" className="control-button perception-reset"
-          disabled={pending} onClick={() => change(key, null)}>恢复继承</button>}
-      </div>;
-    })}
-    {settings && <button type="button" className="control-button" disabled={pending || !changed} onClick={() => void save()}>
-      {pending ? "正在保存…" : "保存设置"}
-    </button>}
-    {changed && !pending && <p className="setting-help" role="status">有未保存的修改。</p>}
-    {saved && <p className="setting-help" role="status">已保存。运行 <code>rsa perception reload</code> 后生效。</p>}
-  </section>;
+  return <Card className="max-w-4xl" aria-busy={pending}>
+    <CardHeader>
+      <CardTitle role="heading" aria-level={2}>感知录制</CardTitle>
+      <CardDescription>
+        保存当前工作区的参数后，运行 <code>rsa perception reload</code> 生效。未覆盖的参数继承感知进程的环境变量，否则使用内置默认值。
+      </CardDescription>
+    </CardHeader>
+    <CardContent className="space-y-5">
+      {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
+      {!settings ? !error && <p className="text-sm text-muted-foreground" role="status">正在读取设置…</p> : KEYS.map(key => {
+        const limit = LIMITS[key];
+        const value = Object.hasOwn(draft, key) ? draft[key] ?? undefined : settings[key];
+        const current = value ?? limit.fallback;
+        const custom = current < limit.min || current > limit.max || !Number.isInteger(current);
+        return <div key={key} className="space-y-3 border-b border-border pb-5 last:border-b-0">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h3 id={`perception-${key}-label`} className="text-sm font-medium">{limit.label}</h3>
+            <Badge variant="secondary" className="tabular-nums">{value === undefined ? "继承设置" : formatSeconds(value)}</Badge>
+          </div>
+          <Slider min={limit.min} max={limit.max} step={1}
+            value={[Math.max(limit.min, Math.min(limit.max, Math.round(current)))]} disabled={pending}
+            aria-labelledby={`perception-${key}-label`} aria-describedby={`perception-${key}-help`}
+            onValueChange={([value]) => change(key, value)} />
+          <p className="text-xs leading-relaxed text-muted-foreground" id={`perception-${key}-help`}>
+            {limit.help}{value === undefined && ` 内置默认：${formatSeconds(limit.fallback)}；当前未写入工作区覆盖。`}
+            {custom && " 当前使用文件中的自定义值，只有调整滑条后才会覆盖。"}
+          </p>
+          {value !== undefined && <Button type="button" variant="outline" size="sm"
+            disabled={pending} onClick={() => change(key, null)}>恢复继承</Button>}
+        </div>;
+      })}
+      {settings && <div className="flex flex-wrap items-center gap-3">
+        <Button type="button" disabled={pending || !changed} onClick={() => void save()}>
+          {pending ? "正在保存…" : "保存设置"}
+        </Button>
+        {changed && !pending && <p className="text-xs text-muted-foreground" role="status">有未保存的修改。</p>}
+      </div>}
+      {saved && <p className="text-sm text-muted-foreground" role="status">已保存。运行 <code>rsa perception reload</code> 后生效。</p>}
+    </CardContent>
+  </Card>;
 }

@@ -25,6 +25,7 @@ const titles: Record<string, string> = {
   "reference/baseware.md": "Baseware 设计理念与能力契约",
   "reference/driver-bridge-protocol.md": "Driver Bridge 协议",
   "reference/logging.md": "日志与调用链",
+  "reference/dashboard-ui.md": "UI 组件与主题约定",
   "reference/benchmark.md": "Benchmark",
   "insights/index.md": "洞见概览",
   "insights/omp-compaction.md": "OMP 后台压缩改造",

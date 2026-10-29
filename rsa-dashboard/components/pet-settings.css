@@ -1,9 +1,5 @@
-.pet-settings {
-  color: var(--text, #e9e9e2);
-  max-width: 920px;
-  margin: 0 auto;
-  padding: 8px 0 32px;
-}
+/* Domain-specific sidebar and desktop notification layout. Settings use shared UI primitives. */
+@layer components {
 .pet-follow-card {
   margin-top: auto;
   padding: 18px 6px 0;
@@ -19,7 +15,7 @@
   background: transparent;
   text-align: left;
 }
-.pet-follow-heading > span:last-child { margin-left: auto; color: var(--muted); }
+.pet-follow-heading > span:last-child { margin-left: auto; color: var(--muted-foreground); }
 .pet-follow-avatar {
   display: grid;
   place-items: center;
@@ -31,29 +27,17 @@
   font: 21px Georgia, serif;
 }
 .pet-follow-heading strong { font-size: 13px; font-weight: 550; }
-.pet-follow-heading small { display: block; color: var(--muted); font-size: 10px; margin-top: 3px; }
+.pet-follow-heading small { display: block; color: var(--muted-foreground); font-size: 10px; margin-top: 3px; }
 .pet-follow-heading .status-dot { margin-right: 5px; }
 .pet-follow-card > p {
   margin: 13px 0 10px;
   font-size: 12px;
-  color: var(--muted);
+  color: var(--muted-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .pet-follow-card .pet-follow-action { width: 100%; padding: 8px 5px; font-size: 11px; }
-.pet-follow-status {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 9px;
-  margin: 20px 0 8px;
-  font-size: 12px;
-}
-.pet-follow-status strong { font-weight: 500; color: var(--gold); }
-.pet-follow-status span { margin-left: auto; color: var(--muted); }
-.pet-follow-settings select { max-width: 55%; font-size: 12px; }
-.pet-target-path { margin: 12px 0 0; overflow-wrap: anywhere; }
 @media (min-width: 681px) and (max-width: 950px) {
   .pet-follow-avatar { display: none; }
 }
@@ -68,193 +52,18 @@
   .pet-follow-card > p { grid-column: 1; margin: 3px 0 0; }
   .pet-follow-card .pet-follow-action { grid-column: 2; grid-row: 1 / 3; width: auto; align-self: center; padding: 9px 12px; }
 }
-.pet-settings-intro {
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  padding: 8px 0 28px;
-}
-.pet-settings-intro h2 {
-  margin: 0 0 6px;
-  font-size: 24px;
-  letter-spacing: -0.6px;
-}
-.pet-settings-intro p,
-.setting-group header p {
-  color: var(--muted, #a3aaa2);
-  margin: 0;
-  font-size: 13px;
-  line-height: 1.6;
-}
-.pet-monogram {
-  width: 58px;
-  height: 58px;
-  border-radius: 19px;
-  display: grid;
-  place-items: center;
-  background: #302d25;
-  color: var(--gold, #dbbc81);
-  font:
-    30px Georgia,
-    serif;
-}
-.desktop-status {
-  margin-left: auto;
-  padding: 7px 11px;
-  border: 1px solid var(--line, #343a35);
-  border-radius: 20px;
-  color: var(--muted, #a3aaa2);
-  font-size: 11px;
-  white-space: nowrap;
-}
-.desktop-only-note {
-  padding: 18px 22px;
-  margin: 0 0 22px;
-  border: 1px solid #514734;
-  border-radius: 14px;
-  background: #28271f;
-  color: #c1b49a;
-  font-size: 13px;
-}
-.desktop-only-note p {
-  margin: 8px 0 0;
-  line-height: 1.7;
-}
-.setting-group {
-  background: var(--panel, #202321);
-  border: 1px solid var(--line, #343a35);
-  border-radius: 16px;
-  padding: 24px 28px;
-  margin-bottom: 20px;
-  box-shadow: 0 3px 10px #00000010;
-}
-.setting-group header {
-  margin-bottom: 14px;
-}
-.setting-group h3 {
-  margin: 0 0 7px;
-  font-size: 16px;
-}
-.setting-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-height: 57px;
-  padding: 10px 0;
-  gap: 24px;
-  border-bottom: 1px solid #303630;
-}
-.setting-row:last-child {
-  border-bottom: none;
-}
-.setting-label {
-  font-size: 13px;
-  color: var(--text, #e9e9e2);
-}
-.setting-label small {
-  display: block;
-  color: var(--muted, #a3aaa2);
-  font-size: 11px;
-  margin-top: 5px;
-  line-height: 1.5;
-}
-.pet-settings .switch {
-  appearance: none;
-  flex: 0 0 34px;
-  width: 34px;
-  height: 20px;
-  border: none;
-  border-radius: 20px;
-  background: #414941;
-  position: relative;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-.pet-settings .switch::after {
-  content: "";
-  position: absolute;
-  width: 14px;
-  height: 14px;
-  left: 3px;
-  top: 3px;
-  border-radius: 50%;
-  background: #e9e9e2;
-  box-shadow: 0 1px 3px #00000030;
-  transition: transform 0.15s;
-}
-.pet-settings .switch:checked {
-  background: var(--gold, #dbbc81);
-}
-.pet-settings .switch:checked::after {
-  transform: translateX(14px);
-}
-.pet-settings .switch:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-.pet-settings .switch:focus-visible {
-  outline: 3px solid #ad976d;
-  outline-offset: 3px;
-}
-.setting-subheading {
-  color: var(--muted, #a3aaa2);
-  text-transform: uppercase;
-  font-size: 11px;
-  letter-spacing: 1px;
-  margin: 24px 0 4px;
-}
-.setting-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 18px;
-}
-.pet-settings .control-button,
 .desktop-notifications .control-button {
-  border: 1px solid var(--line, #343a35);
-  background: var(--panel, #202321);
+  border: 1px solid var(--line);
+  background: var(--panel);
   color: #c8cec5;
   border-radius: 8px;
   padding: 8px 12px;
   font-size: 12px;
   cursor: pointer;
 }
-.pet-settings .control-button:hover:not(:disabled),
 .desktop-notifications .control-button:hover {
-  border-color: var(--gold, #dbbc81);
-  color: var(--gold, #dbbc81);
-}
-.pet-settings .control-button:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-.setting-volume {
-  display: flex;
-  gap: 16px;
-  align-items: center;
-}
-.setting-volume input {
-  width: 200px;
-  accent-color: var(--gold, #dbbc81);
-}
-.setting-volume output {
-  min-width: 35px;
-  font-size: 12px;
-  color: var(--muted, #a3aaa2);
-}
-.setting-audio {
-  margin-top: 20px;
-}
-.setting-audio p {
-  color: var(--muted, #a3aaa2);
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}
-.setting-audio small,
-.setting-help {
-  color: var(--muted, #a3aaa2);
-  font-size: 11px;
-  line-height: 1.7;
+  border-color: var(--gold);
+  color: var(--gold);
 }
 .setting-error {
   color: #e6a49d;
@@ -287,7 +96,7 @@
   margin-bottom: 10px;
 }
 .desktop-notification > div button {
-  color: var(--muted, #a3aaa2);
+  color: var(--muted-foreground, #a3aaa2);
   border: 0;
   background: transparent;
   cursor: pointer;
@@ -304,7 +113,7 @@
   font-weight: 600;
 }
 .desktop-notification p {
-  color: var(--muted, #a3aaa2);
+  color: var(--muted-foreground, #a3aaa2);
   font-size: 12px;
   line-height: 1.6;
   white-space: pre-wrap;
@@ -312,53 +121,10 @@
   overflow: auto;
 }
 @media (max-width: 700px) {
-  .setting-group {
-    padding: 20px;
-  }
-  .desktop-status {
-    display: none;
-  }
-  .setting-volume input {
-    width: 130px;
-  }
   .desktop-notifications {
     right: 16px;
     bottom: 16px;
     max-width: calc(100vw - 32px);
   }
 }
-
-/* Perception recording settings (shared with perception-settings.tsx). */
-.perception-settings .perception-slider {
-  padding: 12px 0;
-  border-bottom: 1px solid #303630;
-}
-.perception-settings .perception-slider:last-of-type {
-  border-bottom: none;
-}
-.perception-slider label {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 8px;
-}
-.perception-slider .perception-value {
-  color: var(--gold, #dbbc81);
-  font-variant-numeric: tabular-nums;
-  font-size: 13px;
-  white-space: nowrap;
-}
-.perception-slider input[type="range"] {
-  width: 100%;
-  accent-color: var(--gold, #dbbc81);
-}
-.perception-slider .setting-help {
-  display: block;
-  margin-top: 6px;
-}
-.perception-slider .perception-reset {
-  margin-top: 8px;
-  font-size: 12px;
-  padding: 4px 12px;
 }

@@ -1,4 +1,6 @@
 "use client";
+import { Button } from "@/components/ui/button";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import type { Project, RunData } from "@/lib/types";
 import type { ReplayOverviewResult } from "@/lib/replay-types";
@@ -371,8 +373,10 @@ export default function Dashboard() {
           ) : view === "settings" ? (
             <div className="bench-global-workspace">桌面与网页共享</div>
           ) : (
-            <select
+            <NativeSelect
               id="workspace"
+              className="w-full text-xs"
+              wrapperClassName="w-full"
               value={selection.project}
               onChange={(e) =>
                 navigate({
@@ -388,13 +392,13 @@ export default function Dashboard() {
                 })
               }
             >
-              {!projects.length && <option value="">暂无工作区</option>}
+              {!projects.length && <NativeSelectOption value="">暂无工作区</NativeSelectOption>}
               {projects.map((p) => (
-                <option key={p.id} value={p.id}>
+                <NativeSelectOption key={p.id} value={p.id}>
                   {workspaceName(p)}{p.available === false ? " · 不可用" : ""}
-                </option>
+                </NativeSelectOption>
               ))}
-            </select>
+            </NativeSelect>
           )}
         </div>
         <nav aria-label="控制台导航">
@@ -434,8 +438,9 @@ export default function Dashboard() {
           <div className="context-controls">
             {runControls && (
               <>
-                <select
+                <NativeSelect
                   aria-label="运行记录"
+                  className="max-w-60 text-xs"
                   value={selection.run}
                   onChange={(e) =>
                     navigate({
@@ -449,21 +454,22 @@ export default function Dashboard() {
                     })
                   }
                 >
-                  <option value="">
+                  <NativeSelectOption value="">
                     最新运行
                     {latest
                       ? " · " + runDate(latest.id)
                       : ""}
-                  </option>
+                  </NativeSelectOption>
                   {project?.runs.map((r) => (
-                    <option key={r.id} value={r.id}>
+                    <NativeSelectOption key={r.id} value={r.id}>
                       {runDate(r.id)}
                       {r.kind === "benchmark" ? " · 评测" : ""}
-                    </option>
+                    </NativeSelectOption>
                   ))}
-                </select>
-                <select
+                </NativeSelect>
+                <NativeSelect
                   aria-label="接管周期"
+                  className="max-w-48 text-xs"
                   value={selection.epoch}
                   onChange={(e) =>
                     navigate({
@@ -478,30 +484,33 @@ export default function Dashboard() {
                     })
                   }
                 >
-                  <option value="">
+                  <NativeSelectOption value="">
                     {data?.manifest.kind === "benchmark" && !cycles.length
                       ? "完整基准运行"
                       : "最新周期"}
                     {cycles.length ? " · #" + cycles.length : ""}
-                  </option>
-                  {view === "replay" && <option value="all">全部周期</option>}
+                  </NativeSelectOption>
+                  {view === "replay" && <NativeSelectOption value="all">全部周期</NativeSelectOption>}
                   {[...cycles].reverse().map((c, i) => (
-                    <option key={c.epoch} value={c.epoch}>
+                    <NativeSelectOption key={c.epoch} value={c.epoch}>
                       #{cycles.length - i} · {clockTime(c.startedAt)}
-                    </option>
+                    </NativeSelectOption>
                   ))}
-                </select>
+                </NativeSelect>
               </>
             )}
-            {(view === "live" || view === "benchmark") && <button
-              className={"refresh-toggle" + (refresh ? " active" : "")}
+            {(view === "live" || view === "benchmark") && <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className={refresh ? "border-success/40 text-success" : "text-muted-foreground"}
               aria-pressed={refresh}
               title="只控制界面刷新，不影响 Agent"
               onClick={() => setRefresh((v) => !v)}
             >
-              <i className="status-dot" />
+              <i className={"status-dot" + (refresh ? " online" : "")} />
               {refresh ? "实时" : "已暂停刷新"}
-            </button>}
+            </Button>}
           </div>
         </header>
         <main className="page-content">
@@ -513,34 +522,35 @@ export default function Dashboard() {
               </p>
             </div>
             {(view === "live" || (view === "benchmark" && !benchmarkCases)) && (
-              <button
-                className="control-button handback"
+              <Button
+                type="button"
+                variant="outline"
                 disabled={!data?.controlAllowed || !auto || stopping}
                 title={data?.controlReason ?? "暂无运行"}
                 onClick={stop}
               >
                 {stopping ? "正在交还…" : "交还控制权"}
-              </button>
+              </Button>
             )}
           </div>
           {view === "benchmark" && (
-            <nav className="benchmark-tabs" aria-label="Benchmark 视图">
+            <nav className="mb-5 flex gap-2 border-b pb-3" aria-label="Benchmark 视图">
               {[
                 ["analysis", "运行剖析"],
                 ["cases", "评测目录"],
               ].map(([tab, title]) => (
-                <button
+                <Button
+                  type="button"
+                  size="sm"
                   key={tab}
                   aria-pressed={benchmarkCases === (tab === "cases")}
-                  className={
-                    benchmarkCases === (tab === "cases") ? "active" : ""
-                  }
+                  variant={benchmarkCases === (tab === "cases") ? "secondary" : "ghost"}
                   onClick={() =>
                     navigate({ bench: tab === "cases" ? "cases" : null })
                   }
                 >
                   {title}
-                </button>
+                </Button>
               ))}
             </nav>
           )}
@@ -600,7 +610,7 @@ export default function Dashboard() {
                         ? `已读取 ${bytes(preparing.progress.bytes)} / ${bytes(preparing.progress.totalBytes)}${preparing.progress.projection ? `，已整理 ${preparing.progress.projection.position.toLocaleString()} / ${preparing.progress.projection.total.toLocaleString()} 条已知事件` : ""}。录像可在回放页直接播放。`
                         : "正在加载当前工作区的观察与行动记录…"}
               </p>
-              {!projects.length && <button className="control-button" onClick={() => navigate({ view: "workspaces" })}>管理工作区</button>}
+              {!projects.length && <Button type="button" onClick={() => navigate({ view: "workspaces" })}>管理工作区</Button>}
             </section>
           ) : (
             <>

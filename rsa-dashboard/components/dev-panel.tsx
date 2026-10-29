@@ -1,5 +1,6 @@
 "use client";
 import { LoopLab } from "@/components/loop-lab";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 const panels = {
   loop: { title: "Loop 实验", render: () => <LoopLab /> },
@@ -12,20 +13,20 @@ export function DevPanel({ navigate }: { navigate: (patch: Record<string, string
   const requested = params.get("panel");
   const panel: PanelId = requested && requested in panels ? (requested as PanelId) : "loop";
   return (
-    <section className="dev-panel">
-      <nav className="benchmark-tabs panel-tabs" aria-label="开发者面板">
+    <Tabs value={panel} onValueChange={id => navigate({ panel: id })} className="gap-4">
+      <TabsList aria-label="开发者面板">
         {(Object.keys(panels) as PanelId[]).map(id => (
-          <button
+          <TabsTrigger
             key={id}
-            aria-pressed={panel === id}
-            className={panel === id ? "active" : ""}
-            onClick={() => navigate({ panel: id })}
+            value={id}
           >
             {panels[id].title}
-          </button>
+          </TabsTrigger>
         ))}
-      </nav>
-      {panels[panel].render()}
-    </section>
+      </TabsList>
+      {(Object.keys(panels) as PanelId[]).map(id => (
+        <TabsContent key={id} value={id}>{panels[id].render()}</TabsContent>
+      ))}
+    </Tabs>
   );
 }
