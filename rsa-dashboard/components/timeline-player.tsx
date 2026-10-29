@@ -8,6 +8,7 @@ import { adjacentReplayFrame, clampReplayTime, mergeReplayPages, nearbyReplayIte
 import { useBufferedMedia } from "./use-buffered-media";
 import type { BufferedImage } from "./image-buffer";
 import { ReplayVideo } from "./replay-video";
+import { replayVideoReady } from "./replay-video-model";
 import { readArchiveJson } from "../lib/archive-client";
 import "./timeline-player.css";
 
@@ -288,8 +289,7 @@ export function TimelinePlayer({ project, run, epoch, position, onPosition, onOv
       return Object.fromEntries(Object.entries(previous).filter(([slot]) => keep.has(slot)));
     });
   }, [slotsKey]);
-  const ready = imageReady && videoSlots.every(({ slot, video }) => video.status === "gap" || video.status === "error"
-    || video.status === "ready" && videoReadiness[slot]?.url === video.assetId && videoReadiness[slot].ready);
+  const ready = imageReady && videoSlots.every(({ slot, video }) => replayVideoReady(video, videoReadiness[slot]));
   const pendingSegments = !!activeWindow?.frames.some(frame => frame.media.some(media => media.video?.status === "pending"));
   useEffect(() => {
     if (!pendingSegments || !activeWindow) return;

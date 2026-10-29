@@ -82,7 +82,13 @@ test("offline frame reads distinguish an unfinished segment from lost recording"
     await mkdir(join(root, "video"));
     await writeFile(join(root, reference.asset + ".json"), JSON.stringify({ status: "pending" }));
     await expect(decodeTimelineFrame(root, reference)).rejects.toMatchObject({ status: 409 });
+    for (const progress of [{ readableBytes: 0, lastReadablePts: null }, { readableBytes: 100, lastReadablePts: 0 }]) {
+      await writeFile(join(root, reference.asset + ".json"), JSON.stringify({ status: "pending", format: "fmp4", ...progress }));
+      await expect(decodeTimelineFrame(root, { ...reference, video: { ...reference.video, pts: 1 } })).rejects.toMatchObject({ status: 409 });
+    }
     await writeFile(join(root, reference.asset + ".json"), JSON.stringify({ status: "error", error: "encoding interrupted" }));
+    await expect(decodeTimelineFrame(root, reference)).rejects.toMatchObject({ status: 410 });
+    await writeFile(join(root, reference.asset + ".json"), JSON.stringify({ status: "error", format: "fmp4", readableBytes: 100, lastReadablePts: 10 }));
     await expect(decodeTimelineFrame(root, reference)).rejects.toMatchObject({ status: 410 });
   } finally { await rm(root, { recursive: true, force: true }); }
 });

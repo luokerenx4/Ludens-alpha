@@ -184,6 +184,72 @@ test("cold replay frames and video do not wait for full event ingestion or creat
   } finally { await f.close(); }
 });
 
+test("fMP4 replay publishes only committed frames and serves immutable byte snapshots while recording", async () => {
+  const f = await fixture(), asset = "video/growing.mp4";
+  try {
+    await mkdir(join(f.timeline, "video"));
+    await writeFile(join(f.timeline, asset), Buffer.alloc(1000));
+    const publish = (state: Record<string, unknown>) => writeFile(join(f.timeline, asset + ".json"), JSON.stringify({
+      status: "pending", format: "fmp4", durationSeconds: 0, readableBytes: 0, lastReadablePts: null, ...state,
+    }));
+    const segment = { mode: "segment" as const, epoch: "one", record: "record-11", sequence: 11, media: 0 };
+    const frames = async () => {
+      const page = await f.window({ epoch: "one", start: start + 15000, end: start + 16000 }) as ReplayWindow;
+      return [11, 12, 13].map(sequence => page.frames.find(frame => frame.sequence === sequence)!.media[0].video!);
+    };
+    await f.records([
+      { ms: 15000, channel: "growing", video: [{ asset, pts: 0 }] },
+      { ms: 15500, channel: "growing", video: [{ asset, pts: 500000 }] },
+      { ms: 15900, channel: "growing", video: [{ asset, pts: 900000, gap: true }] },
+    ], 11);
+    await publish({});
+    let [first, tail, gap] = await frames();
+    assert.equal(first.streaming, false); assert.equal(first.revision, "pending:0");
+    assert.equal(first.readableUntil, undefined);
+    await assert.rejects(f.query(segment), { status: 409 });
+
+    await publish({ readableBytes: 400, lastReadablePts: 0, durationSeconds: 0.5 });
+    [first, tail, gap] = await frames();
+    assert.equal(first.streaming, true); assert.equal(first.revision, "pending:400");
+    assert.equal(first.readableUntil, start + 15000);
+    assert.equal(first.durationSeconds, 0.5);
+    assert.equal(new URL(first.url, "http://localhost").searchParams.get("bytes"), "400");
+    const firstSnapshotUrl = first.url;
+    assert.equal(tail.streaming, false); assert.equal(gap.status, "gap");
+    const current = await f.query(segment) as FileMedia;
+    assert.equal(current.size, 400); assert.equal(current.cacheControl, "no-store");
+    const snapshot = await f.query({ ...segment, bytes: 400 }) as FileMedia;
+    assert.equal(snapshot.size, 400); assert.match(snapshot.cacheControl!, /immutable/);
+    await assert.rejects(f.query({ ...segment, record: "record-12", sequence: 12 }), { status: 409 });
+    await assert.rejects(f.query({ ...segment, record: "record-13", sequence: 13 }), { status: 410 });
+    for (const bytes of [0, -1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, 401])
+      await assert.rejects(f.query({ ...segment, bytes }), { status: 400 });
+
+    await publish({ readableBytes: 800, lastReadablePts: 500000, durationSeconds: 0.9 });
+    [first, tail] = await frames();
+    assert.equal(tail.streaming, true); assert.equal(tail.readableUntil, start + 15500);
+    assert.equal(first.revision, "pending:800");
+    assert.notEqual(first.url, firstSnapshotUrl);
+    assert.equal((await f.query({ ...segment, bytes: 400 }) as FileMedia).size, 400);
+
+    await publish({ status: "ready", readableBytes: 1000, lastReadablePts: 500000, durationSeconds: 0.9 });
+    [first, tail] = await frames();
+    assert.equal(first.status, "ready"); assert.equal(first.revision, "ready"); assert.equal(first.streaming, false);
+    assert.equal(new URL(first.url, "http://localhost").searchParams.get("bytes"), "1000");
+    assert.equal((await f.query(segment) as FileMedia).size, 1000);
+    assert.equal((await f.query({ ...segment, bytes: 400 }) as FileMedia).size, 400);
+    assert.equal((await f.query({ ...segment, record: "record-12", sequence: 12, bytes: 1000 }) as FileMedia).size, 1000);
+
+    await publish({ status: "error", readableBytes: 800, lastReadablePts: 500000, error: "encoder failed" });
+    [first] = await frames();
+    assert.equal(first.status, "error"); assert.equal(first.streaming, false);
+    await assert.rejects(f.query({ ...segment, bytes: 400 }), { status: 410 });
+    await publish({ readableBytes: -1, lastReadablePts: 0 });
+    await assert.rejects(frames(), /无效的视频片段读取进度/);
+    await assert.rejects(f.query(segment), /无效的视频片段读取进度/);
+  } finally { await f.close(); }
+});
+
 test("event interval preparation is explicit and never labels unprepared model calls as logs", async () => {
   const f = await fixture();
   try {

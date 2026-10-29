@@ -42,3 +42,23 @@ test("a range from an 8 GiB sparse video does not allocate the video in memory",
     assert(process.memoryUsage().arrayBuffers - before.arrayBuffers < 4 * 1024 ** 2);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+test("published video snapshots keep their byte length while the file grows", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "rsa-video-snapshot-")), file = join(directory, "video.mp4");
+  const media = { file, mediaType: "video/mp4", size: 4, cacheControl: "private, max-age=31536000, immutable" };
+  const request = (range?: string) => new Request("http://localhost/video?bytes=4", { headers: range ? { Range: range } : undefined });
+  try {
+    await writeFile(file, "0123456789");
+    const response = await fileResponse(request(), media);
+    assert.equal(response.headers.get("content-length"), "4");
+    assert.equal(await response.text(), "0123");
+    await writeFile(file, "0123456789abcdef");
+    const suffix = await fileResponse(request("bytes=-2"), media);
+    assert.equal(suffix.headers.get("content-range"), "bytes 2-3/4");
+    assert.equal(await suffix.text(), "23");
+    const outside = await fileResponse(request("bytes=4-"), media);
+    assert.equal(outside.status, 416);
+    assert.equal(outside.headers.get("content-range"), "bytes */4");
+    for (const size of [-1, 1.5, 17]) await assert.rejects(fileResponse(request(), { ...media, size }), /snapshot size/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
