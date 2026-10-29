@@ -35,7 +35,7 @@ const handlers: { [K in DashboardMethod]: (args: DashboardMethods[K]["args"], si
   capabilities: ([project], signal) => capabilities(project, undefined, signal),
   discoverDriver: ([spec], signal) => discoverDriver(spec, signal),
   docGroups: () => docGroups(),
-  readDoc: ([id]) => readDoc(id),
+  readDoc: ([id, root, lang]) => readDoc(id, root, lang),
   stop: ([project, run, epoch]) => stopRun(project, run, epoch),
   perceptionSettings: ([project]) => perceptionSettings(project),
   updatePerceptionSettings: ([project, patch]) => updatePerceptionSettings(project, patch),

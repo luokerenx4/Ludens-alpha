@@ -35,7 +35,7 @@ export interface DashboardMethods {
   capabilities: { args: [project?: string]; result: Awaited<ReturnType<typeof capabilities>> };
   discoverDriver: { args: [spec: string]; result: Awaited<ReturnType<typeof discoverDriver>> };
   docGroups: { args: []; result: Awaited<ReturnType<typeof docGroups>> };
-  readDoc: { args: [id: string]; result: Awaited<ReturnType<typeof readDoc>> };
+  readDoc: { args: [id: string, root?: string, lang?: "en" | "zh"]; result: Awaited<ReturnType<typeof readDoc>> };
   stop: { args: [project: string, run: string, epoch: string | null]; result: Awaited<ReturnType<typeof stopRun>> };
   perceptionSettings: { args: [project: string]; result: Partial<PerceptionSettings> };
   updatePerceptionSettings: { args: [project: string, patch: PerceptionSettingsPatch]; result: Partial<PerceptionSettings> };
