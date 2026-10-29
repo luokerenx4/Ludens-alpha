@@ -2,11 +2,19 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSwitchProvider } from "@ludens/baseware/drivers/ryubing/provider.ts";
+import { resolveDriver, defaultDriverCacheRoot } from "@ludens/baseware/drivers/loader.ts";
+import type { DriverCreateOptions } from "@ludens/baseware/drivers/registry.ts";
 import { Bridge } from "@ludens/baseware/drivers/bridge.ts";
 import { createTestDeviceSession } from "./runtime-fixture.ts";
 import type { ToolArguments, ControllerContext, ToolExecutionResult } from "@ludens/baseware/contracts";
 import { Runtime } from "../src/harness/runtime.ts";
+
+async function createSwitchProvider(options: DriverCreateOptions) {
+  const spec = process.env.RSA_SWITCH_DRIVER_PACKAGE;
+  if (!spec) throw new Error("Set RSA_SWITCH_DRIVER_PACKAGE to the external Ryubing driver package before live tests");
+  const registration = await resolveDriver("ryubing", spec, defaultDriverCacheRoot());
+  return registration.load(options);
+}
 
 function imageBytes(capture: ToolExecutionResult): Buffer {
   const block = capture.result.content[capture.observations![0].contentIndex!];

@@ -93,7 +93,7 @@ Baseware 启动时通过 `--diagnostics normal|full`（默认 `normal`）设定�
 
 ## Driver 包与启动描述
 
-Baseware 支持通过 `--driver <id> --driver-package <spec>` 加载外部驱动包（内置驱动则从默认注册表加载）。
+Baseware 支持通过 `--driver <id> --driver-package <spec>` 加载外部驱动包；模拟器驱动只从外部包加载，当前仅 `cua` 桌面适配器保留内置注册。
 
 ### 1. 包地址与缓存机制
 

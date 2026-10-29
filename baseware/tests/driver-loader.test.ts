@@ -3,6 +3,21 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+test("serve has no implicit emulator and requires a package for emulator ids", async () => {
+  const root = await mkdtemp(join(tmpdir(), "driver-explicit-"));
+  try {
+    for (const id of [undefined, "mgba", "azahar", "ryubing"]) {
+      const child = Bun.spawn([process.execPath, join(import.meta.dir, "../src/main.ts"), "serve",
+        ...(id ? ["--driver", id] : []), "--socket", join(root, "service.sock"), "--data-dir", join(root, "data")],
+        { stdout: "pipe", stderr: "pipe" });
+      const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+      expect(code).toBe(1);
+      expect(stderr).toContain(id ? "--driver-package" : "requires --driver");
+      expect(await Bun.file(join(root, "service.sock")).exists()).toBe(false);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("GitHub caches distinguish real repositories and revisions and retry failed checkouts", async () => {
   const root = await mkdtemp(join(tmpdir(), "driver-github-"));
   const repositories = join(root, "repositories");

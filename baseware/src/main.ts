@@ -17,11 +17,12 @@ export async function main(args = process.argv.slice(2)) {
   if (args[0] === "mcp") { const { startMcp } = await import("./mcp.ts"); return startMcp(socket); }
   if (args[0] !== "serve") return cli(args, socket);
   const { values } = parseArgs({ args: args.slice(1), options: {
-    driver: { type: "string", default: "mgba" }, "driver-package": { type: "string" }, port: { type: "string" },
+    driver: { type: "string" }, "driver-package": { type: "string" }, port: { type: "string" },
     socket: { type: "string", default: socket }, "data-dir": { type: "string" },
     "cua-command": { type: "string" }, diagnostics: { type: "string", default: "normal" },
   } });
-  const registration = await resolveDriver(values.driver!, values["driver-package"], defaultDriverCacheRoot());
+  if (!values.driver?.trim()) throw new Error("serve requires --driver <id>; emulator drivers also require --driver-package <spec>");
+  const registration = await resolveDriver(values.driver, values["driver-package"], defaultDriverCacheRoot());
   if (values["cua-command"] && registration.defaultPort !== undefined) throw new Error("--cua-command is only for drivers without a bridge port");
   if (values.diagnostics !== "normal" && values.diagnostics !== "full") throw new Error("--diagnostics must be normal or full");
   const portValue = values.port ?? registration.defaultPort;

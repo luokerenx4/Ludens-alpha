@@ -37,6 +37,7 @@ job = {
     "WorkingDirectory": str(workspace),
     "EnvironmentVariables": {"PATH": os.environ.get("PATH", os.defpath), **{
         key: os.environ[key] for key in (
+            "XDG_STATE_HOME",
             "RSA_PERCEPTION_HOT_SECONDS", "RSA_PERCEPTION_PERSIST", "RSA_PERCEPTION_SEGMENT_SECONDS",
             "RSA_PERCEPTION_HOT_BYTES", "RSA_PERCEPTION_SEGMENT_BYTES",
         ) if key in os.environ
