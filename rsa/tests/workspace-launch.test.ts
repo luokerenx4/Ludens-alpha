@@ -6,7 +6,15 @@ import { join, resolve } from "node:path";
 import { launchPlan, parseConfig, WorkspaceLauncher, type DriverManifest, type LaunchIO, type LaunchPlan } from "../src/app/workspace.ts";
 import { getDriver } from "@ludens/baseware/drivers/registry.ts";
 
+const fixtureManifests: Record<string, DriverManifest> = {
+  "bridge-fixture": { id: "bridge-fixture", transport: "bridge", defaultPort: 47991, needsGame: true,
+    launchCommand: ["/fixture/Emulator.app/Contents/MacOS/emulator"], launchEnv: { FIXTURE_STACK_SIZE: "200000" } },
+  "prepared-fixture": { id: "prepared-fixture", transport: "bridge", defaultPort: 47990 },
+  "dual-fixture": { id: "dual-fixture", transport: "bridge", defaultPort: 47992, needsGame: true,
+    launchCommand: ["/fixture/Dual.app/Contents/MacOS/dual"] },
+};
 const manifestFor = (id: string): DriverManifest => {
+  if (fixtureManifests[id]) return fixtureManifests[id];
   const { load: _load, fallbackVersion: _fallback, ...manifest } = getDriver(id);
   return { ...manifest, version: _fallback };
 };
@@ -106,8 +114,8 @@ class FakeServices implements LaunchIO {
   }
 }
 
-const plan = () => launchPlan(parseConfig({ driver: "ryubing", game: "games/A game; $(touch BAD).nsp" }, manifestFor("ryubing")),
-  "/tmp/Workspace with spaces", "/tmp/Source with spaces", "/tmp/baseware-test.sock", manifestFor("ryubing"));
+const plan = () => launchPlan(parseConfig({ driver: "bridge-fixture", game: "games/A game; $(touch BAD).nsp" }, manifestFor("bridge-fixture")),
+  "/tmp/Workspace with spaces", "/tmp/Source with spaces", "/tmp/baseware-test.sock", manifestFor("bridge-fixture"));
 
 test("system Pet readiness uses the Dashboard pet endpoint", async () => {
   const paths: string[] = [];
@@ -141,21 +149,21 @@ test("managed Dashboard uses a current production build and fails before startin
 
 test("launch config keeps limits explicit and paths as literal argv entries", async () => {
   const value = await plan();
-  expect(value.config).toMatchObject({ port: 47663, seconds: 1800, requests: 1000 });
+  expect(value.config).toMatchObject({ port: 47991, seconds: 1800, requests: 1000 });
   // Default follows the selected model's native OMP compaction trigger; no flag is passed.
-  expect(parseConfig({ driver: "mgba" }, manifestFor("mgba")).compactionThreshold).toBeUndefined();
+  expect(parseConfig({ driver: "prepared-fixture" }, manifestFor("prepared-fixture")).compactionThreshold).toBeUndefined();
   expect(value.commands.host).not.toContain("--compaction-threshold");
-  const explicit = await launchPlan(parseConfig({ driver: "ryubing", game: "games/x.nsp", compactionThreshold: 200000 }, manifestFor("ryubing")),
-    "/tmp/Workspace with spaces", "/tmp/Source with spaces", "/tmp/baseware-test.sock", manifestFor("ryubing"));
+  const explicit = await launchPlan(parseConfig({ driver: "bridge-fixture", game: "games/x.nsp", compactionThreshold: 200000 }, manifestFor("bridge-fixture")),
+    "/tmp/Workspace with spaces", "/tmp/Source with spaces", "/tmp/baseware-test.sock", manifestFor("bridge-fixture"));
   expect(explicit.commands.host).toEqual(expect.arrayContaining(["--compaction-threshold", "200000"]));
-  expect(parseConfig({ driver: "mgba" }, manifestFor("mgba")).port).toBe(47653);
-  expect(() => parseConfig({ driver: "ryubing", second: 10 }, manifestFor("ryubing"))).toThrow("Unknown");
-  expect(() => parseConfig({ driver: "mgba", game: "game.gba" }, manifestFor("mgba"))).toThrow("does not support launching a game");
-  expect(value.commands.emulator).toEqual(["env", "DOTNET_DefaultStackSize=200000", "RSA_BRIDGE_PORT=47663",
-    ...manifestFor("ryubing").launchCommand!,
+  expect(parseConfig({ driver: "prepared-fixture" }, manifestFor("prepared-fixture")).port).toBe(47990);
+  expect(() => parseConfig({ driver: "bridge-fixture", second: 10 }, manifestFor("bridge-fixture"))).toThrow("Unknown");
+  expect(() => parseConfig({ driver: "prepared-fixture", game: "game.gba" }, manifestFor("prepared-fixture"))).toThrow("does not support launching a game");
+  expect(value.commands.emulator).toEqual(["env", "FIXTURE_STACK_SIZE=200000", "RSA_BRIDGE_PORT=47991",
+    ...manifestFor("bridge-fixture").launchCommand!,
     "/tmp/Workspace with spaces/games/A game; $(touch BAD).nsp"]);
   expect(value.commands.baseware).toEqual(["/tmp/Source with spaces/baseware/bin/baseware", "serve",
-    "--driver", "ryubing", "--port", "47663", "--socket", "/tmp/baseware-test.sock",
+    "--driver", "bridge-fixture", "--port", "47991", "--socket", "/tmp/baseware-test.sock",
     "--data-dir", "/tmp/Workspace with spaces/logs/baseware", "--diagnostics", "normal"]);
   expect(value.commands.host).toContain("/tmp/Source with spaces/rsa/bin/rsa");
   expect(value.commands.host).toContain("--baseware-socket");
@@ -203,9 +211,9 @@ test("Cua launch config uses its native service without choosing a workspace obs
   const defaults = await launchPlan(parseConfig({ driver: "cua" }, manifestFor("cua")), "/tmp/Desktop workspace", "/tmp/Source", "/tmp/cua-baseware.sock", manifestFor("cua"));
   expect(defaults.commands.baseware).not.toContain("--cua-command");
   expect(defaults.commands.baseware).not.toContain("--port");
-  expect(() => parseConfig({ driver: "cua", port: 47663 }, manifestFor("cua"))).toThrow("bridge port");
+  expect(() => parseConfig({ driver: "cua", port: 47991 }, manifestFor("cua"))).toThrow("bridge port");
   expect(() => parseConfig({ driver: "cua", game: "game.nsp" }, manifestFor("cua"))).toThrow("game");
-  expect(() => parseConfig({ driver: "mgba", cuaCommand: "cua-driver" }, manifestFor("mgba"))).toThrow("cuaCommand");
+  expect(() => parseConfig({ driver: "prepared-fixture", cuaCommand: "cua-driver" }, manifestFor("prepared-fixture"))).toThrow("cuaCommand");
 });
 
 test("Cua startup and shutdown only manage its services, without emulator bridge probes", async () => {
@@ -223,19 +231,19 @@ test("Cua startup and shutdown only manage its services, without emulator bridge
   expect(io.calls.some(argv => ["pgrep", "lsof"].includes(argv[0]!))).toBe(false);
 });
 
-test("Azahar launches its own native device without desktop dependencies", async () => {
-  const config = parseConfig({ driver: "azahar", game: "games/3DS game.cci" }, manifestFor("azahar"));
-  const value = await launchPlan(config, "/tmp/3DS workspace", "/tmp/Source", "/tmp/3ds-baseware.sock", manifestFor("azahar"));
-  expect(config.port).toBe(47673);
-  expect(value.commands.emulator).toEqual(["env", "RSA_BRIDGE_PORT=47673",
-    "/Applications/Azahar.app/Contents/MacOS/azahar", "/tmp/3DS workspace/games/3DS game.cci"]);
-  expect(value.commands.baseware).toContain("azahar");
-  expect(value.commands.baseware).toContain("47673");
+test("an external bridge manifest launches its device without desktop dependencies", async () => {
+  const config = parseConfig({ driver: "dual-fixture", game: "games/3DS game.cci" }, manifestFor("dual-fixture"));
+  const value = await launchPlan(config, "/tmp/3DS workspace", "/tmp/Source", "/tmp/3ds-baseware.sock", manifestFor("dual-fixture"));
+  expect(config.port).toBe(47992);
+  expect(value.commands.emulator).toEqual(["env", "RSA_BRIDGE_PORT=47992",
+    "/fixture/Dual.app/Contents/MacOS/dual", "/tmp/3DS workspace/games/3DS game.cci"]);
+  expect(value.commands.baseware).toContain("dual-fixture");
+  expect(value.commands.baseware).toContain("47992");
   expect(value.commands.baseware).not.toContain("--cua-command");
   expect(value.commands.host).not.toContain("--auto-observe");
-  expect(() => parseConfig({ driver: "azahar", game: "games/3DS game.cci", cuaCommand: "/tools/cua-driver" }, manifestFor("azahar"))).toThrow("stdio driver");
+  expect(() => parseConfig({ driver: "dual-fixture", game: "games/3DS game.cci", cuaCommand: "/tools/cua-driver" }, manifestFor("dual-fixture"))).toThrow("stdio driver");
   const io = new FakeServices(value);
-  io.bridgePort = 47673;
+  io.bridgePort = 47992;
   expect((await new WorkspaceLauncher(value, io).up()).host?.mode).toBe("manual");
   expect(io.starts).toContain("emulator");
 });
@@ -262,12 +270,16 @@ test("init and dry-run preserve existing workspace files and never invoke servic
       const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
       return { code, stdout, stderr };
     };
-    expect((await run("init", "--driver", "ryubing", "--game", "games/Uninstalled ; $ game.nsp", "--seconds", "600")).code).toBe(0);
+    const packagePath = join(directory, "external-driver.ts");
+    await writeFile(packagePath, `export default { ...${JSON.stringify(fixtureManifests["bridge-fixture"])}, load() { throw new Error("init must not load the provider"); } };`);
+    expect((await run("init", "--driver", "bridge-fixture", "--driver-package", `file:${packagePath}`, "--game", "games/Uninstalled ; $ game.nsp", "--seconds", "600")).code).toBe(0);
     const configBefore = await readFile(join(workspace, "rsa.json"), "utf8");
     const preview = await run("up", "--dry-run");
     expect(preview.code).toBe(0);
     expect(JSON.parse(preview.stdout)).toMatchObject({ workspace: await realpath(workspace), config: { seconds: 600 } });
-    expect((await run("init", "--driver", "mgba")).code).not.toBe(0);
+    const repeated = await run("init", "--driver", "cua");
+    expect(repeated.code).not.toBe(0);
+    expect(repeated.stderr).toContain("EEXIST");
     expect(await readFile(join(workspace, "rsa.json"), "utf8")).toBe(configBefore);
     expect(await readFile(join(workspace, "AGENTS.md"), "utf8")).toBe("My existing workspace instructions\n");
     expect((await readdir(workspace)).sort()).toEqual(["AGENTS.md", "action.py", "perception.py", "rsa.json"]);
@@ -424,12 +436,13 @@ test("managed Ludens Pet startup waits for its activity connection after the pro
   expect(io.starts.filter(name => name === "pet")).toEqual(["pet"]);
 });
 
-test("shared launchd options write the chosen label and logs while preserving a stable working directory", async () => {
+test("shared launchd options preserve the working directory and external driver cache environment", async () => {
   const directory = await mkdtemp(join(tmpdir(), "rsa-shared-launch-"));
   try {
     const bin = join(directory, "bin");
     const stableCwd = join(directory, "source");
     const logs = join(directory, "shared", "alice", "background");
+    const driverState = join(directory, "isolated driver state");
     await mkdir(bin);
     await mkdir(stableCwd);
     const launchctl = join(bin, "launchctl");
@@ -438,6 +451,7 @@ test("shared launchd options write the chosen label and logs while preserving a 
     const script = resolve(import.meta.dir, "../scripts/launch-background.py");
     const child = Bun.spawn(["/usr/bin/python3", script, "--label", "dev.ludens.pet", "--log-dir", logs, "pet", "/bin/echo", "--workspace", "/tmp/seed workspace"], {
       cwd: stableCwd, env: { ...process.env, PATH: bin, RSA_WORKSPACE: "/tmp/stale",
+        XDG_STATE_HOME: driverState,
         RSA_PERCEPTION_PERSIST: "0", RSA_PERCEPTION_HOT_SECONDS: "600" }, stdout: "pipe", stderr: "pipe",
     });
     const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
@@ -454,13 +468,14 @@ test("shared launchd options write the chosen label and logs while preserving a 
     expect(plist).toContain(`<key>WorkingDirectory</key>\n\t<string>${canonicalCwd}</string>`);
     expect(plist).toContain(`<string>${join(canonicalLogs, "pet.log")}</string>`);
     expect(plist).not.toContain("RSA_WORKSPACE");
+    expect(plist).toContain(`<key>XDG_STATE_HOME</key>\n\t\t<string>${driverState}</string>`);
     expect(plist).toContain("<key>RSA_PERCEPTION_PERSIST</key>\n\t\t<string>0</string>");
     expect(plist).toContain("<key>RSA_PERCEPTION_HOT_SECONDS</key>\n\t\t<string>600</string>");
     expect(await readdir(stableCwd)).toEqual([]);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
-test("an external Ryubing process blocks startup before spawning or stopping anything", async () => {
+test("an externally started emulator process blocks startup before spawning or stopping anything", async () => {
   const value = await plan();
   const io = new FakeServices(value);
   io.externalEmulator = true;
@@ -469,8 +484,55 @@ test("an external Ryubing process blocks startup before spawning or stopping any
   expect(io.calls.some(argv => argv[1] === "bootout" || argv[1] === "auto")).toBe(false);
 });
 
+test("emulator process matching treats custom executable paths as POSIX regex literals", async () => {
+  const executable = "/tmp/Emulator (native)[1]+.app/Contents/MacOS/emulator";
+  const manifest = { ...manifestFor("bridge-fixture"), launchCommand: [executable] };
+  const value = await launchPlan(parseConfig({ driver: manifest.id, game: "game.rom" }, manifest),
+    "/tmp/Literal path workspace", "/tmp/Source", "/tmp/literal-path.sock", manifest);
+  for (const [existingCommand, matches] of [
+    [executable, true],
+    [`${executable} game.rom`, true],
+    [`${executable}-helper game.rom`, false],
+    ["/tmp/Emulator native11Xapp/Contents/MacOS/emulator game.rom", false],
+  ] as const) {
+    const io = new FakeServices(value);
+    const run = io.run.bind(io);
+    io.run = async (argv, cwd) => {
+      if (argv[0] !== "pgrep") return run(argv, cwd);
+      io.calls.push([...argv]);
+      // Exercise the same POSIX ERE syntax as pgrep without inspecting or
+      // starting any real emulator process, including lookalikes and prefixes.
+      const matcher = Bun.spawn(["grep", "-E", argv[2]!], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+      matcher.stdin.write(`${existingCommand}\n`);
+      matcher.stdin.end();
+      const [code, stdout, stderr] = await Promise.all([
+        matcher.exited, new Response(matcher.stdout).text(), new Response(matcher.stderr).text(),
+      ]);
+      expect(stderr).toBe("");
+      return { code, stdout, stderr };
+    };
+    if (matches) {
+      await expect(new WorkspaceLauncher(value, io).up()).rejects.toThrow("already running outside this workspace");
+      expect(io.starts).toEqual([]);
+    } else {
+      expect((await new WorkspaceLauncher(value, io).up()).host?.mode).toBe("manual");
+      expect(io.starts).toContain("emulator");
+    }
+  }
+});
+
+test("package launch wrappers cannot start another emulator on an externally occupied bridge", async () => {
+  const value = await plan();
+  value.commands.emulator = ["env", `RSA_BRIDGE_PORT=${value.config.port}`, "/external/package/launch.sh", "game.rom"];
+  const io = new FakeServices(value);
+  io.preparedBridgePid = 700;
+  await expect(new WorkspaceLauncher(value, io).up()).rejects.toThrow("already listening outside this workspace");
+  expect(io.starts).toEqual([]);
+  expect(io.calls.some(argv => argv[1] === "bootout" || argv[1] === "auto")).toBe(false);
+});
+
 test("a bridge used by another workspace neither receives a second host nor gets stopped", async () => {
-  const prepared = await launchPlan(parseConfig({ driver: "ryubing" }, manifestFor("ryubing")), "/tmp/Second workspace", undefined, "/tmp/second-baseware.sock", manifestFor("ryubing"));
+  const prepared = await launchPlan(parseConfig({ driver: "bridge-fixture" }, manifestFor("bridge-fixture")), "/tmp/Second workspace", undefined, "/tmp/second-baseware.sock", manifestFor("bridge-fixture"));
   const attach = new FakeServices(prepared);
   attach.preparedBridgePid = 700;
   attach.bridgeClientPids = [701];

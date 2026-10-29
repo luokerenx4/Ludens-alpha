@@ -14,7 +14,7 @@
 
 ## 教程目录
 
-- [**开发与运行**](development.md)：前置依赖、四大内置环境（mGBA / Ryubing / Azahar / Cua）与外部驱动准备、`rsa.json` 配置、工作区启停生命周期、独立组件调试及离线/实机验证。
+- [**开发与运行**](development.md)：前置依赖、可选模拟器驱动（mGBA / Ryubing / Azahar）与内置 Cua 接入、`rsa.json` 配置、工作区启停生命周期、独立组件调试及离线/实机验证。
 - [**Workspace 与自适应代码**](workspace.md)：工作区目录契约、`@capability` 与 `@record` 装饰器、统一能力调用入口、`.rsa/timeline/` 时空轴留档、`perception.py` 常驻感知与历史查询、`action.py` 常驻动作及后台程序边界。
 
 ## 关联参考

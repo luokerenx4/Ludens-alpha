@@ -24,10 +24,12 @@ These are mechanisms for experimenting with adaptation, not a claim that an agen
 
 | Driver | Environment | Setup |
 | --- | --- | --- |
-| mGBA | Game Boy Advance emulator | Open a ROM and load the bundled Lua bridge. See [mGBA setup](docs/tutorials/development.md#mgba). |
+| mGBA | Game Boy Advance emulator | Open a ROM and load the optional driver package's Lua bridge. See [mGBA setup](docs/tutorials/development.md#mgba). |
 | Ryubing | Nintendo Switch emulator | Build and install the patched emulator. See the [Ryubing guide](docs/tutorials/development.md#ryubing). |
 | Azahar | Nintendo 3DS emulator | Build and install the patched emulator. Native pad, touch, and separate top/bottom screen capture. See the [Azahar guide](docs/tutorials/development.md#azahar). |
 | Cua | Local desktop applications | Install the upstream Cua Driver and grant its required OS permissions. See [Cua setup](docs/tutorials/development.md#cua). |
+
+Emulator drivers are optional packages maintained in [ludens-gba-driver](https://github.com/luokerenx4/ludens-gba-driver), [ludens-3ds-driver](https://github.com/luokerenx4/ludens-3ds-driver), and [ludens-switch-driver](https://github.com/luokerenx4/ludens-switch-driver). Only the Cua desktop adapter is built in.
 
 Drivers expose device capabilities, not game strategies. Screen processing, coordinate conversion, action sequences, and task-specific logic belong in the workspace.
 
@@ -69,7 +71,9 @@ The example below uses a prepared Ryubing installation and a local game file.
 mkdir -p ../workspaces/my-task
 cd ../workspaces/my-task
 
-rsa init --driver ryubing --game /absolute/path/to/game.nsp --seconds 1800
+rsa init --driver ryubing \
+  --driver-package github:luokerenx4/ludens-switch-driver#070edf662ba724e1a31c5b477f414d4da61bbd6f \
+  --game /absolute/path/to/game.nsp --seconds 1800
 rsa up --dry-run
 rsa up
 rsa services
@@ -80,8 +84,8 @@ rsa services
 To choose another environment, replace the `rsa init` command above with exactly one of:
 
 ```sh
-rsa init --driver mgba
-rsa init --driver azahar --game /absolute/path/to/game.3ds
+rsa init --driver mgba --driver-package github:luokerenx4/ludens-gba-driver#9c1a014be3d87fe6846fef8ad7eba1c13439e8a5
+rsa init --driver azahar --driver-package github:luokerenx4/ludens-3ds-driver#5b9b1f4032a5973a8882aa23957c3c34da50af9e --game /absolute/path/to/game.3ds
 rsa init --driver cua
 ```
 

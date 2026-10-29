@@ -1,7 +1,4 @@
 import type { Capabilities, Clock } from "../contracts.ts";
-import { createGbaProvider } from "./mgba/provider.ts";
-import { createSwitchProvider } from "./ryubing/provider.ts";
-import { createAzaharProvider } from "./azahar/provider.ts";
 import { createCuaProvider } from "./cua/provider.ts";
 
 /** Runtime shape every driver (built-in or community) must satisfy. */
@@ -56,23 +53,11 @@ export function driverIds(): string[] {
 
 export function getDriver(id: string): DriverRegistration {
   const entry = registry.get(id);
-  if (!entry) throw new Error(`--driver must be one of: ${driverIds().join(", ")}`);
+  if (!entry) throw new Error(`Driver ${JSON.stringify(id)} is not built in. Select its package with --driver-package <spec>. Built-in drivers: ${driverIds().join(", ")}.`);
   return entry;
 }
 
-// Built-in drivers; community drivers will register via registerDriver instead of editing main.ts.
-registerDriver({ id: "mgba", transport: "bridge", defaultPort: 47653, fallbackVersion: "0.10.5",
-  launchHint: "Open the ROM in mGBA and load baseware/src/drivers/mgba/bridge.lua in Tools → Scripting.",
-  load: options => createGbaProvider({ port: options.port!, clock: options.clock }) });
-registerDriver({ id: "ryubing", transport: "bridge", defaultPort: 47663, needsGame: true, fallbackVersion: "1.3.351-rsa.3",
-  launchHint: "Start the patched ryubing with the desired game, or set game in rsa.json.",
-  launchCommand: ["/Applications/Ryubing.app/Contents/MacOS/Ryujinx"],
-  launchEnv: { DOTNET_DefaultStackSize: "200000" },
-  load: options => createSwitchProvider({ port: options.port!, clock: options.clock }) });
-registerDriver({ id: "azahar", transport: "bridge", defaultPort: 47673, needsGame: true,
-  launchHint: "Start the patched azahar with the desired game, or set game in rsa.json.",
-  launchCommand: ["/Applications/Azahar.app/Contents/MacOS/azahar"],
-  load: options => createAzaharProvider({ port: options.port!, clock: options.clock }) });
+// Emulator implementations are optional external packages; only desktop CUA is built in.
 registerDriver({ id: "cua", transport: "stdio",
   launchHint: "Starts the installed Cua Driver (cua-driver by default); it needs no emulator or bridge port.",
   load: options => createCuaProvider({ command: options.command, clock: options.clock }) });

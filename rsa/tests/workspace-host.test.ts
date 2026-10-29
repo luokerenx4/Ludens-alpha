@@ -79,7 +79,7 @@ mock.module(${JSON.stringify(join(rsaDirectory, "src/harness/omp/session.ts"))},
       const socket = join(directory, `baseware-${name}.sock`);
       basewareSockets.set(state.workspace, socket);
       const child = Bun.spawn([process.execPath, join(rsaDirectory, "../baseware/src/main.ts"), "serve",
-        "--driver", "mgba", "--port", String((bridge.address() as AddressInfo).port),
+        "--driver", "lease-fixture", "--driver-package", `file:${resolve(import.meta.dir, "../../baseware/tests/fixtures/lease-driver.ts")}`, "--port", String((bridge.address() as AddressInfo).port),
         "--socket", socket, "--data-dir", join(state.workspace, "logs/baseware")], {
         cwd: state.workspace, env: environment(), stdin: "ignore", stdout: "pipe", stderr: "pipe",
       });
@@ -153,7 +153,7 @@ test("hosts route by workspace, resume only its selected session, and can start 
       const catalog = JSON.parse(await readFile(join(state.workspace, "baseware.json"), "utf8"));
       expect(catalog.schemaVersion).toBe(2);
       expect(Number.isNaN(Date.parse(catalog.generatedAt))).toBe(false);
-      expect(catalog.controllers.map((item: { name: string }) => item.name)).toContain("pad.play");
+      expect(catalog.controllers.map((item: { name: string }) => item.name)).toContain("fixture.noop");
       expect(catalog.stale).toBeUndefined();
       expect(JSON.parse(await readFile(join(result.runDir, "test-driver.json"), "utf8"))).toEqual({
         workspace: state.workspace, resume: join(state.sessionsDir, "selected.jsonl"), cwd: state.workspace,

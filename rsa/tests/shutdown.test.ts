@@ -50,7 +50,7 @@ mock.module(${JSON.stringify(resolve(import.meta.dir, "../src/harness/omp/sessio
 }));
 `);
   const service = Bun.spawn([process.execPath, resolve(import.meta.dir, "../../baseware/src/main.ts"), "serve",
-    "--driver", "mgba", "--port", String((bridge.address() as AddressInfo).port),
+    "--driver", "lease-fixture", "--driver-package", `file:${resolve(import.meta.dir, "../../baseware/tests/fixtures/lease-driver.ts")}`, "--port", String((bridge.address() as AddressInfo).port),
     "--socket", basewareSocket, "--data-dir", join(directory, "device-records")], {
     cwd: directory, stdout: "pipe", stderr: "pipe",
   });
