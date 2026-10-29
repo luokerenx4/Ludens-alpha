@@ -362,6 +362,8 @@
     "noDescription": "No description",
     "taskCol": "Task",
     "versionCol": "Version digest",
+    "taskDigest": "Content digest",
+    "openTask": "Open task in Benchmark",
     "catalogFailed": "Could not refresh the workspace list.",
     "retryCatalog": "Retry workspace list",
     "retryRead": "Retry read",
