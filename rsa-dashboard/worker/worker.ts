@@ -10,7 +10,7 @@ import { docGroups, readDoc } from "../lib/docs";
 import { petState, setPetTarget, recordPetConsumer } from "../lib/pet-state";
 import { closeLogIndexes, indexCacheStats } from "../lib/log-index";
 import { workerFailure, type DashboardMethods, type DashboardMethod, type WorkerRequest, type WorkerResponse } from "../lib/dashboard-protocol";
-import { perceptionSettings, updatePerceptionSettings } from "../lib/perception-config";
+import { perceptionSettings, updatePerceptionSettings, perceptionRuntime } from "../lib/perception-config";
 import { closeArchiveBuilds } from "../lib/cold-build";
 import { workspaceSettings, updateWorkspaceRoot, openWorkspace, removeWorkspace, createWorkspace } from "../lib/workspaces";
 const port = parentPort!;
@@ -37,8 +37,9 @@ const handlers: { [K in DashboardMethod]: (args: DashboardMethods[K]["args"], si
   docGroups: ([root, lang]) => docGroups(root, lang),
   readDoc: ([id, root, lang]) => readDoc(id, root, lang),
   stop: ([project, run, epoch]) => stopRun(project, run, epoch),
-  perceptionSettings: ([project]) => perceptionSettings(project),
-  updatePerceptionSettings: ([project, patch]) => updatePerceptionSettings(project, patch),
+  perceptionSettings: ([project, workspace]) => perceptionSettings(project, workspace),
+  updatePerceptionSettings: ([project, patch, workspace]) => updatePerceptionSettings(project, patch, workspace),
+  perceptionRuntime: ([project, workspace]) => perceptionRuntime(project, workspace),
   petState: () => petState(),
   petTarget: ([project, ifUnset]) => setPetTarget(project, ifUnset),
   petConsumer: ([input]) => recordPetConsumer(input),

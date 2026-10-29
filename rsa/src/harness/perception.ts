@@ -89,7 +89,14 @@ export class PerceptionRuntime {
     this.clock = options.clock ?? { id: basename(options.runDir), now: () => performance.now() };
   }
 
-  status(): PerceptionStatus { return { ...this.current }; }
+  status(): PerceptionStatus {
+    // stop/reload can spend time flushing the old writer. Its last persisted
+    // event may still say ready after shutdown began; that is no longer a
+    // current sampler observation. Keep history as last-loaded evidence.
+    if (this.current.state === "ready" && (!this.worker || !this.isCurrent(this.worker)))
+      return { ...this.current, state: "stopped", pid: undefined };
+    return { ...this.current };
+  }
 
   reload(trace: EventTrace = {}): Promise<PerceptionStatus> {
     const operation = this.transition.then(() => this.replace(trace));
