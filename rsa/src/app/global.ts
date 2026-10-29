@@ -18,7 +18,8 @@ rsa workspace import <directory> [--legacy-state <directory>] [--previous-worksp
 
 LUDENS_HOME selects the global directory (default ~/.ludens).
 New workspaces use its configured workspaceRoot; existing workspace settings do not change.
-open registers an existing workspace; forget removes only its registry entry.
+open registers an existing workspace; forget clears its matching pet follow target and removes its registry entry.
+forget keeps workspace files and services; if target cleanup fails, registration is retained.
 --new-id makes a copied directory independent and starts a new session, retaining archived history.
 import explicitly brings old workspace sessions and skill versions into the workspace.
 Stop the workspace's host and Baseware before import or --new-id; the emulator can remain open.`;

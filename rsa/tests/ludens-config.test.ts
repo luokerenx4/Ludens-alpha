@@ -162,6 +162,39 @@ test("workspace identity survives moves and index loss; unavailable and forgotte
   } finally { await f.close(); }
 });
 
+test("new-id checks owned target cleanup before changing identity or resume state", async () => {
+  const f = await fixture();
+  try {
+    const original = join(f.root, "original"), copied = join(f.root, "copied");
+    await mkdir(original);
+    const identity = await ensureWorkspaceIdentity(original);
+    await registerWorkspace(original, f.home);
+    const selector = join(original, ".rsa/shiori/current-session.json");
+    await mkdir(join(original, ".rsa/shiori"), { recursive: true });
+    await writeFile(selector, JSON.stringify({ sessionFile: "sessions/keep.jsonl" }));
+    const identityPath = join(original, ".rsa/workspace.json"), registration = join(f.home, `registry/${identity.id}.json`);
+    const before = await Promise.all([identityPath, selector, registration].map(path => readFile(path, "utf8")));
+    await mkdir(join(f.home, "pet"));
+    const targetPath = join(f.home, "pet/target.json"); await writeFile(targetPath, "{");
+    const failed = await f.run("workspace", "open", original, "--new-id");
+    expect(failed.code).not.toBe(0); expect(failed.stderr).toContain("仍在列表中");
+    expect(await Promise.all([identityPath, selector, registration].map(path => readFile(path, "utf8")))).toEqual(before);
+    // Even a malformed shared target is irrelevant when renewing a copy that
+    // does not own the original registration. No original state may change.
+    await cp(original, copied, { recursive: true });
+    expect((await f.run("workspace", "open", copied, "--new-id")).code).toBe(0);
+    expect(await Promise.all([identityPath, selector, registration].map(path => readFile(path, "utf8")))).toEqual(before);
+    expect(await readFile(targetPath, "utf8")).toBe("{");
+    await writeFile(targetPath, JSON.stringify({ project: identity.id, workspace: original, revision: "fixture", updatedAt: new Date().toISOString() }));
+    const recovered = await f.run("workspace", "open", original, "--new-id");
+    expect(recovered.code, recovered.stderr).toBe(0);
+    expect((await readWorkspaceIdentity(original)).id).not.toBe(identity.id);
+    expect(await Bun.file(selector).exists()).toBe(false);
+    expect(await Bun.file(registration).exists()).toBe(false);
+    expect(JSON.parse(await readFile(targetPath, "utf8"))).toBeNull();
+  } finally { await f.close(); }
+});
+
 test("independent copies require a new identity and retain explicit archive ownership", async () => {
   const f = await fixture();
   try {

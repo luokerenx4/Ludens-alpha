@@ -44,7 +44,7 @@
     },
     "settings": {
       "title": "Global Settings",
-      "description": "Ludens Pet companion preferences and global console settings; per-workspace settings live on their own pages."
+      "description": "Preferences for this console, with optional desktop companion controls. Workspace options live on their own pages."
     },
     "dev": {
       "title": "How It Works",
@@ -60,8 +60,7 @@
     "languageDescription": "Console display language. Follows your browser by default.",
     "languageEnglish": "English",
     "languageChinese": "中文",
-    "intro": "Global settings for companion display, sound, and follow preferences; which workspace to follow can also be switched in the sidebar card.",
-    "consoleDescription": "Live refresh toggles stay in the run page header as view state, not global preferences; more console settings will be listed here as they arrive.",
+    "consoleDescription": "Display preferences for this console. Workspace options live on their own pages.",
     "consoleTitle": "Console"
   },
   "perceptionSettings": {
@@ -140,7 +139,14 @@
       "following": "Following",
       "waitingRun": "Waiting for workspace run"
     },
-    "unselected": "No workspace selected"
+    "unselected": "No workspace selected",
+    "targetUnknown": "Follow target not yet known",
+    "readUnavailable": "Could not read the follow target.",
+    "readingTarget": "Reading follow target…",
+    "showingLastTarget": "Showing the last known follow target.",
+    "technicalDetails": "Technical details",
+    "retryRead": "Retry read",
+    "followWriteFailed": "Could not confirm the follow change. Read again to check the current target."
   },
   "archiveBuild": {
     "updateFailed": "Failed to update archive state",
@@ -289,10 +295,10 @@
     "readOnlyRefreshHint": "Refresh reads the capability directory; driver verification stays unchanged."
   },
   "petSettings": {
-    "title": "Ludens · Desktop Companion",
-    "subtitle": "What is happening, gently on your desktop.",
+    "title": "Ludens Pet",
+    "subtitle": "Choose a followed workspace here. Desktop appearance, notifications, and sound are optional.",
     "connectedBadge": "Desktop connected",
-    "browserBadge": "Browser mode",
+    "browserBadge": "Browser window",
     "followSwitchTitle": "Switch the followed workspace here",
     "followSwitchDesc": "Browser and desktop share Ludens Pet's follow target. Appearance, notification, and sound preferences must be set from the desktop window opened via the Ludens Pet tray.",
     "companionTitle": "Desktop companion",
@@ -334,7 +340,29 @@
     "previewLabel": "Preview",
     "restoreDefaultSound": "Restore default sound",
     "savingLabel": "Saving…",
-    "footerNote": "Appearance, notification, and sound preferences live in this machine's Ludens Pet profile and never change workspace or agent behavior."
+    "footerNote": "Appearance, notification, and sound preferences live in this machine's Ludens Pet profile and never change workspace or agent behavior.",
+    "optionalBadge": "Optional",
+    "desktopPreferences": "Desktop preferences",
+    "checkingAvailability": "Checking this window…",
+    "desktopWindowBadge": "Desktop controls available",
+    "desktopAvailableHint": "This window provides desktop controls. Each section reads its settings separately.",
+    "desktopUnavailableHint": "Appearance, notifications, and sound are available in the console opened from the Ludens Pet tray. Following a workspace still works here.",
+    "checkAvailability": "Check availability",
+    "availabilityScope": "Checks only whether this window has desktop controls. It does not launch the desktop app.",
+    "checkedAvailable": "This window has desktop controls. Use Read again in a section to read its settings.",
+    "checkedUnavailable": "This window has no desktop controls. Browser preferences and workspace following remain available.",
+    "readingSettings": "Reading…",
+    "retryRead": "Retry read",
+    "readAgain": "Read again",
+    "readValues": "Loaded settings",
+    "unknownValues": "No settings have been read yet.",
+    "readFailed": "Could not read these desktop settings.",
+    "showingCached": "Last read values are shown. Read again before changing them.",
+    "technicalDetails": "Technical details",
+    "invalidSound": "Choose a WAV, MP3, or OGG file no larger than 2 MB and 10 seconds.",
+    "writeUnconfirmed": "The change could not be confirmed. Read settings again before making another change.",
+    "previewFailed": "Could not play this audio.",
+    "noSoundFile": "No audio file selected."
   },
   "activityFeed": {
     "copyAria": "Copy full content",
@@ -1178,7 +1206,19 @@
     "loadFailed": "Could not load workspaces",
     "retry": "Try again",
     "loading": "Loading your workspaces…",
-    "retryHint": "Try again to load your workspace list."
+    "retryHint": "Try again to load your workspace list.",
+    "refreshList": "Refresh list",
+    "refreshing": "Reading…",
+    "locationSavedTitle": "Default location saved",
+    "refreshFailed": "Could not refresh the workspace list",
+    "committedReadFailed": "Your change is saved. Retry the read to update the displayed information.",
+    "technicalDetails": "Technical details",
+    "catalogRefreshFailed": "Workspace selector could not refresh",
+    "catalogRetryHint": "Retry the read to update the workspace selector.",
+    "retryCatalog": "Retry selector read",
+    "removeNotCompleted": "Workspace was not removed",
+    "removeBlockedHint": "Its desktop follow target could not be cleared safely. The workspace remains registered. Review the error and try removing it again.",
+    "alreadyRemoved": "This workspace was already absent from the registry. The list is now updated."
   },
   "workspaceSetup": {
     "folderName": "Folder name",

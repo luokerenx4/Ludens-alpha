@@ -461,7 +461,7 @@ export default function Dashboard() {
           </div>
         </header>
         <main className="page-content">
-          {view !== "workspaces" && view !== "docs" && (view !== "replay" || entry !== "ready") && <div className="page-heading">
+          {view !== "workspaces" && view !== "docs" && (view !== "replay" || entry !== "ready") && <div className={"page-heading" + (view === "settings" ? " mx-auto w-full max-w-5xl" : "")}>
             <div>
               <h1>{benchmarkCases ? t("benchmark.casesTitle") : t(`views.${view}.title`)}</h1>
               <p>
@@ -534,7 +534,8 @@ export default function Dashboard() {
             </Button>
           </section>}
           {view === "workspaces" ? (
-            <WorkspacesView onChanged={refreshCatalog} onOpen={id => navigateUrl("/?" + new URLSearchParams({ view: "caps", project: id }))} />
+            <WorkspacesView onChanged={refreshCatalog} onOpen={id => navigateUrl("/?" + new URLSearchParams({ view: "caps", project: id }))}
+              catalogError={catalogError} catalogLoading={catalogLoading} onRetryCatalog={refreshCatalog} />
           ) : view === "settings" ? (
             <SettingsView follow={pet} projects={projects} />
           ) : view === "dev" ? (

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, rm, realpath } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readdir, writeFile, rm, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
@@ -17,6 +17,7 @@ test("Pet follows registered workspaces without a device; choice persists withou
     await mkdir(workspace);
     await registerFixture(root, "registered", workspace);
     assert.deepEqual(await petState(root), { target: null, consumer: null, connected: false });
+    assert.equal((await readdir(root)).includes("pet"), false, "an empty read does not create pet state or lock directories");
     await assert.rejects(setPetTarget(workspace, false, root), /未找到/);
     await assert.rejects(setPetTarget("../registered", false, root), /未找到/);
     const first = await setPetTarget("registered", false, root);
@@ -30,6 +31,18 @@ test("Pet follows registered workspaces without a device; choice persists withou
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("ordinary pet polling does not need writable target state", { skip: process.getuid?.() === 0 }, async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "pet-read-only-")));
+  const pet = join(root, "pet");
+  try {
+    await registerFixture(root, "selected", join(root, "workspace"));
+    const selected = await setPetTarget("selected", false, root);
+    await chmod(pet, 0o500);
+    assert.deepEqual(await petState(root), selected);
+    assert.deepEqual(await readdir(pet), ["target.json"], "polling leaves no lock or temporary files");
+  } finally { await chmod(pet, 0o700).catch(() => {}); await rm(root, { recursive: true, force: true }); }
 });
 
 test("Pet heartbeat reports connection independently from target application and expires", async () => {

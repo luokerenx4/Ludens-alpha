@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ArrowRight, Check, CheckCircle2, Copy, Folder, FolderOpen, Plus, Search, X } from "lucide-react";
+import { ArrowRight, Check, CheckCircle2, Copy, Folder, FolderOpen, Plus, RefreshCw, Search, X } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,11 +10,11 @@ import { Dialog, DialogClose, DialogContent, DialogDescription, DialogHeader, Di
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { WorkspaceCreateForm } from "@/components/workspace-create-form";
-import type { CreateWorkspaceInput, WorkspaceSettings } from "../lib/workspaces";
+import type { CreateWorkspaceInput, WorkspaceRootResult, WorkspaceRemovalResult, WorkspaceSettings } from "../lib/workspaces";
 import type { WorkspaceRegistration } from "../../shared/ludens";
 import { useLocale, useTranslations } from "@/lib/locale";
+import { useRetryFocus } from "./use-retry-focus";
 
-type Entry = WorkspaceSettings["workspaces"][number];
 type DialogKind = "create" | "register" | "root";
 type Completion = { kind: "created" | "registered"; entry: WorkspaceRegistration };
 
@@ -24,11 +24,14 @@ async function request<T>(fallback: string, method = "GET", body?: unknown, sign
     ...(body === undefined ? {} : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
   });
   const value = await response.json();
-  if (!response.ok) throw new Error(value.error ?? fallback);
+  if (!response.ok) throw Object.assign(new Error(value.error ?? fallback), { code: value.code });
   return value;
 }
 
-export function WorkspacesView({ onChanged, onOpen }: { onChanged(): void; onOpen(id: string): void }) {
+export function WorkspacesView({ onChanged, onOpen, catalogError, catalogLoading, onRetryCatalog }: {
+  onChanged(): void; onOpen(id: string): void;
+  catalogError?: string; catalogLoading?: boolean; onRetryCatalog?(): void;
+}) {
   const t = useTranslations("workspaceLibrary");
   const { locale } = useLocale();
   const [settings, setSettings] = useState<WorkspaceSettings | null>(null);
@@ -43,8 +46,10 @@ export function WorkspacesView({ onChanged, onOpen }: { onChanged(): void; onOpe
   const [existingPath, setExistingPath] = useState("");
   const [workspaceRoot, setWorkspaceRoot] = useState("");
   const [completion, setCompletion] = useState<Completion | null>(null);
-  const [removed, setRemoved] = useState<Entry | null>(null);
-  const [rootSaved, setRootSaved] = useState(false);
+  const [removed, setRemoved] = useState<WorkspaceRegistration | null>(null);
+  const [alreadyRemoved, setAlreadyRemoved] = useState(false);
+  const [savedRoot, setSavedRoot] = useState<string | null>(null);
+  const [removalBlocked, setRemovalBlocked] = useState(false);
   const [copied, setCopied] = useState<"idle" | "done" | "error">("idle");
   const trigger = useRef<HTMLElement | null>(null);
   const [lastDialog, setLastDialog] = useState<DialogKind>("create");
@@ -56,20 +61,22 @@ export function WorkspacesView({ onChanged, onOpen }: { onChanged(): void; onOpe
   const busy = useRef(false);
   const readVersion = useRef(0);
   const readController = useRef<AbortController | null>(null);
+  const readFocus = useRetryFocus(loading, loadError);
+  const catalogFocus = useRetryFocus(!!catalogLoading, catalogError);
 
   useEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; };
   }, []);
   useEffect(() => {
+    if (busy.current) return;
     const controller = new AbortController();
     readController.current = controller;
     const version = ++readVersion.current;
     setLoading(true);
-    setLoadError("");
     void request<WorkspaceSettings>(t("operationFailed"), "GET", undefined, controller.signal)
       .then(value => {
-        if (version === readVersion.current && !controller.signal.aborted) setSettings(value);
+        if (version === readVersion.current && !controller.signal.aborted) { setSettings(value); setLoadError(""); }
       })
       .catch(error => {
         if (!controller.signal.aborted && version === readVersion.current) setLoadError(String(error.message ?? error));
@@ -103,16 +110,21 @@ export function WorkspacesView({ onChanged, onOpen }: { onChanged(): void; onOpe
     setPending(label);
     setActionError("");
     setPageError("");
+    setRemovalBlocked(false);
     try {
       const value = await task();
       if (mounted.current) {
+        // A locale change may have started a read during this write. The
+        // committed result must win over every earlier directory snapshot.
+        readVersion.current++;
+        readController.current?.abort();
         accept(value);
-        setLoadError("");
         onChanged();
       }
     } catch (error) {
       if (mounted.current) {
         const message = error instanceof Error ? error.message : String(error);
+        setRemovalBlocked((error as { code?: string })?.code === "WORKSPACE_REMOVAL_BLOCKED");
         if (label === "create" || label === "register" || label === "root") setActionError(message);
         else setPageError(message);
       }
@@ -129,7 +141,8 @@ export function WorkspacesView({ onChanged, onOpen }: { onChanged(): void; onOpe
     ] }));
     setFilter("");
     setRemoved(null);
-    setRootSaved(false);
+    setAlreadyRemoved(false);
+    setSavedRoot(null);
     setCopied("idle");
     setCompletion({ kind, entry });
     focusCompletion.current = true;
@@ -146,6 +159,7 @@ export function WorkspacesView({ onChanged, onOpen }: { onChanged(): void; onOpe
   };
   const matches = settings?.workspaces.filter(entry => `${entry.name}\n${entry.workspace}`.toLocaleLowerCase().includes(filter.trim().toLocaleLowerCase())) ?? [];
   const hasEntries = !!settings?.workspaces.length;
+  const committed = !!(savedRoot || removed || alreadyRemoved || completion);
   const activeDialog = dialog ?? lastDialog;
   const dialogTitle = activeDialog === "create" ? t("createTitle") : activeDialog === "register" ? t("addTitle") : t("locationTitle");
 
@@ -155,15 +169,38 @@ export function WorkspacesView({ onChanged, onOpen }: { onChanged(): void; onOpe
         <header className="flex flex-wrap items-start justify-between gap-4 pb-1">
           <div className="space-y-2"><h1>{t("title")}</h1><p className="text-sm leading-relaxed text-muted-foreground">{t("description")}</p></div>
           <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="ghost" aria-label={t(loading ? "refreshing" : "refreshList")} title={t("refreshList")} aria-disabled={loading || !!pending} className="aria-disabled:opacity-50" onClick={() => {
+              if (loading || busy.current) return;
+              setLoadRevision(value => value + 1); onRetryCatalog?.();
+            }}><RefreshCw /><span className="hidden sm:inline">{t(loading ? "refreshing" : "refreshList")}</span></Button>
             <Button type="button" variant="outline" disabled={!settings || !!pending} onClick={event => openDialog("register", event.currentTarget)}><FolderOpen />{t("addExisting")}</Button>
             <Button type="button" disabled={!settings || !!pending} onClick={event => openDialog("create", event.currentTarget)}><Plus />{t("newWorkspace")}</Button>
           </div>
         </header>
 
-        {loadError && <Alert variant="destructive"><AlertTitle>{t("loadFailed")}</AlertTitle><AlertDescription>
-          <p>{loadError}</p><Button type="button" size="sm" variant="outline" disabled={loading || !!pending} onClick={() => setLoadRevision(value => value + 1)}>{t("retry")}</Button>
+        {savedRoot && <Alert role="status" className="border-success/35 bg-success/5"><CheckCircle2 className="text-success" /><AlertTitle className="line-clamp-none">{t("locationSavedTitle")}</AlertTitle><AlertDescription>
+          <p>{t("locationSaved")}</p><p className="break-all font-mono text-xs">{savedRoot}</p>
         </AlertDescription></Alert>}
-        {pageError && <Alert variant="destructive"><AlertDescription>{pageError}</AlertDescription></Alert>}
+        {loadError && <Alert variant={committed ? "default" : "destructive"} className={committed ? "border-primary/35 bg-primary/5" : undefined}><AlertTitle className="line-clamp-none">{t(committed ? "refreshFailed" : "loadFailed")}</AlertTitle><AlertDescription>
+          {committed && <p>{t("committedReadFailed")}</p>}
+          <details className="text-xs"><summary>{t("technicalDetails")}</summary><p className="mt-2 break-all">{loadError}</p></details>
+          <Button type="button" size="sm" variant="outline" aria-disabled={loading || !!pending} className="aria-disabled:opacity-50" onClick={event => {
+            if (loading || busy.current) return;
+            readFocus.remember(event.currentTarget); setLoadRevision(value => value + 1);
+          }}>{t(loading ? "refreshing" : "retry")}</Button>
+        </AlertDescription></Alert>}
+        {catalogError && <Alert className="border-primary/35 bg-primary/5"><AlertTitle className="line-clamp-none">{t("catalogRefreshFailed")}</AlertTitle><AlertDescription>
+          <p>{t(committed ? "committedReadFailed" : "catalogRetryHint")}</p>
+          <details className="text-xs"><summary>{t("technicalDetails")}</summary><p className="mt-2 break-all">{catalogError}</p></details>
+          <Button type="button" variant="outline" size="sm" aria-disabled={catalogLoading || !!pending} className="aria-disabled:opacity-50" onClick={event => {
+            if (catalogLoading || busy.current) return;
+            catalogFocus.remember(event.currentTarget); onRetryCatalog?.();
+          }}>{t(catalogLoading ? "refreshing" : "retryCatalog")}</Button>
+        </AlertDescription></Alert>}
+        {pageError && <Alert variant="destructive"><AlertTitle className="line-clamp-none">{t(removalBlocked ? "removeNotCompleted" : "operationFailed")}</AlertTitle><AlertDescription>
+          <p>{removalBlocked ? t("removeBlockedHint") : pageError}</p>
+          {removalBlocked && <details className="text-xs"><summary>{t("technicalDetails")}</summary><p className="mt-2 break-all">{pageError}</p></details>}
+        </AlertDescription></Alert>}
         {completion && <Card ref={resultCard} role="region" tabIndex={-1} className="gap-3 border-success/35 bg-success/5 outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label={t(completion.kind)}>
           <CardHeader className="flex flex-row items-start justify-between gap-3">
             <div className="flex min-w-0 gap-3"><CheckCircle2 className="mt-0.5 size-5 shrink-0 text-success" /><div className="min-w-0 space-y-1">
@@ -183,14 +220,15 @@ export function WorkspacesView({ onChanged, onOpen }: { onChanged(): void; onOpe
         </Card>}
         {removed && <Alert ref={removedNotice} tabIndex={-1} role="status"><AlertDescription className="flex w-full flex-wrap items-center justify-between gap-3">
           <span><strong className="font-medium text-foreground">{removed.name}</strong> · {t("removedHint")}</span>
-          {removed.available && <Button ref={undoButton} type="button" variant="outline" size="sm" disabled={!!pending} onClick={() => void mutate("undo", () => request<WorkspaceRegistration>(t("operationFailed"), "POST", { action: "register", workspace: removed.workspace }), entry => {
+          <Button ref={undoButton} type="button" variant="outline" size="sm" disabled={!!pending} onClick={() => void mutate("undo", () => request<WorkspaceRegistration>(t("operationFailed"), "POST", { action: "register", workspace: removed.workspace }), entry => {
             acceptEntry(entry, "registered");
             requestAnimationFrame(() => { resultCard.current?.focus(); resultCard.current?.scrollIntoView({ block: "nearest" }); focusCompletion.current = false; });
-          })}>{pending === "undo" ? t("restoring") : t("undo")}</Button>}
+          })}>{pending === "undo" ? t("restoring") : t("undo")}</Button>
         </AlertDescription></Alert>}
+        {alreadyRemoved && <Alert ref={removedNotice} tabIndex={-1} role="status"><AlertDescription>{t("alreadyRemoved")}</AlertDescription></Alert>}
 
         {!settings ? <Card><CardContent className="py-12 text-center text-sm text-muted-foreground" role="status">{loading ? t("loading") : t("retryHint")}</CardContent></Card> : <>
-          <Card className="gap-0">
+          <Card ref={node => { readFocus.target.current = node; catalogFocus.target.current = node; }} tabIndex={-1} aria-label={t("collectionTitle")} className="gap-0 outline-none focus-visible:ring-2 focus-visible:ring-ring">
             {hasEntries ? <>
               <CardHeader className="flex flex-col gap-4 pb-5 sm:flex-row sm:items-center sm:justify-between">
                 <CardTitle className="flex items-center gap-3 text-base">{t("collectionTitle")}<Badge variant="secondary">{settings.workspaces.length}</Badge></CardTitle>
@@ -206,8 +244,9 @@ export function WorkspacesView({ onChanged, onOpen }: { onChanged(): void; onOpe
                       <div className="flex w-full flex-wrap items-center gap-2 min-[1200px]:w-auto">
                         <Button type="button" variant="outline" size="sm" disabled={!!pending || !entry.available} onClick={() => onOpen(entry.id)}>{t("open")}<ArrowRight /></Button>
                         {!entry.available && <Button type="button" variant="outline" size="sm" disabled={!!pending} onClick={event => openDialog("register", event.currentTarget, entry.workspace)}>{t("reconnect")}</Button>}
-                        <Button type="button" size="sm" variant="ghost" className="text-muted-foreground" disabled={!!pending} onClick={() => void mutate(entry.id, () => request<WorkspaceSettings>(t("operationFailed"), "DELETE", { id: entry.id }), value => {
-                          setSettings(value); setRemoved(entry); setCompletion(null); setRootSaved(false);
+                        <Button type="button" size="sm" variant="ghost" className="text-muted-foreground" disabled={!!pending} onClick={() => void mutate(entry.id, () => request<WorkspaceRemovalResult>(t("operationFailed"), "DELETE", { id: entry.id }), value => {
+                          setSettings(previous => previous && ({ ...previous, workspaces: previous.workspaces.filter(item => item.id !== entry.id) }));
+                          setRemoved(value.removed); setAlreadyRemoved(!value.removed); setCompletion(null); setSavedRoot(null);
                           requestAnimationFrame(() => (undoButton.current ?? removedNotice.current)?.focus());
                         })}>{pending === entry.id ? t("removing") : t("remove")}</Button>
                       </div>
@@ -228,7 +267,6 @@ export function WorkspacesView({ onChanged, onOpen }: { onChanged(): void; onOpe
             <Folder aria-hidden="true" className="size-5 shrink-0 text-muted-foreground" /><div className="min-w-0 flex-1 basis-48 space-y-1.5"><h2 className="text-sm font-semibold">{t("locationTitle")}</h2><p className="break-all font-mono text-xs text-muted-foreground">{settings.config.workspaceRoot}</p><p className="text-xs leading-relaxed text-muted-foreground">{t("locationHint")}</p></div>
             <Button type="button" size="sm" variant="outline" disabled={!!pending} onClick={event => openDialog("root", event.currentTarget)}>{t("change")}</Button>
           </CardContent></Card>
-          {rootSaved && <p role="status" className="text-sm text-success">{t("locationSaved")}</p>}
         </>}
       </section>
       <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-xl bg-card sm:max-w-xl" showCloseButton={false}
@@ -252,7 +290,9 @@ export function WorkspacesView({ onChanged, onOpen }: { onChanged(): void; onOpe
         </form>}
         {activeDialog === "root" && <form className="grid gap-5" onSubmit={event => {
           event.preventDefault();
-          void mutate("root", () => request<WorkspaceSettings>(t("operationFailed"), "PUT", { workspaceRoot: workspaceRoot.trim() }), value => { setSettings(value); setRootSaved(true); setDialog(null); });
+          void mutate("root", () => request<WorkspaceRootResult>(t("operationFailed"), "PUT", { workspaceRoot: workspaceRoot.trim() }), value => {
+            setSettings(previous => previous && ({ ...previous, config: value.config })); setSavedRoot(value.config.workspaceRoot); setDialog(null);
+          });
         }}>
           <div className="space-y-2"><Label htmlFor="workspace-root">{t("locationInput")}</Label><Input id="workspace-root" required value={workspaceRoot} disabled={!!pending} onChange={event => setWorkspaceRoot(event.target.value)} aria-describedby="workspace-root-hint" placeholder="/Users/you/Ludens" autoComplete="off" spellCheck={false} /><p id="workspace-root-hint" className="text-xs leading-relaxed text-muted-foreground">{t("locationHint")}</p></div>
           {actionError && <Alert variant="destructive"><AlertDescription>{actionError}</AlertDescription></Alert>}

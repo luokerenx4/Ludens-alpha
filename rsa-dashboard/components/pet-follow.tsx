@@ -10,6 +10,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Label } from "@/components/ui/label";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { useTranslations } from "@/lib/locale";
+import { useRetryFocus } from "./use-retry-focus";
 import "./pet-settings.css";
 
 async function request(fallback: string, init?: RequestInit): Promise<PetState> {
@@ -24,12 +25,18 @@ export function usePetFollow() {
   const t = useTranslations("petFollow");
   const [state, setState] = useState<PetState | null>(null);
   const [error, setError] = useState("");
+  const [errorKind, setErrorKind] = useState<"read" | "write">("read");
   const [pending, setPending] = useState(false);
+  const [reading, setReading] = useState(true);
+  const [revision, setRevision] = useState(0);
   const version = useRef(0), busy = useRef(false);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
+      setReading(true);
       const started = version.current;
       try {
         const value = await request(t("connectFailed"), { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(8000)]) });
@@ -38,14 +45,14 @@ export function usePetFollow() {
           setError("");
         }
       } catch (e) {
-        if (!controller.signal.aborted && started === version.current) setError(String(e));
+        if (!controller.signal.aborted && started === version.current && !busy.current) { setError(String(e)); setErrorKind("read"); }
       } finally {
-        if (!controller.signal.aborted) timer = setTimeout(poll, 2500);
+        if (!controller.signal.aborted) { setReading(false); timer = setTimeout(poll, 2500); }
       }
     };
     void poll();
     return () => { controller.abort(); clearTimeout(timer); };
-  }, []);
+  }, [revision, t]);
   const follow = async (project: string | null) => {
     if (busy.current) return;
     busy.current = true;
@@ -53,20 +60,23 @@ export function usePetFollow() {
     setPending(true);
     setError("");
     try {
-      setState(await request(t("connectFailed"), {
+      const next = await request(t("connectFailed"), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ project }),
         signal: AbortSignal.timeout(8000),
-      }));
+      });
+      version.current++;
+      if (mounted.current) setState(next);
     } catch (e) {
-      setError(String(e));
+      version.current++;
+      if (mounted.current) { setError(String(e)); setErrorKind("write"); }
     } finally {
       busy.current = false;
-      setPending(false);
+      if (mounted.current) setPending(false);
     }
   };
-  return { state, pending, error, follow };
+  return { state, pending, reading, error, errorKind, follow, refresh: () => { if (!busy.current) setRevision(value => value + 1); } };
 }
 export type PetFollow = ReturnType<typeof usePetFollow>;
 
@@ -85,7 +95,7 @@ export function PetFollowCard({
       </small></span>
       <span aria-hidden="true">↗</span>
     </Button>
-    <p title={target?.workspace}>{target ? workspaceLabel({ id: target.project, workspace: target.workspace }, t) : t("noFollowTarget")}</p>
+    <p title={target?.workspace}>{target ? workspaceLabel({ id: target.project, workspace: target.workspace }, t) : !follow.state ? t("targetUnknown") : t("noFollowTarget")}</p>
     {project?.workspace ? <Button type="button" variant="outline" size="sm" className="pet-follow-action h-auto px-1.5 py-2 text-[11px] whitespace-normal max-[680px]:px-3"
       disabled={follow.pending || !follow.state || selected}
       onClick={() => void follow.follow(project.id)}>
@@ -96,26 +106,27 @@ export function PetFollowCard({
 }
 
 export function PetFollowSettings({ follow, projects }: { follow: PetFollow; projects: Project[] }) {
-  const { state, pending, error } = follow;
+  const { state, pending, reading, error, errorKind } = follow;
   const t = useTranslations("petFollow");
   const target = state?.target;
   const options = projects.filter((project) => project.workspace);
+  const focus = useRetryFocus(reading, error);
   return <Card>
     <CardHeader>
       <CardTitle role="heading" aria-level={3}>{t("followTargetTitle")}</CardTitle>
       <CardDescription>{t("followTargetDescription")}</CardDescription>
     </CardHeader>
-    <CardContent className="space-y-4">
+    <CardContent ref={focus.target} tabIndex={-1} className="space-y-4 outline-none" aria-label={t("followTargetTitle")}>
       <div className="flex flex-wrap items-center gap-3" role="status">
         <Badge variant="outline" className="gap-2">
           <i className={"status-dot " + (state?.connected ? "online" : "")} />
           {error ? t("connectionIssue") : petStatus(state, t)}
         </Badge>
         <span className="min-w-0 break-all text-sm text-muted-foreground">
-          {target ? workspaceLabel({ id: target.project, workspace: target.workspace }, t) : t("followingNone")}
+          {target ? workspaceLabel({ id: target.project, workspace: target.workspace }, t) : !state ? t("targetUnknown") : t("followingNone")}
         </span>
       </div>
-      <div className="flex flex-col gap-3">
+      {state ? <div className="flex flex-col gap-3">
         <div className="space-y-1">
           <Label htmlFor="pet-follow-workspace">{t("followLabel")}</Label>
           <p id="pet-follow-help" className="text-xs leading-relaxed text-muted-foreground">{t("followHelp")}</p>
@@ -128,12 +139,19 @@ export function PetFollowSettings({ follow, projects }: { follow: PetFollow; pro
             <NativeSelectOption value={target.project}>{workspaceLabel({ id: target.project, workspace: target.workspace }, t)}{t("currentTargetSuffix")}</NativeSelectOption>}
           {options.map((project) => <NativeSelectOption key={project.id} value={project.id}>{workspaceLabel(project, t)}</NativeSelectOption>)}
         </NativeSelect>
-      </div>
+      </div> : <p className="text-xs leading-relaxed text-muted-foreground" role="status">{t(error ? "readUnavailable" : "readingTarget")}</p>}
       {target && <p className="text-xs leading-relaxed break-all text-muted-foreground">{target.workspace}</p>}
       {state && !state.connected && <p className="text-xs leading-relaxed text-muted-foreground">{t("desktopNotConnected")}</p>}
       {state?.connected && target && state.consumer?.workspace === target.workspace && state.consumer.error &&
         <Alert variant="destructive"><AlertDescription>{state.consumer.error}</AlertDescription></Alert>}
-      {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
+      {error && <Alert variant="destructive"><AlertDescription>
+        <p>{t(errorKind === "write" ? "followWriteFailed" : state ? "showingLastTarget" : "readUnavailable")}</p>
+        <details className="text-xs"><summary>{t("technicalDetails")}</summary><p className="mt-2 break-all">{error}</p></details>
+        <Button type="button" variant="outline" size="sm" aria-disabled={reading || pending} className="aria-disabled:opacity-50" onClick={event => {
+          if (reading || pending) return;
+          focus.remember(event.currentTarget); follow.refresh();
+        }}>{t(reading ? "readingTarget" : "retryRead")}</Button>
+      </AlertDescription></Alert>}
     </CardContent>
   </Card>;
 }
