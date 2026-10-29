@@ -2,13 +2,15 @@
 
 import { useEffect, useRef, useState } from "react";
 import { readArchiveJson, type ArchiveBuildState } from "../lib/archive-client";
+import { useTranslations } from "@/lib/locale";
 
-const stages: Record<string, string> = { queued: "等待整理", snapshot: "确定读取范围", events: "读取记录",
-  projections: "整理统计与活动", operations: "整理动作记录", write: "写入目录", ready: "准备就绪" };
+const stages: Record<string, string> = { queued: "stageQueued", snapshot: "stageSnapshot", events: "stageEvents",
+  projections: "stageProjections", operations: "stageOperations", write: "stageWrite", ready: "stageReady" };
 const mib = (bytes: number) => (bytes / 1048576).toFixed(1) + " MiB";
 
 /** Observes build state without starting a build or tying its lifetime to this component. */
 export function ArchiveBuild({ project, run, onReady }: { project: string; run: string; onReady(): void }) {
+  const t = useTranslations("archiveBuild");
   const [state, setState] = useState<ArchiveBuildState | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -49,23 +51,24 @@ export function ArchiveBuild({ project, run, onReady }: { project: string; run: 
       const response = await fetch("/api/run", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ project, run, action, buildId: state.id }), signal: abort.signal });
       const next = await response.json();
-      if (!response.ok) throw new Error(next.error ?? "无法更新整理状态");
+      if (!response.ok) throw new Error(next.error ?? t("updateFailed"));
       if (!abort.signal.aborted && currentScope.current === scope) { current.current = next; setState(next); }
     } catch (e) { if (!abort.signal.aborted && currentScope.current === scope) setError(String(e)); }
     finally { if (!abort.signal.aborted && currentScope.current === scope) setBusy(false); }
   }
 
-  if (!state || state.state === "ready") return error ? <p className="error-banner" role="alert">目录状态：{error}</p> : null;
+  if (!state || state.state === "ready") return error ? <p className="error-banner" role="alert">{t("statusPrefix")}{error}</p> : null;
   const working = state.state === "queued" || state.state === "building";
+  const stageKey = stages[state.stage ?? ""];
   return <div className="archive-build" role="status">
-    <div><strong>{working ? state.state === "queued" ? "等待整理历史目录" : "正在整理历史目录"
-      : state.state === "cancelled" ? "历史目录整理已取消" : "历史目录整理失败"}</strong>
-      <p>{working ? `${stages[state.stage ?? ""] ?? "整理记录"}${state.totalBytes ? ` · ${mib(state.bytes ?? 0)} / ${mib(state.totalBytes)}` : ""}${state.eventPosition ? ` · ${state.eventPosition.toLocaleString()} 条事件` : ""}`
-        : state.error ?? "可以重新整理，原始记录保持完整。"}</p>
+    <div><strong>{working ? state.state === "queued" ? t("waitingTitle") : t("buildingTitle")
+      : state.state === "cancelled" ? t("cancelledTitle") : t("failedTitle")}</strong>
+      <p>{working ? `${stageKey ? t(stageKey) : t("stageFallback")}${state.totalBytes ? ` · ${mib(state.bytes ?? 0)} / ${mib(state.totalBytes)}` : ""}${state.eventPosition ? ` · ${state.eventPosition.toLocaleString()}${t("eventsSuffix")}` : ""}`
+        : state.error ?? t("retryHint")}</p>
       {error && <p role="alert">{error}</p>}
     </div>
     <button type="button" className="text-button" disabled={busy} onClick={() => void control(working ? "cancel" : "retry")}>
-      {busy ? "正在处理…" : working ? "取消整理" : "重新整理"}
+      {busy ? t("processing") : working ? t("cancel") : t("retry")}
     </button>
   </div>;
 }

@@ -1,22 +1,39 @@
 "use client";
 import { PetSettings } from "@/components/pet-settings";
-import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardDescription, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { useLocale, useTranslations } from "@/lib/locale";
 import type { Project } from "@/lib/types";
 import type { PetFollow } from "@/components/pet-follow";
 
 /** 全局设置页：陪伴行为与控制台偏好；工作区运行信息在各自页面查看。 */
 export function SettingsView({ follow, projects }: { follow: PetFollow; projects: Project[] }) {
+  const { locale, setLocale } = useLocale();
+  const t = useTranslations("settings");
   return (
     <section className="mx-auto flex w-full max-w-4xl flex-col gap-5">
       <p className="text-sm leading-relaxed text-muted-foreground">
-        陪伴显示、声音与跟随偏好的全局设置；跟随哪个工作区也可在侧栏卡片里切换。
+        {t("intro")}
       </p>
       <PetSettings follow={follow} projects={projects} />
       <Card>
         <CardHeader>
-          <CardTitle role="heading" aria-level={2}>控制台</CardTitle>
+          <CardTitle role="heading" aria-level={2}>{t("language")}</CardTitle>
+          <CardDescription>{t("languageDescription")}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <NativeSelect value={locale} onChange={event => setLocale(event.target.value === "zh" ? "zh" : "en")}
+            aria-label={t("language")}>
+            <NativeSelectOption value="en">{t("languageEnglish")}</NativeSelectOption>
+            <NativeSelectOption value="zh">{t("languageChinese")}</NativeSelectOption>
+          </NativeSelect>
+        </CardContent>
+      </Card>
+       <Card>
+        <CardHeader>
+          <CardTitle role="heading" aria-level={2}>{t("consoleTitle")}</CardTitle>
           <CardDescription>
-            界面实时刷新开关仍保留在运行页头部，属于观看状态而非全局偏好；更多控制台设置集中到这里时会在此列出。
+            {t("consoleDescription")}
           </CardDescription>
         </CardHeader>
       </Card>

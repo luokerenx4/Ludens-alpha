@@ -13,6 +13,7 @@ const mediaFile = (...args: Parameters<typeof readMediaFile>) => awaitArchive(()
 import { eventObservations, perceptionStatus } from "../lib/observation-events";
 import { mediaFailureMessage, observationTime, perceptionAgeMs, samplingDurationMs, selectObservations } from "../components/observation-model";
 import { ObservationPanel } from "../components/run-visuals";
+import { LocaleProvider } from "../lib/locale";
 import { projectTelemetry } from "../lib/telemetry";
 import type { Event, PerceptionSnapshot, RunData } from "../lib/types";
 
@@ -151,14 +152,15 @@ test("range inputs retain each record's time and generation; continuous samples 
   const subset = selectObservations(result.observations, result.calls[1]);
   assert.deepEqual(subset.inputs.map(o => o.id), ["new-image"]);
   assert.equal(perceptionAgeMs(subset.observation?.perception), 4075);
-  const html = renderToStaticMarkup(createElement(ObservationPanel, {
+  const panel1 = {
     data: { ...result, project: "test", run: "test" } as RunData,
     call, selectedImage: "old-image", onImage() {},
-  }));
-  assert.match(html, /记录时间<\/dt><dd title="1970-01-01T00:00:00.125Z">08:00:00.125/);
-  assert.match(html, /采样耗时<\/dt><dd title="old-clock">15.0 ms/);
-  assert.match(html, /记录代次<\/dt><dd title="old-generation">/);
-  assert.match(html, /来源时刻<\/dt><dd title="1969-12-31T23:59:59.900Z">07:59:59.900/);
+  };
+  const html = renderToStaticMarkup(createElement(LocaleProvider, null, createElement(ObservationPanel, panel1)));
+  assert.match(html, /Recorded at<\/dt><dd title="1970-01-01T00:00:00.125Z">08:00:00.125/);
+  assert.match(html, /Sampling time<\/dt><dd title="old-clock">15.0 ms/);
+  assert.match(html, /Record generation<\/dt><dd title="old-generation">/);
+  assert.match(html, /Source time<\/dt><dd title="1969-12-31T23:59:59.900Z">07:59:59.900/);
   assert.match(html, /<small>08:00:00.125<\/small>/);
   assert.match(html, /<small>08:00:00.925<\/small>/);
   assert.doesNotMatch(html, /producer-only/);
@@ -299,11 +301,11 @@ test("metadata-only deliveries render as unrecorded without broken media request
     event("model_start", { observations: ["input"] }, { modelCallId: "call" }),
   ]);
   assert.equal(result.observations[0].mediaStorage, "unrecorded");
-  const html = renderToStaticMarkup(createElement(ObservationPanel, {
+  const html = renderToStaticMarkup(createElement(LocaleProvider, null, createElement(ObservationPanel, {
     data: { ...result, project: "test", run: "test" } as RunData,
     call: result.calls[0], onImage() {},
-  }));
-  assert.match(html, /未录制 · 仅保留交付记录/);
+  })));
+  assert.match(html, /Unrecorded · delivery record only/);
   assert.doesNotMatch(html, /<img|\/api\/media/);
   assert.equal(mediaFailureMessage(410), "观测已过期或已移除");
 });
@@ -323,13 +325,13 @@ test("data-only and mixed model inputs expose lazy record details without duplic
       event("context", { observations: media.map(item => item.id), executions: ["sensor-input"] }),
       event("model_start", { observations: media.map(item => item.id) }, { modelCallId: "input" }),
     ]);
-    const html = renderToStaticMarkup(createElement(ObservationPanel, {
+    const html = renderToStaticMarkup(createElement(LocaleProvider, null, createElement(ObservationPanel, {
       data: { ...result, project: "test", run: "test" } as RunData, call: result.calls[0], onImage() {},
-    }));
-    assert.match(html, /记录 #1 · 感知数据与空间信息/);
-    assert.match(html, /记录 #2 · 感知数据与空间信息/);
-    assert.doesNotMatch(html, /本次请求没有可展示的输入画面|正在读取时空记录/);
-    if (!withImage) assert.match(html, /本次输入包含 2 条时空记录/);
+    })));
+    assert.match(html, /Record #1 · perception data/);
+    assert.match(html, /Record #2 · perception data/);
+    assert.doesNotMatch(html, /No viewable input frame|Loading timeline record/);
+    if (!withImage) assert.match(html, /This input contains 2 timeline records/);
     assert.deepEqual(result.calls[0].perception?.records?.map(item => item.snapshot.timeline), snapshots.map(item => item.timeline));
   }
 });
@@ -365,12 +367,12 @@ test("canonical queries attach to explicit deliveries, independently of sampler 
   assert.equal(result.notices.find(notice => notice.failed)?.text, "history expired");
   const selected = selectObservations(result.observations, result.calls[0], "image");
   assert.equal(selected.observation?.perception?.snapshot?.id, "old");
-  const html = renderToStaticMarkup(createElement(ObservationPanel, {
+  const html = renderToStaticMarkup(createElement(LocaleProvider, null, createElement(ObservationPanel, {
     data: { ...result, project: "test", run: "test" } as RunData, call: result.calls[0], onImage() {},
-  }));
-  assert.match(html, /本次查询 · 成功/);
-  assert.match(html, /记录 #1/);
-  assert.match(html, /记录 #2/);
+  })));
+  assert.match(html, /This query · succeeded/);
+  assert.match(html, /Record #1/);
+  assert.match(html, /Record #2/);
 });
 
 test("a failed delivery shows its error while keeping query source records out of the model-input panel", () => {
@@ -383,11 +385,11 @@ test("a failed delivery shows its error while keeping query source records out o
     e("observation_context", { id: "delivery", queries: ["query"], observations: [] }),
     e("model_start", { deliveryIds: ["delivery"], observations: [] }, { modelCallId: "model" }),
   ]);
-  const html = renderToStaticMarkup(createElement(ObservationPanel, {
+  const html = renderToStaticMarkup(createElement(LocaleProvider, null, createElement(ObservationPanel, {
     data: { ...result, project: "test", run: "test" } as RunData, call: result.calls[0], onImage() {},
-  }));
-  assert.match(html, /本次查询 · 成功/);
-  assert.match(html, /输入交付失败/);
+  })));
+  assert.match(html, /This query · succeeded/);
+  assert.match(html, /input delivery failed/);
   assert.match(html, /image encoding failed/);
-  assert.doesNotMatch(html, /source not delivered|记录 #1|<img|\/api\/media/);
+  assert.doesNotMatch(html, /source not delivered|Record #1|<img|\/api\/media/);
 });

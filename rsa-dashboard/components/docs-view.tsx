@@ -1,10 +1,12 @@
 "use client";
 import { useEffect, useRef, useState, type MouseEvent } from "react";
+import { useTranslations } from "@/lib/locale";
 
 interface DocItem { id: string; title: string }
 interface DocGroup { id: string; title: string; blurb: string; docs: DocItem[] }
 interface DocDetail { id: string; title: string; group: string; lang: "en" | "zh"; fallback: boolean; html: string }
 function useJson<T>(url: string | null): { value?: T; error?: string } {
+  const t = useTranslations("docsView");
   const [loaded, setLoaded] = useState<{ url: string; value?: T; error?: string } | null>(null);
   useEffect(() => {
     if (!url) return;
@@ -13,7 +15,7 @@ function useJson<T>(url: string | null): { value?: T; error?: string } {
       try {
         const response = await fetch(url, { cache: "no-store", signal: controller.signal });
         const value = await response.json();
-        if (!response.ok) throw new Error(value.error ?? "读取失败");
+        if (!response.ok) throw new Error(value.error ?? t("loadFailed"));
         if (!controller.signal.aborted) setLoaded({ url, value });
       } catch (error) {
         if (!controller.signal.aborted) setLoaded(previous => ({ url, value: previous?.url === url ? previous.value : undefined, error: String(error) }));
@@ -28,6 +30,7 @@ function useJson<T>(url: string | null): { value?: T; error?: string } {
 export function DocsView({ search, navigate }: {
   search: string; navigate: (patch: Record<string, string | null>) => void;
 }) {
+  const t = useTranslations("docsView");
   const query = new URLSearchParams(search);
   const docId = query.get("doc");
   const docAnchor = query.get("docAnchor");
@@ -57,11 +60,11 @@ export function DocsView({ search, navigate }: {
   };
 
   if (!groups) return <section className="surface empty-state main-empty" aria-live="polite">
-    <h2>{groupsLoad.error ? "暂时无法读取文档" : "正在读取文档"}</h2><p>{groupsLoad.error ?? "从仓库 docs/ 实时读取。"}</p>
+    <h2>{groupsLoad.error ? t("loadFailedTitle") : t("loadingTitle")}</h2><p>{groupsLoad.error ?? t("loadingHint")}</p>
   </section>;
 
   return <div className="docs-layout">
-    <aside className="surface docs-nav" aria-label="文档目录">
+    <aside className="surface docs-nav" aria-label={t("navLabel")}>
       {groups.map(group => <div key={group.id} className="docs-group">
         <div className="bench-list-heading"><span>{group.title}</span><small>{group.blurb}</small></div>
         {group.docs.map(item => <button key={item.id}
@@ -71,9 +74,9 @@ export function DocsView({ search, navigate }: {
       </div>)}
     </aside>
     <article ref={article} className="surface docs-article" onClick={followDoc}>
-      {!docId && <><div className="surface-heading"><h2>文档导览</h2><span>docs/</span></div>
+      {!docId && <><div className="surface-heading"><h2>{t("overviewTitle")}</h2><span>docs/</span></div>
         <div className="docs-body">
-          <p className="muted">选择左侧条目或下方卡片直接阅读。教程聚焦上手与工作区编程，契约定义组件与协议边界，洞见记录长跑实测背后的设计取舍。</p>
+          <p className="muted">{t("overviewBlurb")}</p>
           <div className="docs-overview-grid">
             {groups.map(group => <section key={group.id} className="docs-overview-card">
               <h3>{group.title}</h3>
@@ -86,8 +89,8 @@ export function DocsView({ search, navigate }: {
           </div>
         </div></>}
       {docId && docLoad.error && <div className="error-banner" role="alert">{docLoad.error}</div>}
-      {docId && !doc && !docLoad.error && <div className="docs-body"><p role="status">正在读取…</p></div>}
-      {doc && <><div className="surface-heading"><h2>{doc.title}</h2><span>{doc.id} · {doc.lang === "zh" ? "中文" : "EN"}<button type="button" className="text-button" onClick={() => navigate({ docLang: docLang === "zh" ? "en" : "zh" })}>{docLang === "zh" ? "English" : "中文"}</button></span></div>
+      {docId && !doc && !docLoad.error && <div className="docs-body"><p role="status">{t("loadingArticle")}</p></div>}
+      {doc && <><div className="surface-heading"><h2>{doc.title}</h2><span>{doc.id} · {doc.lang === "zh" ? t("chinese") : "EN"}<button type="button" className="text-button" onClick={() => navigate({ docLang: docLang === "zh" ? "en" : "zh" })}>{docLang === "zh" ? "English" : t("chinese")}</button></span></div>
         {doc.fallback && <div className="error-banner" role="status">No English translation yet — showing the Chinese original.</div>}
         <div className="docs-body" dangerouslySetInnerHTML={{ __html: doc.html }} /></>}
     </article>

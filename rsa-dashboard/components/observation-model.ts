@@ -1,16 +1,19 @@
 import type { Call, Observation, PerceptionRead, PerceptionSnapshot, PerceptionStatus } from "../lib/types";
 
-export const perceptionStateLabel: Record<PerceptionStatus["state"], string> = {
-  unimplemented: "尚未实现",
-  loading: "加载中",
-  ready: "就绪",
-  stopped: "已停止",
-  error: "异常",
-};
+export function perceptionStateLabel(state: PerceptionStatus["state"], t?: (key: string) => string): string {
+  const key = `perceptionState.${state}`;
+  const translated = t?.(key);
+  if (translated && translated !== key) return translated;
+  return ({ unimplemented: "尚未实现", loading: "加载中", ready: "就绪", stopped: "已停止", error: "异常" } as const)[state];
+}
 
-export function mediaFailureMessage(status: number): string {
-  if (status === 409) return "视频片段正在写入，请稍后重试";
-  if (status === 503) return "历史画面解码繁忙，请稍后重试";
+export function mediaFailureMessage(status: number, t?: (key: string) => string): string {
+  const key = status === 409 ? "mediaFailure.writing" : status === 503 ? "mediaFailure.busy"
+    : status === 410 ? "mediaFailure.expired" : "mediaFailure.unreadable";
+  const translated = t?.(key);
+  if (translated && translated !== key) return translated;
+  if (status === 409) return "视频片段正在写入请稍后重试";
+  if (status === 503) return "历史画面解码繁忙请稍后重试";
   return status === 410 ? "观测已过期或已移除" : "无法读取观测文件";
 }
 
@@ -25,8 +28,11 @@ function timestampMs(time: string): number {
   return /(?:Z|[+-]\d{2}:?\d{2})$/i.test(time) ? Date.parse(time) : NaN;
 }
 
-export function observationTime(time?: string): string {
-  if (!time || !Number.isFinite(timestampMs(time))) return "未知";
+export function observationTime(time?: string, t?: (key: string) => string): string {
+  if (!time || !Number.isFinite(timestampMs(time))) {
+    const translated = t?.("common.unknown");
+    return translated && translated !== "common.unknown" ? translated : "未知";
+  }
   return new Date(time).toLocaleTimeString("zh-CN", {
     hour12: false, timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", second: "2-digit",
     fractionalSecondDigits: 3,

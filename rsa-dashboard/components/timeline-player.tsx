@@ -3,7 +3,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReplayDetail, ReplayFrame, ReplayItem, ReplayOverview, ReplayOverviewResult, ReplayCoverage, ReplayWindow } from "../lib/replay-types";
 import { adjacentReplayFrame, clampReplayTime, mergeReplayPages, nearbyReplayItems, REPLAY_WINDOW_MS,
-  replayDuration, replayFramesAt, replayItemActive, replayTrackLabels, replayTracks, replayWindowBounds,
+  replayDuration, replayFramesAt, replayItemActive, replayTracks, replayWindowBounds,
   retainReplayWindows } from "./replay-model";
 import { useBufferedMedia } from "./use-buffered-media";
 import type { BufferedImage } from "./image-buffer";
@@ -11,6 +11,7 @@ import { ReplayVideo } from "./replay-video";
 import { replayVideoReady } from "./replay-video-model";
 import { readArchiveJson } from "../lib/archive-client";
 import "./timeline-player.css";
+import { useTranslations } from "@/lib/locale";
 
 const read = readArchiveJson;
 
@@ -18,7 +19,8 @@ const endpoint = (scope: string, params: Record<string, string | number>) =>
   "/api/replay?" + scope + "&" + new URLSearchParams(Object.entries(params).map(([key, value]) => [key, String(value)]));
 
 async function readWindow(scope: string, start: number, end: number, signal: AbortSignal,
-  mode: "frames" | "events" = "frames", onPage?: (page: ReplayWindow) => void, initial?: ReplayWindow) {
+  mode: "frames" | "events" = "frames", onPage?: (page: ReplayWindow) => void, initial?: ReplayWindow,
+  stalledMessage = "Replay pagination stalled; please retry") {
   const pages: ReplayWindow[] = initial ? [initial] : [], cursors = new Set<string>();
   let cursor = initial?.nextCursor;
   for (let n = 0; n < 10; n++) {
@@ -31,7 +33,7 @@ async function readWindow(scope: string, start: number, end: number, signal: Abo
     onPage?.(merged);
     cursor = page.nextCursor;
     if (!cursor) return merged;
-    if (cursors.has(cursor)) throw new Error("回放分页没有前进，请重试");
+    if (cursors.has(cursor)) throw new Error(stalledMessage);
     cursors.add(cursor);
     pages.splice(0, pages.length, merged);
   }
@@ -41,12 +43,13 @@ async function readWindow(scope: string, start: number, end: number, signal: Abo
 const wallTime = (at: number) => new Date(at).toLocaleTimeString("zh-CN", {
   hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit", fractionalSecondDigits: 3,
 });
-const statusLabel: Record<string, string> = { completed: "完成", success: "完成", error: "失败", failed: "失败",
-  cancelled: "取消", pending: "进行中", running: "进行中" };
+const statusKey: Record<string, string> = { completed: "completed", success: "completed", error: "failed", failed: "failed",
+  cancelled: "cancelled", pending: "running", running: "running" };
 
 type VideoPlayback = { at: number; playing: boolean; clockReady: boolean; speed: number; onReady(slot: string, url: string, ready: boolean): void };
 function ReplayMedia({ media, label, sampledAt, image, playback, slot }: { media: ReplayFrame["media"][number]; label: string; image?: BufferedImage;
   sampledAt: number; playback: VideoPlayback; slot: string }) {
+  const t = useTranslations("timelinePlayer");
   const [failure, setFailure] = useState<{ url: string; message: string } | null>(null);
   const error = failure?.url === media.url ? failure.message : "";
   const setError = (message: string) => setFailure({ url: media.url, message });
@@ -57,41 +60,43 @@ function ReplayMedia({ media, label, sampledAt, image, playback, slot }: { media
     if (!isText) return;
     const controller = new AbortController();
     fetch(media.url, { signal: controller.signal }).then(async response => {
-      if (!response.ok) throw new Error(response.status === 410 ? "记录已过期" : "无法读取记录");
+      if (!response.ok) throw new Error(response.status === 410 ? t("recordExpired") : t("recordUnreadable"));
       const value = await response.text();
       if (!controller.signal.aborted) setText(value);
     }).catch(error => { if (!controller.signal.aborted) setError(error.message); });
     return () => controller.abort();
   }, [media.url, isText]);
   if (media.video) return <ReplayVideo source={media.video} sampledAt={sampledAt} {...playback} slot={slot} label={label} />;
-  if (image?.error || error) return <div className="replay-media-missing" role="status">{image?.error || error}<small>此处保留时间位置，播放可以继续。</small></div>;
+  if (image?.error || error) return <div className="replay-media-missing" role="status">{image?.error || error}<small>{t("mediaKeepPosition")}</small></div>;
   if (media.mediaType.startsWith("image/")) return <img src={image?.src} width={image?.width} height={image?.height} alt={label} draggable={false}
-    onError={() => setError("画面不可用 · 可能已过期或被移除")} />;
+    onError={() => setError(t("imageUnavailable"))} />;
   if (media.mediaType.startsWith("audio/")) return <audio controls preload="none" src={media.url}
-    aria-label={label} onError={() => setError("音频不可用")} />;
+    aria-label={label} onError={() => setError(t("audioUnavailable"))} />;
   if (media.mediaType.startsWith("video/")) return <video controls preload="metadata" src={media.url}
-    aria-label={label} onError={() => setError("视频不可用")} />;
-  if (isText) return <pre>{text || "读取文字记录…"}</pre>;
-  return <a href={media.url} target="_blank" rel="noreferrer">查看 {media.mediaType} 记录 ↗</a>;
+    aria-label={label} onError={() => setError(t("videoUnavailable"))} />;
+  if (isText) return <pre>{text || t("readingText")}</pre>;
+  return <a href={media.url} target="_blank" rel="noreferrer">{t("view")} {media.mediaType} {t("record")} ↗</a>;
 }
 
 const FrameMedia = memo(function FrameMedia({ frame, images, playback }: {
   frame: ReplayFrame; images: Map<string, BufferedImage>; playback: VideoPlayback;
 }) {
+  const t = useTranslations("timelinePlayer");
   return <><div className="replay-media-grid">
     {frame.media.map(media => <div className={"replay-media" + (media.mediaType.startsWith("image/") ? " replay-image" : "")} key={media.index}>
       <ReplayMedia media={media} sampledAt={frame.at} image={images.get(media.url)} playback={playback} slot={frame.capability + ":" + media.index}
         label={frame.capability + " · " + wallTime(frame.at) + " · " + (media.index + 1)} />
     </div>)}
-    {!frame.media.length && <p className="replay-no-media">此条感知没有媒体，可展开详情查看数据。</p>}
+    {!frame.media.length && <p className="replay-no-media">{t("noMedia")}</p>}
+    {frame.text && <details className="replay-frame-text"><summary>{t("frameText")}</summary><pre>{frame.text}</pre></details>}
   </div>
-    {frame.text && <details className="replay-frame-text"><summary>观测文字</summary><pre>{frame.text}</pre></details>}
   </>;
 });
 
 type Selection = { kind: "frame"; value: ReplayFrame } | { kind: "item"; value: ReplayItem };
 
 function ReplayDetails({ scope, selection, onClose }: { scope: string; selection: Selection; onClose(): void }) {
+  const t = useTranslations("timelinePlayer");
   const [detail, setDetail] = useState<ReplayDetail | null>(null);
   const [error, setError] = useState("");
   const { value, kind } = selection;
@@ -105,15 +110,15 @@ function ReplayDetails({ scope, selection, onClose }: { scope: string; selection
     }).catch(error => { if (!controller.signal.aborted) setError(error.message); });
     return () => controller.abort();
   }, [url]);
-  return <section className="surface replay-detail" aria-label="回放来源详情">
-    <div className="surface-heading"><h2>{detail?.title ?? "来源详情"}</h2>
-      <button type="button" className="text-button" onClick={onClose}>关闭详情 ×</button></div>
-    {error ? <p role="alert">{error}</p> : !detail ? <p role="status">正在读取原始记录…</p> : <>
-      {!!detail.observations?.length && <div className="replay-inputs"><h3>模型输入的观测</h3>
+  return <section className="surface replay-detail" aria-label={t("detailsAria")}>
+    <div className="surface-heading"><h2>{detail?.title ?? t("detailsTitle")}</h2>
+      <button type="button" className="text-button" onClick={onClose}>{t("closeDetails")}</button></div>
+    {error ? <p role="alert">{error}</p> : !detail ? <p role="status">{t("readingRecord")}</p> : <>
+      {!!detail.observations?.length && <div className="replay-inputs"><h3>{t("modelObservations")}</h3>
         {detail.observations.map(observation => <div key={observation.id}>
-          {observation.url ? <img src={observation.url} alt={"模型输入 " + observation.id} loading="lazy" /> : <span>未录制的媒体</span>}
+          {observation.url ? <img src={observation.url} alt={t("modelInput") + " " + observation.id} loading="lazy" /> : <span>{t("unrecordedMedia")}</span>}
           <small>{observation.recordId ?? observation.id}{observation.sequence ? " · #" + observation.sequence : ""}
-            {observation.approximate ? " · 视频还原，与当时输入可能有压缩差异" : ""}</small>
+            {observation.approximate ? t("approximateNote") : ""}</small>
         </div>)}
       </div>}
       <pre>{JSON.stringify(detail.data, null, 2)}</pre>
@@ -126,6 +131,7 @@ export function TimelinePlayer({ project, run, epoch, position, onPosition, onOv
   onOverview?(value: ReplayOverviewResult): void;
   archiveRevision?: number;
 }) {
+  const t = useTranslations("timelinePlayer");
   const requestedScope = new URLSearchParams({ project, run, ...(epoch ? { epoch } : {}) }).toString();
   const [overview, setOverview] = useState<ReplayOverview | null>(null);
   const resolvedEpoch = overview ? overview.epoch : epoch;
@@ -357,96 +363,96 @@ export function TimelinePlayer({ project, run, epoch, position, onPosition, onOv
     url.searchParams.set("view", "replay"); url.searchParams.set("at", String(Math.round(at)));
     url.searchParams.set("project", project); url.searchParams.set("run", run);
     url.searchParams.set("epoch", overview?.epoch ?? "all");
-    try { await navigator.clipboard.writeText(url.toString()); setShareState("链接已复制"); }
-    catch { setShareState("已将当前时刻写入地址栏"); }
+    try { await navigator.clipboard.writeText(url.toString()); setShareState(t("linkCopied")); }
+    catch { setShareState(t("timeInUrl")); }
   };
 
-  if (!project || !run) return <section className="surface empty-state"><h2>选择一段运行记录</h2><p>已有的感知、动作和模型记录会在同一条时间轴播放。</p></section>;
-  if (!overview) return <section className="surface empty-state"><h2>{overviewError ? "回放暂时不可用" : "正在整理时间轴"}</h2>
-    <p role={overviewError ? "alert" : "status"}>{overviewError || (coverage ? `正在读取源目录 ${Math.round(coverage.bytes / Math.max(1, coverage.totalBytes) * 100)}% · 画面与日志独立加载` : "从现有记录读取这段经历…")}</p>
-    {overviewError && <button className="control-button" onClick={() => setRefresh(value => value + 1)}>重新读取</button>}</section>;
+  if (!project || !run) return <section className="surface empty-state"><h2>{t("emptyTitle")}</h2><p>{t("emptyDescription")}</p></section>;
+  if (!overview) return <section className="surface empty-state"><h2>{overviewError ? t("unavailable") : t("preparing")}</h2>
+    <p role={overviewError ? "alert" : "status"}>{overviewError || (coverage ? <>{t("readingSourceDir")} {Math.round(coverage.bytes / Math.max(1, coverage.totalBytes) * 100)}% · {t("loadIndependent")}</> : t("readingFromRecords"))}</p>
+    {overviewError && <button className="control-button" onClick={() => setRefresh(value => value + 1)}>{t("retryLoad")}</button>}</section>;
   const duration = overview.endAt - overview.startAt;
   const x = (time: number) => Math.max(0, Math.min(100, (time - bounds.startAt) / Math.max(1, bounds.endAt - bounds.startAt) * 100));
   const trackFrames = (activeWindow?.frames ?? []).filter(frame => frame.at >= bounds.startAt && (!capability || frame.capability === capability));
   return <div className="replay-player">
     <div className="replay-toolbar">
-      <span className="replay-readonly"><i /> 历史回放 · 不操作设备</span>
+      <span className="replay-readonly"><i /> {t("readonlyNotice")}</span>
       <div><button className="text-button" disabled={refreshing} onClick={() => { cached.current = []; setWindows([]); setRefresh(value => value + 1); setRetry(value => value + 1); }}>
-        {refreshing ? "正在刷新…" : "刷新记录"}</button>
-        <button className="text-button" onClick={share}>分享此刻 ↗</button></div>
+        {refreshing ? t("refreshing") : t("refreshRecords")}</button>
+        <button className="text-button" onClick={share}>{t("shareMoment")}</button></div>
     </div>
-    {coverage && !coverage.complete && <p className="replay-notice" role="status">源目录已读取 {Math.round(coverage.bytes / Math.max(1, coverage.totalBytes) * 100)}%，当前显示已核验的时间范围，剩余记录继续读取。</p>}
+    {coverage && !coverage.complete && <p className="replay-notice" role="status">{t("coverageReadPrefix")} {Math.round(coverage.bytes / Math.max(1, coverage.totalBytes) * 100)}%{t("coverageReadSuffix")}</p>}
     {shareState && <p className="replay-notice" role="status">{shareState}</p>}
-    {overviewError && <p className="error-banner" role="alert">{overviewError} · 保留已加载记录</p>}
+    {overviewError && <p className="error-banner" role="alert">{overviewError}{t("keepLoaded")}</p>}
     <section className="surface replay-stage">
-      <div className="surface-heading"><h2>经历回放</h2><label className="replay-capability">感知来源
-        <select aria-label="感知来源" value={capability} onChange={event => {
+      <div className="surface-heading"><h2>{t("stageTitle")}</h2><label className="replay-capability">{t("capabilityLabel")}
+        <select aria-label={t("capabilityLabel")} value={capability} onChange={event => {
           stepRequest.current?.abort(); setStepping(false); setCapability(event.target.value);
         }}>
-          <option value="">全部感知</option>{capabilities.map(value => <option key={value} value={value}>{value}</option>)}
+          <option value="">{t("allCapabilities")}</option>{capabilities.map(value => <option key={value} value={value}>{value}</option>)}
         </select></label></div>
       <div className="replay-frames" aria-busy={!ready}>
         {shownFrames.length ? shownFrames.map(frame => <article className="replay-frame" key={frame.capability} data-frame-id={frame.id}>
           <div className="replay-frame-meta"><button type="button" className="text-button" onClick={() => setSelection({ kind: "frame", value: frame })}>
-            {frame.capability} · #{frame.sequence} ↗</button><span>采样 {wallTime(frame.at)}{ready ? " · " + (Math.max(0, at - frame.at) / 1000).toFixed(1) + " 秒前" : " · 上一画面"}</span></div>
+            {frame.capability} · #{frame.sequence} ↗</button><span>{t("sampled")} {wallTime(frame.at)}{ready ? " · " + (Math.max(0, at - frame.at) / 1000).toFixed(1) + " " + t("secondsAgo") : t("previousFrame")}</span></div>
           <FrameMedia key={refresh + ":" + retry} frame={frame} images={displayed?.images ?? new Map()} playback={{ at, playing, clockReady: ready, speed, onReady: onVideoReady }} />
-        </article>) : <div className="replay-loading">{!ready ? "正在载入画面…" : "此时还没有" + (capability ? "此来源的" : "") + "感知记录"}<small>播放会按记录时间继续。</small></div>}
-        {!ready && <span className="replay-buffering" role="status">{windowError ? "此段读取失败" : "正在缓冲…"}</span>}
+        </article>) : <div className="replay-loading">{!ready ? t("loadingFrames") : capability ? t("noFramesFiltered") : t("noFramesAll")}<small>{t("playbackContinues")}</small></div>}
+        {!ready && <span className="replay-buffering" role="status">{windowError ? t("segmentFailed") : t("buffering")}</span>}
       </div>
-      {windowError && <div className="replay-window-error" role="alert">{windowError}<button className="text-button" onClick={() => setRetry(value => value + 1)}>重试此段</button></div>}
+      {windowError && <div className="replay-window-error" role="alert">{windowError}<button className="text-button" onClick={() => setRetry(value => value + 1)}>{t("retrySegment")}</button></div>}
       <div className="replay-controls">
         <input className="replay-seek" type="range" min={overview.startAt} max={Math.max(overview.endAt, overview.startAt + 1)} step="1" value={at}
-          disabled={duration <= 0} aria-label="回放进度" aria-valuetext={replayDuration(at - overview.startAt) + " / " + replayDuration(duration)}
+          disabled={duration <= 0} aria-label={t("seekLabel")} aria-valuetext={replayDuration(at - overview.startAt) + " / " + replayDuration(duration)}
           onChange={event => seek(Number(event.target.value), false)} onPointerUp={() => onPosition(Math.round(atRef.current))}
           onKeyUp={() => onPosition(Math.round(atRef.current))} />
         <div className="replay-control-row"><div className="replay-transport">
-          <button type="button" className="replay-play" aria-label={playing ? "暂停回放" : "播放回放"} disabled={duration <= 0 || !!windowError}
+          <button type="button" className="replay-play" aria-label={playing ? t("pauseReplay") : t("playReplay")} disabled={duration <= 0 || !!windowError}
             onClick={() => { stepRequest.current?.abort(); setStepping(false); if (at >= overview.endAt) move(overview.startAt); setPlaying(value => !value); }}>
-            {playing ? "Ⅱ 暂停" : "▶ 播放"}</button>
-          <button type="button" aria-label="上一采样帧" disabled={stepping || at <= overview.startAt} onClick={() => void step(-1)}>‹ 帧</button>
-          <button type="button" aria-label="下一采样帧" disabled={stepping || at >= overview.endAt} onClick={() => void step(1)}>帧 ›</button>
+            {playing ? t("pause") : t("play")}</button>
+          <button type="button" aria-label={t("prevFrame")} disabled={stepping || at <= overview.startAt} onClick={() => void step(-1)}>{t("prevFrameShort")}</button>
+          <button type="button" aria-label={t("nextFrame")} disabled={stepping || at >= overview.endAt} onClick={() => void step(1)}>{t("nextFrameShort")}</button>
           <span className="replay-time mono">{replayDuration(at - overview.startAt)} <small>/ {replayDuration(duration)}</small></span>
         </div><div className="replay-clock"><span className="mono">{wallTime(at)}</span>
-          <select aria-label="播放速度" value={speed} onChange={event => setSpeed(Number(event.target.value))}>
+          <select aria-label={t("speedLabel")} value={speed} onChange={event => setSpeed(Number(event.target.value))}>
             {[0.25, 0.5, 1, 2, 4, 8].map(value => <option key={value} value={value}>{value}×</option>)}
           </select></div></div>
       </div>
     </section>
-    <section className="surface replay-timeline" aria-label="多轨时间轴">
-      <div className="surface-heading"><h2>同一时刻，发生了什么</h2><label className="replay-window-size">时间窗
-        <select aria-label="回放时间窗" value={windowMs} onChange={event => {
+    <section className="surface replay-timeline" aria-label={t("timelineLabel")}>
+      <div className="surface-heading"><h2>{t("timelineTitle")}</h2><label className="replay-window-size">{t("windowLabel")}
+        <select aria-label={t("windowSelectLabel")} value={windowMs} onChange={event => {
           stepRequest.current?.abort(); setStepping(false); cached.current = []; setWindows([]); setWindowMs(Number(event.target.value));
-        }}>{[1, 5, 15, 30, 60].map(seconds => <option key={seconds} value={seconds * 1000}>{seconds} 秒</option>)}</select>
+        }}>{[1, 5, 15, 30, 60].map(seconds => <option key={seconds} value={seconds * 1000}>{seconds} {t("seconds")}</option>)}</select>
         <span className="mono">{wallTime(bounds.startAt)} — {wallTime(bounds.endAt)}</span></label></div>
-      <div className="replay-track-row"><span>感知</span><div className="replay-track-lane">
+      <div className="replay-track-row"><span>{t("track.perception")}</span><div className="replay-track-lane">
         {trackFrames.map(frame => <button key={frame.id} className="replay-frame-tick" style={{ left: x(frame.at) + "%" }}
-          aria-label={"查看感知 " + wallTime(frame.at)} title={frame.capability + " · " + wallTime(frame.at)} onClick={() => selectFrame(frame)} />)}
+          aria-label={t("viewPerception") + " " + wallTime(frame.at)} title={frame.capability + " · " + wallTime(frame.at)} onClick={() => selectFrame(frame)} />)}
         <i className="replay-cursor" style={{ left: x(at) + "%" }} />
       </div></div>
-      {replayTracks.map(track => <div key={track} className="replay-track-row"><span>{replayTrackLabels[track]}</span><div className="replay-track-lane">
+      {replayTracks.map(track => <div key={track} className="replay-track-row"><span>{t(`track.${track}`)}</span><div className="replay-track-lane">
         {items.filter(item => item.track === track).map(item => <button key={item.id}
           className={"replay-span " + track + (replayItemActive(item, at) ? " active" : "") + (/error|failed/.test(item.status ?? "") ? " failed" : "")}
           style={{ left: x(item.startAt) + "%", width: Math.max(0.35, x(item.endAt ?? bounds.endAt) - x(item.startAt)) + "%" }}
-          title={item.label + " · " + wallTime(item.startAt)} aria-label={replayTrackLabels[track] + " · " + item.label}
+          title={item.label + " · " + wallTime(item.startAt)} aria-label={t(`track.${track}`) + " · " + item.label}
           onClick={() => selectItem(item)}>{track === "log" ? "" : item.label}</button>)}
         <i className="replay-cursor" style={{ left: x(at) + "%" }} />
       </div></div>)}
-      {eventError && <p className="error-banner" role="alert">事件轨道：{eventError} · 视频可继续播放<button className="text-button" onClick={() => setEventPage(value => value + 1)}>重试</button></p>}
-      {eventsLoading && <p role="status">正在补充事件轨道，画面播放不受影响…</p>}
-      {eventWindow?.nextCursor && !eventsLoading && <button className="text-button" onClick={() => setEventPage(value => value + 1)}>继续读取此窗事件（当前保留最近 5000 项）</button>}
-      <p className="replay-axis-note">以已有记录时间对齐。点击轨道查看来源；画面沿用最近一次采样。</p>
+      {eventError && <p className="error-banner" role="alert">{t("eventTrackPrefix")}{eventError}{t("videoContinues")}<button className="text-button" onClick={() => setEventPage(value => value + 1)}>{t("retry")}</button></p>}
+      {eventsLoading && <p role="status">{t("supplementingEvents")}</p>}
+      {eventWindow?.nextCursor && !eventsLoading && <button className="text-button" onClick={() => setEventPage(value => value + 1)}>{t("continueEvents")}</button>}
+      <p className="replay-axis-note">{t("axisNote")}</p>
     </section>
     <div className="replay-context-grid">
-      <section className="surface replay-context"><div className="surface-heading"><h2>当前动作与调用</h2><span>{activeItems.length} 项</span></div>
+      <section className="surface replay-context"><div className="surface-heading"><h2>{t("currentActions")}</h2><span>{activeItems.length} {t("items")}</span></div>
         {activeItems.length ? activeItems.map(item => <button key={item.id} className="replay-context-item" onClick={() => selectItem(item)}>
-          <span className={"replay-track-badge " + item.track}>{replayTrackLabels[item.track]}</span><strong>{item.label}</strong>
-          <small>{statusLabel[item.status ?? ""] ?? item.status ?? (item.endAt === null ? "未记录结束" : "已记录")}</small>
-        </button>) : <p className="replay-empty-context">已加载的事件中，此刻没有正在执行的动作或调用。</p>}
+          <span className={"replay-track-badge " + item.track}>{t(`track.${item.track}`)}</span><strong>{item.label}</strong>
+          <small>{item.status && statusKey[item.status] ? t(`status.${statusKey[item.status]}`) : (item.status ?? (item.endAt === null ? t("status.notEnded") : t("status.recorded")))}</small>
+        </button>) : <p className="replay-empty-context">{t("noActiveItems")}</p>}
       </section>
-      <section className="surface replay-context"><div className="surface-heading"><h2>附近日志</h2><span>点击定位与展开</span></div>
+      <section className="surface replay-context"><div className="surface-heading"><h2>{t("nearbyLogs")}</h2><span>{t("clickToLocate")}</span></div>
         {logs.length ? logs.map(item => <button key={item.id} className={"replay-context-item" + (item.startAt <= at ? " past" : " future")} onClick={() => selectItem(item)}>
           <time className="mono">{wallTime(item.startAt)}</time><strong>{item.label}</strong>
-        </button>) : <p className="replay-empty-context">当前已加载的这一时间窗没有日志。</p>}
+        </button>) : <p className="replay-empty-context">{t("noLogs")}</p>}
       </section>
     </div>
     {selection && <ReplayDetails key={selection.kind + ":" + selection.value.id} scope={scope} selection={selection} onClose={() => setSelection(null)} />}
