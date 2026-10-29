@@ -66,6 +66,7 @@ class Perception:
       toolNames: baseTools, customTools: extension.tools,
       preloadedPreparedExtensions: [{ path: "rsa-observe-test", resolvedPath: "rsa-observe-test", factory: extension.factory, error: null }],
     }));
+    let call = 0;
     session.agent.streamFn = async (_model, context) => {
       const messages = structuredClone(context.messages);
       const records = messages.flatMap(message => Array.isArray(message.content) ? message.content : []).flatMap(part => {
@@ -74,44 +75,53 @@ class Perception:
       });
       snapshots.push({ tools: context.tools?.map(tool => tool.name) ?? [], messages,
         observation: Object.assign({}, ...records.slice(records.findLastIndex(value => value?.perception))) });
-      const index = snapshots.length;
-      const sources = [source("adapted-v1"), source("adapted-v2"), broken, source("adapted-v3")];
-      const content: AssistantMessage["content"] = index <= sources.length
-        ? [{ type: "toolCall", id: `write-observer-${index}`, name: "write", arguments: { path: "perception.py", content: sources[index - 1] } },
-           { type: "toolCall", id: `reload-${index}`, name: "bash", arguments: { command: "rsa perception reload; sleep 0.15" } }]
-        : [{ type: "text", text: "Observer repaired." }];
+      call++;
+      const repairs = call === 1 || call === 2 || call === 5;
+      const content: AssistantMessage["content"] = repairs
+        ? [{ type: "toolCall", id: `write-observer-${call}`, name: "write", arguments: { path: "perception.py",
+            content: call === 2 ? broken : source(`adapted-v${call === 5 ? 3 : 1}`) } },
+           { type: "toolCall", id: `reload-${call}`, name: "bash", arguments: { command: "rsa perception reload; sleep 0.15" } }]
+        : [{ type: "text", text: `Step ${call}.` }];
       const message: AssistantMessage = { role: "assistant", api: model.api, provider: model.provider, model: model.id,
-        timestamp: Date.now(), content, stopReason: index <= sources.length ? "toolUse" : "stop",
+        timestamp: Date.now(), content, stopReason: repairs ? "toolUse" : "stop",
         usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 110,
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
       const stream = new AssistantMessageEventStream();
       stream.push({ type: "done", reason: message.stopReason as "stop" | "toolUse", message });
       return stream;
     };
-    await session.prompt("Build and improve an observation function.");
-    expect(snapshots).toHaveLength(5);
+    // Perception only speaks at prompt starts; mid-round sampler transitions stay silent.
+    await session.prompt("Build and improve an observation function."); // write v1, break it, final
+    await session.prompt("Check the observer."); // boundary state: error
+    await session.prompt("Repair the observer."); // unchanged state stays quiet, then repair
+    await session.prompt("Verify the repair."); // boundary state: ready, fresh records
+    expect(snapshots).toHaveLength(7);
     expect(snapshots.map(snapshot => snapshot.observation.perception.state))
-      .toEqual(["unimplemented", "ready", "ready", "error", "ready"]);
+      .toEqual(["unimplemented", "unimplemented", "unimplemented", "error", "error", "error", "ready"]);
     expect(snapshots[3]!.observation.perception.error).toContain("observer needs repair");
     expect(snapshots[0]!.observation.records).toBeUndefined();
     expect(snapshots[3]!.observation.records).toBeUndefined();
     expect(captures).toBe(0);
     for (const snapshot of snapshots) expect(snapshot.tools.toSorted()).toEqual(baseTools.toSorted());
+    // OMP stamps completedAt/contextSnapshot onto earlier messages between prompts.
+    const stable = (messages: unknown[]) => messages.map(message => {
+      if (!message || typeof message !== "object") return message;
+      const { completedAt: _completedAt, contextSnapshot: _contextSnapshot, ...rest } = message as Record<string, unknown>;
+      return rest;
+    });
     for (let index = 1; index < snapshots.length; index++) {
-      const earlier = snapshots[index - 1]!.messages;
-      expect(snapshots[index]!.messages.slice(0, earlier.length)).toEqual(earlier);
+      const earlier = stable(snapshots[index - 1]!.messages);
+      expect(stable(snapshots[index]!.messages).slice(0, earlier.length)).toEqual(earlier);
     }
-    const adapted = snapshots.filter(snapshot => snapshot.observation.perception.state === "ready");
-    expect(new Set(adapted.map(snapshot => snapshot.observation.perception.codeSHA)).size).toBe(3);
-    for (const snapshot of adapted) {
-      const record = snapshot.observation.records[0];
-      expect(record.id).toBeString();
-      expect(record.recordedAt).toBeString();
-      expect(record.media).toEqual([{ id: `${record.id}-0`, mediaType: "image/png" }]);
-      expect(snapshot.observation.snapshot).toBeUndefined();
-      expect(snapshot.observation.result).toBeUndefined();
-      expect(snapshot.observation.control?.perception).toBeUndefined();
-    }
+    const repaired = snapshots[6]!;
+    expect(repaired.observation.perception.codeSHA).toBeString();
+    const record = repaired.observation.records[0];
+    expect(record.id).toBeString();
+    expect(record.recordedAt).toBeString();
+    expect(record.media).toEqual([{ id: `${record.id}-0`, mediaType: "image/png" }]);
+    expect(repaired.observation.snapshot).toBeUndefined();
+    expect(repaired.observation.result).toBeUndefined();
+    expect(repaired.observation.control?.perception).toBeUndefined();
     // The query keeps provenance once; model messages carry only the selected view.
     const ready = events.find(event => event.type === "perception_observe_end" && event.data.ok)!;
     expect(ready.data.records[0].media[0].timeline.asset.startsWith("video/")).toBe(true);
@@ -119,13 +129,13 @@ class Perception:
     const file = session.sessionFile!;
     await session.dispose(); session = undefined;
     const persisted = await SessionManager.open(file, undefined, undefined, { throwIfMissing: true });
-    expect(persisted.getEntries().filter(entry => entry.type === "message" && entry.message.role === "toolResult")).toHaveLength(8);
+    expect(persisted.getEntries().filter(entry => entry.type === "message" && entry.message.role === "toolResult")).toHaveLength(6);
     const saved = await readFile(file, "utf8");
     expect(saved).not.toContain("raw-view-1");
     expect(saved).toContain("adapted-v1");
     expect(saved).toContain("observer needs repair");
     expect(events.filter(event => event.type === "perception_observe_end").map(event => event.data.ok))
-      .toEqual([true, true, true]); // known unavailable samplers generate state changes, not failed queries
+      .toEqual([true]); // known unavailable samplers generate state changes, not failed queries
   } finally {
     await session?.dispose(); authStorage.close(); await runtime.close(); await closeServer();
     await rm(directory, { recursive: true, force: true });

@@ -11,7 +11,6 @@ import type { Runtime } from "../runtime.ts";
 import { Workspace } from "../workspace.ts";
 import { childTrace, type EventTrace, type RecordEvent } from "../events.ts";
 import { pythonEnvironment } from "../../../../shared/python.ts";
-import { ludensHome } from "../../../../shared/ludens.ts";
 import { observationBytes, perceptionInput, type DeriveMedia, type TimelineMedia, type ObservationQuery, type PerceptionRead, type PerceptionRecord, type PerceptionStatus } from "../perception.ts";
 
 export async function media(observations: Observation[], record?: RecordEvent, trace?: EventTrace, derive?: DeriveMedia) {
@@ -65,10 +64,6 @@ export function createRsaExtension(options: {
   const { runtime, workspace } = options;
   let requests = 0;
   let requestEpoch: string | undefined;
-  const pendingTools = new Set<string>();
-  let batchImages: Observation[] = [];
-  const batchQueries = new Set<string>();
-  let explicitPerception = false;
   let lastMain: Pick<PerceptionRecord, "id" | "sequence" | "generation"> | undefined;
   let lastPerceptionState = "";
   const deliveredBackground = new Set<string>();
@@ -93,7 +88,7 @@ export function createRsaExtension(options: {
     PYTHONPATH: python.PYTHONPATH,
     RSA_SOCKET: options.rsaSocket ?? "",
     RSA_WORKSPACE: workspace.path, RSA_RUN_ID: runtime.status().runId, RSA_LOG_DIAGNOSTICS: runtime.diagnostics,
-    LUDENS_HOME: ludensHome(),
+    RSA_ARTIFACT_ROOT: process.env.RSA_ARTIFACT_ROOT ?? resolve(import.meta.dir, "../../../../../artifacts/rsa"),
     BASEWARE_SOCKET: options.basewareSocket, BASEWARE_EPOCH: "", BASEWARE_TRACE: "{}",
     RSA_EPOCH: "", RSA_TRACE: "",
   };
@@ -106,8 +101,9 @@ export function createRsaExtension(options: {
     async execute(id, params, _onUpdate, _ctx, signal) {
       const cycle = options.cycle();
       const read = await readPerception(signal ? AbortSignal.any([signal, cycle.signal]) : cycle.signal, trace(id), params);
-      explicitPerception = true;
       const rendered = await perceptionContent(read, trace(id));
+      // The explicit read is its own delivery; receipt it for trace attribution.
+      receipt(trace(id), "explicit", read.records.flatMap(record => record.media.map(item => item.id)), [read.queryId]);
       return { ...rendered, details: { queryId: read.queryId, ok: read.ok } };
     },
   };
@@ -124,14 +120,12 @@ export function createRsaExtension(options: {
   }
 
   async function perceptionContent(read: PerceptionRead, parent: EventTrace) {
-    batchQueries.add(read.queryId);
     const derive: DeriveMedia | undefined = runtime.perception
       ? input => runtime.perception!.deriveMedia(input, options.cycle().signal) : undefined;
     try {
       const observations = read.records.flatMap(record => record.media);
       const images = await media(observations, runtime.record, parent, derive);
       options.cycle().signal.throwIfAborted();
-      batchImages.push(...observations);
       for (const record of read.records) {
         if (record.capability !== "python/perception.py:Perception.sample") continue;
         // Explicit old-history reads must not move the live cursor backwards.
@@ -185,15 +179,7 @@ export function createRsaExtension(options: {
     return observations;
   }
 
-  function resetBatch() {
-    pendingTools.clear();
-    batchImages = [];
-    batchQueries.clear();
-    explicitPerception = false;
-  }
-
   function resetContext() {
-    resetBatch();
     lastMain = undefined;
     lastPerceptionState = "";
     deliveredBackground.clear();
@@ -208,37 +194,39 @@ export function createRsaExtension(options: {
     latestContext.deliveryIds.push(delivery.spanId!);
   }
 
-  async function captureContext(parent: EventTrace, origin: "prompt_start" | "tool_batch") {
+  async function captureContext(parent: EventTrace, origin: "prompt_start") {
     const cycle = options.cycle();
     const status = runtime.status();
     const consolidating = cycle.purpose === "consolidate";
-    let content: (ImageContent | { type: "text"; text: string })[] = [];
-    // Perception is the only proactive channel: new samples plus sampler state
-    // transitions (with the repair-relevant error and code identity), so
-    // silence is never ambiguous between "no new frame" and "the sampler is
-    // dead". Control status and skill or memory indexes are on demand: the
-    // model reads files or runs `rsa status`; ops metadata lives in logs.
+    const content: (ImageContent | { type: "text"; text: string })[] = [];
+    // Perception is the only proactive channel and it speaks once per prompt:
+    // new samples plus sampler state transitions (with the repair-relevant
+    // error and code identity), so silence is never ambiguous between "no new
+    // frame" and "the sampler is dead". Inside a round the model composes its
+    // own observations through the observe tool; control status and skill or
+    // memory indexes stay on demand: the model reads files or runs `rsa
+    // status`; ops metadata lives in logs.
     const perception = status.perception;
     const state: { state: PerceptionStatus["state"]; codeSHA?: string; error?: string } = perception
       ? { state: perception.state, codeSHA: perception.codeSHA, ...(perception.error ? { error: perception.error } : {}) }
       : { state: "unimplemented" };
     const stateVersion = JSON.stringify(state);
-    if (!consolidating && !explicitPerception && !batchImages.some(image => image.timeline?.recordId)
-      && runtime.perceptionInjectionEnabled()) {
+    let delivered: string[] = [], queries: string[] = [];
+    if (!consolidating && runtime.perceptionInjectionEnabled()) {
       if (stateVersion !== lastPerceptionState) content.push({ type: "text", text: JSON.stringify({ perception: state }) });
       if (state.state === "ready") {
         const read = await readPerception(cycle.signal, parent);
         if (!read.ok || read.records.some(record => record.id !== lastMain?.id)) {
           content.push(...(await perceptionContent(read, parent)).content);
+          delivered = read.records.flatMap(record => record.media.map(item => item.id));
+          queries = [read.queryId];
         }
       }
       // Suppressed or cancelled delivery must leave the state notice pending.
       lastPerceptionState = stateVersion;
     }
     latestContext = { observations: [], deliveryIds: [] };
-    if (content.length || batchImages.length || batchQueries.size) {
-      receipt(parent, origin, [...new Set(batchImages.map(image => image.id))], [...batchQueries]);
-    }
+    if (content.length) receipt(parent, origin, delivered, queries);
     return content;
   }
 
@@ -248,8 +236,8 @@ export function createRsaExtension(options: {
     pi.on("session_branch", resetContext);
     pi.on("session_tree", resetContext);
     pi.on("session_compact", resetContext);
-    // OMP persists both the initial custom message and enriched tool results.
-    // Keep history immutable between compactions so provider prefixes can be reused.
+    // OMP persists the initial custom message. Keep history immutable between
+    // compactions so provider prefixes can be reused.
     pi.on("before_agent_start", async () => {
       const cycle = options.cycle();
       // Passive under handback: native abort owns interruption; hooks never throw.
@@ -260,7 +248,6 @@ export function createRsaExtension(options: {
         BASEWARE_EPOCH: cycle.epoch, BASEWARE_TRACE: JSON.stringify({ epoch: cycle.epoch, recordingId: runtime.status().runId }),
       });
       refreshShellConfigCache();
-      resetBatch();
       const content = await captureContext({ epoch: options.cycle().epoch }, "prompt_start");
       if (content.length) return { message: { customType: "rsa-observation", content, display: false } };
     });
@@ -271,13 +258,15 @@ export function createRsaExtension(options: {
       refreshShellConfigCache();
     });
     pi.on("assistant_message", () => {
-      resetBatch();
       latestContext = { ...latestContext, observations: [], deliveryIds: [] };
     });
     pi.on("tool_result", async (event) => {
       if (event.toolName !== "observe") {
         const images = event.content.filter((part): part is ImageContent => part.type === "image");
-        batchImages.push(...await recordToolImages(images, trace(event.toolCallId), event.toolName, event.content));
+        // Native tool images stay in OMP's own history; record their delivery
+        // for trace attribution without appending anything to the result.
+        const observations = await recordToolImages(images, trace(event.toolCallId), event.toolName, event.content);
+        if (observations.length) receipt(trace(event.toolCallId), "tool_result", observations.map(observation => observation.id), []);
       }
       if (event.toolName === "read") {
         // OMP resolves selectors such as SKILL.md:19-22. Use its result metadata
@@ -291,12 +280,6 @@ export function createRsaExtension(options: {
           ? new Bun.CryptoHasher("sha256").update(await file.arrayBuffer()).digest("hex") : undefined;
         runtime.record("read", { requestedPath: event.input.path, path, hash, isError: event.isError }, trace(event.toolCallId));
       }
-      pendingTools.delete(event.toolCallId);
-      if (pendingTools.size) return;
-      if (options.cycle().signal.aborted) return;
-      // tool_result is awaited before persistence and the next model request;
-      // turn_end is only a notification. Attach one observation per tool batch.
-      return { content: [...event.content, ...await captureContext(trace(event.toolCallId), "tool_batch")], isError: event.isError };
     });
     pi.on("context", async (event) => {
       const cycle = options.cycle();
@@ -328,12 +311,6 @@ export function createRsaExtension(options: {
         return;
       }
       runtime.record("context", { request: ++requests, purpose: cycle.purpose, ...latestContext }, { epoch: cycle.epoch });
-    });
-    pi.on("tool_call", (event) => {
-      // Handback interrupts the turn via session.abort(); this hook only tracks
-      // the prepared batch so tool_result can attach one observation per batch.
-      // Invalid calls never execute or emit tool_result.
-      pendingTools.add(event.toolCallId);
     });
   };
   return { factory, tools: [observe], context: () => ({ ...latestContext }) };

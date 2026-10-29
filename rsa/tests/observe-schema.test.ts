@@ -67,8 +67,8 @@ print(json.dumps(records))`, workspace], {env: {...process.env, PYTHONPATH: join
     expect(failed.isError).toBe(true);
     expect(JSON.parse(failed.content.find(part => part.type === "text")!.text).error.message).toContain("cannot be combined");
     expect(runtime.perception.status().state).toBe("ready");
-    const enriched = await handlers.tool_result!({ toolName: "observe", toolCallId: "invalid-query", input: invalid, ...failed });
-    expect(enriched.isError).toBe(true);
+    const passthrough = await handlers.tool_result!({ toolName: "observe", toolCallId: "invalid-query", input: invalid, ...failed });
+    expect(passthrough).toBeUndefined();
   } finally {
     await runtime.close();
     await rm(workspace, { recursive: true, force: true });
