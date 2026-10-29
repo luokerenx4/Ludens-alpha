@@ -276,14 +276,28 @@ export function BenchmarkCases({ search, workspace, workspacePath, ready, refres
           <div className="surface-heading"><h2>{t("historyTitle")}</h2><span>{rows.length} {t("historySubtitle")}</span></div>
           {query.get("case") && <div className="flex flex-wrap items-center gap-2 border-b px-4 pb-3 text-xs"><Badge variant="outline" className="max-w-full whitespace-normal break-all">{query.get("case")}</Badge><span className="text-muted-foreground">{t("allTaskVersions")}</span>
             <Button type="button" variant="outline" size="xs" onClick={event => clearSelection(event, clearBenchmarkFilter)}>{t("clearTaskFilter")}</Button></div>}
-          {rows.length > 0 ? <Table className="text-xs [&_th]:px-3 [&_td]:px-3 [&_td]:py-3 [&_td]:align-top"><TableHeader className="bg-muted/40"><TableRow><TableHead>{t("colTime")}</TableHead><TableHead>{t("colStatus")}</TableHead><TableHead>{t("colVerification")}</TableHead><TableHead>{t("colActions")}</TableHead></TableRow></TableHeader><TableBody>
-            {rows.map(trial => <TableRow key={resultKey(trial)} data-state={resultKey(trial) === selectedKey ? "selected" : undefined}>
-              <TableCell className="min-w-40"><Button type="button" variant="link" size="xs" className="h-auto whitespace-normal px-0 text-left" onClick={() => selectTrial(trial)}>{date(trial.startedAt)}</Button><small className="mt-1 block max-w-64 whitespace-normal text-muted-foreground">{trial.task.name}</small></TableCell>
-              <TableCell><Status trial={trial} /></TableCell><TableCell><code>{trial.selectedVerificationId ?? t("notScored")}</code></TableCell>
-              <TableCell><Button type="button" variant="link" size="xs" className="h-auto whitespace-normal px-0 text-left" onClick={() => navigate({ baseline: resultKey(trial), baselineVerification: trial.selectedVerificationId ?? null, baselineReport: null })}>{t("setBaseline")}</Button>
-                <Button asChild variant="link" size="xs"><a href={benchmarkRunUrl(trial)} onClick={event => link(event, benchmarkRunUrl(trial))}>{t("viewRun")}</a></Button></TableCell>
-            </TableRow>)}
-          </TableBody></Table> : <div className="space-y-2 px-4 pb-4 text-sm">
+          {rows.length > 0 ? <>
+            <div className="bench-history-columns" aria-hidden="true"><span>{t("colTime")}</span><span>{t("colStatus")}</span><span>{t("colVerification")}</span><span>{t("colActions")}</span></div>
+            <ul className="bench-history-list" role="list" aria-label={t("historyTitle")}>
+              {rows.map(trial => {
+                const selected = resultKey(trial) === selectedKey;
+                return <li key={resultKey(trial)} className="bench-history-row" data-benchmark-history-run={resultKey(trial)} data-state={selected ? "selected" : undefined}>
+                  <div className="bench-history-identity">
+                    <span className="bench-history-task">{trial.task.name}{selected && <span className="bench-history-current"><Check aria-hidden="true" />{t("selectedRun")}</span>}</span>
+                    <Button type="button" variant="link" size="sm" className="bench-history-select h-auto min-h-8 whitespace-normal px-0 text-left text-xs" aria-current={selected ? "true" : undefined} onClick={() => selectTrial(trial)}>
+                      <span className="sr-only">{trial.task.name}{" · "}</span>{date(trial.startedAt)}
+                    </Button>
+                  </div>
+                  <div className="bench-history-status [&_[data-slot=badge]]:whitespace-normal"><span className="sr-only">{t("colStatus")}{": "}</span><Status trial={trial} /></div>
+                  <div className="bench-history-verification"><span className="bench-history-field-label">{t("colVerification")}</span><code>{trial.selectedVerificationId ?? t("notScored")}</code></div>
+                  <div className="bench-history-actions">
+                    <Button type="button" variant="link" size="sm" className="h-auto min-h-8 whitespace-normal px-0 text-left text-xs" onClick={() => navigate({ baseline: resultKey(trial), baselineVerification: trial.selectedVerificationId ?? null, baselineReport: null })}>{t("setBaseline")}</Button>
+                    <Button asChild variant="link" size="sm" className="h-auto min-h-8 whitespace-normal px-0 text-left text-xs"><a href={benchmarkRunUrl(trial)} onClick={event => link(event, benchmarkRunUrl(trial))}>{t("viewRun")}</a></Button>
+                  </div>
+                </li>;
+              })}
+            </ul>
+          </> : <div className="space-y-2 px-4 pb-4 text-sm">
             <p className="font-medium">{t(`historyEmpty.${historyState}.title`)}</p><p className="text-xs leading-relaxed text-muted-foreground">{t(`historyEmpty.${historyState}.description`)}</p>
             {historyState === "no-runs" && !chosenTask && taskChoices[0] && <Button type="button" size="sm" variant="outline" onClick={event => clearSelection(event, benchmarkTaskFilter(taskChoices[0].name, taskChoices[0].digest))}>{t("chooseFirstTask")}</Button>}
           </div>}

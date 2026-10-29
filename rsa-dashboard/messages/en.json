@@ -1207,6 +1207,7 @@
     "colStatus": "Run status",
     "colVerification": "Score version",
     "colActions": "Actions",
+    "selectedRun": "Selected run",
     "setBaseline": "Set as baseline",
     "viewRun": "View run ↗",
     "noHistory": "No execution records on this page. Historic tasks remain viewable via pinned run links even when gone from the catalog.",
