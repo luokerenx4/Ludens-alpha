@@ -1223,7 +1223,7 @@
       "hasMore": "尚有后续记录",
       "samplingSources": "采样来源",
       "recordsPrefix": "本次输入包含",
-      "recordsSuffix": "条时空记录。展开上方详情查看感知数据与空间信息。",
+      "recordsSuffix": "条时空记录。展开记录详情查看感知数据与空间信息。",
       "altInput": "模型输入",
       "altSaved": "保存观测",
       "modelInput": "模型输入",
@@ -1237,7 +1237,9 @@
       "capture": "采集",
       "encode": "编码",
       "frameDelta": "帧变化",
-      "afterExecution": "动作后采样请求"
+      "afterExecution": "动作后采样请求",
+      "perceptionDetails": "感知与记录详情",
+      "detailsBelow": "详见下方详情"
     },
     "fact": {
       "readMs": "读取耗时",
@@ -1314,6 +1316,13 @@
     "events": {
       "help": "近期最多 100 条事件；完整历史可在运行页的活动日志中按类型筛选。",
       "empty": "本轮没有错误或压缩事件。"
+    },
+    "mediaRecovery": {
+      "region": "已记录的观测媒体",
+      "retry": "重试读取媒体",
+      "retrying": "正在重试读取媒体…",
+      "readOnly": "重新读取已有记录。",
+      "audioReady": "已重新载入音频控件，请手动播放以检查音频。"
     }
   },
   "common": {
@@ -1470,7 +1479,13 @@
     "hostHistorical": "历史运行",
     "hostSnapshot": "上次观测",
     "refreshFailed": "最新记录更新失败。可再次回到最新，同时重试观测和日志。",
-    "scopeChanged": "载入期间运行范围发生变化，请再次回到最新以读取同一范围的记录。"
+    "scopeChanged": "载入期间运行范围发生变化，请再次回到最新以读取同一范围的记录。",
+    "runDetails": "运行详情",
+    "model": "模型",
+    "drivers": "驱动",
+    "retryRun": "重新读取所选运行",
+    "readingRun": "正在读取所选运行…",
+    "readFailureHint": "可以重新读取所选运行，保留当前范围与自动刷新设置。"
   },
   "consoleSidebar": {
     "menuOpen": "展开菜单",

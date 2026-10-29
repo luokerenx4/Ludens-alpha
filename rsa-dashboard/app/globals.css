@@ -413,6 +413,42 @@ h3 {
 .live-observation {
   min-width: 0;
 }
+.live-context-banner {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 15px;
+  border: 1px solid;
+  border-radius: 12px;
+}
+.live-context-copy { min-width: 0; }
+.live-context-copy h2 { line-height: 1.35; }
+.live-context-checked, .live-context-description, .live-context-error {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+  overflow-wrap: anywhere;
+}
+.live-context-error { color: var(--primary); }
+.live-host-status { border: 0; padding: 10px 0 12px; overflow-wrap: anywhere; }
+.live-run-details { margin-top: 16px; }
+.live-run-details > summary {
+  padding: 13px 16px;
+  font-size: 13px;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.live-run-details > summary:focus-visible { outline: 2px solid var(--ring); outline-offset: -3px; }
+.live-run-summary { margin-left: 12px; color: var(--muted-foreground); font-size: 11px; }
+.live-run-details-content { padding: 0 16px 16px; }
+.live-run-context-help { color: var(--muted-foreground); font-size: 12px; line-height: 1.6; }
+.live-run-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin: 16px 0; }
+.live-run-facts dt { color: var(--muted-foreground); font-size: 11px; margin-bottom: 5px; }
+.live-run-facts dd { margin: 0; font-size: 12px; overflow-wrap: anywhere; }
+.live-run-details .live-metrics { margin-bottom: 12px; }
+.live-page:focus { outline: none; }
 .observation-panel .surface-heading {
   padding-bottom: 14px;
 }
@@ -1175,6 +1211,18 @@ pre {
     font-size: 12px;
     max-width: 220px;
   }
+  .live-page { padding-top: 16px; }
+  .live-page-heading { align-items: center; margin-bottom: 12px; }
+  .live-page-heading h1 { margin-bottom: 0; }
+  .live-page-heading p { display: none; }
+  .live-context-banner { grid-template-columns: minmax(0, 1fr) auto; gap: 10px; padding: 11px 12px; }
+  .live-context-icon, .live-context-description { display: none; }
+  .live-context-banner button { max-width: 150px; height: auto; min-height: 32px; white-space: normal; }
+  .live-context-copy h2 { font-size: 13px; }
+  .live-host-status { padding-block: 9px; font-size: 11px; }
+  .live-run-facts { grid-template-columns: 1fr; gap: 12px; }
+  .live-run-details > summary { padding: 12px; }
+  .live-run-details-content { padding: 0 12px 12px; }
   .run-status {
     font-size: 11px;
     gap: 7px;

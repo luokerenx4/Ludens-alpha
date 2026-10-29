@@ -1,10 +1,10 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useLocale, useTranslations } from "@/lib/locale";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useBufferedMedia } from "./use-buffered-media";
+import { ObservationMedia } from "./observation-media";
 import type { Call, Observation, PerceptionSnapshot, RunData, TraceSpan } from "@/lib/types";
 import type { TimelineRecordDetail } from "@/lib/timeline-record";
 import { requestWait, sseFallbackReason } from "@/lib/transport";
@@ -202,74 +202,6 @@ export function RequestChart({
   );
 }
 
-function TextObservation({ url }: { url: string }) {
-  const t = useTranslations("runVisuals");
-  const { t: rootT } = useLocale();
-  const [text, setText] = useState(t("textObservation.loading"));
-  useEffect(() => {
-    const controller = new AbortController();
-    fetch(url, { signal: controller.signal })
-      .then(async (response) => {
-        if (!response.ok) throw new Error(mediaFailureMessage(response.status, rootT));
-        const value = await response.text();
-        if (!controller.signal.aborted) setText(value);
-      })
-      .catch((error) => {
-        if (!controller.signal.aborted) setText(String(error));
-      });
-    return () => controller.abort();
-  }, [url]);
-  return <pre className="observation-text">{text}</pre>;
-}
-
-function MediaFailure({ url }: { url: string }) {
-  const t = useTranslations("runVisuals");
-  const { t: rootT } = useLocale();
-  const [message, setMessage] = useState(t("mediaFailure.default"));
-  useEffect(() => {
-    const controller = new AbortController();
-    // Only failed media requests need a status lookup; normal images stream
-    // directly to the browser without a second copy in application memory.
-    fetch(url, { signal: controller.signal, cache: "no-store" })
-      .then(response => {
-        void response.body?.cancel();
-        if (!controller.signal.aborted) setMessage(mediaFailureMessage(response.status, rootT));
-      }).catch(() => {});
-    return () => controller.abort();
-  }, [url]);
-  return <span role="status">{message}</span>;
-}
-
-function BufferedObservationImage({ url, alt }: { url: string; alt: string }) {
-  const t = useTranslations("runVisuals");
-  const { t: rootT } = useLocale();
-  const target = useMemo(() => ({ key: url, value: alt, urls: [url] }), [url, alt]);
-  const { displayed, pending } = useBufferedMedia("observation", target);
-  const image = displayed?.images.get(displayed.key);
-  return <div className="buffered-observation" aria-busy={pending}>
-    {image?.error ? <span role="status">{image.error}</span> : image ?
-      <img src={image.src} width={image.width} height={image.height} alt={displayed!.value} /> : <span>{t("buffered.loading")}</span>}
-    {pending && displayed && <small role="status">{t("buffered.pendingKeep")} {displayed.value}</small>}
-  </div>;
-}
-
-function ObservationMedia({ observation, url, alt = "", thumbnail = false }: {
-  observation: Observation; url: string; alt?: string; thumbnail?: boolean;
-}) {
-  const t = useTranslations("runVisuals");
-  const { t: rootT } = useLocale();
-  const [failed, setFailed] = useState(false);
-  useEffect(() => setFailed(false), [url]);
-  if (observation.mediaStorage === "unrecorded") return <span>{t("media.unrecorded")}</span>;
-  if (failed) return <MediaFailure url={url} />;
-  if (observation.mediaType.startsWith("image/"))
-    return thumbnail ? <img src={url} alt={alt} onError={() => setFailed(true)} /> : <BufferedObservationImage url={url} alt={alt} />;
-  if (thumbnail) return <span>{observation.mediaType.startsWith("audio/") ? t("media.audio") : t("media.text")}</span>;
-  if (observation.mediaType.startsWith("audio/"))
-    return <audio controls preload="none" src={url} onError={() => setFailed(true)} />;
-  return <TextObservation url={url} />;
-}
-
 function TimelineRecordData({ url }: { url: string }) {
   const t = useTranslations("runVisuals");
   const { t: rootT } = useLocale();
@@ -305,12 +237,14 @@ export function ObservationPanel({
   selectedImage,
   onImage,
   compact = false,
+  priority = false,
 }: {
   data: RunData;
   call?: Call;
   selectedImage?: string;
   onImage(id: string): void;
   compact?: boolean;
+  priority?: boolean;
 }) {
   const t = useTranslations("runVisuals");
   const { t: rootT } = useLocale();
@@ -351,16 +285,7 @@ export function ObservationPanel({
       ))}
     </div>
   );
-  return (
-    <section
-      className={"surface observation-panel" + (compact ? " compact" : "")}
-    >
-      <div className="surface-heading">
-        <h2>{showingInput ? t("panel.inputTitle") : t("panel.samplesTitle")}</h2>
-        <span>
-          {call ? t("panel.request") + " #" + String(call.index).padStart(3, "0") : t("panel.waitingRequest")}
-        </span>
-      </div>
+  const readDetails = (<>
       {data.perception && (
         <div className="screen-meta">
           <span>{t("panel.perceptionProcess")} · {perceptionStateLabel(data.perception.state, rootT)}</span>
@@ -405,7 +330,27 @@ export function ObservationPanel({
         url={"/api/media?" + new URLSearchParams({ project: data.project, run: data.run,
           record: record.timeline!.recordId, sequence: String(record.timeline!.sequence),
           ...(showingInput && call ? { call: call.id } : observation ? { id: observation.id } : {}) })} />)}
-      <div className="screen">
+    </>);
+  return (
+    <section
+      className={"surface observation-panel" + (compact ? " compact" : "") + (priority ? " observation-priority" : "")}
+    >
+      <div className="surface-heading">
+        <h2>{showingInput ? t("panel.inputTitle") : t("panel.samplesTitle")}</h2>
+        <span>
+          {call ? t("panel.request") + " #" + String(call.index).padStart(3, "0") : t("panel.waitingRequest")}
+        </span>
+      </div>
+      {priority && (perception?.ok === false || perception?.deliveryError || data.perception?.state === "error") && (
+        <p className="observation-query-warning" role="status">
+          {perception?.deliveryError ? t("panel.deliveryFailed") : perception?.ok === false
+            ? t("panel.thisQuery") + " · " + t("panel.queryFailed")
+            : t("panel.perceptionProcess") + " · " + perceptionStateLabel("error", rootT)}
+          {" · " + t("panel.detailsBelow")}
+        </p>
+      )}
+      {!priority && readDetails}
+      <div className={"screen" + (priority && (!observation || !observation.mediaType.startsWith("image/") || observation.mediaStorage === "unrecorded") ? " screen-content" : "")}>
         {observation ? (
           <ObservationMedia key={data.project + ":" + data.run} observation={observation} url={media(observation)}
             alt={(showingInput ? t("panel.altInput") : t("panel.altSaved")) + " · " + observation.controller + " · " + observationTime(timestamp(observation), t)} />
@@ -441,7 +386,18 @@ export function ObservationPanel({
           </Button>
         )}
       </div>
-      {!!inputs.length && samples(inputs, t("panel.modelInput"))}
+      {priority ? inputs.length > 1 && (
+        <details className="observation-metadata observation-inputs">
+          <summary>{t("panel.modelInput")} · {inputs.length}</summary>
+          {samples(inputs, t("panel.modelInput"))}
+        </details>
+      ) : !!inputs.length && samples(inputs, t("panel.modelInput"))}
+      {priority && (data.perception || perception || records.length > 0) && (
+        <details className="observation-metadata observation-diagnostics">
+          <summary>{t("panel.perceptionDetails")}</summary>
+          {readDetails}
+        </details>
+      )}
       {observation && text && (
         <details className="observation-metadata">
           <summary>{showingInput ? t("panel.textWithObservation") : t("panel.observationText")}</summary>

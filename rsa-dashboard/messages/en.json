@@ -1223,7 +1223,7 @@
       "hasMore": "more records follow",
       "samplingSources": "Sampling sources",
       "recordsPrefix": "This input contains",
-      "recordsSuffix": "timeline records. Expand details above for perception data and space info.",
+      "recordsSuffix": "timeline records. Expand the record details to view perception data and space info.",
       "altInput": "model input",
       "altSaved": "saved observation",
       "modelInput": "Model input",
@@ -1237,7 +1237,9 @@
       "capture": "Capture",
       "encode": "Encode",
       "frameDelta": "Frame delta",
-      "afterExecution": "Post-action sample request"
+      "afterExecution": "Post-action sample request",
+      "perceptionDetails": "Perception & record details",
+      "detailsBelow": "Details below"
     },
     "fact": {
       "readMs": "Read time",
@@ -1314,6 +1316,13 @@
     "events": {
       "help": "Most recent 100 events; filter by type in the run page activity log for the full history.",
       "empty": "No error or compaction events in this round."
+    },
+    "mediaRecovery": {
+      "region": "Recorded observation media",
+      "retry": "Retry media read",
+      "retrying": "Retrying media read…",
+      "readOnly": "Re-reads this recording.",
+      "audioReady": "Audio controls reloaded. Choose Play to check playback."
     }
   },
   "common": {
@@ -1470,7 +1479,13 @@
     "hostHistorical": "Recorded run",
     "hostSnapshot": "Last observed",
     "refreshFailed": "Latest snapshot could not be refreshed. Return to latest to retry observations and logs together.",
-    "scopeChanged": "The run changed while loading. Return to latest to read a matching snapshot."
+    "scopeChanged": "The run changed while loading. Return to latest to read a matching snapshot.",
+    "runDetails": "Run details",
+    "model": "Model",
+    "drivers": "Drivers",
+    "retryRun": "Read selected run again",
+    "readingRun": "Reading selected run…",
+    "readFailureHint": "Read this selected run again without changing its scope or your auto-refresh setting."
   },
   "consoleSidebar": {
     "menuOpen": "Open menu",

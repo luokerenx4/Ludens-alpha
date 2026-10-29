@@ -1,0 +1,14 @@
+.buffered-observation[data-media-kind="audio"] {
+  height: auto;
+  min-height: 112px;
+  align-content: center;
+  gap: 12px;
+  padding-block: 16px;
+}
+
+.buffered-observation[data-media-state="error"],
+.buffered-observation[data-media-retrying="true"] {
+  height: auto;
+  min-height: 112px;
+}
+

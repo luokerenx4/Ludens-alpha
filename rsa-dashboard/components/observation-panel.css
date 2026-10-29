@@ -1,0 +1,101 @@
+.observation-priority .surface-heading {
+  gap: 10px;
+  padding: 14px;
+  align-items: baseline;
+}
+
+.observation-priority .surface-heading h2 {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.observation-priority .surface-heading > span {
+  flex-shrink: 0;
+  max-width: 45%;
+  text-align: right;
+}
+
+.observation-priority .screen-meta {
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  overflow-wrap: anywhere;
+}
+
+.observation-priority .screen-content,
+.observation-priority .screen:has([data-media-state="error"]),
+.observation-priority .screen:has([data-media-retrying="true"]) {
+  aspect-ratio: auto;
+  min-height: 112px;
+}
+
+.observation-priority .screen-content > .observation-text,
+.observation-priority .screen-content .observation-text {
+  max-height: 280px;
+  height: auto;
+}
+
+.observation-priority .screen-content > p,
+.observation-priority .screen-content > span {
+  padding: 16px;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.observation-priority .screen-content .empty-state {
+  padding: 20px 16px;
+}
+
+.observation-priority .screen-content .empty-symbol {
+  font-size: 26px;
+}
+
+.observation-priority .screen-content .empty-state h3 {
+  margin-block: 10px 0;
+}
+
+.observation-query-warning {
+  margin: 0 10px 10px;
+  border: 1px solid color-mix(in srgb, var(--gold) 35%, transparent);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  color: var(--gold);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.observation-priority .observation-metadata summary {
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
+
+.observation-priority .observation-metadata summary:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 4px;
+  border-radius: 2px;
+}
+
+.observation-priority .observation-metadata summary span {
+  float: none;
+  margin-left: 8px;
+  color: var(--subtle);
+}
+
+.observation-priority .observation-inputs[open] > summary,
+.observation-priority .observation-diagnostics[open] > summary {
+  margin-bottom: 12px;
+  color: var(--foreground);
+}
+
+.observation-priority .observation-inputs .sample-strip {
+  padding: 2px;
+}
+
+.observation-priority .observation-diagnostics > .observation-metadata {
+  padding-inline: 0;
+}
+
+.observation-priority .observation-diagnostics > .screen-meta {
+  padding-inline: 0;
+}
