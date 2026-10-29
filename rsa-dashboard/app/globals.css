@@ -180,8 +180,10 @@ h3 {
   color: var(--gold);
 }
 .sidebar .brand { flex-shrink: 0; }
-.sidebar .sidebar-navigation { min-height: 0; overflow-y: auto; }
-.sidebar-footer { grid-column: 1 / -1; margin-top: auto; display: flex; min-width: 0; flex-direction: column; gap: 12px; flex-shrink: 0; }
+.sidebar-menu-control { display: none; }
+.sidebar-scroll-area { display: flex; flex: 1; flex-direction: column; gap: 22px; min-width: 0; min-height: 0; padding: 6px; margin: -6px; overflow-y: auto; overscroll-behavior: contain; scroll-padding-block: 6px; }
+.sidebar-scroll-area > .sidebar-navigation, .sidebar-scroll-area > .pet-follow-card { flex-shrink: 0; }
+.sidebar-footer { grid-column: 1 / -1; display: flex; min-width: 0; flex-direction: column; flex-shrink: 0; }
 .sidebar-settings { border-top: 1px solid var(--line); padding-top: 10px; }
 .sidebar nav {
   display: flex;
@@ -1145,7 +1147,9 @@ pre {
     padding: 0;
     font-size: 20px;
   }
-  .sidebar[data-expanded="false"] .sidebar-navigation,
+  .sidebar-menu-control { display: inline-flex; }
+  .sidebar-scroll-area { grid-column: 1 / -1; flex: none; overflow: visible; gap: 14px; }
+  .sidebar[data-expanded="false"] .sidebar-scroll-area,
   .sidebar[data-expanded="false"] .sidebar-footer { display: none; }
   .sidebar .sidebar-settings { display: flex; flex-direction: column; }
   .sidebar .sidebar-settings a { justify-content: flex-start; border-radius: 8px; }
