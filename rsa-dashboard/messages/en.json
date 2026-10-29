@@ -1383,7 +1383,12 @@
       "ariaCache": "Cache hit percentage",
       "ariaBody": "Request body size, MB",
       "noData": "No data",
-      "noRequests": "No requests"
+      "noRequests": "No requests",
+      "empty": {
+        "latency": "No request duration or transport wait was recorded for this page.",
+        "cache": "No cache-hit ratio was recorded for this page.",
+        "body": "No request body or WebSocket frame size was recorded for this page."
+      }
     },
     "textObservation": {
       "loading": "Loading text observation…"
@@ -1773,5 +1778,29 @@
     "panelTitle": "Recorded evidence",
     "close": "Close",
     "contentLabel": "Evidence content"
+  },
+  "runAnalysis": {
+    "requests": "Requests",
+    "chooseRequest": "Choose a request",
+    "selectedRequest": "Selected request",
+    "noRequests": "No requests in this page",
+    "outsidePage": "Outside this page",
+    "olderRequest": "Previous request",
+    "newerRequest": "Next request",
+    "retry": "Read again",
+    "reading": "Reading…",
+    "readFailed": "Could not read this request.",
+    "refreshFailed": "Could not refresh request details.",
+    "showingCached": "Showing the last successful read for this selection.",
+    "technicalDetails": "Technical details",
+    "loadingRequest": "Reading the selected request…",
+    "chooseOrRetry": "Read again or choose another request.",
+    "requestUnavailable": "Selected request unavailable",
+    "requestUnavailableHint": "This read did not contain the selected request. Choose another request or read again.",
+    "performanceOverview": "Performance overview",
+    "overviewCount": "{count} requests in this selection",
+    "overviewHint": "Summary for the selected scope and recorded metrics for the requests on this page. Charts appear only when their metrics were recorded.",
+    "requestCharts": "Recorded request metrics",
+    "pageRange": "Page #{first}–#{last} · {total} requests"
   }
 }
