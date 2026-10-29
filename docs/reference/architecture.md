@@ -10,7 +10,7 @@ Ludens（RSA，Recursive Self-Adaptation）将设备驱动、Agent 执行运行�
 | `rsa/` | **自适应 Harness**：管理工作区配置与生命周期、能力发现与路由、常驻感知（`perception.py`）与常驻动作（`action.py`）Python 子进程、Harbor 评测以及运行日志归档。 |
 | **Shiori** | **唯一执行内核（职责名）**：由 RSA Host Runtime 实现，统一管控控制周期、时间/请求预算、信号取消与退出清理。Agent 模式挂载 **OMP 18.9.1**；普通评测程序、Verifier 与 Metric 共用同一生命周期而不启动模型。 |
 | `rsa-dashboard/` | **本地控制台服务**：通过独立 Node Worker 构建与查询日志索引，提供实时活动流、时空轴视频回放、运行统计、文档浏览、能力目录与人工交还入口。 |
-| `rsa-companion/` | **桌面伴侣（Ludens Pet）**：Electron 桌面壳，主窗口复用同一 Dashboard 视图，原生透明桌宠窗口与音频引擎增量消费同一套活动日志。 |
+| `rsa-companion/` | **可选桌面伴侣（Ludens Pet）**：Electron 桌面壳，主窗口复用同一 Dashboard 视图，原生透明桌宠窗口与音频引擎增量消费同一套活动日志。 |
 
 ```mermaid
 flowchart LR
@@ -105,7 +105,7 @@ RSA 由 TypeScript 宿主（`rsa/src/`）与 Python 工具包（`rsa/python/rsa_
 
 | 存储位置 | 归属与内容 |
 | --- | --- |
-| `.rsa/timeline/` | **能力观测与媒体唯一原件**：由常驻感知进程单一写入者维护，存放 `@record` 记录元数据、10 秒分段 MP4 视频（`video/`）与 SHA-256 去重非视频媒体（`objects/`）。 |
+| `.rsa/timeline/` | **能力观测与媒体唯一原件**：由常驻感知进程单一写入者维护，存放 `@record` 记录元数据、分段 fMP4 视频（`video/`，默认 5 分钟一段、空闲 10 秒收尾）与 SHA-256 去重非视频媒体（`objects/`）。 |
 | `.rsa/archive/` | **模型与工具结构化文本归档**：跨请求、跨 run 按内容哈希去重存储 `objects/<sha256>.json.gz` 与流式载荷，内含媒体一律通过引用指向 `.rsa/timeline/`。 |
 | `logs/<run-id>/` | **单次运行事件流**：存放 `manifest.json`、`events.jsonl`、`streams/` 与 Benchmark `trial.json` / `verifier/`，通过 `eventSources` 与内容引用关联 Baseware、Archive 与 Timeline。 |
 | `.rsa/shiori/` | **OMP 原生会话存储**：存放 `sessions/*.jsonl` 与当前续接指针，由 OMP SessionManager 管理。 |
