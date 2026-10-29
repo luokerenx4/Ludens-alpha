@@ -58,14 +58,16 @@ rsa run --model openai-codex/gpt-6.1-sol --seconds 300 --requests 50
 
 `rsa up` 需要新启动 Dashboard 时，会在拉起设备前调用 `npm run build:check` 校验构建产物与当前源码指纹；若未构建或源码已更新，会提示先执行 `npm run build`。如果已有 Dashboard API 可用，`rsa up` 会直接复用，不检查或热更新该进程的构建。更新生产控制台时需重新构建并重启 Dashboard；仅停止或重启 Dashboard 不会停止正在运行的 Host、Baseware 与模拟器。
 
-打开浏览器访问 `http://127.0.0.1:3015` 即可使用控制台：
+打开浏览器访问 `http://127.0.0.1:3015` 即可使用控制台。侧栏按作用域分段：**工作区**段展示当前工作区的运行信息，**全局**段放不依赖具体运行的页面，**开发者**段放原理展示工具；运行/周期选择器与实时刷新开关只出现在需要运行上下文的页面头部。
 
-- **工作区管理（`?view=workspaces`）**：创建新工作区（名称与可选目录）、登记已有目录、只移除索引，以及设置默认父目录；读取同一 `LUDENS_HOME` 下的配置与 `registry/<id>.json`。
 - **运行与回放（`?view=live` / `?view=replay`）**：实时查看模型推理流、工具调用、设备输入与感知画面，或在历史时间轴上同步回放采样帧与事件。归档 worker、冷索引构建子进程与内存预算详见 [消费与指标解释](../reference/logging.md#消费与指标解释)。
 - **性能与评测（`?view=benchmark`）**：查看单次请求的耗时、缓存与调用链剖析，或在“评测目录”（`?view=benchmark&bench=cases`）中查看跨工作区的 Harbor 任务执行历史与评分对比。
 - **能力目录与驱动校验（`?view=caps`）**：静态展示当前选中工作区的设备目录快照（`baseware.json`）、Python `@capability` 声明及 Harbor 评测任务，并提供外部驱动包的在线校验与 `rsa init` 命令生成。
 - **感知配置（`?view=perception`）**：配置所选工作区的热窗口秒数、视频分段时长与停采空闲收尾秒数（写入 `.rsa/settings.json`，执行 `rsa perception reload` 后生效）。
+- **工作区管理（`?view=workspaces`）**：创建新工作区（名称与可选目录）、登记已有目录、只移除索引，以及设置默认父目录；读取同一 `LUDENS_HOME` 下的配置与 `registry/<id>.json`。
 - **站内文档（`?view=docs`）**：直接在控制台内浏览 `docs/tutorials/`、`docs/reference/` 与 `docs/insights/`，支持跨篇与章节锚点跳转。
+- **全局设置（`?view=settings`）**：集中 Ludens Pet 陪伴偏好（跟随、气泡、声音）等不依赖具体运行的设置；工作区自身的设置在各自页面。
+- **开发者面板（`?view=dev`）**：原理展示工具容器，目前有 Loop 注入实验台（`?view=dev&panel=loop`），模拟一次接管的上下文构成并对照已删除的批次末注入通道，详见 [注入收敛为轮首单通道](../insights/omp-injection.md)。
 
 ### 3. Ludens Pet 桌面伴侣
 
