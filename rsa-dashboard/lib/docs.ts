@@ -14,9 +14,9 @@ const groups: { id: DocGroup; title: string; blurb: string }[] = [
 ];
 
 const titles: Record<string, string> = {
-  "tutorials/README.md": "教程概览",
-  "reference/README.md": "组件与契约概览",
-  "insights/README.md": "洞见概览",
+  "tutorials/index.md": "教程概览",
+  "reference/index.md": "组件与契约概览",
+  "insights/index.md": "洞见概览",
   "tutorials/development.md": "开发与运行",
   "tutorials/workspace.md": "Workspace 与自适应代码",
   "reference/architecture.md": "架构与边界",
@@ -29,13 +29,14 @@ const titles: Record<string, string> = {
   "insights/ws-recovery.md": "WS 恢复测试依据",
 };
 
-const docIdPattern = /^(tutorials|reference|insights)\/(?:[a-z0-9-]+|README)$/;
+const docIdPattern = /^(tutorials|reference|insights)\/[a-z0-9-]+$/;
 
 async function listed(group: DocGroup, root: string): Promise<DocEntry[]> {
   const dir = join(root, group);
   let files: string[];
   try {
-    files = (await readdir(dir)).filter(name => name.endsWith(".md") && docIdPattern.test(`${group}/${name.slice(0, -3)}`)).sort();
+    files = (await readdir(dir)).filter(name => name.endsWith(".md") && docIdPattern.test(`${group}/${name.slice(0, -3)}`))
+      .sort((a, b) => (a === "index.md" ? -1 : b === "index.md" ? 1 : a.localeCompare(b)));
   } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
   return files.map(name => ({ id: `${group}/${name.replace(/\.md$/, "")}`, group,
     title: titles[`${group}/${name}`] ?? name.replace(/\.md$/, ""),

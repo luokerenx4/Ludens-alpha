@@ -13,13 +13,13 @@ test("relative document links retain their group, fragment and a keyboard-access
     "[日志](logging.md#消费与指标解释)",
     "[Workspace](../tutorials/workspace.md#能力留档与-workspace-时空轴)",
     "[本页](#%E7%BB%84%E4%BB%B6)",
-    "[概览](./README.md)",
+    "[概览](./index.md)",
   ].join("\n"), "reference/architecture");
   assert.match(html, /<a class="doc-ref" href="\/\?view=docs&amp;doc=reference%2Flogging&amp;docAnchor=/);
   assert.match(html, /data-doc="reference\/logging" data-doc-anchor="消费与指标解释"/);
   assert.match(html, /data-doc="tutorials\/workspace" data-doc-anchor="能力留档与-workspace-时空轴"/);
   assert.match(html, /data-doc="reference\/architecture" data-doc-anchor="组件"/);
-  assert.match(html, /data-doc="reference\/README"/);
+  assert.match(html, /data-doc="reference\/index"/);
   assert.doesNotMatch(html, /<span[^>]*data-doc/);
 });
 
@@ -73,7 +73,7 @@ test("only available docs become navigation links; source labels and unsafe path
 
 test("current repository documents and their internal section links all resolve", async () => {
   const groups = await docGroups(repositoryDocs);
-  for (const group of groups) assert.ok(group.docs.some(doc => doc.id === `${group.id}/README`));
+  for (const group of groups) assert.equal(group.docs[0]?.id, `${group.id}/index`);
   const documents = await Promise.all(groups.flatMap(group => group.docs.map(doc => readDoc(doc.id, repositoryDocs))));
   const byId = new Map(documents.map(doc => [doc.id, doc]));
   let links = 0, anchoredLinks = 0;
@@ -97,11 +97,11 @@ test("document reads reject traversal and symlinks outside the docs tree", async
   const root = join(directory, "docs");
   try {
     await mkdir(join(root, "reference"), { recursive: true });
-    await writeFile(join(root, "reference/README.md"), "# Overview\n");
+    await writeFile(join(root, "reference/index.md"), "# Overview\n");
     await writeFile(join(directory, "outside.md"), "private fixture");
     await symlink(join(directory, "outside.md"), join(root, "reference/escape.md"));
-    assert.equal((await readDoc("reference/README", root)).title, "组件与契约概览");
-    for (const id of ["reference/../outside", "../outside", "reference/README.md", "history/old", "reference/escape"]) {
+    assert.equal((await readDoc("reference/index", root)).title, "组件与契约概览");
+    for (const id of ["reference/../outside", "../outside", "reference/index.md", "history/old", "reference/escape"]) {
       await assert.rejects(readDoc(id, root), /未知文档/);
     }
   } finally { await rm(directory, { recursive: true, force: true }); }

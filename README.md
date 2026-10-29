@@ -173,16 +173,16 @@ Current documentation lives in the root `docs/` directory, split into `tutorials
 
 | Guide | Category | Contents |
 | --- | --- | --- |
-| [Tutorials Overview](docs/tutorials/README.md) | Tutorials | End-to-end onboarding path and common operational workflows. |
+| [Tutorials Overview](docs/tutorials/index.md) | Tutorials | End-to-end onboarding path and common operational workflows. |
 | [Development](docs/tutorials/development.md) | Tutorials | Installation, device setup (`mGBA` / `Ryubing` / `Azahar` / `Cua`), service lifecycle, and verification. |
 | [Workspace](docs/tutorials/workspace.md) | Tutorials | Configuration, `@capability` / `@record`, resident perception & action, and background programs. |
-| [Reference Overview](docs/reference/README.md) | Reference | System layers, contract index, and source-of-truth code map. |
+| [Reference Overview](docs/reference/index.md) | Reference | System layers, contract index, and source-of-truth code map. |
 | [Architecture](docs/reference/architecture.md) | Reference | Component boundaries, Shiori, control leases, OMP session loop, and storage ownership. |
 | [Baseware](docs/reference/baseware.md) | Reference | CUA native capability contract, driver boundaries, control arbitration, media, and external driver packages. |
 | [Driver Bridge Protocol](docs/reference/driver-bridge-protocol.md) | Reference | TCP line protocol (`HELLO` / `OWN` / `APPLY` / `TOUCH` / `CAPTURE`) for emulator bridges. |
 | [Logging](docs/reference/logging.md) | Reference | Event envelopes, timeline/archive storage, trace attribution, Dashboard cold/hot indexing, and replay. |
 | [Benchmark](docs/reference/benchmark.md) | Reference | Harbor 1.4 native profile, run bindings, `current_trial()`, independent verifiers, and built-in tasks. |
-| [Insights Overview](docs/insights/README.md) | Insights | Index of engineering decisions, production postmortems, and empirical measurements. |
+| [Insights Overview](docs/insights/index.md) | Insights | Index of engineering decisions, production postmortems, and empirical measurements. |
 | [OMP Compaction](docs/insights/omp-compaction.md) | Insights | Why and how OMP speculative compaction was patched for 30Hz real-time control loops. |
 | [OMP Injection](docs/insights/omp-injection.md) | Insights | Why automatic context injection was narrowed to perception records and sampler state transitions. |
 | [WS Recovery](docs/insights/ws-recovery.md) | Insights | 2026-10-20 Codex WebSocket recovery TDD rationale and 13-condition fault matrix. |
