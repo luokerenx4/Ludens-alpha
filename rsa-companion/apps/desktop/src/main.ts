@@ -24,7 +24,7 @@ if (values.help) {
   }
   const here = dirname(fileURLToPath(import.meta.url))
   app.setName('RSA Ludens Pet')
-  app.setPath('userData', resolve(values.profile ?? join(app.getPath('appData'), 'RSA Pet Pet')))
+  app.setPath('userData', resolve(values.profile ?? join(app.getPath('appData'), 'RSA Ludens Pet')))
   mkdirSync(app.getPath('userData'), { recursive: true })
   if (!app.requestSingleInstanceLock()) {
     app.exit(0)
