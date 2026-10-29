@@ -21,18 +21,18 @@ export function installCompanionActivity(owner: BrowserWindow, pet: BrowserWindo
     if (!source) throw new Error('No activity source')
     return source.read(signal)
   }, stop: () => source?.stop?.(), record: (...args) => source?.record?.(...args) }, {
-    signals: signals => { if (!owner.isDestroyed()) owner.webContents.send('openalice:activity:signals', signals) },
+    signals: signals => { if (!owner.isDestroyed()) owner.webContents.send('ludens:activity:signals', signals) },
     foreground, petVisible: () => !pet.isDestroyed() && pet.isVisible(),
     send: (surface, event) => {
       const window = surface === 'main' ? owner : pet
-      if (!window.isDestroyed()) window.webContents.send('openalice:activity:display', event)
+      if (!window.isDestroyed()) window.webContents.send('ludens:activity:display', event)
     },
     open: url => {
       if (owner.isDestroyed()) return
       if (owner.isMinimized()) owner.restore()
       owner.show(); owner.focus()
       if (access.openDetails) access.openDetails(url)
-      else owner.webContents.send('openalice:activity:open', url)
+      else owner.webContents.send('ludens:activity:open', url)
     },
   }, store.get())
   const trusted = (event: Electron.IpcMainInvokeEvent, window: BrowserWindow) =>
@@ -40,12 +40,12 @@ export function installCompanionActivity(owner: BrowserWindow, pet: BrowserWindo
       && (window !== owner || !access.trustedOwner || access.trustedOwner(event))
   const handlers: string[] = []
   const handle = (name: string, callback: (event: Electron.IpcMainInvokeEvent, input: unknown) => unknown) => {
-    const channel = 'openalice:activity:' + name; handlers.push(channel); ipcMain.handle(channel, callback)
+    const channel = 'ludens:activity:' + name; handlers.push(channel); ipcMain.handle(channel, callback)
   }
   handle('preferences', event => { if (!trusted(event, owner)) throw new Error('Unauthorized activity access'); return store.get() })
   const publish = (settings: ReturnType<typeof store.get>) => {
     controller.setPreferences(settings)
-    if (!owner.isDestroyed()) owner.webContents.send('openalice:activity:preferences-changed', settings)
+    if (!owner.isDestroyed()) owner.webContents.send('ludens:activity:preferences-changed', settings)
     return settings
   }
   handle('update-preferences', async (event, input) => { if (!trusted(event, owner)) throw new Error('Unauthorized activity access'); return publish(await store.update(input)) })

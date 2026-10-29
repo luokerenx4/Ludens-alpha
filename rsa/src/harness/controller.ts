@@ -1,7 +1,7 @@
 import type { EventTrace, RecordEvent } from "./events.ts";
 import { PythonCapabilities, type PythonCapability } from "./python-capabilities.ts";
 import type { DeviceSession } from "./runtime.ts";
-import { objectArguments } from "@playness/baseware/tool-contract";
+import { objectArguments } from "@ludens/baseware/tool-contract";
 
 interface ControllerOptions {
   workspace: string;

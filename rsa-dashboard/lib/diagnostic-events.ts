@@ -3,7 +3,7 @@ import { getDiagnosticIndex, type EventQuery } from "./log-index";
 
 export type DiagnosticQuery = Pick<EventQuery, "afterPosition" | "limit" | "epoch" | "fromAt" | "toAt" | "traceId" | "spanId" | "actionId" | "observationId">;
 
-/** Bounded explicit reads; optional full traces never enter activity/replay or Alice. */
+/** Bounded explicit reads; optional full traces never enter activity/replay or Pet. */
 export async function diagnosticEvents(project: string, run: string, query: DiagnosticQuery = {}, signal?: AbortSignal, root = artifactRoot) {
   const path = await resolveRun(project, run, root), index = getDiagnosticIndex(path), release = index.retain();
   try {

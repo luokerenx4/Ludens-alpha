@@ -6,7 +6,7 @@ const FAILURE_SIGNAL_MS = 12_000
 // stopped event. Do not let that historical gap leave the global affordance
 // claiming that a delegated request is still active forever.
 const ACTIVE_STALE_MS = 24 * 60 * 60 * 1_000
-export const GLOBAL_ACTIVITY_REFRESH_EVENT = 'openalice:activity-refresh'
+export const GLOBAL_ACTIVITY_REFRESH_EVENT = 'ludens:activity-refresh'
 
 /**
  * A signal is a deliberately small, user-facing fact selected from a larger

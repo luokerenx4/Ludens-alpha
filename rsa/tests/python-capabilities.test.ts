@@ -4,9 +4,9 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PythonCapabilities } from "../src/harness/python-capabilities.ts";
-import { BasewareCore } from "@playness/baseware/core";
-import { BasewareClient } from "@playness/baseware/client";
-import { listen } from "@playness/baseware/server";
+import { BasewareCore } from "@ludens/baseware/core";
+import { BasewareClient } from "@ludens/baseware/client";
+import { listen } from "@ludens/baseware/server";
 import { captureResult } from "./runtime-fixture.ts";
 
 async function workspace() { return realpath(await mkdtemp(join(tmpdir(), "rsa-python-"))); }

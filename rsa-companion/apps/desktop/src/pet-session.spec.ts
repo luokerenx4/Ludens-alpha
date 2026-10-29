@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AliceSessionCoordinator, type AliceTarget } from './alice-session.js'
+import { PetSessionCoordinator, type PetTarget } from './pet-session.js'
 import { RsaActivityController } from './rsa-activity-controller.js'
 import { DEFAULT_ACTIVITY_PREFERENCES } from './activity-policy.js'
 import type { RsaActivitySnapshot, RsaPetSnapshot } from './rsa-source.js'
 
-function target(name: string): AliceTarget {
+function target(name: string): PetTarget {
   return { project: `ws-${name}`, workspace: `/${name}`, revision: name, updatedAt: '2026-10-20T00:00:00Z' }
 }
 function snapshot(name: string): RsaActivitySnapshot {
@@ -16,7 +16,7 @@ function snapshot(name: string): RsaActivitySnapshot {
 }
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers() })
 
-describe('shared Alice follow target', () => {
+describe('shared Pet follow target', () => {
   it('can stay open without a workspace, reports idle, and recovers from a missing dashboard', async () => {
     const posts: any[] = [], createSource = vi.fn(), onSnapshot = vi.fn()
     let offline = true
@@ -26,7 +26,7 @@ describe('shared Alice follow target', () => {
       expect(init.headers).toMatchObject({ Origin: 'http://localhost:3015' })
       return Response.json({ target: null })
     }))
-    const session = new AliceSessionCoordinator({ dashboardUrl: 'http://localhost:3015', createSource, onSnapshot, onTargetChanged: () => {} })
+    const session = new PetSessionCoordinator({ dashboardUrl: 'http://localhost:3015', createSource, onSnapshot, onTargetChanged: () => {} })
     await session.pollTarget()
     expect((await session.read()).current.error).toContain('offline')
     offline = false
@@ -38,7 +38,7 @@ describe('shared Alice follow target', () => {
   })
 
   it('switches immediately during an old read, clears its bubble, and rejects late old callbacks and results', async () => {
-    let selected: AliceTarget | null = target('a')
+    let selected: PetTarget | null = target('a')
     const posts: any[] = [], stops: string[] = [], publications: RsaPetSnapshot[] = []
     const callbacks = new Map<string, (snapshot: RsaPetSnapshot) => void>()
     const pending = new Map<string, (snapshot: RsaActivitySnapshot) => void>()
@@ -48,7 +48,7 @@ describe('shared Alice follow target', () => {
     }))
     const sent: any[] = []
     let controller!: RsaActivityController
-    const session = new AliceSessionCoordinator({
+    const session = new PetSessionCoordinator({
       dashboardUrl: 'http://localhost:3015', onSnapshot: value => publications.push(value),
       onTargetChanged: () => { void controller.poll() },
       createSource: (workspace, onSnapshot) => {
@@ -96,7 +96,7 @@ describe('shared Alice follow target', () => {
       calls.push({ method: init.method!, body: init.body ? JSON.parse(init.body as string) : null })
       return Response.json({ target: selected })
     }))
-    const session = new AliceSessionCoordinator({
+    const session = new PetSessionCoordinator({
       dashboardUrl: 'http://localhost:3015', onSnapshot: () => {}, onTargetChanged: changed,
       createSource: workspace => ({ identity: () => workspace, read: () => new Promise(() => {}) }),
     })

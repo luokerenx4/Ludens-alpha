@@ -145,7 +145,7 @@ Dashboard 能力页（`?view=caps`）的“外部驱动”区在尚无工作区�
 
 新 Host 取得 workspace socket 独占权后，会一次性迁移旧 managed sessions 整目录和当前指针，保留旧目录符号链接以维持历史绝对资源引用，不清空会话。历史技能版本与 workspace 注册信息仍保留在 `../artifacts/rsa/ws-<name>-<hash>/`；OMP 全局 blob 不迁移，workspace 尚非独立导出包。存储边界见 [workspace](workspace.md#文件与会话)。
 
-[launch-background.py](../../rsa/scripts/launch-background.py) 将工作区日志/job 写到 `logs/background/`；共享 Ludens Pet 在 `../artifacts/rsa/alice/background/`，label 为 `dev.playness.alice.pet`（历史 label 与目录名保留）。服务脱离终端，不自动重启/开机启动。故障先看 `rsa services` 和对应日志，避免重复启动。
+[launch-background.py](../../rsa/scripts/launch-background.py) 将工作区日志/job 写到 `logs/background/`；共享 Ludens Pet 在 `../artifacts/rsa/alice/background/`，label 为 `dev.ludens.pet`。服务脱离终端，不自动重启/开机启动。故障先看 `rsa services` 和对应日志，避免重复启动。
 
 ## 独立组件与控制台
 
@@ -224,7 +224,7 @@ python3 baseware/scripts/sync-cua-contract.py --check
 姿态优先级为互动、当前可见日志、手选姿态、闲置；日志隐藏后恢复原姿态。
 思考日志显示思考，工具运行显示操作，工具完成显示得意，错误显示吃瘪；
 这只表达当前日志块的状态，不代表整项任务成功。简略通知不读取私有日志字段。
-现有 `RSA Alice Pet` 配置目录、IPC 与启动环境变量保留以延续设置。
+桌面端默认偏好目录为 Electron appData 下的 `RSA Ludens Pet`，可用 `--profile PATH` 指定独立目录。Dashboard 原生桥使用 `window.ludens`，桌宠 IPC 使用 `ludens:*`，禁用环境变量为 `LUDENS_DISABLE_COMPANION=1`；共享跟随状态保存在 Dashboard artifacts 根目录的 `.pet-target.json` / `.pet-consumer.json`。
 
 
 评测统一用 `rsa bench`，先读 help。`ludens/capability-reuse` 调用真实模型，其他内置用例离线；自定义评测依其代码运行，见 [benchmark](../reference/benchmark.md)。

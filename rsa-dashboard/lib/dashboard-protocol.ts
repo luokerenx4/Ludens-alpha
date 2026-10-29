@@ -1,5 +1,5 @@
 import type { getActivity, ActivityQuery } from "./activity";
-import type { aliceState, recordAliceConsumer, setAliceTarget } from "./alice-state";
+import type { petState, recordPetConsumer, setPetTarget } from "./pet-state";
 import type { benchmarkAttachment, benchmarkCatalog, benchmarkEvidence } from "./benchmark-data";
 import type { BenchmarkQuery, BenchmarkDetailQuery } from "./benchmarks";
 import type { capabilities } from "./capabilities";
@@ -30,9 +30,9 @@ export interface DashboardMethods {
   docGroups: { args: []; result: Awaited<ReturnType<typeof docGroups>> };
   readDoc: { args: [id: string]; result: Awaited<ReturnType<typeof readDoc>> };
   stop: { args: [project: string, run: string, epoch: string | null]; result: Awaited<ReturnType<typeof stopRun>> };
-  aliceState: { args: []; result: ReturnType<typeof aliceState> };
-  aliceTarget: { args: [project: unknown, ifUnset: boolean]; result: Awaited<ReturnType<typeof setAliceTarget>> };
-  aliceConsumer: { args: [input: unknown]; result: ReturnType<typeof recordAliceConsumer> };
+  petState: { args: []; result: ReturnType<typeof petState> };
+  petTarget: { args: [project: unknown, ifUnset: boolean]; result: Awaited<ReturnType<typeof setPetTarget>> };
+  petConsumer: { args: [input: unknown]; result: ReturnType<typeof recordPetConsumer> };
 }
 export type DashboardMethod = keyof DashboardMethods;
 export type WorkerRequest = { type: "call"; id: number; method: DashboardMethod; args: unknown[] }

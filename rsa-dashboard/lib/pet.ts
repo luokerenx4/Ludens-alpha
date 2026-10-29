@@ -1,12 +1,12 @@
 import type { Project } from "./types";
 
-export interface AliceTarget {
+export interface PetTarget {
   project: string;
   workspace: string;
   revision: string;
   updatedAt: string;
 }
-export interface AliceConsumer {
+export interface PetConsumer {
   instanceId: string;
   pid: number;
   revision: string | null;
@@ -16,9 +16,9 @@ export interface AliceConsumer {
   error: string | null;
   seenAt: string;
 }
-export interface AliceState {
-  target: AliceTarget | null;
-  consumer: AliceConsumer | null;
+export interface PetState {
+  target: PetTarget | null;
+  consumer: PetConsumer | null;
   connected: boolean;
 }
 export function workspaceLabel(project?: Pick<Project, "id" | "workspace">) {
@@ -26,7 +26,7 @@ export function workspaceLabel(project?: Pick<Project, "id" | "workspace">) {
   const parts = project.workspace?.split("/").filter(Boolean);
   return (parts?.at(-1) === "workspace" ? parts.at(-2) : parts?.at(-1)) ?? project.id;
 }
-export function aliceStatus(state: AliceState | null) {
+export function petStatus(state: PetState | null) {
   if (!state) return "正在连接…";
   if (!state.connected) return "Ludens Pet 未连接";
   if (!state.target)

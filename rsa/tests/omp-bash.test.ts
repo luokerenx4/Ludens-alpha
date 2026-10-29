@@ -7,8 +7,8 @@ import { daemonClientForProject } from "@oh-my-pi/pi-coding-agent/launch/client"
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { refreshShellConfigCache } from "@oh-my-pi/pi-utils/procmgr";
-import { BasewareCore } from "@playness/baseware/core";
-import { listen as listenBaseware } from "@playness/baseware/server";
+import { BasewareCore } from "@ludens/baseware/core";
+import { listen as listenBaseware } from "@ludens/baseware/server";
 import { connectBaseware } from "../src/harness/baseware.ts";
 import { WorkspaceController } from "../src/harness/controller.ts";
 import { EventLog } from "../src/harness/events.ts";

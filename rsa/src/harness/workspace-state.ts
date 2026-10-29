@@ -23,7 +23,7 @@ export async function resolveWorkspaceState(workspacePath: string, artifactRoot:
   const sessionsDir = join(shioriDir, "sessions");
   await Promise.all([mkdir(dir, { recursive: true }), mkdir(sessionsDir, { recursive: true })]);
   return { workspace, id, dir, shioriDir, sessionsDir, versionsDir: join(dir, "skill-versions"),
-    socket: `/tmp/playness-rsa-${process.getuid!()}-${hash}.sock` };
+    socket: `/tmp/ludens-rsa-${process.getuid!()}-${hash}.sock` };
 }
 
 export async function readCurrentSession(state: WorkspaceState): Promise<string | undefined> {

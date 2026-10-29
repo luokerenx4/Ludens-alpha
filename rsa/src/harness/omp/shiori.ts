@@ -50,7 +50,7 @@ export class ShioriTelemetry {
       }],
     });
     this.config = {
-      tracer: this.provider.getTracer("playness.shiori.omp", SHIORI_SOURCE.implementationVersion),
+      tracer: this.provider.getTracer("ludens.shiori.omp", SHIORI_SOURCE.implementationVersion),
       agent: { name: "shiori" },
       // Bodies already have shared archive references. Do not capture another
       // prompt/response/tool-result copy in native telemetry attributes.

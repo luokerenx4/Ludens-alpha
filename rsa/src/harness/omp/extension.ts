@@ -6,7 +6,7 @@ import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { resizeImage } from "@oh-my-pi/pi-coding-agent/utils/image-resize";
 import { refreshShellConfigCache } from "@oh-my-pi/pi-utils/procmgr";
 import * as z from "@oh-my-pi/omptype/zod";
-import type { Clock, Observation } from "@playness/baseware/contracts";
+import type { Clock, Observation } from "@ludens/baseware/contracts";
 import type { Runtime } from "../runtime.ts";
 import { Workspace } from "../workspace.ts";
 import { childTrace, type EventTrace, type RecordEvent } from "../events.ts";

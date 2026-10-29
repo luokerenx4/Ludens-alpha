@@ -1,5 +1,5 @@
 {
-  "name": "@playness/baseware",
+  "name": "@ludens/baseware",
   "private": true,
   "type": "module",
   "exports": {

@@ -1,5 +1,5 @@
 import { readArchiveJson } from "./archive-client";
-/** Shared read-only activity protocol for the Dashboard hook and Alice Pet. */
+/** Shared read-only activity protocol for the Dashboard hook and Ludens Pet. */
 export interface EventSource { component: string; implementation?: string; implementationVersion?: string }
 export interface LogBlock {
   id: string;

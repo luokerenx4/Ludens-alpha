@@ -3,8 +3,8 @@ import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promi
 import { connect, type Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { BasewareCore } from "@playness/baseware/core";
-import { listen as listenBaseware } from "@playness/baseware/server";
+import { BasewareCore } from "@ludens/baseware/core";
+import { listen as listenBaseware } from "@ludens/baseware/server";
 import { connectBaseware } from "../src/harness/baseware.ts";
 import { WorkspaceController } from "../src/harness/controller.ts";
 import { Runtime } from "../src/harness/runtime.ts";

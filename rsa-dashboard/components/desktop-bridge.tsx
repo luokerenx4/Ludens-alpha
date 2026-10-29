@@ -5,7 +5,7 @@ import {
   localDashboardLink,
   type ActivityDisplay,
 } from "../lib/desktop";
-import "./alice-settings.css";
+import "./pet-settings.css";
 
 /** Native affordances around the same Web console; no second run view. */
 export function DesktopBridge({
@@ -22,7 +22,7 @@ export function DesktopBridge({
     navigate.current = onNavigate;
   }, [onNavigate]);
   useEffect(() => {
-    const companion = window.openAlice?.companion;
+    const companion = window.ludens?.companion;
     if (!companion) return;
     const open = (input: string) => {
       const url = localDashboardLink(input, window.location.href);
@@ -45,7 +45,7 @@ export function DesktopBridge({
   const action = async (name: "open" | "dismiss", id: string) => {
     setError(false);
     try {
-      await window.openAlice?.companion?.activity[name](id);
+      await window.ludens?.companion?.activity[name](id);
     } catch {
       setError(true);
     }

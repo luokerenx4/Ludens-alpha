@@ -6,11 +6,11 @@ import type { ActivityPreferences, DesktopCompanion, PetSoundSettings } from '..
 export function useDesktopCompanion() {
   const [bridge, setBridge] = useState<DesktopCompanion | null>(null)
   const [ready, setReady] = useState(false)
-  useEffect(() => { setBridge(window.openAlice?.companion ?? null); setReady(true) }, [])
+  useEffect(() => { setBridge(window.ludens?.companion ?? null); setReady(true) }, [])
   return { bridge, ready }
 }
 
-/** Preserves Alice's local audio validation, persistence and preview behavior. */
+/** Preserves Pet's local audio validation, persistence and preview behavior. */
 export function usePetSound(bridge: DesktopCompanion | null) {
   const [settings, setSettings] = useState<PetSoundSettings | null>(null)
   const [loading, setLoading] = useState(false)

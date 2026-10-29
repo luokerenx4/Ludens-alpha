@@ -5,11 +5,11 @@ import {
   useActivityPreferences,
   useDesktopCompanion,
   usePetSound,
-} from "./alice-hooks";
+} from "./pet-hooks";
 import type { BlockKind } from "../lib/desktop";
 import type { Project } from "../lib/types";
-import { AliceFollowSettings, type AliceFollow } from "./alice-follow";
-import "./alice-settings.css";
+import { PetFollowSettings, type PetFollow } from "./pet-follow";
+import "./pet-settings.css";
 
 const blockLabels: Record<BlockKind, string> = {
   thinking: "思考",
@@ -49,7 +49,7 @@ function Switch({
   );
 }
 
-export function AliceSettings({ follow, projects }: { follow: AliceFollow; projects: Project[] }) {
+export function PetSettings({ follow, projects }: { follow: PetFollow; projects: Project[] }) {
   const { bridge, ready } = useDesktopCompanion();
   const sound = usePetSound(bridge),
     prefs = useActivityPreferences(bridge);
@@ -102,9 +102,9 @@ export function AliceSettings({ follow, projects }: { follow: AliceFollow; proje
   };
   const settings = prefs.settings;
   return (
-    <div className="alice-settings">
-      <div className="alice-settings-intro">
-        <div className="alice-monogram" aria-hidden="true">
+    <div className="pet-settings">
+      <div className="pet-settings-intro">
+        <div className="pet-monogram" aria-hidden="true">
           L
         </div>
         <div>
@@ -115,7 +115,7 @@ export function AliceSettings({ follow, projects }: { follow: AliceFollow; proje
           {bridge ? "桌面端已连接" : "浏览器模式"}
         </span>
       </div>
-      <AliceFollowSettings follow={follow} projects={projects} />
+      <PetFollowSettings follow={follow} projects={projects} />
       {ready && !bridge && (
         <div className="desktop-only-note">
           <strong>关注工作区可在这里切换</strong>

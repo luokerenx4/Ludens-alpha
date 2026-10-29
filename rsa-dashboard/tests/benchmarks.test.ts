@@ -280,7 +280,7 @@ test("evidence keeps source event identity distinct from a colliding run-local s
   } finally { await f.cleanup(); }
 });
 
-test("benchmark history does not replace a game run or Alice initial selection", async () => {
+test("benchmark history does not replace a game run or Pet initial selection", async () => {
   const f = await fixture();
   try {
     await f.save(f.make("z-benchmark"));
