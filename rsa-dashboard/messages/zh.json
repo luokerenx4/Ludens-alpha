@@ -1207,6 +1207,7 @@
     "colStatus": "执行状态",
     "colVerification": "评分版本",
     "colActions": "操作",
+    "selectedRun": "已选运行",
     "setBaseline": "设为基线",
     "viewRun": "查看运行 ↗",
     "noHistory": "此页没有执行记录。历史任务即使已不在目录中，也可通过固定运行链接查看。",
