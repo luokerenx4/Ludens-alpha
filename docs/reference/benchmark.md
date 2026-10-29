@@ -52,7 +52,7 @@ Harbor 任务包只描述“测什么与怎么判分”，而“运行什么程�
 
 | 占位符 / 字段 | 解析值与边界 |
 | --- | --- |
-| `{rsa}` / `{python}` / `{bun}` | 当前 RSA CLI、选定框架 Python 解释器（`RSA_PYTHON`）与 Bun 可执行文件的绝对路径。 |
+| `{rsa}` / `{python}` / `{bun}` | RSA 包根目录（仓库中的 `rsa/`）、选定框架 Python 解释器（`RSA_PYTHON`）与 Bun 可执行文件路径。 |
 | `{workspace}` | 作者所在的原工作区绝对路径。 |
 | `{workdir}` | 本次试验的实际执行目录（`workspace: "isolated"` 时为每次试验独立创建的隔离目录）。 |
 | `{artifacts}` | 本次试验独占的产物输出目录（`logs/<run-id>/artifacts`）。 |
@@ -87,7 +87,7 @@ version = "1"
 description = "Measure a capability on fixed examples."
 ```
 
-- **命名与内容寻址固定**：`ludens-native` 要求 `task.name` 必须采用 `org/name` 命名空间格式。Shiori 对任务包内的全部文件计算确定性 `sha256:<64位十六进制>` 内容摘要（Digest），并在运行前将任务包快照固定至 `<workspace>/.rsa/benchmarks/tasks/<digest>/`。
+- **命名与内容寻址固定**：`ludens-native` 要求 `task.name` 必须采用 `org/name` 命名空间格式。Shiori 按 Harbor 发布文件选择规则计算确定性 `sha256:<64位十六进制>` 内容摘要（Digest）：根目录选择 `task.toml`、`instruction.md`、可选 `README.md` 与 `trajectory.json`，再扫描 `environment/`、`tests/`、`solution/`、`steps/` 并应用 `.gitignore` / `.harborignore` 排除规则（见 [task.ts](../../rsa/src/benchmark/task.ts)）。运行前将选定文件快照固定至 `<workspace>/.rsa/benchmarks/tasks/<digest 十六进制部分>/`。
 - **执行溯源分离**：被测外部脚本或模型权重不纳入 Task 包摘要，而是由 Shiori 在 `input.json` 与 `manifest.json` 中自动记录 Git commit/dirty 状态、实际 `argv`、预算及模型标识，或由被测程序通过 `current_trial().subject(...)` 显式登记。
 
 ### 2. Dataset 清单（`dataset.toml`）
@@ -131,13 +131,13 @@ trial.flush()
 
 ### 1. Verifier 环境变量与 `reward.json` 契约
 
-Shiori 在启动 `tests/test.sh` 时清理实时设备 socket、控制 `epoch` 与模型凭据环境变量，并注入以下四个路径变量：
+Shiori 在启动 `tests/test.sh` 时清理实时设备 socket、控制 `epoch` 与模型凭据环境变量，并注入以下四个路径变量。Native Profile 运行普通本机进程；`isolated` 仅分配独立执行目录，环境变量清理不提供文件系统或网络隔离。
 
 | 环境变量 | 指向路径与用途 |
 | --- | --- |
-| `RSA_BENCH_TASK_DIR` | 本次评分使用的固定任务包目录（`.rsa/benchmarks/tasks/<digest>/`）。 |
+| `RSA_BENCH_TASK_DIR` | 本次评分使用的固定任务包目录（`.rsa/benchmarks/tasks/<digest 十六进制部分>/`）。 |
 | `RSA_BENCH_INPUT` | 本次评分输入清单 JSON（含 trial 元数据与证据路径引用）。 |
-| `RSA_BENCH_ARTIFACTS` | 被测程序产出的 `logs/<run-id>/artifacts/` 目录（只读消费）。 |
+| `RSA_BENCH_ARTIFACTS` | 被测程序产出的 `logs/<run-id>/artifacts/` 目录，供评分器读取事实；不施加文件系统只读权限。 |
 | `RSA_BENCH_VERIFIER_DIR` | 本次评分独占的输出目录（`logs/<run-id>/verifier/<verification-id>/`）。 |
 
 `tests/test.sh` 将最终数值评分写入 `$RSA_BENCH_VERIFIER_DIR/reward.json`（可选将详细诊断写入同目录的 `details.json`）：
@@ -146,12 +146,12 @@ Shiori 在启动 `tests/test.sh` 时清理实时设备 socket、控制 `epoch` �
 {"accuracy": 0.94, "latency_ms": 12.3, "success": 1}
 ```
 
-- **扁平有限数值映射**：`reward.json` 必须是非空的扁平 `Record<string, number>`，所有值均为有限数字（`finite number`，不限制在 `0..1` 区间，也不预设统一的 `passed` 字段）；兼容读取单值 `reward.txt`，但当 `reward.json` 存在时以 JSON 为准。
+- **扁平有限数值映射**：`reward.json` 必须是扁平的 `Record<string, number>`，所有值均为有限数字（`finite number`，不限制在 `0..1` 区间，也不预设统一的 `passed` 字段）；空对象可解析，但没有提供任何得分维度，不能据此判定任务成功。可读取单值 `reward.txt`，但当 `reward.json` 存在时以 JSON 为准。
 - **缺失维度处理**：无法测量的指标维度应直接从对象中省略并在 `details.json` 说明原因，严禁写入 `null`、`NaN` 或用假 `0` 填充。当整个 Verifier 失败或未产出合法文件时，投影结果的 `verifier_result.rewards` 为 `null`。
 
 ### 2. 多版本重评、对比与数据集聚合
 
-- **无损重评（`rsa bench verify`）**：每次执行 `verify` 都会在 `verifier/<new-verification-id>/` 下追加一条独立评分记录，并在评分成功后原子更新当前默认 verification 指针，原执行状态（`trial.json`）与历史评分版本完整保留。若传入 `--task <new-task-dir>`，系统会将新任务包固定并记录新的评分 Task 摘要，同时保留试验原本的执行 Task 身份。
+- **无损重评（`rsa bench verify`）**：每次执行 `verify` 都会在 `verifier/<new-verification-id>/` 下追加一条独立评分记录，并在评分结束后原子更新当前默认 verification 指针；失败评分也成为当前版本，不自动回退使用上次分数。原执行状态（`trial.json`）与历史评分版本完整保留。若传入 `--task <new-task-dir>`，系统会将新任务包固定并记录新的评分 Task 摘要，同时保留试验原本的执行 Task 身份。
 - **双试验对比（`rsa bench compare`）**：对比两次试验（或同一试验的两个评分版本 `run-id@ver-id`）的任务摘要、参数、`conditions`、`subjects` 与数值维度差值。仅对双方均存在的指标计算差值，缺失维度保持缺失而不补零；当实验条件或被测版本不同时明确标注差异，不直接宣称能力提升。
 - **数据集聚合（`rsa bench aggregate`）**：对显式选定的一组 trial 执行统计。默认按 Task 分组输出 `byTask`（采用 Harbor 均值语义：缺失或 `null` 计为 `0`，同时输出 `total / valid / error` 计数）；若 Dataset 声明了自定义 `metric.py`（接收 `-i <JSONL> -o <JSON>`），则校验文件摘要后调用该脚本计算跨任务聚合指标。`--policy all` 保留全部选定试验，`--policy graded` 显式剔除无有效评分的试验并记录原因。
 

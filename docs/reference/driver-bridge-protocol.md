@@ -9,7 +9,7 @@
   - 请求行：`{id}\t{op}\t{args...}\n`
   - 成功响应：`{id}\tOK\t{fields...}\n`
   - 失败响应：`{id}\tERROR\t{message}\n`
-- **异步请求配对**：`id` 由 Provider 生成（`crypto.randomUUID()`），Bridge 必须在响应行首原样回传。`APPLY`、`CAPTURE`、`TOUCH_*` 等耗时或等待帧边界的操作均为异步延迟响应，依靠 `id` 精确配对。
+- **异步请求配对**：`id` 由 Provider 生成（`crypto.randomUUID()`），Bridge 必须在响应行首原样回传。请求依靠 `id` 精确配对；`APPLY` 以及需要等待设备采样或渲染的操作延迟响应，具体时机见各指令说明。
 - **字符转义约束**：所有字段内部严禁包含 `\t`、`\r` 或 `\n`（由 [baseware/src/drivers/bridge.ts](../../baseware/src/drivers/bridge.ts) 强制校验）。TCP 连接断开即视为设备断连，立即触发 Provider 的 `onDisconnect` 回调。
 
 ## 会话与所有权
@@ -17,23 +17,25 @@
 | 指令 (`op`) | 请求参数 | 响应格式 | 语义说明 |
 | --- | --- | --- | --- |
 | `HELLO` | 无 | `OK\t<version...>` | 连接握手与版本核验。`mgba` 返回 `<frequency>\t<cycles>`（用于计算精确帧率）；`azahar` 要求返回 `azahar-rsa-3`；`ryubing` 要求返回 `ryubing-rsa-3`。版本不匹配时 Provider 立即关闭连接。 |
-| `OWN` | `<epoch>` | `OK` 或 `ERROR OWNED` | 申请设备控制权。若当前已被其他 epoch 持有则拒绝（`mgba` 返回 `ALREADY_OWNED`，`azahar` / `ryubing` 返回 `OWNED`）。接管成功后立即清零手柄输入状态。 |
+| `OWN` | `<epoch>` | `OK` 或 `ERROR OWNED` | 申请设备控制权。若当前已有持有者则拒绝，包括重复传入相同 epoch（`mgba` 返回 `ALREADY_OWNED`，`azahar` / `ryubing` 返回 `OWNED`）；Provider 在上层处理同 epoch 的幂等。接管成功后立即清零手柄输入状态。 |
 | `DISOWN` | `<epoch>` | `OK` 或 `ERROR STALE_EPOCH` | 释放设备控制权。在途手柄动作按 `interrupted` 结算并归零按键；`azahar` 与 `ryubing` 同时释放触屏接触点。 |
 | `STATE` | `<epoch>` | 见下方说明 | 读取当前 Bridge 注入层持有的控制状态（仅反映控制器状态，绝不读取游戏内存）。 |
 
 各模拟器 `STATE` 响应字段格式：
 
-- **mGBA**：`OK\t<mask>\t<actionId|->`（`mask` 为 10 位 GBA 按键位图；末尾附带 `emu:getKeys()` 原生诊断值）。
+- **mGBA**：`OK\t<mask>\t<actionId|->\t<nativeKeys>`（`mask` 为 10 位 GBA 按键位图；`nativeKeys` 是 `emu:getKeys()` 原生诊断值）。
 - **Azahar / Ryubing**：`OK\t<mask>\t<lx>\t<ly>\t<rx>\t<ry>\t<actionId|->`（`mask` 按各 Provider 的 `BUTTONS` 位序编码；左右摇杆轴 `lx/ly/rx/ry` 为 `[-32767, 32767]` 整数，Provider 侧除以 `32767` 归一化为 `[-1, 1]`）。
 
-凡是携带 `<epoch>` 的指令，若与 Bridge 当前持有的所有权不一致，一律返回 `ERROR STALE_EPOCH`。
+除申请控制权的 `OWN` 外，携带 `<epoch>` 的指令若与 Bridge 当前持有的所有权不一致，返回 `ERROR STALE_EPOCH`。
 
 ## Pad 时间线
 
 | 指令 (`op`) | 请求参数 | 响应格式 | 语义说明 |
 | --- | --- | --- | --- |
-| `APPLY` | `<epoch>\t<sequence>` | 延迟响应：`OK\tcompleted\t<elapsedMs>\t<polls>` 或 `OK\tinterrupted\t<elapsedMs>\t<polls>` | 执行编译后的手柄状态序列。若已有动作在途则返回 `ERROR BUSY`。 |
+| `APPLY` | `<epoch>\t<sequence>` | 延迟响应：`OK\t<outcome>\t<timing...>`（字段见下方） | 执行编译后的手柄状态序列；`outcome` 为 `completed` 或 `interrupted`。若已有动作在途则返回 `ERROR BUSY`。 |
 | `STOP` | `<epoch>\t[actionId]` | `OK` | 若省略 `actionId` 或与当前在途动作匹配，则立即中断该动作（使 `APPLY` 以 `interrupted` 结算）并归零输入；`azahar` / `ryubing` 同时按相同规则释放触屏。 |
+
+`APPLY` 的终态计时字段按设备区分：mGBA 返回 `<startFrame>\t<endFrame>`；Azahar / Ryubing 返回 `<elapsedMs>\t<polls>`。Provider 据此保留模拟帧数或墙钟耗时与采样数，不把帧号当作毫秒。
 
 Provider 侧先通过 [timeline.ts](../../baseware/src/drivers/timeline.ts) 的 `compileTimeline` 将多通道 `pad.play` 输入校验并切分为不重叠的全状态切片（Span），再编码为逗号分隔的 `<sequence>` 字符串：
 
@@ -49,7 +51,7 @@ Provider 侧先通过 [timeline.ts](../../baseware/src/drivers/timeline.ts) 的 
 | `TOUCH_INFO` | 无 | `OK\t<minX>\t<minY>\t<maxX>\t<maxY>` | 查询触屏原生坐标边界。`azahar` 返回 `0 0 319 239`，`ryubing` 返回 `0 0 1279 719`。Provider 据此生成 JSON Schema 并拦截越界坐标。 |
 | `TOUCH_DOWN` | `<epoch>\t<x>\t<y>` | 延迟响应：`OK\tcompleted` 或 `OK\tinterrupted` | 按下指定坐标，待模拟器完成一次输入采样后返回 `completed`，接触状态在返回后继续保持。若已处于按下状态则返回 `ALREADY_DOWN` / `TOUCH_ALREADY_DOWN`。 |
 | `TOUCH_MOVE` | `<epoch>\t<x>\t<y>` | 延迟响应：`OK\tcompleted` 或 `OK\tinterrupted` | 移动当前触点，待采样后返回 `completed`。若未处于按下状态则返回 `NOT_DOWN` / `TOUCH_NOT_DOWN`。 |
-| `TOUCH_UP` | `<epoch>` | `OK\tcompleted` | 抬起触点；未按下时直接幂等返回 `completed`。 |
+| `TOUCH_UP` | `<epoch>` | 延迟响应：`OK\tcompleted` 或 `OK\tinterrupted` | 抬起触点并等待一次输入采样；等待期间被取消或交还控制权时返回 `interrupted`。未按下且无在途 Touch 请求时直接幂等返回 `completed`。 |
 
 同一时刻最多允许一个在途 Touch 请求，并发请求返回 `BUSY` / `TOUCH_BUSY`。当调用方取消请求（`AbortSignal` 触发 `STOP <epoch> <touchId>`）、调用 `pad.release` 或执行 `DISOWN` 时，Bridge 会立即抬起触点。
 
@@ -76,7 +78,7 @@ Provider 侧先通过 [timeline.ts](../../baseware/src/drivers/timeline.ts) 的 
 | 错误码 | 含义与触发条件 |
 | --- | --- |
 | `STALE_EPOCH` | 请求携带的 `epoch` 与当前 Bridge 拥有者不匹配，或尚未 `OWN`。 |
-| `OWNED` / `ALREADY_OWNED` | 其他控制周期已持有该设备，拒绝重复 `OWN`。 |
+| `OWNED` / `ALREADY_OWNED` | 设备已有控制周期持有，拒绝重复 `OWN`（包括相同 epoch）。 |
 | `BUSY` | 已有未完成的 `APPLY` 手柄时间表在途。 |
 | `CAPTURE_BUSY` | 已有未完成的截图请求在途。 |
 | `TOUCH_BUSY` / `ALREADY_DOWN` / `NOT_DOWN` | 触屏状态机冲突（并发触控、重复按下或未按下时移动）。 |

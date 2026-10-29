@@ -85,7 +85,7 @@ function DiscoverDriver() {
       {failure ? <p role="alert" className="bench-note error-text">{failure}</p> : null}
       {result ? <div className="caps-discover-result">
         <p className="bench-note">已验证包：<code>{result.spec}</code></p>
-        <p><code>{result.id}</code> · {result.version}{result.transport ? ` · ${result.transport}` : ""}{result.defaultPort !== undefined ? ` · 默认端口 ${result.defaultPort}` : ""}{result.needsGame ? " · 需传入游戏路径" : ""}</p>
+        <p><code>{result.id}</code> · {result.version}{result.transport ? ` · ${result.transport}` : ""}{result.defaultPort !== undefined ? ` · 默认端口 ${result.defaultPort}` : ""}{result.needsGame ? " · 需预备已启动游戏的后端" : ""}</p>
         {result.launchHint ? <p className="bench-note">{result.launchHint}</p> : null}
         <div className="bench-command">
           <code>{command}</code>

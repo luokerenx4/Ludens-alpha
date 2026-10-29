@@ -183,7 +183,7 @@ Current documentation lives in the root `docs/` directory, split into `tutorials
 | [Logging](docs/reference/logging.md) | Reference | Event envelopes, timeline/archive storage, trace attribution, Dashboard cold/hot indexing, and replay. |
 | [Benchmark](docs/reference/benchmark.md) | Reference | Harbor 1.4 native profile, run bindings, `current_trial()`, independent verifiers, and built-in tasks. |
 | [Insights Overview](docs/insights/index.md) | Insights | Index of engineering decisions, production postmortems, and empirical measurements. |
-| [OMP Compaction](docs/insights/omp-compaction.md) | Insights | Why and how OMP speculative compaction was patched for 30Hz real-time control loops. |
+| [OMP Compaction](docs/insights/omp-compaction.md) | Insights | Why and how OMP speculative compaction was patched for real-time control with continuous 30Hz perception. |
 | [WS Recovery](docs/insights/ws-recovery.md) | Insights | 2026-10-20 Codex WebSocket recovery TDD rationale and 13-condition fault matrix. |
 
 Detailed guides in `docs/` are currently in Chinese. Runtime prompts, workspace templates, and license notices remain beside the files that consume them.

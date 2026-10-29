@@ -161,10 +161,10 @@ CLI `rsa observe`、Python `Client().observe(query)` 与 OMP 原生 `observe` �
 
 | 错误码 | 触发场景 |
 | --- | --- |
-| `NOT_READY` | 查询最新主通道记录，但当前 generation 尚未产出可用样本或采样器处于故障状态。 |
+| `NOT_READY` | 查询最新记录，但所选能力尚未产出可用样本；主通道仍在加载时也返回此码。 |
 | `NOT_FOUND` | 指定的 `--id` 不存在，或 `--at` 时刻之前没有任何匹配记录。 |
-| `EXPIRED` | 请求的记录或时间范围已超出非持久窗口并被淘汰，且无可读记录返回（若范围查询仅部分过期但仍有可读记录，则返回 `ok: true` 并标记 `availability.expired = true`）。 |
-| `UNAVAILABLE` | 感知进程（时空轴 writer）已停止或未就绪。 |
+| `EXPIRED` | 时间或范围查询涉及已淘汰的非持久窗口，且无可读记录返回（若范围查询仅部分过期但仍有可读记录，则返回 `ok: true` 并标记 `availability.expired = true`）。未知 `--id` 始终返回 `NOT_FOUND`，不会推断它曾存在。 |
+| `UNAVAILABLE` | 感知进程（时空轴 writer）已停止或在查询中被替换，或最新主通道的采样器不可用（如加载、采样失败）。writer 仍运行时，显式历史查询不受采样器故障影响。 |
 | `QUERY_FAILED` | 参数非法、磁盘读取异常或冷视频帧解码失败。 |
 
 ### 4. 时空轴存储与编码预算环境变量
@@ -198,7 +198,7 @@ rsa action reload
 rsa action stop
 ```
 
-- **控制权与输入重置边界**：动作进程严格绑定启动时的 `epoch` 与 `inputGeneration`。当人工交还（`auto off`）、预算耗尽或设备断连时，动作进程立即终止并释放设备输入。在 `auto` 期间执行 `rsa action stop`、`rsa action reload` 或 `step()` 抛出未捕获异常时，系统会**立即停止动作循环并重置本工作区的全部当前设备输入（包括同轮并发 CLI 提交的按键/触点）**，同时保留当前控制 `epoch`、OMP 会话与剩余预算；修复代码后执行 `rsa action reload` 即可恢复运行。
+- **控制权与输入重置边界**：动作进程严格绑定启动时的 `epoch` 与 `inputGeneration`。当人工交还（`auto off`）、预算耗尽或设备断连时，动作进程终止并释放设备输入。在 `auto` 期间执行 `rsa action stop`、`rsa action reload` 或 `step()` 抛出未捕获异常时，系统会**停止动作循环并重置本工作区的全部当前设备输入（包括同轮并发 CLI 提交的按键/触点）**，等待释放完成后保留当前控制 `epoch`、OMP 会话与剩余预算；如果无法确认释放，则交还控制。修复代码后执行 `rsa action reload` 重新启用动作，若已交还控制还需再次 `rsa auto on`。
 
 ## 后台程序与人工交还
 

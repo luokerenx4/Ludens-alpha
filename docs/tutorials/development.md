@@ -140,12 +140,12 @@ rsa auto on
 | 命令 | 行为与边界 |
 | --- | --- |
 | `rsa init` | 生成 `rsa.json` 及缺失的 `AGENTS.md`、`perception.py`、`action.py` 模板，绝不覆盖已有文件。 |
-| `rsa up --dry-run` | 校验配置与 Dashboard 构建状态，打印完整进程启动计划而不实际拉起服务。 |
+| `rsa up --dry-run` | 校验配置并打印完整进程启动计划，不实际拉起服务；需要新启动 Dashboard 时，实际 `rsa up` 才执行其构建检查。 |
 | `rsa up` | 按需启动或复用模拟器、Baseware、Host、Dashboard 与 Ludens Pet。新启动的 Host 处于 `manual` 模式；若复用已在 `auto` 运行的 Host 则继续原控制周期。重复 `up` 不会热加载修改后的 `rsa.json`。 |
 | `rsa services` | 查询当前工作区关联的 launchd 任务 PID、状态与最近退出码。 |
 | `rsa auto on [--message '文本']` | 开启新控制周期（生成新 `epoch`，重置时间与请求预算）并向模型发起推理。`--message` 仅在该次接管的首轮附加一次，后续续轮不重复注入。 |
 | `rsa auto off` | 立即撤销设备操作权并取消 RSA 管理的在途调用，模拟器保持运行；需等待当前周期清理完毕后方可再次 `auto on`。 |
-| `rsa action status / reload / stop` | 管理工作区 `action.py` 常驻动作进程。`manual` 下 `reload` 仅标记就绪；`auto` 下 `stop` 或 `reload` 会清空本工作区全部当前设备输入（含并发 CLI 输入），但保留当前 `epoch`、OMP 会话与剩余预算。详见 [常驻动作](workspace.md#常驻动作)。 |
+| `rsa action status / reload / stop` | 管理工作区 `action.py` 常驻动作进程。`manual` 下 `reload` 仅标记就绪；`auto` 下 `stop` 或 `reload` 会清空本工作区全部当前设备输入（含并发 CLI 输入），释放成功后保留当前 `epoch`、OMP 会话与剩余预算。详见 [常驻动作](workspace.md#常驻动作)。 |
 | `rsa down --keep-emulator` | 交还控制权并停止 Host 与 Baseware，保留模拟器窗口与游戏现场；适合修改 `rsa.json`（如预算或模型）后重新 `rsa up`。 |
 | `rsa down [--dashboard] [--pet]` | 停止本工作区受管的 Host、Baseware 与模拟器（**执行前请先在游戏内保存进度**）。默认保留共享的 Dashboard 与 Ludens Pet；附加 `--dashboard`（仅限启动它的工作区）或 `--pet` 可一并关闭对应共享服务。 |
 
@@ -277,7 +277,7 @@ node --expose-gc --max-old-space-size=1024 --import tsx scripts/check-index-memo
 | mGBA 完整控制权交还 | 模拟器已加载 ROM 与 `bridge.lua`；另开终端运行该工作区的 Baseware 与 `rsa run --device-only` | `RSA_MGBA=1 RSA_WORKSPACE=/absolute/path/to/workspace bun test rsa/tests/device.live.test.ts` |
 | mGBA 连续断线恢复 | 模拟器与桥保持运行，停止占用该桥的 Host 与 Baseware（默认端口 `47653`） | `RSA_BRIDGE_TEST=1 bun test baseware/tests/bridge.live.test.ts` |
 | Ryubing 按键/采样/长动作中断 | 游戏停在安全可输入画面，停止 Host 与 Baseware，模拟器桥保持运行（可用 `RSA_BRIDGE_PORT` 覆盖端口） | `RSA_SWITCH_TEST=1 bun test rsa/tests/switch.live.test.ts` |
-| Ryubing 系统键盘框 | 同上，且游戏内已打开系统命名输入框（测试会输入并取消，不提交名字） | `RSA_SWITCH_KEYBOARD_TEST=1 bun test rsa/tests/switch.live.test.ts` |
+| Ryubing 系统键盘框 | 同上，且已打开火纹的八字符命名框。测试会输入九字符并按 Enter 验证拒绝，再取消；不要在其他输入框执行，以免实际提交名字。 | `RSA_SWITCH_KEYBOARD_TEST=1 bun test rsa/tests/switch.live.test.ts` |
 
 ## WS 恢复测试依据
 

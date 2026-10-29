@@ -99,9 +99,9 @@ Baseware 支持通过 `--driver <id> --driver-package <spec>` 加载外部驱动
 
 `<spec>` 支持三类格式：
 
-1. **npm 包**：如 `@ scope/pkg@1.2.0`，由 Bun 安装至仓库外的隔离缓存目录（`../artifacts/baseware/drivers/`）；
+1. **npm 包**：如 `@scope/pkg@1.2.0`，由 Bun 安装至仓库外的缓存目录（默认 `~/.local/state/ludens/baseware/drivers/`；设置 `XDG_STATE_HOME` 时使用其下的 `ludens/baseware/drivers/`）；
 2. **GitHub 仓库**：如 `github:org/repo#commit-sha` 或完整 GitHub URL，按仓库与 revision 独立缓存，完成检出与依赖安装后按 `package.json` 的 `exports` 解析入口；
-3. **本地目录**：`file:/absolute/path` 或相对路径。
+3. **本地目录或入口文件**：`file:/absolute/path` 或 `file:relative/path`；Baseware CLI 的相对路径从当前目录解析，RSA 工作区配置中的相对路径从工作区根目录解析。
 
 为保证实验可重现，生产与评测中应固定精确的 npm 版本号或 Git commit SHA。
 
@@ -115,10 +115,10 @@ Baseware 支持通过 `--driver <id> --driver-package <spec>` 加载外部驱动
 | `version` / `fallbackVersion` | 可选版本字符串；运行目录依次取 Provider 握手实际版本、声明版本、内置 fallback，最后为 `"unknown"`。 |
 | `transport` | `"bridge"`（默认，TCP 行协议）或 `"stdio"`（子进程标准输入输出）。 |
 | `defaultPort` | 可选整数（`1..65535`）；`bridge` 驱动必须由 `rsa.json.port` 或 `defaultPort` 提供合法端口。 |
-| `needsGame` | 布尔值，标识启动后端是否需要传入游戏文件路径。 |
+| `needsGame` | 可选布尔值，标识 Bridge 就绪前是否需要启动后端并加载游戏；可手动准备设备，或由启动器使用 `rsa.json.game` 启动。 |
 | `launchHint` | 设备准备与手动启动提示文本（在 Dashboard 与 CLI 帮助中展示）。 |
 | `launchCommand` / `launchEnv` | 可选后端启动命令数组（不含游戏路径，由启动器追加）与环境变量映射（`RSA_BRIDGE_PORT` 由实际端口覆盖）。 |
-| `load({ port, command, clock })` | 异步工厂函数，连接设备并返回 `{ controllers, onDisconnect, close }`。 |
+| `load({ port, command, clock })` | 异步工厂函数，连接设备并返回 `{ capabilities: { controllers }, onDisconnect, close }`，可另带 `version`；具体类型见 [registry.ts](../../baseware/src/drivers/registry.ts)。 |
 
 模拟器侧 TCP 协议实现规范见 [Driver Bridge 协议](driver-bridge-protocol.md)。
 

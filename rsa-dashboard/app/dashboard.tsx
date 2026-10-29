@@ -395,7 +395,7 @@ export default function Dashboard() {
             </a>
           ))}
         </nav>
-        <PetFollowCard follow={pet} project={benchmarkCases ? undefined : project}
+        <PetFollowCard follow={pet} project={benchmarkCases || view === "docs" || view === "pet" ? undefined : project}
           onSettings={() => navigate({ view: "pet" })} />
       </aside>
       <div className="console-main">
