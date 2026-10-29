@@ -122,23 +122,23 @@ export function BenchmarkCases({ search, refresh, navigate, onNavigate }: {
       {catalog.issues.map((issue, index) => <p key={`catalog:${index}`}><code>{issue.project}</code> · {issue.error}</p>)}
       {catalog.history.issues.map((issue, index) => <p key={`history:${index}`}><code>{issue.runId}</code> · {issue.error}</p>)}
     </details>}
-    <div className="bench-selectors"><label>工作区<select aria-label="评测工作区" value={catalog.project ?? ""}
+    <div className="bench-toolbar"><label>工作区<select aria-label="评测工作区" value={catalog.project ?? ""}
       onChange={event => navigate({ ...reset, benchWorkspace: event.target.value || null, case: null })}>
-      {!catalog.projects.length && <option value="">没有工作区</option>}
+      {!catalog.projects.length && <option value="">暂无工作区</option>}
       {catalog.projects.map(project => <option key={project.id} value={project.id}>{project.workspace}</option>)}
-    </select></label><p className="bench-note">每页读取 25 次执行。查看评测不会启动任务或切换 Ludens Pet 的关注目标。</p></div>
+    </select></label><span className="muted">每页展示 25 次执行 · 浏览评测不影响 Agent 或 Ludens Pet 关注目标</span></div>
     <div className="bench-case-layout">
       <aside className="surface bench-case-list" aria-label="评测目录"><div className="bench-list-heading"><span>{catalog.tasks.length} 个任务包</span></div>
         <button className={`bench-case-item${!query.get("case") ? " selected" : ""}`} onClick={() => navigate({ ...reset, case: null })}>全部执行历史</button>
         {catalog.tasks.map(task => <button key={taskKey(task)} className={`bench-case-item${chosenTask === task ? " selected" : ""}`}
           aria-pressed={chosenTask === task} onClick={() => navigate({ ...reset, case: task.name, caseDigest: task.digest })}>
-          <strong>{task.title}</strong><p>{task.name}</p><small>{task.source === "repository" ? "仓库任务" : "工作区任务"} · {task.version ?? task.schemaVersion}</small>
+          <strong>{task.name}</strong>{task.title !== task.name && <p>{task.title}</p>}<small>{task.source === "repository" ? "仓库任务" : "工作区任务"} · {task.version ?? task.schemaVersion}</small>
           <footer><code>{short(task.digest)}</code>{task.unsupportedRequirements.length > 0 && <span className="bench-status error">环境要求未满足</span>}</footer>
         </button>)}
       </aside>
       <div className="bench-case-main">
         {chosenTask && <section className="surface bench-result">
-          <header className="bench-result-heading"><div><h2>{chosenTask.title}</h2><p>{chosenTask.config.task.description ?? chosenTask.name}</p></div></header>
+          <header className="bench-result-heading"><div><h2>{chosenTask.name}</h2>{chosenTask.config.task.description && <p>{chosenTask.config.task.description}</p>}</div></header>
           {workspace && chosenTask.bindings.map(binding => {
             const command = benchmarkCommand(chosenTask, workspace, binding.path)!;
             return <div className="bench-command" key={binding.path}><code>{command}</code>
@@ -174,14 +174,17 @@ export function BenchmarkCases({ search, refresh, navigate, onNavigate }: {
             <div className="bench-result-layers"><div><span>执行</span><strong>{statusLabels[selected.trial.status]}</strong></div>
               <div><span>评分</span><strong>{verificationLabel(selected.verification)}</strong><small>{selected.verification?.id ?? "未提交"}</small></div>
               <div><span>任务版本</span><code>{short(selected.trial.task.digest)}</code></div></div>
-            <section className="bench-report"><h3>评分版本</h3><p className="bench-note">重评读取已保存产物，不重做动作。数值为零不代表执行错误。</p>
-              {proof!.verifications.verifications.map(verification => <p key={verification.id}>
-                <button className="text-button" aria-pressed={selected.verification?.id === verification.id}
-                  onClick={() => navigate({ verification: verification.id, report: null, evidenceCursor: null })}>{verification.id}</button>
-                {" · "}{verificationLabels[verification.status]} · {date(verification.startedAt)} · {verification.reason}
-                {" · "}<button className="text-button" onClick={() => navigate({ baseline: resultKey(selected.trial), baselineVerification: verification.id, baselineReport: null })}>设为基线</button>
-              </p>)}
-              {!proof!.verifications.verifications.length && <p>尚无评分记录。</p>}
+            <section className="bench-report"><h3>评分版本</h3><p className="bench-note">重评仅读取已落盘产物，不重跑被测程序；得分为 0 属于正常测量值而非系统错误。</p>
+              <div className="bench-verification-list">
+                {proof!.verifications.verifications.map(verification => <div key={verification.id} className="bench-verification-row">
+                  <button className="text-button" aria-pressed={selected.verification?.id === verification.id}
+                    onClick={() => navigate({ verification: verification.id, report: null, evidenceCursor: null })}><code>{verification.id}</code></button>
+                  <span className={`bench-status ${verification.status === "error" ? "error" : ""}`}>{verificationLabels[verification.status]}</span>
+                  <small>{date(verification.startedAt)}{verification.reason ? ` · ${verification.reason}` : ""}</small>
+                  <button className="text-button" onClick={() => navigate({ baseline: resultKey(selected.trial), baselineVerification: verification.id, baselineReport: null })}>设为基线</button>
+                </div>)}
+              </div>
+              {!proof!.verifications.verifications.length && <p className="bench-note">尚无评分记录。</p>}
               <div className="bench-selectors">{query.get("verificationCursor") && <button className="text-button" onClick={() => navigate({ verificationCursor: null })}>最新评分页</button>}
                 {proof!.verifications.nextCursor && <button className="text-button" onClick={() => navigate({ verificationCursor: proof!.verifications.nextCursor! })}>更早的评分 →</button>}</div>
               <div className="bench-command"><code>{benchmarkVerifyCommand(selected.trial)}</code><button className="text-button" onClick={() => void copy(benchmarkVerifyCommand(selected.trial))}>复制重评命令</button></div>

@@ -1934,12 +1934,13 @@ pre {
 .docs-group .bench-list-heading { display: flex; flex-direction: column; gap: 2px; padding: 4px 8px 8px; }
 .docs-article { min-width: 0; }
 .docs-body { padding: 4px 20px 28px; max-width: 860px; }
+.docs-body > h1:first-child { display: none; }
 .docs-body h1 { font-size: 24px; margin: 20px 0 10px; }
 .docs-body h2 { font-size: 17px; margin: 22px 0 8px; }
 .docs-body h3 { font-size: 15px; margin: 18px 0 6px; }
 .docs-body h4 { font-size: 14px; margin: 14px 0 6px; }
 .docs-body p { margin: 0 0 10px; }
-.docs-body ul { margin: 0 0 12px; padding-left: 22px; }
+.docs-body ul, .docs-body ol { margin: 0 0 12px; padding-left: 22px; }
 .docs-body li { margin-bottom: 5px; }
 .docs-body li::marker { color: var(--subtle); }
 .docs-body code { background: #141a15; border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; font-size: 12.5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -1949,14 +1950,31 @@ pre {
 .docs-body table { border-collapse: collapse; width: 100%; font-size: 13px; }
 .docs-body th, .docs-body td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
 .docs-body th { color: var(--muted); font-weight: 600; background: #1b201c; }
+.docs-body td:first-child { white-space: nowrap; }
 .docs-body tr:last-child td { border-bottom: 0; }
+.docs-body .doc-diagram { margin: 0 0 14px; border: 1px solid var(--line); border-radius: 8px; background: #141a15; }
+.docs-body .doc-diagram summary { cursor: pointer; padding: 10px 16px; color: var(--muted); font-size: 13px; }
+.docs-body .doc-diagram pre { border: 0; margin: 0; border-top: 1px solid var(--line); border-radius: 0 0 8px 8px; }
 .docs-body a { color: var(--gold); }
 .docs-body .doc-ref { color: var(--gold); cursor: pointer; }
 .docs-body .doc-ref:hover { text-decoration: underline; }
 .docs-body .doc-repo { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+.docs-overview-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-top: 16px; }
+.docs-overview-card { border: 1px solid var(--line); border-radius: 8px; padding: 16px; background: #191d1a; display: flex; flex-direction: column; gap: 8px; }
+.docs-overview-card h3 { font-size: 15px; margin: 0; color: var(--text); }
+.docs-overview-card p { font-size: 12.5px; color: var(--muted); margin: 0 0 4px; }
+.docs-overview-links { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 6px; }
 /* Capabilities: overview cards + tables. */
 .caps-layout { display: flex; flex-direction: column; gap: 16px; }
-.caps-discover-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
-.caps-discover-row input { flex: 1; min-width: 240px; }
-.caps-discover-result { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
+.caps-section { padding: 0 18px 18px; }
+.caps-section .bench-note { padding: 0 0 10px; }
+.caps-discover-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+.caps-discover-row input { flex: 1; min-width: 240px; background: #181c19; border: 1px solid var(--line); border-radius: 7px; padding: 9px 12px; font-size: 13px; }
+.caps-discover-result { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; }
+.bench-toolbar { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin: 4px 0 18px; font-size: 12px; }
+.bench-toolbar label { display: flex; align-items: center; gap: 10px; color: #bbc5b8; font-size: 12px; }
+.bench-toolbar select { min-width: 240px; font-size: 12px; }
+.bench-verification-list { display: flex; flex-direction: column; gap: 8px; margin: 10px 0 14px; }
+.bench-verification-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 8px 12px; border: 1px solid var(--line); border-radius: 6px; background: #191d1a; font-size: 12px; }
+.bench-verification-row small { color: var(--muted); margin-right: auto; }
 @media (max-width: 900px) { .docs-layout { grid-template-columns: minmax(0, 1fr); } }

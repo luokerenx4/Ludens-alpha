@@ -108,7 +108,7 @@ export function PetSettings({ follow, projects }: { follow: PetFollow; projects:
           L
         </div>
         <div>
-          <h2>Ludens Pet 陪伴</h2>
+          <h2>卢登斯 · 桌面伴侣</h2>
           <p>让正在发生的事，轻轻出现在桌面上。</p>
         </div>
         <span className="desktop-status">

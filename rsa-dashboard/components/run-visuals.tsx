@@ -542,9 +542,7 @@ function TraceList({ data, call }: { data: RunData; call?: Call }) {
   return (
     <>
       <p className="help-text">
-        按显式调用关系连接。Python
-        细节合并到同一能力节点，包含关系的耗时不相加。压缩 HTTP
-        仅记录到响应头，候选就绪也不代表已经应用。
+        按显式 Trace 关系连接（Python 调用归并至对应能力节点，父子包含耗时不重复相加）。
       </p>
       {!primary.length ? (
         <div className="empty-state">
@@ -753,8 +751,7 @@ export function RequestDetails({
               <p className="empty-state">这次请求没有工具调用。</p>
             )}
             <p className="help-text">
-              HTTP 响应头等待和 WS
-              首事件等待都包含网络与服务端处理，不能单独归因于上传或排队。
+              HTTP 响应头等待与 WS 首事件等待均包含网络传输与服务端处理耗时。
             </p>
           </>
         ) : panel === "skills" ? (
@@ -781,7 +778,7 @@ export function RequestDetails({
             {!data.skills.length && (
               <p className="empty-state">当前范围没有技能读写证据。</p>
             )}
-            <p className="help-text">读写成功不表示技能质量或任务能力提高。</p>
+            <p className="help-text">点击条目可定位到触发该技能读写的模型请求。</p>
           </>
         ) : (
           <>

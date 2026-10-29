@@ -71,38 +71,40 @@ function DiscoverDriver() {
     catch { setCopied(""); setFailure("无法复制，请手动选择并复制下方命令。"); }
   };
   return <section className="surface" aria-label="外部驱动">
-    <div className="surface-heading"><h2>外部驱动 · Driver</h2><span>按需验证</span></div>
-    <p className="bench-note">粘贴驱动包地址（npm 名、github:org/repo#rev 或 file:/绝对路径），查看包声明和后端准备指引。本页不维护驱动清单。</p>
-    <p className="bench-note">验证可能下载、安装依赖，并会导入包代码；仅使用可信来源。验证不调用 load()，通过仅表示声明符合约定，不保证设备可连接。</p>
-    <form className="caps-discover-row" onSubmit={event => { event.preventDefault(); void discover(); }}>
-      <input value={spec} onChange={event => changeSpec(event.target.value)} placeholder="github:org/repo#rev"
-        aria-label="驱动包地址" spellCheck={false} />
-      <button type="submit" className="control-button" disabled={pending || !spec.trim()}>
-        {pending ? "验证中…" : "验证"}
-      </button>
-    </form>
-    {failure ? <p role="alert" className="bench-note">{failure}</p> : null}
-    {result ? <div className="caps-discover-result">
-      <p className="bench-note">已验证地址：<code>{result.spec}</code></p>
-      <p><code>{result.id}</code> · {result.version}{result.transport ? ` · ${result.transport}` : ""}{result.defaultPort !== undefined ? ` · 端口 ${result.defaultPort}` : ""}{result.needsGame ? " · 需预备后端" : ""}</p>
-      {result.launchHint ? <p className="bench-note">{result.launchHint}</p> : null}
-      <div className="caps-discover-row">
-        <code>{command}</code>
-        <button className="text-button" onClick={copy}>{copied === command ? "已复制" : "复制初始化命令"}</button>
-      </div>
-    </div> : null}
+    <div className="surface-heading"><h2>外部驱动验证 · Driver Package</h2><span>按需校验</span></div>
+    <div className="caps-section">
+      <p className="bench-note">输入外部驱动包地址（npm 包名、<code>github:org/repo#rev</code> 或 <code>file:/绝对路径</code>），校验其注册声明并生成工作区初始化命令。</p>
+      <p className="bench-note">注意：验证过程可能下载安装依赖并会导入包代码，请仅使用可信来源。验证不调用 <code>load()</code>，通过仅代表声明合规，不保证设备可连接。</p>
+      <form className="caps-discover-row" onSubmit={event => { event.preventDefault(); void discover(); }}>
+        <input value={spec} onChange={event => changeSpec(event.target.value)} placeholder="github:org/repo#rev 或 npm 包名"
+          aria-label="驱动包地址" spellCheck={false} />
+        <button type="submit" className="control-button" disabled={pending || !spec.trim()}>
+          {pending ? "验证中…" : "验证驱动包"}
+        </button>
+      </form>
+      {failure ? <p role="alert" className="bench-note error-text">{failure}</p> : null}
+      {result ? <div className="caps-discover-result">
+        <p className="bench-note">已验证包：<code>{result.spec}</code></p>
+        <p><code>{result.id}</code> · {result.version}{result.transport ? ` · ${result.transport}` : ""}{result.defaultPort !== undefined ? ` · 默认端口 ${result.defaultPort}` : ""}{result.needsGame ? " · 需传入游戏路径" : ""}</p>
+        {result.launchHint ? <p className="bench-note">{result.launchHint}</p> : null}
+        <div className="bench-command">
+          <code>{command}</code>
+          <button type="button" className="control-button" onClick={copy}>{copied === command ? "已复制" : "复制初始化命令"}</button>
+        </div>
+      </div> : null}
+    </div>
   </section>;
 }
 function WorkspaceCapabilities({ project, ready, catalogError }: { project: string; ready: boolean; catalogError?: string }) {
   const capsLoad = useJson<CapabilitiesResult>(project ? `/api/capabilities?project=${encodeURIComponent(project)}` : null);
   const caps = capsLoad.value;
   const error = catalogError || capsLoad.error;
-  if (error || !ready || (project && !caps)) return <section className="surface empty-state main-empty" aria-live="polite">
+  if (error || !ready || (project && !caps)) return <section className="surface empty-state" aria-live="polite">
     <h2>{error ? "暂时无法读取能力" : "正在读取能力"}</h2>
-    <p>{error ?? "从所选工作空间的 Baseware 目录与 Python 发现读取。"}</p>
+    <p>{error ?? "正在从当前工作区的 baseware.json 与 Python @capability 声明读取…"}</p>
   </section>;
-  if (!caps?.project) return <section className="surface empty-state main-empty">
-    <h2>还没有工作空间</h2><p>启动 RSA 并注册工作空间后，这里展示它的设备能力、自创能力与评测任务。</p>
+  if (!caps?.project) return <section className="surface empty-state">
+    <h2>尚无已注册的工作区</h2><p>在工作区启动 RSA 后，这里将展示其设备能力快照、Python 自创能力与评测任务。</p>
   </section>;
   return <div className="caps-layout">
     {caps.issues.length > 0 && <details className="bench-warning"><summary>读取诊断</summary>
@@ -128,9 +130,10 @@ function WorkspaceCapabilities({ project, ready, catalogError }: { project: stri
     <section className="surface" aria-label="评测任务">
       <div className="surface-heading"><h2>评测任务 · Benchmark</h2><span>{caps.tasks.length} 个</span></div>
       {caps.tasks.length ? <div className="bench-table-scroll"><table className="bench-table">
-        <thead><tr><th>任务</th><th>版本摘要</th></tr></thead>
+        <thead><tr><th>任务</th><th>说明</th><th>版本摘要</th></tr></thead>
         <tbody>{caps.tasks.map(task => <tr key={`${task.name}@${task.digest}`}>
-          <td><strong>{task.title}</strong><br /><small>{task.name}</small></td>
+          <td><code>{task.name}</code></td>
+          <td>{task.title !== task.name ? task.title : <span className="muted">无描述</span>}</td>
           <td><code>{task.digest.slice(0, 20)}…</code></td>
         </tr>)}</tbody>
       </table></div> : <p className="bench-note">目录中没有任务包。执行历史与评分见 Benchmark 的评测目录。</p>}
@@ -140,7 +143,7 @@ function WorkspaceCapabilities({ project, ready, catalogError }: { project: stri
 
 export function CapabilitiesView(props: { project: string; ready: boolean; catalogError?: string }) {
   return <div className="caps-layout">
-    <DiscoverDriver />
     <WorkspaceCapabilities {...props} />
+    <DiscoverDriver />
   </div>;
 }
