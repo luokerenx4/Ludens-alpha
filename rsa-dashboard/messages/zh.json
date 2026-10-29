@@ -44,7 +44,7 @@
     },
     "settings": {
       "title": "全局设置",
-      "description": "Ludens Pet 陪伴偏好与控制台全局设置；工作区自身的设置在各自页面。"
+      "description": "此控制台的偏好设置，以及可选的桌面陪伴控制。工作区选项在各自页面中设置。"
     },
     "dev": {
       "title": "原理展示",
@@ -60,8 +60,7 @@
     "languageDescription": "控制台显示语言。默认跟随浏览器。",
     "languageEnglish": "English",
     "languageChinese": "中文",
-    "intro": "陪伴显示、声音与跟随偏好的全局设置；跟随哪个工作区也可在侧栏卡片里切换。",
-    "consoleDescription": "界面实时刷新开关仍保留在运行页头部，属于观看状态而非全局偏好；更多控制台设置集中到这里时会在此列出。",
+    "consoleDescription": "此控制台的显示偏好。工作区选项在各自页面中设置。",
     "consoleTitle": "控制台"
   },
   "perceptionSettings": {
@@ -140,7 +139,14 @@
       "following": "正在跟随",
       "waitingRun": "等待工作区运行"
     },
-    "unselected": "未选择工作区"
+    "unselected": "未选择工作区",
+    "targetUnknown": "尚未读取到关注目标",
+    "readUnavailable": "无法读取关注目标。",
+    "readingTarget": "读取关注目标中…",
+    "showingLastTarget": "正在显示上次读取的关注目标。",
+    "technicalDetails": "技术详情",
+    "retryRead": "重试读取",
+    "followWriteFailed": "未能确认关注目标的更改。可重新读取，查看当前目标。"
   },
   "archiveBuild": {
     "updateFailed": "无法更新整理状态",
@@ -289,10 +295,10 @@
     "readOnlyRefreshHint": "刷新只读取能力目录，保留驱动验证结果。"
   },
   "petSettings": {
-    "title": "卢登斯 · 桌面伴侣",
-    "subtitle": "让正在发生的事，轻轻出现在桌面上。",
+    "title": "Ludens Pet",
+    "subtitle": "在这里选择关注的工作区。桌面外观、通知和声音均为可选功能。",
     "connectedBadge": "桌面端已连接",
-    "browserBadge": "浏览器模式",
+    "browserBadge": "浏览器窗口",
     "followSwitchTitle": "关注工作区可在这里切换",
     "followSwitchDesc": "浏览器与桌面端共享 Ludens Pet 的关注目标。下方的外观、通知和声音偏好，需要从 Ludens Pet 托盘打开桌面窗口设置。",
     "companionTitle": "桌面陪伴",
@@ -334,7 +340,29 @@
     "previewLabel": "试听",
     "restoreDefaultSound": "恢复默认声音",
     "savingLabel": "正在保存…",
-    "footerNote": "外观、通知与声音偏好保存在这台电脑的 Ludens Pet profile 中，不会修改工作区或 Agent 的行为。"
+    "footerNote": "外观、通知与声音偏好保存在这台电脑的 Ludens Pet profile 中，不会修改工作区或 Agent 的行为。",
+    "optionalBadge": "可选",
+    "desktopPreferences": "桌面偏好设置",
+    "checkingAvailability": "正在检查此窗口…",
+    "desktopWindowBadge": "此窗口提供桌面控制",
+    "desktopAvailableHint": "此窗口提供桌面控制，各个区域会分别读取对应设置。",
+    "desktopUnavailableHint": "外观、通知和声音可在 Ludens Pet 托盘打开的控制台中设置。这里仍可选择关注的工作区。",
+    "checkAvailability": "检查可用性",
+    "availabilityScope": "只检查此窗口是否提供桌面控制，不会启动桌面应用。",
+    "checkedAvailable": "此窗口提供桌面控制。使用对应区域的“重新读取”获取设置。",
+    "checkedUnavailable": "此窗口未提供桌面控制。浏览器偏好与工作区关注功能仍可使用。",
+    "readingSettings": "读取中…",
+    "retryRead": "重试读取",
+    "readAgain": "重新读取",
+    "readValues": "已读取的设置",
+    "unknownValues": "尚未读取到设置。",
+    "readFailed": "无法读取这些桌面设置。",
+    "showingCached": "正在显示上次读取的值，请重新读取后再修改。",
+    "technicalDetails": "技术详情",
+    "invalidSound": "请选择不超过 2 MB、10 秒的 WAV、MP3 或 OGG 音频。",
+    "writeUnconfirmed": "无法确认本次修改是否生效，请重新读取设置后再修改。",
+    "previewFailed": "无法播放这段音频。",
+    "noSoundFile": "尚未选择音频文件。"
   },
   "activityFeed": {
     "copyAria": "复制完整内容",
@@ -1178,7 +1206,19 @@
     "loadFailed": "工作区加载失败",
     "retry": "重试",
     "loading": "正在加载工作区…",
-    "retryHint": "请重试以加载工作区列表。"
+    "retryHint": "请重试以加载工作区列表。",
+    "refreshList": "刷新列表",
+    "refreshing": "读取中…",
+    "locationSavedTitle": "默认目录已保存",
+    "refreshFailed": "无法刷新工作区列表",
+    "committedReadFailed": "你的更改已保存。可重试读取，更新显示的信息。",
+    "technicalDetails": "技术详情",
+    "catalogRefreshFailed": "工作区选择器未能刷新",
+    "catalogRetryHint": "可重试读取，更新工作区选择器。",
+    "retryCatalog": "重读选择器",
+    "removeNotCompleted": "工作区未移除",
+    "removeBlockedHint": "无法安全清除它的桌宠关注目标，工作区仍保留登记。请检查错误后再尝试移除。",
+    "alreadyRemoved": "这个工作区已不在登记中，列表现已更新。"
   },
   "workspaceSetup": {
     "folderName": "文件夹名称",

@@ -1,9 +1,8 @@
 import { spawn } from "node:child_process";
 import { isAbsolute, join, resolve } from "node:path";
 import { readGlobalConfig, updateGlobalConfig, listRegisteredWorkspaces, registerWorkspace, forgetWorkspace,
-  registeredWorkspace, readWorkspaceIdentity } from "../../shared/ludens";
+  registeredWorkspace, readWorkspaceIdentity, type LudensConfig, type WorkspaceRegistration } from "../../shared/ludens";
 import { globalHome, clearCatalogCache } from "./data";
-import { petState, setPetTarget } from "./pet-state";
 
 export interface CreateWorkspaceInput {
   name: string;
@@ -22,10 +21,13 @@ function absolutePath(input: unknown, label: string) {
   if (typeof input !== "string" || !input.trim() || !isAbsolute(input.trim())) throw new Error(`${label}必须是完整的绝对路径`);
   return resolve(input.trim());
 }
-export async function updateWorkspaceRoot(input: unknown, home = globalHome) {
+export interface WorkspaceRootResult { config: LudensConfig }
+export async function updateWorkspaceRoot(input: unknown, home = globalHome): Promise<WorkspaceRootResult> {
   const workspaceRoot = absolutePath(input, "默认工作区目录");
-  await updateGlobalConfig(config => ({ ...config, workspaceRoot }), home);
-  return workspaceSettings(home);
+  // The committed value is authoritative. A later registry refresh is a
+  // separate read and must never turn a successful save into a failed write.
+  const config = await updateGlobalConfig(config => ({ ...config, workspaceRoot }), home);
+  return { config };
 }
 export async function openWorkspace(input: unknown, home = globalHome) {
   const workspace = absolutePath(input, "工作区目录");
@@ -38,15 +40,12 @@ export async function openWorkspace(input: unknown, home = globalHome) {
   clearCatalogCache();
   return entry;
 }
-export async function removeWorkspace(input: unknown, home = globalHome) {
+export interface WorkspaceRemovalResult { removed: WorkspaceRegistration | null }
+export async function removeWorkspace(input: unknown, home = globalHome): Promise<WorkspaceRemovalResult> {
   if (typeof input !== "string") throw new Error("请选择工作区");
-  await forgetWorkspace(input, home);
+  const removed = await forgetWorkspace(input, home);
   clearCatalogCache();
-  // A removal is an explicit decision to stop following, so a subsequent
-  // registration must not silently restore the previous target.
-  const target = await petState(home);
-  if (!target.target) await setPetTarget(null, false, home);
-  return workspaceSettings(home);
+  return { removed };
 }
 export async function createWorkspace(input: unknown, signal?: AbortSignal, home = globalHome) {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("工作区设置必须是对象");

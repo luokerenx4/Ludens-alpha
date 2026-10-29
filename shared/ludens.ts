@@ -160,8 +160,12 @@ async function withStateLock<T>(path: string, work: () => Promise<T>): Promise<T
     return await work();
   } finally { await releaseStateLock(acquired ? path : pending, owner); }
 }
-async function withRegistryLock<T>(home: string, id: string, work: () => Promise<T>): Promise<T> {
+/** When both are needed, acquire the workspace lock before the pet-target lock. */
+export async function withWorkspaceRegistrationLock<T>(home: string, id: string, work: () => Promise<T>): Promise<T> {
   return withStateLock(`${registrationPath(id, home)}.lock`, work);
+}
+export async function withPetTargetLock<T>(home: string, work: () => Promise<T>): Promise<T> {
+  return withStateLock(join(home, "pet", "target.json.lock"), work);
 }
 /** Read-only ownership check, also used before starting any workspace service. */
 export async function validateWorkspaceRegistration(workspacePath: string, home = ludensHome()): Promise<{ id: string; workspace: string }> {
@@ -181,7 +185,7 @@ export async function validateWorkspaceRegistration(workspacePath: string, home 
 export async function registerWorkspace(workspacePath: string, home = ludensHome()): Promise<WorkspaceRegistration> {
   const workspace = await realpath(workspacePath);
   const { id } = await readWorkspaceIdentity(workspace);
-  return withRegistryLock(home, id, async () => {
+  return withWorkspaceRegistrationLock(home, id, async () => {
     if ((await validateWorkspaceRegistration(workspace, home)).id !== id) throw new Error("Workspace identity changed; retry registration");
     const value = { id, workspace, name: basename(workspace), updatedAt: new Date().toISOString() };
     await atomicJson(registrationPath(id, home), value);
@@ -199,19 +203,53 @@ export async function listRegisteredWorkspaces(home = ludensHome()): Promise<Reg
   }));
   return result.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
 }
-export async function forgetWorkspace(id: string, home = ludensHome()): Promise<void> {
-  await withRegistryLock(home, id, async () => {
-    await unlink(registrationPath(id, home)).catch(error => { if (error.code !== "ENOENT") throw error; });
+/** The caller holds this workspace's registry lock before touching target state. */
+async function clearRegisteredPetTarget(id: string, home: string): Promise<boolean> {
+  try {
+    return await withPetTargetLock(home, async () => {
+      const path = join(home, "pet", "target.json");
+      const target: unknown = await readFile(path, "utf8").then(text => JSON.parse(text)).catch(error => {
+        if (error.code !== "ENOENT") throw error;
+        return null;
+      });
+      // Never consult consumers or unrelated registry entries here. Clearing
+      // happens before unlink, so re-registration cannot revive a stale target.
+      if (object(target) && target.project === id) { await atomicJson(path, null); return true; }
+      return false;
+    });
+  } catch (error) {
+    throw Object.assign(new Error(`无法安全清除该工作区的桌宠跟随设置，工作区仍在列表中；请修复后重试。${error instanceof Error ? ` ${error.message}` : ""}`),
+      { code: "WORKSPACE_REMOVAL_BLOCKED" });
+  }
+}
+export async function forgetWorkspace(id: string, home = ludensHome()): Promise<WorkspaceRegistration | null> {
+  return withWorkspaceRegistrationLock(home, id, async () => {
+    const removed = await registeredWorkspace(id, home).catch(error => { if (error.code !== "ENOENT") throw error; return null; });
+    if (!removed) return null;
+    const clearedTarget = await clearRegisteredPetTarget(id, home);
+    try { await unlink(registrationPath(id, home)); }
+    catch (error) {
+      throw Object.assign(new Error(`无法移除工作区登记，工作区仍在列表中；${clearedTarget ? "桌宠已停止跟随；" : ""}请修复后重试。${error instanceof Error ? ` ${error.message}` : ""}`),
+        { code: "WORKSPACE_REMOVAL_BLOCKED" });
+    }
+    return removed;
   });
 }
 /** Explicitly turn a copied directory into a separate workspace; retain its archived history. */
 export async function renewWorkspaceIdentity(workspacePath: string, home = ludensHome()): Promise<WorkspaceIdentity> {
   const workspace = await realpath(workspacePath);
   const previous = await readWorkspaceIdentity(workspace);
-  const existing = await registeredWorkspace(previous.id, home).catch(error => { if (error.code !== "ENOENT") throw error; });
-  const value: WorkspaceIdentity = { version: 1, id: `ws-${randomUUID()}`, historyIds: [...new Set([previous.id, ...previous.historyIds ?? []])] };
-  await atomicJson(join(workspace, ".rsa", "workspace.json"), value);
-  await unlink(join(workspace, ".rsa", "shiori", "current-session.json")).catch(error => { if (error.code !== "ENOENT") throw error; });
-  if (existing?.workspace === workspace) await forgetWorkspace(previous.id, home);
-  return value;
+  return withWorkspaceRegistrationLock(home, previous.id, async () => {
+    if ((await readWorkspaceIdentity(workspace)).id !== previous.id) throw new Error("Workspace identity changed; retry renewal");
+    const existing = await registeredWorkspace(previous.id, home).catch(error => { if (error.code !== "ENOENT") throw error; });
+    // A copy does not own the original registration or target. For an owned
+    // registration, cleanup must succeed before identity/session mutation.
+    const ownsRegistration = existing?.workspace === workspace;
+    if (ownsRegistration) await clearRegisteredPetTarget(previous.id, home);
+    const value: WorkspaceIdentity = { version: 1, id: `ws-${randomUUID()}`, historyIds: [...new Set([previous.id, ...previous.historyIds ?? []])] };
+    await atomicJson(join(workspace, ".rsa", "workspace.json"), value);
+    await unlink(join(workspace, ".rsa", "shiori", "current-session.json")).catch(error => { if (error.code !== "ENOENT") throw error; });
+    if (ownsRegistration) await unlink(registrationPath(previous.id, home));
+    return value;
+  });
 }

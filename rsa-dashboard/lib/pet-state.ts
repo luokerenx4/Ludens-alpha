@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { realpath } from "node:fs/promises";
 import { join } from "node:path";
-import { globalHome, catalog } from "./data";
-import { listRegisteredWorkspaces } from "../../shared/ludens";
+import { globalHome } from "./data";
+import { registeredWorkspace, readWorkspaceIdentity, validWorkspaceId, withWorkspaceRegistrationLock, withPetTargetLock } from "../../shared/ludens";
 import type { PetConsumer, PetState, PetTarget } from "./pet";
 
 const targetFile = "pet/target.json";
@@ -35,16 +36,38 @@ function write(root: string, name: string, value: unknown) {
   writeFileSync(temporary, JSON.stringify(value) + "\n");
   renameSync(temporary, join(root, name));
 }
+async function targetRegistration(project: string, root: string) {
+  const entry = await registeredWorkspace(project, root).catch(error => { if (error.code !== "ENOENT") throw error; return null; });
+  if (!entry) return null;
+  try { if ((await readWorkspaceIdentity(await realpath(entry.workspace))).id === entry.id) return entry; }
+  catch { /* Offline workspaces stay registered. */ }
+  return null;
+}
+async function currentTarget(root: string, now: number): Promise<PetTarget | null> {
+  const observed = read<PetTarget | null>(root, targetFile) ?? null;
+  if (!observed) return null;
+  const entry = await targetRegistration(observed.project, root);
+  if (!entry) return null;
+  // Ordinary polling remains read-only, including an empty/unwritable pet
+  // directory. Only a moved workspace needs a locked target-file update.
+  if (entry.workspace === observed.workspace) return observed;
+  const resolved = await withPetTargetLock(root, async () => {
+    const current = read<PetTarget | null>(root, targetFile) ?? null;
+    if (!current) return null;
+    if (current.project !== observed.project || current.revision !== observed.revision) return undefined;
+    const latest = await targetRegistration(current.project, root);
+    if (!latest) return null;
+    if (latest.workspace === current.workspace) return current;
+    const moved = { ...current, workspace: latest.workspace, revision: randomUUID(), updatedAt: new Date(now).toISOString() };
+    write(root, targetFile, moved);
+    return moved;
+  });
+  // Another explicit choice superseded the relocation; read that choice after
+  // releasing the lock rather than overwriting or returning the stale target.
+  return resolved === undefined ? currentTarget(root, now) : resolved;
+}
 export async function petState(root = globalHome, now = Date.now()): Promise<PetState> {
-  let target = read<PetTarget | null>(root, targetFile) ?? null;
-  if (target) {
-    const entry = (await listRegisteredWorkspaces(root)).find(entry => entry.id === target!.project);
-    if (!entry?.available) target = null;
-    else if (entry.workspace !== target.workspace) {
-      target = { ...target, workspace: entry.workspace, revision: randomUUID(), updatedAt: new Date(now).toISOString() };
-      write(root, targetFile, target);
-    }
-  }
+  const target = await currentTarget(root, now);
   const consumer = read<PetConsumer>(root, consumerFile) ?? null;
   return {
     target,
@@ -60,20 +83,31 @@ export async function setPetTarget(
 ): Promise<PetState> {
   if (project !== null && typeof project !== "string")
     throw new Error("请选择已登记的工作区");
-  const indexed = project === null ? null : (await catalog(root, true)).find((p) => p.id === project);
-  if (project !== null && !indexed?.workspace)
-    throw new Error("未找到已登记的工作区");
-  // Null is an explicit choice to stop following. A startup default must not undo it.
-  const previous = read<PetTarget | null>(root, targetFile);
-  if (ifUnset && previous !== undefined) return petState(root);
-  if (previous?.project === project && previous.workspace === indexed?.workspace)
-    return petState(root);
-  write(root, targetFile, indexed ? {
-    project: indexed.id,
-    workspace: indexed.workspace!,
-    revision: randomUUID(),
-    updatedAt: new Date().toISOString(),
-  } satisfies PetTarget : null);
+  if (project !== null && !validWorkspaceId(project)) throw new Error("未找到已登记的工作区");
+  const select = async () => {
+    const indexed = project === null ? null : await registeredWorkspace(project, root).catch(error => {
+      if (error.code !== "ENOENT") throw error;
+      throw new Error("未找到已登记的工作区");
+    });
+    if (indexed) {
+      const identity = await readWorkspaceIdentity(await realpath(indexed.workspace)).catch(() => null);
+      if (identity?.id !== indexed.id) throw new Error("未找到已登记的工作区");
+    }
+    await withPetTargetLock(root, async () => {
+      // Null is an explicit choice to stop following. Startup must not undo it.
+      const previous = read<PetTarget | null>(root, targetFile);
+      if (ifUnset && previous !== undefined) return;
+      if (previous?.project === project && previous.workspace === indexed?.workspace) return;
+      write(root, targetFile, indexed ? {
+        project: indexed.id, workspace: indexed.workspace,
+        revision: randomUUID(), updatedAt: new Date().toISOString(),
+      } satisfies PetTarget : null);
+    });
+  };
+  // A removal and a follow choice serialize around the same registration. A
+  // queued follow must re-check it after unlink, never resurrecting stale state.
+  if (project === null) await select();
+  else await withWorkspaceRegistrationLock(root, project, select);
   return petState(root);
 }
 export async function recordPetConsumer(input: unknown, root = globalHome): Promise<PetState> {
