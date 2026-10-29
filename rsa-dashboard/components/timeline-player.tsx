@@ -1,11 +1,11 @@
 "use client";
 
-import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
-import type { ReplayDetail, ReplayFrame, ReplayItem, ReplayOverview, ReplayOverviewResult, ReplayCoverage, ReplayWindow } from "../lib/replay-types";
+import type { ReplayFrame, ReplayItem, ReplayOverview, ReplayOverviewResult, ReplayCoverage, ReplayWindow } from "../lib/replay-types";
 import { adjacentReplayFrame, clampReplayTime, mergeReplayPages, nearbyReplayItems, REPLAY_WINDOW_MS,
   replayDuration, replayFramesAt, replayItemActive, replayTracks, replayWindowBounds,
   retainReplayWindows } from "./replay-model";
@@ -16,6 +16,19 @@ import { replayVideoReady } from "./replay-video-model";
 import { readArchiveJson } from "../lib/archive-client";
 import "./timeline-player.css";
 import { useTranslations } from "@/lib/locale";
+import { ChevronLeft, ChevronRight, RotateCcw, RotateCw } from "lucide-react";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ReplayTimeJump } from "./replay-time-jump";
+import { ReplayEventSearch } from "./replay-event-search";
+import { ReplayEvidencePanel, type ReplayEvidenceSelection } from "./replay-evidence-panel";
+import { replayElapsedInput, replayEvidenceKey, replayEvidencePatch } from "./replay-navigation";
+
+const subscribeWide = (listener: () => void) => {
+  const query = window.matchMedia("(min-width: 1280px)"); query.addEventListener("change", listener);
+  return () => query.removeEventListener("change", listener);
+};
+const isWideScreen = () => window.matchMedia("(min-width: 1280px)").matches;
 
 const read = readArchiveJson;
 
@@ -48,7 +61,7 @@ const wallTime = (at: number) => new Date(at).toLocaleTimeString("zh-CN", {
   hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit", fractionalSecondDigits: 3,
 });
 const statusKey: Record<string, string> = { completed: "completed", success: "completed", error: "failed", failed: "failed",
-  cancelled: "cancelled", pending: "running", running: "running" };
+  cancelled: "cancelled", pending: "pending", running: "running" };
 
 type VideoPlayback = { at: number; playing: boolean; clockReady: boolean; speed: number; onReady(slot: string, url: string, ready: boolean): void };
 function ReplayMedia({ media, label, sampledAt, image, playback, slot }: { media: ReplayFrame["media"][number]; label: string; image?: BufferedImage;
@@ -92,51 +105,45 @@ const FrameMedia = memo(function FrameMedia({ frame, images, playback }: {
         label={frame.capability + " · " + wallTime(frame.at) + " · " + (media.index + 1)} />
     </div>)}
     {!frame.media.length && <p className="replay-no-media">{t("noMedia")}</p>}
-    {frame.text && <details className="replay-frame-text"><summary>{t("frameText")}</summary><pre>{frame.text}</pre></details>}
   </div>
+    {frame.text && <details className="replay-frame-text"><summary>{t("frameText")}</summary><pre>{frame.text}</pre></details>}
   </>;
 });
 
-type Selection = { kind: "frame"; value: ReplayFrame } | { kind: "item"; value: ReplayItem };
-
-function ReplayDetails({ scope, selection, onClose }: { scope: string; selection: Selection; onClose(): void }) {
-  const t = useTranslations("timelinePlayer");
-  const [detail, setDetail] = useState<ReplayDetail | null>(null);
-  const [error, setError] = useState("");
-  const { value, kind } = selection;
-  const url = endpoint(scope, kind === "frame" ? { mode: "detail", record: value.id, sequence: (value as ReplayFrame).sequence }
-    : { mode: "detail", id: value.id });
-  useEffect(() => {
-    const controller = new AbortController();
-    setDetail(null); setError("");
-    void read<ReplayDetail>(url, controller.signal).then(value => {
-      if (!controller.signal.aborted) setDetail(value);
-    }).catch(error => { if (!controller.signal.aborted) setError(error.message); });
-    return () => controller.abort();
-  }, [url]);
-  return <section className="surface replay-detail" aria-label={t("detailsAria")}>
-    <div className="surface-heading"><h2>{detail?.title ?? t("detailsTitle")}</h2>
-      <Button type="button" variant="ghost" size="xs" onClick={onClose}>{t("closeDetails")}</Button></div>
-    {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : !detail ? <p role="status">{t("readingRecord")}</p> : <>
-      {!!detail.observations?.length && <div className="replay-inputs"><h3>{t("modelObservations")}</h3>
-        {detail.observations.map(observation => <div key={observation.id}>
-          {observation.url ? <img src={observation.url} alt={t("modelInput") + " " + observation.id} loading="lazy" /> : <span>{t("unrecordedMedia")}</span>}
-          <small>{observation.recordId ?? observation.id}{observation.sequence ? " · #" + observation.sequence : ""}
-            {observation.approximate ? t("approximateNote") : ""}</small>
-        </div>)}
-      </div>}
-      <pre>{JSON.stringify(detail.data, null, 2)}</pre>
-    </>}
-  </section>;
-}
-
-export function TimelinePlayer({ project, run, epoch, position, onPosition, onOverview, archiveRevision }: {
-  project: string; run: string; epoch?: string; position?: string | null; onPosition(at: number): void;
+export function TimelinePlayer({ project, run, epoch, position, evidence = null, onPosition, onEvidence, onOverview, archiveRevision }: {
+  project: string; run: string; epoch?: string; position?: string | null; evidence?: ReplayEvidenceSelection | null;
+  onPosition(at: number, selection?: ReplayEvidenceSelection | null): void;
+  onEvidence(selection: ReplayEvidenceSelection | null): void;
   onOverview?(value: ReplayOverviewResult): void;
   archiveRevision?: number;
 }) {
   const t = useTranslations("timelinePlayer");
+  const nt = useTranslations("replayNavigation");
   const controlsId = useId();
+  const wide = useSyncExternalStore(subscribeWide, isWideScreen, () => false);
+  const evidenceKey = replayEvidenceKey(evidence);
+  const [inspectorTab, setInspectorTab] = useState("events");
+  const evidencePanel = useRef<HTMLElement>(null);
+  const evidenceOpener = useRef<HTMLElement | null>(null);
+  const eventsTab = useRef<HTMLButtonElement>(null);
+  const player = useRef<HTMLDivElement>(null);
+  const lastEvidence = useRef("");
+  const restoreEvidenceFocus = () => {
+    const opener = evidenceOpener.current;
+    if (opener?.isConnected && opener.getClientRects().length) opener.focus();
+    else if (eventsTab.current?.getClientRects().length) eventsTab.current.focus();
+    else player.current?.focus({ preventScroll: true });
+  };
+  useEffect(() => {
+    if (evidenceKey) {
+      setInspectorTab("details");
+      if (wide) requestAnimationFrame(() => { evidencePanel.current?.focus({ preventScroll: true }); evidencePanel.current?.scrollIntoView({ block: "nearest" }); });
+    } else {
+      setInspectorTab("events");
+      if (lastEvidence.current && wide && document.activeElement === document.body) requestAnimationFrame(restoreEvidenceFocus);
+    }
+    lastEvidence.current = evidenceKey;
+  }, [evidenceKey, wide]);
   const requestedScope = new URLSearchParams({ project, run, ...(epoch ? { epoch } : {}) }).toString();
   const [overview, setOverview] = useState<ReplayOverview | null>(null);
   const resolvedEpoch = overview ? overview.epoch : epoch;
@@ -160,7 +167,6 @@ export function TimelinePlayer({ project, run, epoch, position, onPosition, onOv
   const cached = useRef(windows);
   const [windowError, setWindowError] = useState("");
   const [retry, setRetry] = useState(0);
-  const [selection, setSelection] = useState<Selection | null>(null);
   const [shareState, setShareState] = useState("");
   const stepRequest = useRef<AbortController | null>(null);
   const [stepping, setStepping] = useState(false);
@@ -185,7 +191,7 @@ export function TimelinePlayer({ project, run, epoch, position, onPosition, onOv
       setCoverage(next.coverage ?? null);
       if (next.startAt === null) return;
       if (hasOverview.current && previousEpoch.current !== next.epoch) {
-        setWindows([]); setEventWindow(null); setSelection(null); setPlaying(false);
+        cached.current = []; setWindows([]); setEventWindow(null); setPlaying(false);
         move(next.startAt);
       }
       previousEpoch.current = next.epoch;
@@ -212,7 +218,9 @@ export function TimelinePlayer({ project, run, epoch, position, onPosition, onOv
   }, [position, overview, move]);
   useEffect(() => () => stepRequest.current?.abort(), []);
 
-  const bounds = overview ? replayWindowBounds(at, overview, windowMs) : { startAt: 0, endAt: 0 };
+  // Video sampling stays bounded even when event inspection spans fifteen minutes.
+  const bounds = overview ? replayWindowBounds(at, overview) : { startAt: 0, endAt: 0 };
+  const eventBounds = overview ? replayWindowBounds(at, overview, windowMs) : { startAt: 0, endAt: 0 };
   const activeWindow = windows.find(window => window.startAt === bounds.startAt && window.endAt === bounds.endAt);
   const frameLoads = useRef(new Map<string, AbortController>());
   const [framePass, setFramePass] = useState(0);
@@ -243,24 +251,24 @@ export function TimelinePlayer({ project, run, epoch, position, onPosition, onOv
       }
     };
     void load(bounds.startAt, bounds.endAt, true);
-    if (bounds.endAt < overview.endAt) void load(bounds.endAt, Math.min(bounds.endAt + windowMs, overview.endAt), false);
+    if (bounds.endAt < overview.endAt) void load(bounds.endAt, Math.min(bounds.endAt + REPLAY_WINDOW_MS, overview.endAt), false);
     return () => controller.abort();
-  }, [scope, bounds.startAt, bounds.endAt, windowMs, overview?.startAt, overview?.endAt, retry, storeWindow]);
+  }, [scope, bounds.startAt, bounds.endAt, overview?.startAt, overview?.endAt, retry, storeWindow]);
 
   useEffect(() => {
     if (!overview) return;
     const controller = new AbortController();
     setEventError(""); setEventsLoading(true);
-    const prior = eventWindow?.startAt === bounds.startAt && eventWindow.endAt === bounds.endAt && eventPage ? eventWindow : undefined;
+    const prior = eventWindow?.startAt === eventBounds.startAt && eventWindow.endAt === eventBounds.endAt && eventPage ? eventWindow : undefined;
     if (!prior) setEventWindow(null);
-    void readWindow(scope, bounds.startAt, bounds.endAt, controller.signal, "events", page => {
+    void readWindow(scope, eventBounds.startAt, eventBounds.endAt, controller.signal, "events", page => {
       if (!controller.signal.aborted) setEventWindow(page);
     }, prior).catch(error => { if (!controller.signal.aborted) setEventError(String(error)); })
       .finally(() => { if (!controller.signal.aborted) setEventsLoading(false); });
     return () => controller.abort();
     // Events have their own cursor and never gate frame readiness.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scope, bounds.startAt, bounds.endAt, eventPage, retry, overview?.coverage?.complete, archiveRevision]);
+  }, [scope, eventBounds.startAt, eventBounds.endAt, eventPage, retry, overview?.coverage?.complete, archiveRevision]);
 
   const moreFrameRequest = useRef<AbortController | null>(null);
   const frameTail = activeWindow?.frames.at(-1)?.at;
@@ -289,7 +297,8 @@ export function TimelinePlayer({ project, run, epoch, position, onPosition, onOv
   const { displayed, pending } = useBufferedMedia(scope + ":" + capability + ":" + refresh + ":" + retry, target, future, !activeWindow || stepping);
   // Video frames share a decoder for the entire segment; advancing record metadata must not pause playback.
   const imageReady = !!activeWindow && (!activeWindow.nextCursor || frameTail === undefined || at <= frameTail) && (!target?.urls.length || !pending) && !stepping;
-  const shownFrames = target && !target.urls.length ? visibleFrames : displayed?.value ?? [];
+  const shownFrames = (target && !target.urls.length ? visibleFrames : displayed?.value ?? [])
+    .filter(frame => frame.at <= at);
   const videoSlots = visibleFrames.flatMap(frame => frame.media.filter(media => media.video)
     .map(media => ({ slot: frame.capability + ":" + media.index, video: media.video! })));
   const slotsKey = JSON.stringify(videoSlots.map(({ slot }) => slot));
@@ -327,19 +336,19 @@ export function TimelinePlayer({ project, run, epoch, position, onPosition, onOv
     return () => cancelAnimationFrame(animation);
   }, [playing, speed, ready, overview]);
 
-  const items = eventWindow?.startAt === bounds.startAt && eventWindow.endAt === bounds.endAt ? eventWindow.items : [];
+  const items = eventWindow?.startAt === eventBounds.startAt && eventWindow.endAt === eventBounds.endAt ? eventWindow.items : [];
   const activeItems = items.filter(item => item.track !== "log" && replayItemActive(item, at));
   const logs = nearbyReplayItems(items.filter(item => item.track === "log"), at, 8);
   const capabilities = [...new Set([...(overview?.capabilities ?? []), ...frames.map(frame => frame.capability)])];
-  const seek = (next: number, share = true) => {
+  const seek = (next: number, commit = true, selection: ReplayEvidenceSelection | null = null) => {
     if (!overview) return;
     stepRequest.current?.abort(); moreFrameRequest.current?.abort(); setStepping(false); setPlaying(false);
     const value = clampReplayTime(next, overview);
     if (activeWindow?.nextCursor && value < (activeWindow.frames[0]?.at ?? value)) {
       cached.current = []; setWindows([]); setRetry(current => current + 1);
     }
-    move(value);
-    if (share) onPosition(Math.round(value));
+    setShareState(""); move(value);
+    if (commit) onPosition(Math.round(value), selection);
   };
   const step = async (direction: -1 | 1) => {
     if (!overview) return;
@@ -350,39 +359,67 @@ export function TimelinePlayer({ project, run, epoch, position, onPosition, onOv
     try {
       let edge = direction === 1 ? bounds.endAt : bounds.startAt;
       while (direction === 1 ? edge < overview.endAt : edge > overview.startAt) {
-        const target = replayWindowBounds(direction === 1 ? edge : edge - 1, overview, windowMs);
+        const target = replayWindowBounds(direction === 1 ? edge : edge - 1, overview);
         const result = await readWindow(scope, target.startAt, target.endAt, controller.signal);
         if (controller.signal.aborted) return;
         const next = adjacentReplayFrame(result.frames, at, direction, capability);
-        if (next) { move(next.at); storeWindow(result); onPosition(next.at); return; }
+        if (next) { move(next.at); storeWindow(result); onPosition(next.at, null); return; }
         edge = direction === 1 ? target.endAt : target.startAt;
       }
     } catch (error) { if (!controller.signal.aborted) setWindowError(String(error)); }
     finally { if (!controller.signal.aborted) setStepping(false); }
   };
-  const selectFrame = (frame: ReplayFrame) => { seek(frame.at); setSelection({ kind: "frame", value: frame }); };
-  const selectItem = (item: ReplayItem) => { seek(item.startAt); setSelection({ kind: "item", value: item }); };
+  const selectFrame = (frame: ReplayFrame, trigger: HTMLElement) => {
+    evidenceOpener.current = trigger; setInspectorTab("details");
+    seek(frame.at, true, { kind: "frame", record: frame.id, sequence: frame.sequence });
+    if (wide) requestAnimationFrame(() => evidencePanel.current?.focus({ preventScroll: true }));
+  };
+  const selectItem = (item: ReplayItem, trigger: HTMLElement) => {
+    evidenceOpener.current = trigger; setInspectorTab("details");
+    seek(item.startAt, true, { kind: "item", id: item.id });
+    if (wide) requestAnimationFrame(() => evidencePanel.current?.focus({ preventScroll: true }));
+  };
+  const closeEvidence = () => {
+    setInspectorTab("events"); onEvidence(null);
+    if (wide) requestAnimationFrame(restoreEvidenceFocus);
+  };
+  const evidenceUrl = (item: ReplayItem) => {
+    const url = new URL(window.location.href);
+    url.searchParams.set("view", "replay"); url.searchParams.set("project", project); url.searchParams.set("run", run);
+    url.searchParams.set("epoch", overview?.epoch ?? "all"); url.searchParams.set("at", String(item.startAt));
+    for (const [key, value] of Object.entries(replayEvidencePatch({ kind: "item", id: item.id }))) {
+      if (value === null) url.searchParams.delete(key); else url.searchParams.set(key, value);
+    }
+    return url.pathname + url.search;
+  };
+  const evidenceView = evidence && <ReplayEvidencePanel key={scope + evidenceKey} scope={scope} selection={evidence} focusRef={evidencePanel} onClose={closeEvidence}
+    onLoaded={detail => {
+      if (position == null && overview && detail.summary) seek(detail.summary.startAt, true, evidence);
+    }} />;
   const share = async () => {
-    onPosition(Math.round(at));
+    onPosition(Math.round(at), evidence);
     const url = new URL(window.location.href);
     url.searchParams.set("view", "replay"); url.searchParams.set("at", String(Math.round(at)));
     url.searchParams.set("project", project); url.searchParams.set("run", run);
     url.searchParams.set("epoch", overview?.epoch ?? "all");
+    for (const [key, value] of Object.entries(replayEvidencePatch(evidence))) {
+      if (value === null) url.searchParams.delete(key); else url.searchParams.set(key, value);
+    }
     try { await navigator.clipboard.writeText(url.toString()); setShareState(t("linkCopied")); }
     catch { setShareState(t("timeInUrl")); }
   };
 
   if (!project || !run) return <section className="surface empty-state"><h2>{t("emptyTitle")}</h2><p>{t("emptyDescription")}</p></section>;
-  if (!overview) return <section className="surface empty-state"><h2>{overviewError ? t("unavailable") : t("preparing")}</h2>
+  if (!overview) return <section className="surface empty-state"><h1>{overviewError ? t("unavailable") : t("preparing")}</h1>
     {overviewError ? <Alert variant="destructive"><AlertDescription>{overviewError}</AlertDescription></Alert>
       : <p role="status">{coverage ? <>{t("readingSourceDir")} {Math.round(coverage.bytes / Math.max(1, coverage.totalBytes) * 100)}% · {t("loadIndependent")}</> : t("readingFromRecords")}</p>}
     {overviewError && <Button type="button" variant="outline" size="sm" onClick={() => setRefresh(value => value + 1)}>{t("retryLoad")}</Button>}</section>;
   const duration = overview.endAt - overview.startAt;
-  const x = (time: number) => Math.max(0, Math.min(100, (time - bounds.startAt) / Math.max(1, bounds.endAt - bounds.startAt) * 100));
+  const x = (time: number) => Math.max(0, Math.min(100, (time - eventBounds.startAt) / Math.max(1, eventBounds.endAt - eventBounds.startAt) * 100));
   const trackFrames = (activeWindow?.frames ?? []).filter(frame => frame.at >= bounds.startAt && (!capability || frame.capability === capability));
-  return <div className="replay-player">
+  return <div ref={player} tabIndex={-1} className="replay-player outline-none">
     <div className="replay-toolbar">
-      <span className="replay-readonly"><i /> {t("readonlyNotice")}</span>
+      <div className="replay-title"><h1>{nt("title")}</h1><span className="replay-readonly"><i /> {t("readonlyNotice")}</span></div>
       <div><Button type="button" variant="ghost" size="xs" disabled={refreshing} onClick={() => { cached.current = []; setWindows([]); setRefresh(value => value + 1); setRetry(value => value + 1); }}>
         {refreshing ? t("refreshing") : t("refreshRecords")}</Button>
         <Button type="button" variant="ghost" size="xs" onClick={share}>{t("shareMoment")}</Button></div>
@@ -390,6 +427,7 @@ export function TimelinePlayer({ project, run, epoch, position, onPosition, onOv
     {coverage && !coverage.complete && <p className="replay-notice" role="status">{t("coverageReadPrefix")} {Math.round(coverage.bytes / Math.max(1, coverage.totalBytes) * 100)}%{t("coverageReadSuffix")}</p>}
     {shareState && <p className="replay-notice" role="status">{shareState}</p>}
     {overviewError && <Alert variant="destructive"><AlertDescription>{overviewError}{t("keepLoaded")}</AlertDescription></Alert>}
+    <div className="replay-workbench"><div className="replay-main-stack">
     <section className="surface replay-stage">
       <div className="surface-heading"><h2>{t("stageTitle")}</h2><div className="replay-capability">
         <Label htmlFor={`${controlsId}-capability`} className="text-xs font-normal">{t("capabilityLabel")}</Label>
@@ -400,7 +438,7 @@ export function TimelinePlayer({ project, run, epoch, position, onPosition, onOv
         </NativeSelect></div></div>
       <div className="replay-frames" aria-busy={!ready}>
         {shownFrames.length ? shownFrames.map(frame => <article className="replay-frame" key={frame.capability} data-frame-id={frame.id}>
-          <div className="replay-frame-meta"><Button type="button" variant="ghost" size="xs" onClick={() => setSelection({ kind: "frame", value: frame })}>
+          <div className="replay-frame-meta"><Button type="button" variant="ghost" size="xs" onClick={event => selectFrame(frame, event.currentTarget)}>
             {frame.capability} · #{frame.sequence} ↗</Button><span>{t("sampled")} {wallTime(frame.at)}{ready ? " · " + (Math.max(0, at - frame.at) / 1000).toFixed(1) + " " + t("secondsAgo") : t("previousFrame")}</span></div>
           <FrameMedia key={refresh + ":" + retry} frame={frame} images={displayed?.images ?? new Map()} playback={{ at, playing, clockReady: ready, speed, onReady: onVideoReady }} />
         </article>) : <div className="replay-loading">{!ready ? t("loadingFrames") : capability ? t("noFramesFiltered") : t("noFramesAll")}<small>{t("playbackContinues")}</small></div>}
@@ -413,12 +451,14 @@ export function TimelinePlayer({ project, run, epoch, position, onPosition, onOv
         {/* The media scrubber keeps native pointer/key commit semantics and millisecond steps. */}
         <input className="replay-seek accent-primary focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring" type="range" min={overview.startAt} max={Math.max(overview.endAt, overview.startAt + 1)} step="1" value={at}
           disabled={duration <= 0} aria-label={t("seekLabel")} aria-valuetext={replayDuration(at - overview.startAt) + " / " + replayDuration(duration)}
-          onChange={event => seek(Number(event.target.value), false)} onPointerUp={() => onPosition(Math.round(atRef.current))}
-          onKeyUp={() => onPosition(Math.round(atRef.current))} />
+          onChange={event => seek(Number(event.target.value), false)} onPointerUp={() => onPosition(Math.round(atRef.current), null)}
+          onKeyUp={() => onPosition(Math.round(atRef.current), null)} />
         <div className="replay-control-row"><div className="replay-transport">
           <Button type="button" size="sm" className="min-w-[90px]" aria-label={playing ? t("pauseReplay") : t("playReplay")} disabled={duration <= 0 || !!windowError}
             onClick={() => { stepRequest.current?.abort(); setStepping(false); if (at >= overview.endAt) move(overview.startAt); setPlaying(value => !value); }}>
             {playing ? t("pause") : t("play")}</Button>
+          <Button type="button" variant="outline" size="sm" aria-label={nt("backTen")} disabled={at <= overview.startAt} onClick={() => seek(at - 10_000)}><RotateCcw aria-hidden="true" />10{t("seconds")}</Button>
+          <Button type="button" variant="outline" size="sm" aria-label={nt("forwardTen")} disabled={at >= overview.endAt} onClick={() => seek(at + 10_000)}><RotateCw aria-hidden="true" />10{t("seconds")}</Button>
           <Button type="button" variant="outline" size="sm" aria-label={t("prevFrame")} disabled={stepping || at <= overview.startAt} onClick={() => void step(-1)}>{t("prevFrameShort")}</Button>
           <Button type="button" variant="outline" size="sm" aria-label={t("nextFrame")} disabled={stepping || at >= overview.endAt} onClick={() => void step(1)}>{t("nextFrameShort")}</Button>
           <span className="replay-time mono">{replayDuration(at - overview.startAt)} <small>/ {replayDuration(duration)}</small></span>
@@ -426,26 +466,31 @@ export function TimelinePlayer({ project, run, epoch, position, onPosition, onOv
           <NativeSelect size="sm" aria-label={t("speedLabel")} value={speed} onChange={event => setSpeed(Number(event.target.value))}>
             {[0.25, 0.5, 1, 2, 4, 8].map(value => <NativeSelectOption key={value} value={value}>{value}×</NativeSelectOption>)}
           </NativeSelect></div></div>
+        <ReplayTimeJump elapsed={at - overview.startAt} duration={duration} onJump={elapsed => seek(overview.startAt + elapsed)} />
       </div>
     </section>
     <section className="surface replay-timeline" aria-label={t("timelineLabel")}>
       <div className="surface-heading"><h2>{t("timelineTitle")}</h2><div className="replay-window-size">
         <Label htmlFor={`${controlsId}-window`} className="text-xs font-normal">{t("windowLabel")}</Label>
         <NativeSelect id={`${controlsId}-window`} size="sm" className="text-xs" aria-label={t("windowSelectLabel")} value={windowMs} onChange={event => {
-          stepRequest.current?.abort(); setStepping(false); cached.current = []; setWindows([]); setWindowMs(Number(event.target.value));
-        }}>{[1, 5, 15, 30, 60].map(seconds => <NativeSelectOption key={seconds} value={seconds * 1000}>{seconds} {t("seconds")}</NativeSelectOption>)}</NativeSelect>
-        <span className="mono">{wallTime(bounds.startAt)} — {wallTime(bounds.endAt)}</span></div></div>
+          setEventPage(0); setWindowMs(Number(event.target.value));
+        }}>{[5, 15, 30, 60, 300, 900].map(seconds => <NativeSelectOption key={seconds} value={seconds * 1000}>{seconds >= 60 ? `${seconds / 60} ${nt("minutes")}` : `${seconds} ${t("seconds")}`}</NativeSelectOption>)}</NativeSelect>
+        <Button type="button" variant="outline" size="icon-sm" aria-label={nt("previousWindow")} disabled={eventBounds.startAt <= overview.startAt} onClick={() => seek(at - windowMs)}><ChevronLeft aria-hidden="true" /></Button>
+        <Button type="button" variant="outline" size="icon-sm" aria-label={nt("nextWindow")} disabled={eventBounds.endAt >= overview.endAt} onClick={() => seek(at + windowMs)}><ChevronRight aria-hidden="true" /></Button>
+        </div></div>
+      <div className="replay-time-axis"><time>{replayElapsedInput(eventBounds.startAt - overview.startAt)}</time><span>{nt("elapsedTime")}</span><time>{replayElapsedInput(eventBounds.endAt - overview.startAt)}</time></div>
       <div className="replay-track-row"><span>{t("track.perception")}</span><div className="replay-track-lane">
+        <span className="replay-sampled-window" aria-hidden="true" style={{ left: x(bounds.startAt) + "%", width: Math.max(0.5, x(bounds.endAt) - x(bounds.startAt)) + "%" }} />
         {trackFrames.map(frame => <button type="button" key={frame.id} className="replay-frame-tick focus-visible:z-10 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-ring" style={{ left: x(frame.at) + "%" }}
-          aria-label={t("viewPerception") + " " + wallTime(frame.at)} title={frame.capability + " · " + wallTime(frame.at)} onClick={() => selectFrame(frame)} />)}
+          aria-label={t("viewPerception") + " " + wallTime(frame.at)} title={frame.capability + " · " + wallTime(frame.at)} onClick={event => selectFrame(frame, event.currentTarget)} />)}
         <i className="replay-cursor" style={{ left: x(at) + "%" }} />
       </div></div>
       {replayTracks.map(track => <div key={track} className="replay-track-row"><span>{t(`track.${track}`)}</span><div className="replay-track-lane">
         {items.filter(item => item.track === track).map(item => <button type="button" key={item.id}
           className={"replay-span focus-visible:z-10 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-ring " + track + (replayItemActive(item, at) ? " active" : "") + (/error|failed/.test(item.status ?? "") ? " failed" : "")}
-          style={{ left: x(item.startAt) + "%", width: Math.max(0.35, x(item.endAt ?? bounds.endAt) - x(item.startAt)) + "%" }}
+          style={{ left: x(item.startAt) + "%", width: Math.max(0.35, x(item.track === "log" ? item.startAt : item.endAt ?? eventBounds.endAt) - x(item.startAt)) + "%" }}
           title={item.label + " · " + wallTime(item.startAt)} aria-label={t(`track.${track}`) + " · " + item.label}
-          onClick={() => selectItem(item)}>{track === "log" ? "" : item.label}</button>)}
+          onClick={event => selectItem(item, event.currentTarget)}>{track === "log" ? "" : item.label}</button>)}
         <i className="replay-cursor" style={{ left: x(at) + "%" }} />
       </div></div>)}
       {eventError && <Alert variant="destructive"><AlertDescription className="flex flex-wrap items-center justify-between gap-2">
@@ -453,21 +498,40 @@ export function TimelinePlayer({ project, run, epoch, position, onPosition, onOv
       </AlertDescription></Alert>}
       {eventsLoading && <p role="status">{t("supplementingEvents")}</p>}
       {eventWindow?.nextCursor && !eventsLoading && <Button type="button" variant="ghost" size="xs" onClick={() => setEventPage(value => value + 1)}>{t("continueEvents")}</Button>}
-      <p className="replay-axis-note">{t("axisNote")}</p>
+      <p className="replay-axis-note">{nt("frameWindowNote")} {t("axisNote")}</p>
     </section>
+    </div>
+    <aside className="replay-inspector">
+      <Tabs value={inspectorTab} onValueChange={setInspectorTab}>
+        <TabsList variant="line" aria-label={nt("inspectorTabs")} className="w-full">
+          <TabsTrigger ref={eventsTab} value="events">{nt("eventsTab")}</TabsTrigger>
+          <TabsTrigger value="details" disabled={!evidence} onClick={() => { if (evidence && !wide) setInspectorTab("details"); }}>{nt("evidenceTab")}</TabsTrigger>
+        </TabsList>
+        <TabsContent value="events" forceMount className="data-[state=inactive]:hidden">
+          <ReplayEventSearch key={scope} scope={scope} startAt={overview.startAt} itemUrl={evidenceUrl} onSelect={selectItem} selectedId={evidence?.kind === "item" ? evidence.id : undefined} />
+        </TabsContent>
+        <TabsContent value="details">{wide ? evidenceView : evidence && <Button type="button" variant="outline" onClick={() => setInspectorTab("details")}>{nt("evidenceTab")}</Button>}</TabsContent>
+      </Tabs>
+    </aside></div>
     <div className="replay-context-grid">
       <section className="surface replay-context"><div className="surface-heading"><h2>{t("currentActions")}</h2><span>{activeItems.length} {t("items")}</span></div>
-        {activeItems.length ? activeItems.map(item => <button type="button" key={item.id} className="replay-context-item focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring" onClick={() => selectItem(item)}>
+        {activeItems.length ? activeItems.map(item => <button type="button" key={item.id} className="replay-context-item focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring" onClick={event => selectItem(item, event.currentTarget)}>
           <span className={"replay-track-badge " + item.track}>{t(`track.${item.track}`)}</span><strong>{item.label}</strong>
           <small>{item.status && statusKey[item.status] ? t(`status.${statusKey[item.status]}`) : (item.status ?? (item.endAt === null ? t("status.notEnded") : t("status.recorded")))}</small>
         </button>) : <p className="replay-empty-context">{t("noActiveItems")}</p>}
       </section>
       <section className="surface replay-context"><div className="surface-heading"><h2>{t("nearbyLogs")}</h2><span>{t("clickToLocate")}</span></div>
-        {logs.length ? logs.map(item => <button type="button" key={item.id} className={"replay-context-item focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring" + (item.startAt <= at ? " past" : " future")} onClick={() => selectItem(item)}>
+        {logs.length ? logs.map(item => <button type="button" key={item.id} className={"replay-context-item focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring" + (item.startAt <= at ? " past" : " future")} onClick={event => selectItem(item, event.currentTarget)}>
           <time className="mono">{wallTime(item.startAt)}</time><strong>{item.label}</strong>
         </button>) : <p className="replay-empty-context">{t("noLogs")}</p>}
       </section>
     </div>
-    {selection && <ReplayDetails key={selection.kind + ":" + selection.value.id} scope={scope} selection={selection} onClose={() => setSelection(null)} />}
+    <Dialog open={!wide && !!evidence && inspectorTab === "details"} onOpenChange={open => { if (!open) closeEvidence(); }}>
+      <DialogContent showCloseButton={false} className="replay-evidence-dialog max-h-[90dvh] overflow-y-auto p-0" onOpenAutoFocus={event => { event.preventDefault(); evidencePanel.current?.focus(); }}
+        onCloseAutoFocus={event => { event.preventDefault(); requestAnimationFrame(restoreEvidenceFocus); }}>
+        <DialogHeader className="sr-only"><DialogTitle>{t("detailsTitle")}</DialogTitle><DialogDescription>{nt("evidenceDialogHint")}</DialogDescription></DialogHeader>
+        {!wide && evidenceView}
+      </DialogContent>
+    </Dialog>
   </div>;
 }

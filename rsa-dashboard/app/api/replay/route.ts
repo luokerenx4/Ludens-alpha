@@ -15,6 +15,7 @@ export async function GET(request: Request) {
       sequence: q.has("sequence") ? Number(q.get("sequence")) : undefined, media: q.has("media") ? Number(q.get("media")) : undefined,
       asset: q.get("asset") ?? undefined,
       bytes: q.has("bytes") ? Number(q.get("bytes")) : undefined,
+      q: q.get("q") ?? undefined, track: (q.get("track") ?? undefined) as ReplayQuery["track"],
     }], request.signal);
     if ("file" in result) return await fileResponse(request, result);
     if ("bytes" in result) return new Response(new Uint8Array(result.bytes), {
