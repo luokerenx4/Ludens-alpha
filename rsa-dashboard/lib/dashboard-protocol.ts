@@ -10,7 +10,7 @@ import type { getReplay, ReplayQuery } from "./replay";
 import type { RunPage } from "./run-index";
 import type { diagnosticEvents, DiagnosticQuery } from "./diagnostic-events";
 import type { indexCacheStats } from "./log-index";
-import type { PerceptionSettings } from "./perception-config";
+import type { PerceptionSettings, PerceptionSettingsPatch } from "./perception-config";
 
 /** Only existing Dashboard operations cross the worker boundary, never arbitrary code or paths. */
 export interface DashboardMethods {
@@ -32,7 +32,7 @@ export interface DashboardMethods {
   readDoc: { args: [id: string]; result: Awaited<ReturnType<typeof readDoc>> };
   stop: { args: [project: string, run: string, epoch: string | null]; result: Awaited<ReturnType<typeof stopRun>> };
   perceptionSettings: { args: [project: string]; result: Partial<PerceptionSettings> };
-  updatePerceptionSettings: { args: [project: string, patch: unknown]; result: Partial<PerceptionSettings> };
+  updatePerceptionSettings: { args: [project: string, patch: PerceptionSettingsPatch]; result: Partial<PerceptionSettings> };
   petState: { args: []; result: ReturnType<typeof petState> };
   petTarget: { args: [project: unknown, ifUnset: boolean]; result: Awaited<ReturnType<typeof setPetTarget>> };
   petConsumer: { args: [input: unknown]; result: ReturnType<typeof recordPetConsumer> };
