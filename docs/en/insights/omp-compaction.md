@@ -1,8 +1,8 @@
 # OMP Background Compaction Rework
 
-For plain question-and-answer coding, OMP's (`18.9.1`) native context compaction works fine. Once we ran OMP inside a **spatiotemporally consistent real-time environment**, however, its default optimistic compaction policy started falling back to synchronous blocking almost immediately.
+For plain question-and-answer coding, OMP's native context compaction works fine. Once we ran OMP inside a **spatiotemporally consistent real-time environment**, however, its default optimistic compaction policy started falling back to synchronous blocking almost immediately.
 
-This note covers what happened and why we adjusted OMP's compaction structure under [rsa/patches/](../../rsa/patches/) (the Agent Loop itself is untouched; see [Architecture & Boundaries](../reference/architecture.md) for the boundary).
+This note covers what happened and why we adjusted OMP's compaction structure under [rsa/patches/](../../rsa/patches/) (the Agent Loop itself is untouched; see [Architecture & Boundaries](../reference/architecture.md) for the boundary). Patches track OMP releases (currently `18.14.0`): upstream additions make our duplicated parts redundant while behavioral forks are kept and replayed.
 
 ## How stock OMP thinks about it
 

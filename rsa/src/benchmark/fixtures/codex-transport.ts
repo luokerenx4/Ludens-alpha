@@ -1,5 +1,6 @@
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import { getOpenAICodexTransportDetails, streamOpenAICodexResponses } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
+import { getOpenAICodexTransportDetails } from "@oh-my-pi/pi-ai/providers/openai-codex-state";
+import { streamOpenAICodexResponses } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import type { FetchImpl, ProviderSessionState } from "@oh-my-pi/pi-ai/types";
 import { syntheticKey } from "./evidence.ts";
 

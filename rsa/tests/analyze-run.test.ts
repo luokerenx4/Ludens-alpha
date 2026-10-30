@@ -264,7 +264,7 @@ test("analysis pairs concurrent capabilities by span, keeps late cancellation, a
   const event = fixture();
   const trace = (spanId: string, parentSpanId?: string) => ({ traceId: "trace", spanId, parentSpanId });
   const native = (row: ReturnType<ReturnType<typeof fixture>>) => ({ ...row,
-    source: { component: "shiori", implementation: "omp", implementationVersion: "18.9.1" } });
+    source: { component: "shiori", implementation: "omp", implementationVersion: "18.14.0" } });
   const report = await analyze([
     event("control", "one", { mode: "auto", epoch: "one" }),
     native(event("shiori_span_start", "one", { operation: "invoke_agent", name: "agent" }, trace("loop"))),

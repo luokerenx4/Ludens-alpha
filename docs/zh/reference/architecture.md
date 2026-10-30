@@ -8,7 +8,7 @@ Ludens（RSA，Recursive Self-Adaptation）将设备驱动、Agent 执行运行�
 | --- | --- |
 | `baseware/` | **独立设备服务**：加载内置或外部 Driver，提供统一 Controller 能力目录、控制权租约（`epoch`）仲裁、输入取消与设备事实日志，对外暴露 CLI、TS/Python API 与 MCP 接口。 |
 | `rsa/` | **自适应 Harness**：管理工作区配置与生命周期、能力发现与路由、常驻感知（`perception.py`）与常驻动作（`action.py`）Python 子进程、Harbor 评测以及运行日志归档。 |
-| **Shiori** | **唯一执行内核（职责名）**：由 RSA Host Runtime 实现，统一管控控制周期、时间/请求预算、信号取消与退出清理。Agent 模式挂载 **OMP 18.9.1**；普通评测程序、Verifier 与 Metric 共用同一生命周期而不启动模型。 |
+| **Shiori** | **唯一执行内核（职责名）**：由 RSA Host Runtime 实现，统一管控控制周期、时间/请求预算、信号取消与退出清理。Agent 模式挂载 **OMP 18.14.0**；普通评测程序、Verifier 与 Metric 共用同一生命周期而不启动模型。 |
 | `rsa-dashboard/` | **本地控制台服务**：通过独立 Node Worker 构建与查询日志索引，提供实时活动流、时空轴视频回放、运行统计、文档浏览、能力目录与人工交还入口。 |
 | `rsa-companion/` | **可选桌面伴侣（Ludens Pet）**：Electron 桌面壳，主窗口复用同一 Dashboard 视图，原生透明桌宠窗口与音频引擎增量消费同一套活动日志。 |
 

@@ -10,7 +10,7 @@ Unless a `cd` into the target workspace is shown explicitly, run all commands fr
 
 - **OS**: full background-service orchestration (`rsa up` / `rsa down` / `rsa services`) requires **macOS launchd**.
 - **Toolchain**: **Bun 1.4**, **Python 3.12+**, **Node.js 22.x (22.13+) or 24+**, and **uv**. The optional pet additionally requires **pnpm 11**.
-- **Model credentials**: complete **OMP model login** on the machine before starting an agent. RSA pins **OMP 18.9.1** and reuses its credential store directly; the default model is `openai-codex/gpt-6.1-sol`.
+- **Model credentials**: complete **OMP model login** on the machine before starting an agent. RSA pins **OMP 18.14.0** and reuses its credential store directly; the default model is `openai-codex/gpt-6.1-sol`.
 
 ### 2. Install core components
 

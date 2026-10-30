@@ -140,15 +140,18 @@ async function main() {
     devices.onHandback(reason => { void runtime!.stop(reason); });
     devices.onDisconnect(error => { void runtime!.disconnected(error); });
     await writeFile(join(runDir, "manifest.json"), JSON.stringify({ runId, workspace, workspaceId: state.id, stateDir: state.dir, socket,
-      drivers: devices.catalog.drivers, basewareSocket, omp: "18.9.1", eventSchemaVersion: EVENT_SCHEMA_VERSION,
+      drivers: devices.catalog.drivers, basewareSocket, omp: "18.14.0", eventSchemaVersion: EVENT_SCHEMA_VERSION,
       logging: { diagnostics, basewareDiagnostics: devices.diagnostics }, eventSources: devices.eventSources,
-      shiori: values["device-only"] ? null : { implementation: "omp", implementationVersion: "18.9.1" },
+      shiori: values["device-only"] ? null : { implementation: "omp", implementationVersion: "18.14.0" },
       provenance: await runProvenance(workspace), model: values["device-only"] ? null : model,
       seconds, maxRequests, resume, perception: { entry: "perception.py:Perception" }, action: { entry: "action.py:Action" }, compactionThreshold: compactionThreshold ?? null }, null, 2));
     ready = true;
     await runtime.perception!.reload();
     console.log(JSON.stringify({ ready: true, socket, workspace, stateDir: state.dir, runDir, ...runtime.status() }, null, 2));
-    await new Promise<void>((done) => { process.once("SIGINT", done); process.once("SIGTERM", done); });
+    const interrupt = Promise.withResolvers<NodeJS.Signals>();
+    process.once("SIGINT", () => interrupt.resolve("SIGINT"));
+    process.once("SIGTERM", () => interrupt.resolve("SIGTERM"));
+    shutdownSignal = await interrupt.promise;
   } finally {
     try { await close(); }
     finally { unregisterCleanup?.(); }
@@ -156,4 +159,7 @@ async function main() {
 }
 
 // OMP owns process-wide background services; exit after all application cleanup finishes.
-main().then(() => exit(Number(process.exitCode ?? 0)), (error) => { console.error(String(error)); return exit(1); });
+// A signal-driven shutdown reports the signal's exit status (SIGTERM 143/SIGINT 130),
+// not a clean 0, so a killed host still reads as interrupted rather than successful.
+let shutdownSignal: NodeJS.Signals | undefined;
+main().then(() => exit(shutdownSignal === "SIGTERM" ? 143 : shutdownSignal === "SIGINT" ? 130 : Number(process.exitCode ?? 0)), (error) => { console.error(String(error)); return exit(1); });

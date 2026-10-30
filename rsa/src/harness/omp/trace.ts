@@ -3,7 +3,7 @@ import { channel } from "node:diagnostics_channel";
 import type { StreamFn } from "@oh-my-pi/pi-agent-core";
 import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
-import { getOpenAICodexTransportDetails } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
+import { getOpenAICodexTransportDetails } from "@oh-my-pi/pi-ai/providers/openai-codex-state";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent";
 import { ASYNC_RESULT_MESSAGE_TYPE, type AsyncResultDetails } from "@oh-my-pi/pi-coding-agent/session/async-job-delivery";
 import { LAUNCH_COMPLETION_MESSAGE_TYPE, type LaunchCompletionEntry } from "@oh-my-pi/pi-coding-agent/session/launch-completion";
