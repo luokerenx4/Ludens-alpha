@@ -19,17 +19,17 @@ The OpenAI Codex Responses API's **WebSocket mode supports delta transport**: as
 
 So for us, WebSocket is not some "nice performance optimization" — it is **the lifeline that decides whether multimodal long-horizon runs can survive at all**. If a network jitter or edge case drops WS mid-run and it never comes back — permanently degrading to HTTP full retransmission — the rest of the experiment is essentially ruined.
 
-## Potholes hit on real long device runs (R1 / R2 / R3)
+## Three disconnect scenarios observed in long runs (R1 / R2 / R3)
 
-Simple in theory — but run the agent in a game continuously for six to eight hours and every bizarre disconnect posture shows up:
+Across six- to eight-hour continuous runs, three distinct disconnect boundary conditions surfaced:
 
-- **Pothole 1 (R1 · 2026-10-18 Besiege 6-hour run): hard cap on connection lifetime**
-  After enough uptime, the server throws back a `websocket_connection_limit_reached` following a stretch of empty `thinking`. A single WS connection has a server-side lifetime cap — expiry is inevitable, so the current round must glide back to SSE, then reopen a fresh WS after a cooldown to resume deltas.
-- **Second pothole (R2 · 2026-10-19 马造 8-hour run): a `1012` at midnight, then 5.5 hours wasted as SSE**
-  That run (`2026-10-19T13-19-53.903Z`) survived connection-lifetime expiry normally at 23:19:59 Beijing time and reconnected to WS at 23:21; then at 23:46:56 the connection suddenly received a `websocket closed (1012)`. The existing records establish a gap in recovery classification — they do not identify the server or network fault source. Because there was no transient-fault recovery classification for mid-stream close codes like `1012` at the time, the system got "once bitten" and gave up on WS entirely for the following **5.5 hours**, degrading to HTTP SSE with full multimodal retransmission every round!
-- **Third pothole (R3 · 2026-10-20 run): disconnect mid-way through tool arguments — dare we replay over SSE?**
-  In run `2026-10-20T14-57-50.713Z`, the connection expired exactly while the model was streaming `custom_tool_call_input.delta` (tool-call JSON arguments half-emitted, `done` not yet reached). To guard against replay side effects we had initially added a rule stricter than stock OMP: "if this round has emitted any visible output, never replay on disconnect, just error out" — which stopped the running agent dead.
-  The post-mortem made it clear: **half-emitted `text` / `thinking` text, or tool-argument deltas not yet complete, means the tool never even started executing!** Replaying the current request over SSE at that point is perfectly safe. The only real red line is **`toolcall_end` (the tool call has been fully delivered for execution)** — only past that line must replay be abandoned to avoid double-executing a side-effecting tool. So we removed the overzealous guard and fully aligned with stock OMP's `canSafelyReplayWebsocketOverSse`.
+- **Scenario 1 (R1 · 2026-10-18 6-hour continuous run): hard cap on connection lifetime**
+  After enough uptime, the server returns `websocket_connection_limit_reached` following a stretch of empty `thinking`. A single WS connection has a server-side lifetime cap — expiry is expected, so the current round must fall back to SSE, then reopen a fresh WS after a cooldown to resume deltas.
+- **Scenario 2 (R2 · 2026-10-19 8-hour continuous run): mid-stream `1012` close left on SSE for 5.5 hours**
+  That run (`2026-10-19T13-19-53.903Z`) handled connection-lifetime expiry normally at 23:19:59 Beijing time and reconnected to WS at 23:21; then at 23:46:56 the connection received `websocket closed (1012)`. The existing records establish a gap in recovery classification — they do not identify the server or network fault source. Because mid-stream close codes like `1012` were not classified as transient faults at the time, the session remained on HTTP SSE with full multimodal retransmission for the next **5.5 hours**.
+- **Scenario 3 (R3 · 2026-10-20 run): disconnect mid-way through tool arguments — SSE replay boundary**
+  In run `2026-10-20T14-57-50.713Z`, the connection expired while the model was streaming `custom_tool_call_input.delta` (tool-call JSON arguments partially emitted, `done` not yet reached). To guard against replay side effects we had initially added a rule stricter than stock OMP: "if this round has emitted any visible output, never replay on disconnect, just error out" — which aborted the running agent.
+  Reviewing the execution boundary clarified the invariant: **partially emitted `text` / `thinking` content, or incomplete tool-argument deltas, means the tool has not started executing.** Replaying the current request over SSE at that point is safe. The actual non-replayable boundary is **`toolcall_end` (the tool call has been fully delivered for execution)** — only past that point must replay be blocked to prevent duplicate execution of side-effecting tools. We removed the extra guard and aligned with stock OMP's `canSafelyReplayWebsocketOverSse`.
 
 ## How the patches established the recovery rules
 
@@ -41,7 +41,7 @@ To make this multimodal delta artery pick itself up no matter how it falls, we f
 
 ## Why a dedicated offline fault matrix?
 
-Network edge cases that take five or six hours to hit once cannot be debugged by hanging an eight-hour 马造 run after every code change — that would take forever.
+Network edge cases that take five or six hours to trigger cannot be debugged by running an eight-hour live session after every code change.
 
 So, exceptionally during construction, we took a TDD approach and wrote a fully offline transport-layer suite ([rsa/tests/omp-websocket.test.ts](../../rsa/tests/omp-websocket.test.ts)) plus a companion dashboard benchmark ([ws-recovery.ts](../../rsa/src/benchmark/cases/ws-recovery.ts)): in-process fixtures take over the WebSocket and HTTP layers beneath `streamOpenAICodexResponses`, and a virtual clock fast-forwards the 60 s cooldown in seconds — no real model connection, not a cent of tokens spent:
 

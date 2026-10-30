@@ -17,8 +17,6 @@ contextBridge.exposeInMainWorld('ludens', {
     toggle: () => ipcRenderer.invoke('ludens:companion:toggle'),
     onVisibility: (callback: (value: boolean) => void) => on('ludens:companion:visibility', callback),
     activity: {
-      getSignals: () => ipcRenderer.invoke('ludens:activity:signals'),
-      onSignals: (callback: (value: unknown) => void) => on('ludens:activity:signals', callback),
       getPreferences: () => ipcRenderer.invoke('ludens:activity:preferences'),
       updatePreferences: (value: unknown) => ipcRenderer.invoke('ludens:activity:update-preferences', value),
       resetPreferences: () => ipcRenderer.invoke('ludens:activity:reset-preferences'),

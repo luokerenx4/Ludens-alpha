@@ -15,11 +15,11 @@ Sounds reasonable, right? The problem: **OMP is far too aggressive about when to
 
 Upstream has a **refresh-on-growth** rule: counting from the moment background summarization starts, if the foreground main loop's context grows by more than `max(keepRecentTokens, 8192)` (just **20k tokens** by default), it declares the snapshot "too stale", discards the already-computed `armed` summary, and recomputes from scratch! And if the threshold is hit while the background summary is still in flight (`pendingSpec`), it `abort`s the background request without mercy and falls back to synchronous foreground recomputation.
 
-## Dropped into a spatiotemporally consistent environment, disaster follows
+## Why refresh-on-growth fails in continuous environments
 
-In short coding sessions, 20k tokens of headroom may be plenty. But in our setting the outside world is **spatiotemporally consistent and never stops flowing** — e.g. the 马造 workspace runs continuous perception at 30 Hz while the model keeps acting and observing, accumulating screenshots and tool records. The 30 Hz here is the sampling rate, not the inference or context-update rate: auto-injection only reads the latest records at prompt start and at tool-batch end, deduplicated by record ID; explicit `observe` only delivers selected records, never stuffing every sampled frame into model history.
+In short coding sessions, 20k tokens of headroom may be plenty. But in our setting the outside world is **spatiotemporally consistent and continuously evolving** — for example, a real-time workspace running continuous perception at 30 Hz while the model keeps acting and observing, accumulating screenshots and tool records. The 30 Hz here is the sampling rate, not the inference or context-update rate: auto-injection only reads the latest records at prompt start, deduplicated by record ID; explicit `observe` only delivers selected records, never stuffing every sampled frame into model history.
 
-We pulled one real measurement from an actual 马造 run (run `2026-10-27T17-22-02.413Z`, explicitly using a `256000` threshold, 4 compaction cycles) and did the math. The current default threshold still follows the selected model's native OMP setting (`contextWindow - reserve`):
+Below is a real measurement from a continuous run (`2026-10-27T17-22-02.413Z`, explicitly using a `256000` threshold, 4 compaction cycles). The current default threshold still follows the selected model's native OMP setting (`contextWindow - reserve`):
 
 | Observed fact | Value | Source |
 | --- | --- | --- |
@@ -44,17 +44,17 @@ Once the root cause was clear, the fix was obvious — **rather keep a slightly 
 
 In `pi-coding-agent` (`session-maintenance.ts` / `speculation-lead.ts`), we removed the "invalidate the candidate because context grew past the limit" condition outright. As long as the session branch is unchanged and there is still enough post-compaction context headroom, the `armed` summary stays valid! Even if the foreground accumulates another 30k of new messages after the snapshot, commit replays the entire post-snapshot tail verbatim after the summary — no history lost, instant switch.
 
-### 2. If the background is still computing at the line (`pendingSpec`), wait for it — don't kill and restart
+### 2. If the background is still computing at the line (`pendingSpec`), wait for it instead of restarting
 
-If the background candidate is still in flight when the threshold is reached, it has likely been running for fifty or sixty seconds and is about to finish. `abort`ing it and opening a fresh foreground request is self-sabotage. We now wait out the in-flight background request with `untilAborted` and validate + splice; the wait is bound to the control cycle's cancellation signal, so budget expiry or human handoff still interrupts cleanly and never commits late.
+If the background candidate is still in flight when the threshold is reached, it has likely been running for fifty or sixty seconds and is about to finish. Aborting it to open a fresh foreground request wastes that work. We now wait out the in-flight background request with `untilAborted` and validate + splice; the wait is bound to the control cycle's cancellation signal, so budget expiry or human handoff still interrupts cleanly and never commits late.
 
 ### 3. Isolate the background compaction request from the foreground WebSocket connection
 
-If background summarization grabs the session channel the foreground is using, it easily corrupts the foreground WebSocket sticky session. So background compaction requests use an independent `sessionId: "<id>:spec:<snowflake>"`, inherit the server-side prompt-cache affinity via a new `parentSessionId` plumbed through `pi-agent-core` / `pi-ai`, and are forced onto HTTP (`preferWebsockets: false`) — foreground and background never touch each other.
+If background summarization grabs the session channel the foreground is using, it can disrupt the foreground WebSocket sticky session. So background compaction requests use an independent `sessionId: "<id>:spec:<snowflake>"`, inherit the server-side prompt-cache affinity via a new `parentSessionId` plumbed through `pi-agent-core` / `pi-ai`, and are forced onto HTTP (`preferWebsockets: false`) so foreground and background stay isolated.
 
-### 4. Give every background candidate an ID (`operationId`)
+### 4. Assign every background candidate an `operationId`
 
-Previously, how a background compaction died and how long it took was an accounting mess in the logs. We added `diagnostics_channel("omp.compaction.speculation")`, binding a unique `operationId` from candidate creation and logging the full lifecycle and latency of `started / armed / failed / cancelled / applied / invalidated` (see [trace.ts](../../rsa/src/harness/omp/trace.ts) and the [logging contract](../reference/logging.md#shiori-compaction-and-transport)).
+Previously, why a background compaction terminated and how long it took were not correlated in the logs. We added `diagnostics_channel("omp.compaction.speculation")`, binding a unique `operationId` from candidate creation and logging the full lifecycle and latency of `started / armed / failed / cancelled / applied / invalidated` (see [trace.ts](../../rsa/src/harness/omp/trace.ts) and the [logging contract](../reference/logging.md#shiori-compaction-and-transport)).
 
 ## Cost and verification
 

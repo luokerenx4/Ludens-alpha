@@ -128,7 +128,7 @@ The Ludens pet uses static transparent WebP assets (defined in `rsa-companion/ui
 | mGBA full control handoff | Emulator has the ROM and `bridge.lua` loaded; run this workspace's Baseware and `rsa run --device-only` in a separate terminal | `RSA_MGBA=1 RSA_WORKSPACE=/absolute/path/to/workspace bun test rsa/tests/device.live.test.ts` |
 | mGBA repeated disconnect recovery | Keep the emulator and bridge running; stop the Host and Baseware occupying the bridge | Run the hardware tests per the README in the `ludens-gba-driver` package, with an explicit port. |
 | Ryubing button/sampling/long-action interruption | Park the game on a safe input-ready screen; stop the Host and Baseware and keep the emulator bridge running (override the port with `RSA_BRIDGE_PORT`) | `RSA_SWITCH_DRIVER_PACKAGE='github:<org>/ludens-switch-driver#<rev>' RSA_SWITCH_TEST=1 bun test rsa/tests/switch.live.test.ts` |
-| Ryubing system keyboard dialog | Same as above, with Fire Emblem's eight-character naming box open. The test types nine characters and presses Enter to verify rejection, then cancels; do not run it in any other input box, or it may actually submit a name. | `RSA_SWITCH_DRIVER_PACKAGE='github:<org>/ludens-switch-driver#<rev>' RSA_SWITCH_KEYBOARD_TEST=1 bun test rsa/tests/switch.live.test.ts` |
+| Ryubing system keyboard dialog | Same as above, with an eight-character system naming dialog open. The test types nine characters and presses Enter to verify rejection, then cancels; do not run it in any other input box, or it may actually submit a name. | `RSA_SWITCH_DRIVER_PACKAGE='github:<org>/ludens-switch-driver#<rev>' RSA_SWITCH_KEYBOARD_TEST=1 bun test rsa/tests/switch.live.test.ts` |
 
 ## WS Recovery Test Basis
 

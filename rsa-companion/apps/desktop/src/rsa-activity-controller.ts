@@ -1,8 +1,16 @@
-import type { ActivityDisplay, ActivitySurface } from './activity-controller.js'
-import type { AgentActivitySignal } from './activity-projection.js'
 import { briefNotification, type ActivityPreferences, type SerializedNotification } from './activity-policy.js'
 import type { ConsumerRecord, LogBlock, RsaActivitySnapshot, RsaActivitySource } from './rsa-source.js'
 import { blockUrl } from './dashboard-window.js'
+
+export type ActivityDisplay =
+  | { type: 'hide'; displayId: string }
+  | { type: 'show'; displayId: string; input: SerializedNotification }
+export interface ActivitySurface {
+  foreground(): boolean
+  petVisible(): boolean
+  send(surface: 'main' | 'pet', event: ActivityDisplay): void
+  open(url: string): void
+}
 
 const PREVIEW_MS = 4_000
 type Displayed = { blockId: string; displayId: string; surface: 'main' | 'pet'; input: SerializedNotification }
@@ -24,7 +32,7 @@ export class RsaActivityController {
   private timer: ReturnType<typeof setTimeout> | undefined
   private abort: AbortController | null = null
   private stopped = false
-  constructor(private source: RsaActivitySource, private surface: Omit<ActivitySurface, 'open'> & { open(url: string): void }, private prefs: ActivityPreferences,
+  constructor(private source: RsaActivitySource, private surface: ActivitySurface, private prefs: ActivityPreferences,
     private record: ConsumerRecord = (...args) => source.record?.(...args)) {}
 
   private chosenSurface(): 'main' | 'pet' | null {
@@ -63,7 +71,6 @@ export class RsaActivityController {
     this.flush()
   }
   transition() { if (!this.stopped) this.flush() }
-  signalSnapshot(): AgentActivitySignal[] { return [] }
   snapshot(): ActivityDisplay[] {
     return this.current?.surface === 'main' && this.sourceId === this.source.identity()
       ? [{ type: 'show', displayId: this.current.displayId, input: this.current.input }] : []
@@ -98,7 +105,7 @@ export class RsaActivityController {
     let input: SerializedNotification = {
       id: block.id, title: block.title, description: block.text, block,
       status: block.status === 'error' ? 'error' : block.status === 'running' ? 'running' : 'info',
-      duration: block.status === 'running' ? null : PREVIEW_MS, context: 'office',
+      duration: block.status === 'running' ? null : PREVIEW_MS,
     }
     if (surface === 'pet' && this.prefs.brief) input = briefNotification(input)
     const changed = !this.current || JSON.stringify(this.current.input) !== JSON.stringify(input)

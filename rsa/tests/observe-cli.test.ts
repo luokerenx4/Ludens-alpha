@@ -7,7 +7,7 @@ import { TerminalGraphicsDecoder } from "@oh-my-pi/pi-coding-agent/utils/termina
 import { encodeRawPng } from "@oh-my-pi/pi-coding-agent/utils/png-encode";
 import type { PerceptionRead, PerceptionRecord } from "../src/harness/perception.ts";
 
-// Offline reproduction of the 2026-10-22 LEGO history read: the CLI must
+// Offline reproduction of the 2026-10-22 history read: the CLI must
 // deliver the requested old pixels through OMP's real terminal decoder.
 // The fake socket has visibly different old/current frames; no agent or device.
 async function fixture() {

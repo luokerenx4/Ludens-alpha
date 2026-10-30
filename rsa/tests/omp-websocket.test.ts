@@ -14,7 +14,7 @@ import type { Context, FetchImpl, ProviderSessionState } from "@oh-my-pi/pi-ai/t
 
 /**
  * External OMP transport contract tests: architecture-development TDD exception.
- * Production seed: Mario Maker 8h run 2026-10-19T13-19-53.903Z, explicit expiry
+ * Production seed: 8h run 2026-10-19T13-19-53.903Z, explicit expiry
  * recovered at 23:21 Asia/Shanghai, but close(1012) at 23:46:56 stayed on SSE.
  * Boundary correction: run 2026-10-20T14-57-50.713Z expired while a custom
  * tool's input was incomplete; restore OMP's native toolcall_end commit point.

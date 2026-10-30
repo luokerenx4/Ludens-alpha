@@ -330,7 +330,7 @@ test("analysis separates local Python calls from runners and actions, retaining 
 });
 
 test("42 negative-test raises remain local diagnostics without guessing an execution or test expectation", async () => {
-  // Regression shape from the 2026-10-26 Mario run: direct imports did not carry
+  // Regression shape from the 2026-10-26 run: direct imports did not carry
   // the native bash span. Test provenance was established by reviewing payloads,
   // and cannot be recovered just from these function-boundary events.
   const event = fixture();

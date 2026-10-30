@@ -36,19 +36,19 @@ describe('companion notification IPC',()=>{
     pet.emit('closed')
   })
   it('accepts only owning main frame settings and rejects subframes/other windows; no URL/code actions',async()=>{
-    vi.useFakeTimers();state.home=mkdtempSync(join(tmpdir(),'oa-ipc-'));const owner=windowStub(),pet=windowStub();installCompanionActivity(owner as never,pet as never)
+    vi.useFakeTimers();state.home=mkdtempSync(join(tmpdir(),'rsa-ipc-'));const owner=windowStub(),pet=windowStub();installCompanionActivity(owner as never,pet as never)
     const event={sender:owner.webContents,senderFrame:owner.webContents.mainFrame}
-    const get=handlers.get('ludens:activity:preferences')!;expect(get(event)).toMatchObject({events:{news:false,progress:true},brief:false})
+    const get=handlers.get('ludens:activity:preferences')!;expect(get(event)).toMatchObject({blocks:{thinking:true,tool:true,diagnostic:false},brief:false})
     expect(()=>get({...event,senderFrame:{}})).toThrow('Unauthorized')
     expect(()=>get({sender:pet.webContents,senderFrame:pet.webContents.mainFrame})).toThrow('Unauthorized')
     const update=handlers.get('ludens:activity:update-preferences')!;await expect(update(event,{enabled:'yes'})).rejects.toThrow()
-    await expect(update(event,{events:{news:false}})).resolves.toMatchObject({events:{news:false}})
+    await expect(update(event,{blocks:{diagnostic:true}})).resolves.toMatchObject({blocks:{diagnostic:true}})
     const open=handlers.get('ludens:activity:open')!;expect(open(event,{url:'javascript:evil'})).toBe(false)
     expect(()=>open({...event,senderFrame:{}},'anything')).toThrow('Unauthorized')
     pet.emit('closed');expect(handlers.size).toBe(0)
   })
   it('ignores destroyed owner state during transitions and pet retirement',()=>{
-    vi.useFakeTimers();state.home=mkdtempSync(join(tmpdir(),'oa-ipc-'))
+    vi.useFakeTimers();state.home=mkdtempSync(join(tmpdir(),'rsa-ipc-'))
     const owner=windowStub(),pet=windowStub()
     installCompanionActivity(owner as never,pet as never)
     owner.isDestroyed=()=>true

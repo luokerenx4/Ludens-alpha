@@ -151,7 +151,7 @@ test.skipIf(process.env.RSA_SWITCH_KEYBOARD_TEST !== "1")("foreground keyboard c
     const png = imageBytes(before);
     expect(png.readUInt32BE(16)).toBeGreaterThan(100);
     await key("keyboard.press", {key: "CTRL+A"});
-    await key("keyboard.type", {text: "123456789"}); // Fire Emblem's visible dialog currently limits input to eight characters.
+    await key("keyboard.type", {text: "123456789"}); // The active naming dialog limits input to eight characters.
     await expect(key("keyboard.press", {key: "ENTER"})).rejects.toThrow("TEXT_INVALID");
     await key("keyboard.press", {key: "CTRL+A"});
     await key("keyboard.type", {text: "RSA"});

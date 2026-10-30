@@ -2,35 +2,16 @@ import { readFileSync, statSync } from 'node:fs'
 import { writeFile, rename } from 'node:fs/promises'
 import { z } from 'zod'
 import { DEFAULT_ACTIVITY_PREFERENCES, DEFAULT_BLOCK_VISIBILITY, type ActivityPreferences } from './activity-policy.js'
-const decision = z.enum(['show', 'hide']).optional()
 const controls = {
   enabled: z.boolean(), main: z.boolean(), pet: z.boolean(), brief: z.boolean(),
   pausedUntil: z.number().finite().nonnegative().max(8.64e15),
 }
-const eventsSchema = z.object({ completion: z.boolean(), failure: z.boolean(), action: z.boolean(), news: z.boolean(), progress: z.boolean() }).strict()
 const blocksSchema = z.object({ thinking: z.boolean(), text: z.boolean(), tool: z.boolean(), system: z.boolean(), diagnostic: z.boolean() }).strict()
 export const preferencesSchema = z.object({
   version: z.literal(2), defaultsVersion: z.number().int().nonnegative(),
-  events: eventsSchema, blocks: blocksSchema.default(DEFAULT_BLOCK_VISIBILITY), ...controls,
+  blocks: blocksSchema.default(DEFAULT_BLOCK_VISIBILITY), ...controls,
 }).strict()
-const legacySchema = z.object({
-  version: z.literal(1), defaultsVersion: z.number().int().min(0).max(1),
-  preset: z.enum(['action', 'important', 'all']),
-  overrides: z.object({ completion: decision, failure: decision, action: decision, news: decision, progress: decision }).strict(),
-  ...controls,
-}).strict()
-/** Expand saved choices, independently of temporary delivery gates. */
 export function migrateActivityPreferences(input: unknown): ActivityPreferences {
-  if (typeof input === 'object' && input !== null && 'version' in input && input.version === 1) {
-    const { preset, overrides, ...saved } = legacySchema.parse(input)
-    const events = { ...DEFAULT_ACTIVITY_PREFERENCES.events }
-    for (const kind of Object.keys(events) as Array<keyof typeof events>) {
-      events[kind] = overrides[kind] ? overrides[kind] === 'show'
-        : preset === 'all' || (preset === 'important' && kind !== 'progress')
-          || (preset === 'action' && (kind === 'action' || kind === 'failure'))
-    }
-    return { ...saved, version: 2, defaultsVersion: DEFAULT_ACTIVITY_PREFERENCES.defaultsVersion, events, blocks: { ...DEFAULT_BLOCK_VISIBILITY } }
-  }
   // A new official default never replaces an existing explicit choice.
   return preferencesSchema.parse(input)
 }
@@ -48,13 +29,13 @@ export function createActivityPreferenceStore(path: string, defaults = DEFAULT_A
   return {
     get: () => structuredClone(current),
     update(input: unknown) {
-      const patch = preferencesSchema.omit({ version: true, defaultsVersion: true, events: true, blocks: true }).extend({ events: eventsSchema.partial(), blocks: blocksSchema.partial() }).partial().parse(input)
+      const patch = preferencesSchema.omit({ version: true, defaultsVersion: true, blocks: true }).extend({ blocks: blocksSchema.partial() }).partial().parse(input)
       return enqueue(() => persist(preferencesSchema.parse({ ...current, ...patch,
-        events: { ...current.events, ...patch.events }, blocks: { ...current.blocks, ...patch.blocks },
+        blocks: { ...current.blocks, ...patch.blocks },
       })))
     },
     reset: () => enqueue(() => persist({ ...current, defaultsVersion: defaults.defaultsVersion,
-      events: { ...defaults.events }, blocks: { ...defaults.blocks },
+      blocks: { ...defaults.blocks },
     })),
   }
 }

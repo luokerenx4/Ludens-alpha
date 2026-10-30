@@ -6,9 +6,9 @@ import { codexTransport, fixtureModel, inputTexts, userMessage, type SimulatedSo
 import { readEvents, seqs } from "../fixtures/evidence.ts";
 
 const conditions = [
-  { id: "expiry", label: "连接到期", observed: "2026-10-18 Besiege 6h",
+  { id: "expiry", label: "连接到期", observed: "2026-10-18 6h run",
     fault: "connection_limit_reached after empty reasoning", inject: (socket: SimulatedSocket) => socket.expire() },
-  { id: "close-1012", label: "响应中关闭 1012", observed: "2026-10-19/20 Mario Maker 8h",
+  { id: "close-1012", label: "响应中关闭 1012", observed: "2026-10-19/20 8h run",
     fault: "websocket closed (1012) before deliverable output", inject: (socket: SimulatedSocket) => socket.closeFromServer(1012) },
 ] as const;
 
@@ -16,7 +16,7 @@ export async function run(ctx: BenchmarkContext): Promise<Record<string, any>> {
   const outcomes: Record<string, any>[] = [];
   for (const condition of conditions) outcomes.push(await runCondition(ctx, condition));
   ctx.metadata.limitations = [
-    "这是有生产故障依据的 TDD 特例：Besiege 6h 的连接到期，以及 Mario Maker 8h 的响应中关闭 1012；只重建传输工况，不包含用户历史。",
+    "这是有生产故障依据的 TDD 特例：6h 长跑的连接到期，以及 8h 长跑的响应中关闭 1012；只重建传输工况，不包含用户历史。",
     "运行真实 OMP Codex provider 和 ModelTrace；WS/SSE 均为进程内传输 fixture，不访问在线模型。",
     "通过虚拟 Date.now 推进 60 秒冷却；计时使用真实 performance.now，只反映本地处理开销，不代表在线上传、网络或服务端性能。",
     "每个工况的无重放请求故意产生一次 model_end:error，这是预期故障证据。",

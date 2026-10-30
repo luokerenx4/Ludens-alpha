@@ -13,7 +13,7 @@ function notification(kind: LogBlock['kind'], overrides: Partial<LogBlock> = {})
   const block: LogBlock = { id: 'block-1', kind, at: '2026-10-17T17:00:00Z', title: `${kind} title`,
     text: `${kind} source text`, status: 'complete', ...overrides }
   return { id: block.id, title: block.title, description: block.text, status: 'info',
-    duration: 4000, context: 'office', block }
+    duration: 4000, block }
 }
 
 let target: HTMLElement

@@ -24,9 +24,9 @@ These are mechanisms for experimenting with adaptation, not a claim that an agen
 
 | Driver | Environment | Setup |
 | --- | --- | --- |
-| mGBA | Game Boy Advance emulator | Open a ROM and load the optional driver package's Lua bridge. See [mGBA setup](docs/en/tutorials/devices.md#mgba). |
-| Ryubing | Nintendo Switch emulator | Build and install the patched emulator. See the [Ryubing guide](docs/en/tutorials/devices.md#ryubing). |
-| Azahar | Nintendo 3DS emulator | Build and install the patched emulator. Native pad, touch, and separate top/bottom screen capture. See the [Azahar guide](docs/en/tutorials/devices.md#azahar). |
+| mGBA | GBA emulator | Open a ROM and load the optional driver package's Lua bridge. See [mGBA setup](docs/en/tutorials/devices.md#mgba). |
+| Ryubing | Switch emulator | Build and install the patched emulator. See the [Ryubing guide](docs/en/tutorials/devices.md#ryubing). |
+| Azahar | 3DS emulator | Build and install the patched emulator. Native pad, touch, and separate top/bottom screen capture. See the [Azahar guide](docs/en/tutorials/devices.md#azahar). |
 | Cua | Local desktop applications | Install the upstream Cua Driver and grant its required OS permissions. See [Cua setup](docs/en/tutorials/devices.md#cua). |
 
 Emulator drivers are optional external packages (`ludens-gba-driver`, `ludens-3ds-driver`, and `ludens-switch-driver`). Only the Cua desktop adapter is built in.
