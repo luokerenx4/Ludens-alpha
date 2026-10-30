@@ -137,4 +137,4 @@ baseware driver discover --package 'github:org/repo#rev'
 
 ## 上游契约与升级
 
-[baseware/contracts/cua-driver/](../../baseware/contracts/cua-driver/) 目录固定保存了上游 CUA Driver 的版本、来源哈希、许可证与工具快照。该快照用于离线审计原子能力与运行 `python3 baseware/scripts/sync-cua-contract.py --check` 回归测试，运行期不会用快照阉割上游新增的平台工具。由于 MCP SDK 默认 schema 解析会裁剪未知嵌套字段，Baseware 在协议边界校验结构后原样保留原始字段，并通过 MCP 往返测试保障保真度。
+[baseware/contracts/cua-driver/](../../baseware/contracts/cua-driver/) 目录固定保存了上游 CUA Driver 的版本、来源哈希、许可证与工具快照。该快照用于离线审计原子能力与运行 `python3 baseware/scripts/sync-cua-contract.py --check` 回归测试，运行期不会用快照裁剪上游新增的平台工具。由于 MCP SDK 默认 schema 解析会裁剪未知嵌套字段，Baseware 在协议边界校验结构后原样保留原始字段，并通过 MCP 往返测试保障保真度。

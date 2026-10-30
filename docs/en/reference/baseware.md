@@ -11,12 +11,12 @@ Baseware takes the CUA Driver's native tool contract as the structural model and
 
 ```mermaid
 flowchart LR
-    W[Workspace 程序 / RSA] --> C[CLI · TS/Python API · MCP]
-    C --> B[Baseware：能力目录 + 控制权仲裁 + 设备日志]
+    W[Workspace Program / RSA] --> C[CLI · TS/Python API · MCP]
+    C --> B[Baseware: Capability Catalog + Control Arbitration + Device Log]
     B --> U[CUA Adapter]
-    U --> N[原装 CUA Driver 子进程]
+    U --> N[Upstream CUA Driver Subprocess]
     B --> E[mGBA / Azahar / Ryubing Adapter]
-    E --> H[模拟器原生 TCP Bridge]
+    E --> H[Emulator Native TCP Bridge]
 ```
 
 ## Three boundaries

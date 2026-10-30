@@ -10,6 +10,7 @@ This directory defines the Ludens system architecture, process responsibility bo
 | **Device services and capability catalog** | CUA-native tool structure, the `ExecutionResult` envelope, `requiresControl` arbitration, external driver package discovery and loading | [Baseware Philosophy and Capability Contracts](baseware.md) | `baseware/src/contracts.ts` · `baseware/src/catalog.ts` |
 | **Emulator wire communication** | TCP single-client line protocol, the `HELLO / OWN / APPLY / CAPTURE / TOUCH` instruction set and error codes | [Driver Bridge Protocol](driver-bridge-protocol.md) | `baseware/src/drivers/bridge.ts` · each emulator satellite repo's Provider |
 | **Observability and console consumption** | `normal / full` recording modes, `.rsa/timeline/` and `.rsa/archive/` storage, Trace pairing, Dashboard hot/cold indexes and replay | [Logging and Call Chains](logging.md) | `rsa/src/harness/events.ts` · `shared/log-archive.ts` · `rsa-dashboard/lib/` |
+| **Console interface** | shadcn/ui primitives, Tailwind theme tokens and style layers, form and interaction conventions | [Dashboard UI](dashboard-ui.md) | `rsa-dashboard/components/ui/` · `rsa-dashboard/app/globals.css` |
 | **Evaluation and independent scoring** | Harbor 1.4 Native Profile, `task.toml / dataset.toml`, `current_trial()`, `reward.json`, and the 8 built-in tasks | [Benchmark](benchmark.md) | `rsa/src/benchmark/` · `rsa/benchmarks/` |
 
 ## Reading Guide

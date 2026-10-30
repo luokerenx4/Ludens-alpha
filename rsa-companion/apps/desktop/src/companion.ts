@@ -34,8 +34,7 @@ export interface CompanionHandle {
  * One presentation window belonging to the existing desktop process.
  * Thanks to MeteorNOX's DeepSeek Balance Whale Widget for the interaction model:
  * https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget
- * Press/release, mirroring, bubble timing and snapping follow that MIT project;
- * Native lifecycle/IPC adaptation originally ported from OpenAlice. See companion/NOTICE.md.
+ * Press/release, mirroring, bubble timing and snapping follow that MIT project (see companion/NOTICE.md).
  */
 export function createCompanion(owner: BrowserWindow, access: OwnerAccess = {}): CompanionHandle | undefined {
   if (process.env.LUDENS_DISABLE_COMPANION === '1') return

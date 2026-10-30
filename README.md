@@ -24,12 +24,12 @@ These are mechanisms for experimenting with adaptation, not a claim that an agen
 
 | Driver | Environment | Setup |
 | --- | --- | --- |
-| mGBA | Game Boy Advance emulator | Open a ROM and load the optional driver package's Lua bridge. See [mGBA setup](docs/en/tutorials/devices.md#mgba). |
-| Ryubing | Nintendo Switch emulator | Build and install the patched emulator. See the [Ryubing guide](docs/en/tutorials/devices.md#ryubing). |
-| Azahar | Nintendo 3DS emulator | Build and install the patched emulator. Native pad, touch, and separate top/bottom screen capture. See the [Azahar guide](docs/en/tutorials/devices.md#azahar). |
+| mGBA | GBA emulator | Open a ROM and load the optional driver package's Lua bridge. See [mGBA setup](docs/en/tutorials/devices.md#mgba). |
+| Ryubing | Switch emulator | Build and install the patched emulator. See the [Ryubing guide](docs/en/tutorials/devices.md#ryubing). |
+| Azahar | 3DS emulator | Build and install the patched emulator. Native pad, touch, and separate top/bottom screen capture. See the [Azahar guide](docs/en/tutorials/devices.md#azahar). |
 | Cua | Local desktop applications | Install the upstream Cua Driver and grant its required OS permissions. See [Cua setup](docs/en/tutorials/devices.md#cua). |
 
-Emulator drivers are optional packages maintained in [ludens-gba-driver](https://github.com/luokerenx4/ludens-gba-driver), [ludens-3ds-driver](https://github.com/luokerenx4/ludens-3ds-driver), and [ludens-switch-driver](https://github.com/luokerenx4/ludens-switch-driver). Only the Cua desktop adapter is built in.
+Emulator drivers are optional external packages (`ludens-gba-driver`, `ludens-3ds-driver`, and `ludens-switch-driver`). Only the Cua desktop adapter is built in.
 
 Drivers expose device capabilities, not game strategies. Screen processing, coordinate conversion, action sequences, and task-specific logic belong in the workspace.
 
@@ -49,9 +49,6 @@ For device preparation and model configuration, see [Devices & Drivers](docs/en/
 The default setup uses Baseware, RSA and the browser Dashboard. Each component has its own dependency lockfile. RSA includes a TypeScript host and a packaged Python runtime; `uv sync` installs the latter into `rsa/python/.venv`.
 
 ```sh
-git clone https://github.com/luokerenx4/Ludens-alpha.git
-cd Ludens-alpha
-
 (cd baseware && bun install --frozen-lockfile)
 (cd rsa && bun install --frozen-lockfile)
 uv sync --project rsa/python --frozen
@@ -68,7 +65,7 @@ The example below uses a prepared Ryubing installation and a local game file. Gl
 
 ```sh
 rsa init --name my-task --workspace "$HOME/Ludens Workspaces/my-task" --driver ryubing \
-  --driver-package github:luokerenx4/ludens-switch-driver#070edf662ba724e1a31c5b477f414d4da61bbd6f \
+  --driver-package 'github:<org>/ludens-switch-driver#<rev>' \
   --game /absolute/path/to/game.nsp --seconds 1800
 cd "$HOME/Ludens Workspaces/my-task"
 rsa up --dry-run
@@ -81,14 +78,14 @@ rsa services
 To choose another environment, replace the `rsa init` command above with exactly one of:
 
 ```sh
-rsa init --name my-task --workspace "$HOME/Ludens Workspaces/my-task" --driver mgba --driver-package github:luokerenx4/ludens-gba-driver#9c1a014be3d87fe6846fef8ad7eba1c13439e8a5
-rsa init --name my-task --workspace "$HOME/Ludens Workspaces/my-task" --driver azahar --driver-package github:luokerenx4/ludens-3ds-driver#5b9b1f4032a5973a8882aa23957c3c34da50af9e --game /absolute/path/to/game.3ds
+rsa init --name my-task --workspace "$HOME/Ludens Workspaces/my-task" --driver mgba --driver-package 'github:<org>/ludens-gba-driver#<rev>'
+rsa init --name my-task --workspace "$HOME/Ludens Workspaces/my-task" --driver azahar --driver-package 'github:<org>/ludens-3ds-driver#<rev>' --game /absolute/path/to/game.3ds
 rsa init --name my-task --workspace "$HOME/Ludens Workspaces/my-task" --driver cua
 ```
 
 Use a new workspace. mGBA needs its ROM and Lua bridge loaded first. Cua does not use a game path; use `--cua-command /absolute/path/to/cua-driver` if the executable is not on PATH. Detailed setup is linked in [Supported environments](#supported-environments).
 
-Use `rsa config show` to inspect global creation defaults and `rsa config set workspaceRoot /absolute/path` to change the parent for future workspaces. Reopen an existing workspace with `rsa workspace open /absolute/path`; list registered workspaces with `rsa workspace list`. `rsa workspace forget <id>` only removes the registry entry. Workspaces retain their identity and history when moved; copied experiments require `rsa workspace open /path/to/copy --new-id`. Older workspaces use the explicit [import command](docs/tutorials/quickstart.md#已有工作区登记与迁移).
+Use `rsa config show` to inspect global creation defaults and `rsa config set workspaceRoot /absolute/path` to change the parent for future workspaces. Reopen an existing workspace with `rsa workspace open /absolute/path`; list registered workspaces with `rsa workspace list`. `rsa workspace forget <id>` only removes the registry entry. Workspaces retain their identity and history when moved; copied experiments require `rsa workspace open /path/to/copy --new-id`. Older workspaces use the explicit [import command](docs/en/tutorials/quickstart.md#registering-and-migrating-existing-workspaces).
 
 ### 4. Inspect and start
 
@@ -185,7 +182,7 @@ Follow [AGENTS.md](AGENTS.md) for development conventions and [Console, Debuggin
 
 ## Documentation
 
-Current documentation lives in the root `docs/` directory, split into `tutorials/` (how to run), `reference/` (components and contracts), and `insights/` (why things are the way they are). Component READMEs only link here.
+Current documentation lives in `docs/en/` (English) and `docs/zh/` (Chinese), split into `tutorials/` (how to run), `reference/` (components and contracts), and `insights/` (why things are the way they are). Component READMEs only link here.
 
 | Guide | Category | Contents |
 | --- | --- | --- |
@@ -200,14 +197,16 @@ Current documentation lives in the root `docs/` directory, split into `tutorials
 | [Baseware](docs/en/reference/baseware.md) | Reference | CUA native capability contract, driver boundaries, control arbitration, media, and external driver packages. |
 | [Driver Bridge Protocol](docs/en/reference/driver-bridge-protocol.md) | Reference | TCP line protocol (`HELLO` / `OWN` / `APPLY` / `TOUCH` / `CAPTURE`) for emulator bridges. |
 | [Logging](docs/en/reference/logging.md) | Reference | Event envelopes, timeline/archive storage, trace attribution, Dashboard cold/hot indexing, and replay. |
+| [Dashboard UI](docs/en/reference/dashboard-ui.md) | Reference | shadcn/ui primitives, Tailwind CSS 4 theme tokens, responsive layouts, and interaction rules. |
 | [Benchmark](docs/en/reference/benchmark.md) | Reference | Harbor 1.4 native profile, run bindings, `current_trial()`, independent verifiers, and built-in tasks. |
 | [Insights Overview](docs/en/insights/index.md) | Insights | Index of engineering decisions, production postmortems, and empirical measurements. |
 | [OMP Compaction](docs/en/insights/omp-compaction.md) | Insights | Why and how OMP speculative compaction was patched for real-time control with continuous 30Hz perception. |
 | [WS Recovery](docs/en/insights/ws-recovery.md) | Insights | 2026-10-20 Codex WebSocket recovery TDD rationale and 13-condition fault matrix. |
+| [OMP Injection](docs/en/insights/omp-injection.md) | Insights | Why end-of-batch screenshot injection was removed in favor of turn-start delivery and explicit `observe`. |
 
-Detailed guides in `docs/` are currently in Chinese. Runtime prompts, workspace templates, and license notices remain beside the files that consume them.
+English guides live in `docs/en/` with Chinese counterparts in `docs/zh/`. Runtime prompts, workspace templates, and license notices remain beside the files that consume them.
 
 ## License and attribution
 
-Ludens is licensed under the [MIT License](LICENSE), including the OpenAlice-derived code used with the copyright holder's authorization. See [third-party notices and provenance](THIRD_PARTY_NOTICES.md) for retained attributions and licenses. Dependencies and optional community drivers retain their own licenses.
+Ludens is licensed under the [MIT License](LICENSE). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for third-party notices. Dependencies and optional community drivers retain their own licenses.
 

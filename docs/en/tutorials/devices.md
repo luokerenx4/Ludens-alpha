@@ -6,17 +6,17 @@ Emulator drivers are all installed on demand; the main repo no longer ships emul
 
 ## mGBA
 
-Use [ludens-gba-driver](https://github.com/luokerenx4/ludens-gba-driver) (driver ID `mgba`). Follow that repo's README to install mGBA, load a game, and load the bundled `bridge.lua`; the default bridge port is `47653`. mGBA requires manually preparing the game and bridge, and `rsa.json` rejects the `game` field. Dev-build compatibility notes, port configuration, and SRAM save notes are also maintained in that repo.
+Use `ludens-gba-driver` (driver ID `mgba`). Follow that package's README to install mGBA, load a game, and load the bundled `bridge.lua`; the default bridge port is `47653`. mGBA requires manually preparing the game and bridge, and `rsa.json` rejects the `game` field. Dev-build compatibility notes, port configuration, and SRAM save notes are also maintained in that package.
 
 ## Ryubing
 
-Use [ludens-switch-driver](https://github.com/luokerenx4/ludens-switch-driver) (driver ID `ryubing`). That repo centrally maintains the pinned upstream version, native bridge, patches, build/launch scripts, and dedicated tests; the default bridge port is `47663`. After preparing a bridged emulator per that repo's README, RSA can launch games via the driver manifest.
+Use `ludens-switch-driver` (driver ID `ryubing`). That package centrally maintains the pinned upstream version, native bridge, patches, build/launch scripts, and dedicated tests; the default bridge port is `47663`. After preparing a bridged emulator per that package's README, RSA can launch games via the driver manifest.
 
 Native capabilities include `pad.*`, `screen.capture`, `touch.down / move / up`, plus `keyboard.type / press` for the Switch system keyboard. The touch range is `1280×720`. Firmware, keys, and saves stay on the local machine; avoid concurrently launching emulator instances that share one data directory.
 
 ## Azahar
 
-Use [ludens-3ds-driver](https://github.com/luokerenx4/ludens-3ds-driver) (driver ID `azahar`). That repo maintains the pinned upstream version, native bridge, patches, build/launch scripts, and dedicated tests; the default bridge port is `47673`. After preparing a bridged emulator per that repo's README, RSA can launch games via the manifest.
+Use `ludens-3ds-driver` (driver ID `azahar`). That package maintains the pinned upstream version, native bridge, patches, build/launch scripts, and dedicated tests; the default bridge port is `47673`. After preparing a bridged emulator per that package's README, RSA can launch games via the manifest.
 
 Native capabilities include `pad.*`, `screen.top.capture` (top screen `400×240`), `screen.bottom.capture` (bottom screen `320×240`), and `touch.down / move / up` (bottom-screen range `x = 0..319`, `y = 0..239`). Coordinate mapping and game strategy belong in the workspace.
 
@@ -28,7 +28,7 @@ The desktop environment uses the stock upstream [Cua Driver](https://github.com/
 2. Baseware attaches the driver through a persistent `cua-driver mcp` child process (stdio transport); no `game` or bridge port is needed. If `cua-driver` is not on `PATH`, specify the absolute path via `rsa init --cua-command` or the `rsa.json` `cuaCommand` field.
 3. All tools keep their upstream names and JSON parameter shapes (e.g. `rsa controller controller/get_desktop_state --args '{}'`); for contract boundaries see [Baseware design & capability contracts](../reference/baseware.md).
 
-**Desktop environment boundaries**: multiple Cua workspaces share the same host's real desktop (including melonDS and other emulators running on the desktop that lack a dedicated native bridge yet); use a separate OS session or VM for an isolated desktop. Handing control back to a human immediately rejects new inputs and requests cancellation, but a single native call already inside the OS may still finish; `rsa down` does not close the shared `CuaDriver.app` or the user's desktop apps.
+**Desktop environment boundaries**: multiple Cua workspaces share the same host's real desktop (including desktop emulators that do not yet have a dedicated native bridge); use a separate OS session or VM for an isolated desktop. Handing control back to a human immediately rejects new inputs and requests cancellation, but a single native call already inside the OS may still finish; `rsa down` does not close the shared `CuaDriver.app` or the user's desktop apps.
 
 ## Discovering & connecting external driver packages
 
@@ -55,6 +55,6 @@ New packages start the emulator from their respective build caches by default. T
 
 | Driver ID | Optional package |
 | --- | --- |
-| `mgba` | `github:luokerenx4/ludens-gba-driver#9c1a014be3d87fe6846fef8ad7eba1c13439e8a5` |
-| `azahar` | `github:luokerenx4/ludens-3ds-driver#5b9b1f4032a5973a8882aa23957c3c34da50af9e` |
-| `ryubing` | `github:luokerenx4/ludens-switch-driver#070edf662ba724e1a31c5b477f414d4da61bbd6f` |
+| `mgba` | `github:<org>/ludens-gba-driver#<rev>` |
+| `azahar` | `github:<org>/ludens-3ds-driver#<rev>` |
+| `ryubing` | `github:<org>/ludens-switch-driver#<rev>` |

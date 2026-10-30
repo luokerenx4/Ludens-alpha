@@ -3,7 +3,7 @@ schema_version = "1.4"
 [task]
 name = "ludens/ws-recovery"
 version = "2"
-description = "分别重建 Besiege 6h 连接到期和 Mario Maker 8h 响应中关闭 1012，验证 SSE 冷却、WS 全量恢复、增量续接与工具不重放。"
+description = "分别重建 6h 长跑连接到期和 8h 长跑响应中关闭 1012，验证 SSE 冷却、WS 全量恢复、增量续接与工具不重放。"
 
 [metadata]
 title = "WS 故障恢复"

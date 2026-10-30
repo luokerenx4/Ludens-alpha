@@ -11,17 +11,13 @@ export interface OwnerAccess {
 }
 
 export function installCompanionActivity(owner: BrowserWindow, pet: BrowserWindow, access: OwnerAccess = {}) {
-  const store = createActivityPreferenceStore(join(app.getPath('userData'), 'activity-notifications.json'), {
-    ...DEFAULT_ACTIVITY_PREFERENCES,
-    events: { ...DEFAULT_ACTIVITY_PREFERENCES.events, progress: true, news: false }, brief: false,
-  })
+  const store = createActivityPreferenceStore(join(app.getPath('userData'), 'activity-notifications.json'), DEFAULT_ACTIVITY_PREFERENCES)
   let source: RsaActivitySource | undefined
   const foreground = () => !owner.isDestroyed() && owner.isVisible() && !owner.isMinimized()
   const controller = new RsaActivityController({ identity: () => source?.identity() ?? null, read: signal => {
     if (!source) throw new Error('No activity source')
     return source.read(signal)
   }, stop: () => source?.stop?.(), record: (...args) => source?.record?.(...args) }, {
-    signals: signals => { if (!owner.isDestroyed()) owner.webContents.send('ludens:activity:signals', signals) },
     foreground, petVisible: () => !pet.isDestroyed() && pet.isVisible(),
     send: (surface, event) => {
       const window = surface === 'main' ? owner : pet
@@ -50,7 +46,6 @@ export function installCompanionActivity(owner: BrowserWindow, pet: BrowserWindo
   }
   handle('update-preferences', async (event, input) => { if (!trusted(event, owner)) throw new Error('Unauthorized activity access'); return publish(await store.update(input)) })
   handle('reset-preferences', async event => { if (!trusted(event, owner)) throw new Error('Unauthorized activity access'); return publish(await store.reset()) })
-  handle('signals', event => { if (!trusted(event, owner)) throw new Error('Unauthorized activity access'); return controller.signalSnapshot() })
   handle('snapshot', event => { if (!trusted(event, owner)) throw new Error('Unauthorized activity access'); return controller.snapshot() })
   for (const action of ['open', 'dismiss'] as const) handle(action, (event, input) => {
     const surface = trusted(event, owner) ? 'main' : trusted(event, pet) ? 'pet' : null

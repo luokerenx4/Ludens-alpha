@@ -32,7 +32,7 @@ When debugging standalone without `rsa up`, prepare the device bridge per [Devic
 # Terminal 1: start the device service
 cd /absolute/path/to/workspace
 baseware serve --driver azahar \
-  --driver-package github:luokerenx4/ludens-3ds-driver#5b9b1f4032a5973a8882aa23957c3c34da50af9e \
+  --driver-package 'github:<org>/ludens-3ds-driver#<rev>' \
   --port 47673 --data-dir ./logs/baseware
 ```
 
@@ -58,14 +58,16 @@ Developing or viewing the frontend alone needs no model or emulator — it runs 
 
 When `rsa up` needs to start Dashboard fresh, it calls `npm run build:check` before bringing up devices to verify the build artifacts match the current source fingerprint; if unbuilt or the sources changed, it prompts to run `npm run build` first. If a Dashboard API is already available, `rsa up` reuses it directly without checking or hot-updating that process's build. Updating the production console requires rebuilding and restarting Dashboard; stopping or restarting Dashboard alone never stops a running Host, Baseware, or emulator.
 
-Open `http://127.0.0.1:3015` in a browser to use the console:
+Open `http://127.0.0.1:3015` in a browser to use the console. The sidebar is grouped by scope: **Workspace** pages show the active workspace's run data, **Global** pages hold settings and catalogs independent of any single run, and **Developer** pages host mechanism workbenches; the run/cycle selector and live-refresh toggle appear only in headers that use run context.
 
 - **Run & replay (`?view=live` / `?view=replay`)**: watch model reasoning streams, tool calls, device inputs, and perception frames live, or replay sampled frames and events synchronously on the history timeline. Archive worker, cold-index builder subprocess, and memory budgets: see [Consumption and Metrics](../reference/logging.md#consumption-and-metric-interpretation).
 - **Performance & benchmarks (`?view=benchmark`)**: inspect per-request latency, caches, and call-chain profiling, or browse cross-workspace Harbor task runs and score comparisons in the "benchmark catalog" (`?view=benchmark&bench=cases`).
 - **Capability catalog & driver validation (`?view=caps`)**: statically display the selected workspace's device catalog snapshot (`baseware.json`), Python `@capability` declarations, and Harbor eval tasks, plus online validation of external driver packages and `rsa init` command generation.
 - **Perception settings (`?view=perception`)**: configure the selected workspace's hot-window seconds, video segment duration, and idle-stop finalization seconds (written to `.rsa/settings.json`, effective after `rsa perception reload`).
 - **Workspaces (`?view=workspaces`)**: search and open registered folders, create a new workspace, add an existing directory, or change the default parent directory in the same `LUDENS_HOME`.
-- **In-console docs (`?view=docs`)**: browse `docs/tutorials/`, `docs/reference/`, and `docs/insights/` inside the console, with cross-article and section-anchor navigation.
+- **In-console docs (`?view=docs`)**: browse `tutorials/`, `reference/`, and `insights/` inside the console, with cross-article and section-anchor navigation.
+- **Global settings (`?view=settings`)**: centralizes Ludens Pet companion preferences (follow target, bubbles, sound) and console language independent of any specific run; workspace-scoped settings stay on their respective pages.
+- **Developer panel (`?view=dev`)**: interactive mechanism workbenches, currently including the Loop injection workbench (`?view=dev&panel=loop`) that simulates takeover context composition across the native OMP layer, the RSA injection layer, and the removed end-of-batch channel; see [Injection converges to a single per-turn channel](../insights/omp-injection.md).
 
 ### Workspace entry flow
 
@@ -126,9 +128,9 @@ The Ludens pet uses static transparent WebP assets (defined in `rsa-companion/ui
 | Test | Prerequisite | Run at repo root |
 | --- | --- | --- |
 | mGBA full control handoff | Emulator has the ROM and `bridge.lua` loaded; run this workspace's Baseware and `rsa run --device-only` in a separate terminal | `RSA_MGBA=1 RSA_WORKSPACE=/absolute/path/to/workspace bun test rsa/tests/device.live.test.ts` |
-| mGBA repeated disconnect recovery | Keep the emulator and bridge running; stop the Host and Baseware occupying the bridge | Run the hardware tests per the README in the [GBA driver repo](https://github.com/luokerenx4/ludens-gba-driver), with an explicit port. |
-| Ryubing button/sampling/long-action interruption | Park the game on a safe input-ready screen; stop the Host and Baseware and keep the emulator bridge running (override the port with `RSA_BRIDGE_PORT`) | `RSA_SWITCH_DRIVER_PACKAGE=github:luokerenx4/ludens-switch-driver#070edf662ba724e1a31c5b477f414d4da61bbd6f RSA_SWITCH_TEST=1 bun test rsa/tests/switch.live.test.ts` |
-| Ryubing system keyboard dialog | Same as above, with Fire Emblem's eight-character naming box open. The test types nine characters and presses Enter to verify rejection, then cancels; do not run it in any other input box, or it may actually submit a name. | `RSA_SWITCH_DRIVER_PACKAGE=github:luokerenx4/ludens-switch-driver#070edf662ba724e1a31c5b477f414d4da61bbd6f RSA_SWITCH_KEYBOARD_TEST=1 bun test rsa/tests/switch.live.test.ts` |
+| mGBA repeated disconnect recovery | Keep the emulator and bridge running; stop the Host and Baseware occupying the bridge | Run the hardware tests per the README in the `ludens-gba-driver` package, with an explicit port. |
+| Ryubing button/sampling/long-action interruption | Park the game on a safe input-ready screen; stop the Host and Baseware and keep the emulator bridge running (override the port with `RSA_BRIDGE_PORT`) | `RSA_SWITCH_DRIVER_PACKAGE='github:<org>/ludens-switch-driver#<rev>' RSA_SWITCH_TEST=1 bun test rsa/tests/switch.live.test.ts` |
+| Ryubing system keyboard dialog | Same as above, with an eight-character system naming dialog open. The test types nine characters and presses Enter to verify rejection, then cancels; do not run it in any other input box, or it may actually submit a name. | `RSA_SWITCH_DRIVER_PACKAGE='github:<org>/ludens-switch-driver#<rev>' RSA_SWITCH_KEYBOARD_TEST=1 bun test rsa/tests/switch.live.test.ts` |
 
 ## WS Recovery Test Basis
 

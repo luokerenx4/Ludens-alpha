@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ActivityDisplay } from './activity-controller.js'
 import { DEFAULT_ACTIVITY_PREFERENCES } from './activity-policy.js'
-import { RsaActivityController } from './rsa-activity-controller.js'
+import { RsaActivityController, type ActivityDisplay } from './rsa-activity-controller.js'
 import type { ActivityBlock, LogBlock, RsaActivitySnapshot } from './rsa-source.js'
 
 let revision = 0
@@ -110,9 +109,8 @@ describe('RSA block speech', () => {
     expect(s.sent.at(-1)?.event.type).toBe('show')
     s.controller.stop()
   })
-  it('queues every thinking, text and tool block in order even when legacy progress is disabled', async () => {
+  it('queues every thinking, text and tool block in order', async () => {
     const s = setup(); await s.poll()
-    expect(DEFAULT_ACTIVITY_PREFERENCES.events.progress).toBe(false)
     const blocks = [block('thought', 'thinking'), block('message', 'text'), block('tool-a'), block('tool-b')]
     await s.poll(state(blocks)); expect(s.shows().map(item => item.event.input.id)).toEqual(['thought'])
     await vi.advanceTimersByTimeAsync(12_000)
@@ -158,7 +156,6 @@ describe('RSA block speech', () => {
     await vi.advanceTimersByTimeAsync(8_000)
     expect(s.shows()).toHaveLength(1)
     expect(blocks).toHaveLength(3)
-    expect(s.controller.signalSnapshot()).toEqual([])
     s.controller.stop()
   })
   it('prefers a visible pet with owner open, and keeps hidden work queued until a surface returns', async () => {

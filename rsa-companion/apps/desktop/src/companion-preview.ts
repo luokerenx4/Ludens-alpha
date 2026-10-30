@@ -1,4 +1,4 @@
-/** Isolated native companion acceptance; no Guardian, credentials, or broker. */
+/** Isolated native companion acceptance preview. */
 import { app, BrowserWindow } from 'electron'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'

@@ -35,7 +35,7 @@ rsa observe --capability python/sensors.py:temperature
 rsa observe --capability '*' --start 2026-10-27T01:00:00Z --limit 8
 ```
 
-- **Sampling decoupled from auto-injection**: `rsa perception inject off` only stops auto-appending new observations and sampler state to the model at each prompt start and tool-batch end; background `sample()`, video recording, and explicit `observe` queries keep running. `rsa perception stop` halts the sampling process and timeline writer entirely until the next `reload`.
+- **Sampling decoupled from auto-injection**: `rsa perception inject off` only stops auto-appending new observations and sampler state to the model at each prompt start; background `sample()`, video recording, and explicit `observe` queries keep running, mid-turn observation is always performed explicitly via `observe`, and tool results are never appended with observations. `rsa perception stop` halts the sampling process and timeline writer entirely until the next `reload`.
 - **Query dimensions and pagination**: reads the latest record of the main channel `python/perception.py:Perception.sample` by default; `--capability` filters by another `@record` capability or takes `'*'` to query the whole timeline; `--at` returns the last record with `recordedAt` no later than the given time; `--start` / `--end` paginate in ascending `recordedAt` order over a closed interval (default `8` records, max `64`; pass the returned `nextAfter` to `--after` for the next page).
 - **Terminal image delivery**: adding `--images` in the agent's `bash` tool delivers images straight into the model through the OMP terminal image channel (max 32 images / 40 MiB per page).
 

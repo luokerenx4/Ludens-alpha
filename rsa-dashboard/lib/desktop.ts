@@ -10,7 +10,6 @@ export interface ActivityPreferences {
   version: 2;
   defaultsVersion: number;
   enabled: boolean;
-  events: Record<string, boolean>;
   blocks: Record<BlockKind, boolean>;
   main: boolean;
   pet: boolean;

@@ -4,7 +4,7 @@ import { PerceptionRuntime, type PerceptionRead, type PerceptionStatus } from ".
 import type { BenchmarkContext } from "../types.ts";
 import { readEvents, seqs } from "../fixtures/evidence.ts";
 
-// Reproduces the Mario Maker cold-start boundary with an actual Python process,
+// Reproduces the perception cold-start boundary with an actual Python process,
 // while a small JSON file stands in for model weights. No framework or device.
 const implementation = `from pathlib import Path
 from datetime import datetime, timezone
