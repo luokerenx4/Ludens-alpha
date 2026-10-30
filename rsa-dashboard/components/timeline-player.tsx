@@ -506,7 +506,7 @@ export function TimelinePlayer({ project, run, epoch, position, evidence = null,
         <Button type="button" variant="outline" size="icon-sm" aria-label={nt("previousWindow")} disabled={eventBounds.startAt <= overview.startAt} onClick={() => seek(at - windowMs)}><ChevronLeft aria-hidden="true" /></Button>
         <Button type="button" variant="outline" size="icon-sm" aria-label={nt("nextWindow")} disabled={eventBounds.endAt >= overview.endAt} onClick={() => seek(at + windowMs)}><ChevronRight aria-hidden="true" /></Button>
         </div></div>
-      <div className="replay-time-axis"><time>{replayElapsedInput(eventBounds.startAt - overview.startAt)}</time><span>{nt("elapsedTime")}</span><time>{replayElapsedInput(eventBounds.endAt - overview.startAt)}</time></div>
+      <div className="replay-time-axis"><time>{replayElapsedInput(eventBounds.startAt - overview.startAt, "seconds")}</time><span>{nt("elapsedTime")}</span><time>{replayElapsedInput(eventBounds.endAt - overview.startAt, "seconds")}</time></div>
       <div className="replay-track-row"><span>{t("track.perception")}</span><div className="replay-track-lane">
         <span className="replay-sampled-window" aria-hidden="true" style={{ left: x(bounds.startAt) + "%", width: Math.max(0.5, x(bounds.endAt) - x(bounds.startAt)) + "%" }} />
         {trackFrames.map(frame => <button type="button" key={frame.id} className="replay-frame-tick focus-visible:z-10 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-ring" style={{ left: x(frame.at) + "%" }}
