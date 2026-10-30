@@ -29,7 +29,7 @@ These are mechanisms for experimenting with adaptation, not a claim that an agen
 | Azahar | Nintendo 3DS emulator | Build and install the patched emulator. Native pad, touch, and separate top/bottom screen capture. See the [Azahar guide](docs/en/tutorials/devices.md#azahar). |
 | Cua | Local desktop applications | Install the upstream Cua Driver and grant its required OS permissions. See [Cua setup](docs/en/tutorials/devices.md#cua). |
 
-Emulator drivers are optional packages maintained in [ludens-gba-driver](https://github.com/luokerenx4/ludens-gba-driver), [ludens-3ds-driver](https://github.com/luokerenx4/ludens-3ds-driver), and [ludens-switch-driver](https://github.com/luokerenx4/ludens-switch-driver). Only the Cua desktop adapter is built in.
+Emulator drivers are optional external packages (`ludens-gba-driver`, `ludens-3ds-driver`, and `ludens-switch-driver`). Only the Cua desktop adapter is built in.
 
 Drivers expose device capabilities, not game strategies. Screen processing, coordinate conversion, action sequences, and task-specific logic belong in the workspace.
 
@@ -49,9 +49,6 @@ For device preparation and model configuration, see [Devices & Drivers](docs/en/
 The default setup uses Baseware, RSA and the browser Dashboard. Each component has its own dependency lockfile. RSA includes a TypeScript host and a packaged Python runtime; `uv sync` installs the latter into `rsa/python/.venv`.
 
 ```sh
-git clone https://github.com/luokerenx4/Ludens-alpha.git
-cd Ludens-alpha
-
 (cd baseware && bun install --frozen-lockfile)
 (cd rsa && bun install --frozen-lockfile)
 uv sync --project rsa/python --frozen
@@ -68,7 +65,7 @@ The example below uses a prepared Ryubing installation and a local game file. Gl
 
 ```sh
 rsa init --name my-task --workspace "$HOME/Ludens Workspaces/my-task" --driver ryubing \
-  --driver-package github:luokerenx4/ludens-switch-driver#070edf662ba724e1a31c5b477f414d4da61bbd6f \
+  --driver-package 'github:<org>/ludens-switch-driver#<rev>' \
   --game /absolute/path/to/game.nsp --seconds 1800
 cd "$HOME/Ludens Workspaces/my-task"
 rsa up --dry-run
@@ -81,8 +78,8 @@ rsa services
 To choose another environment, replace the `rsa init` command above with exactly one of:
 
 ```sh
-rsa init --name my-task --workspace "$HOME/Ludens Workspaces/my-task" --driver mgba --driver-package github:luokerenx4/ludens-gba-driver#9c1a014be3d87fe6846fef8ad7eba1c13439e8a5
-rsa init --name my-task --workspace "$HOME/Ludens Workspaces/my-task" --driver azahar --driver-package github:luokerenx4/ludens-3ds-driver#5b9b1f4032a5973a8882aa23957c3c34da50af9e --game /absolute/path/to/game.3ds
+rsa init --name my-task --workspace "$HOME/Ludens Workspaces/my-task" --driver mgba --driver-package 'github:<org>/ludens-gba-driver#<rev>'
+rsa init --name my-task --workspace "$HOME/Ludens Workspaces/my-task" --driver azahar --driver-package 'github:<org>/ludens-3ds-driver#<rev>' --game /absolute/path/to/game.3ds
 rsa init --name my-task --workspace "$HOME/Ludens Workspaces/my-task" --driver cua
 ```
 
@@ -209,5 +206,5 @@ Detailed guides in `docs/` are currently in Chinese. Runtime prompts, workspace 
 
 ## License and attribution
 
-Ludens is licensed under the [MIT License](LICENSE), including the OpenAlice-derived code used with the copyright holder's authorization. See [third-party notices and provenance](THIRD_PARTY_NOTICES.md) for retained attributions and licenses. Dependencies and optional community drivers retain their own licenses.
+Ludens is licensed under the [MIT License](LICENSE). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for third-party notices. Dependencies and optional community drivers retain their own licenses.
 

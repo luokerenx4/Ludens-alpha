@@ -6,17 +6,17 @@
 
 ## mGBA
 
-使用 [ludens-gba-driver](https://github.com/luokerenx4/ludens-gba-driver)（驱动 ID `mgba`）。按该仓 README 安装 mGBA、加载游戏及包内 `bridge.lua`，默认桥端口为 `47653`。mGBA 需要手动准备游戏与桥，`rsa.json` 不接受 `game` 字段。开发版兼容记录、端口配置和 SRAM 存档说明也维护在该仓。
+使用 `ludens-gba-driver`（驱动 ID `mgba`）。按该包 README 安装 mGBA、加载游戏及包内 `bridge.lua`，默认桥端口为 `47653`。mGBA 需要手动准备游戏与桥，`rsa.json` 不接受 `game` 字段。开发版兼容记录、端口配置和 SRAM 存档说明也维护在该包中。
 
 ## Ryubing
 
-使用 [ludens-switch-driver](https://github.com/luokerenx4/ludens-switch-driver)（驱动 ID `ryubing`）。该仓统一维护固定上游版本、原生桥、补丁、构建/启动脚本与专属测试；默认桥端口为 `47663`。按该仓 README 准备带桥的模拟器后，RSA 可通过驱动 manifest 启动游戏。
+使用 `ludens-switch-driver`（驱动 ID `ryubing`）。该包统一维护固定上游版本、原生桥、补丁、构建/启动脚本与专属测试；默认桥端口为 `47663`。按该包 README 准备带桥的模拟器后，RSA 可通过驱动 manifest 启动游戏。
 
 原生能力包括 `pad.*`、`screen.capture`、`touch.down / move / up`，以及 Switch 系统输入框的 `keyboard.type / press`。触屏范围为 `1280×720`。固件、密钥和存档留在本机，避免并发启动共用同一数据目录的模拟器实例。
 
 ## Azahar
 
-使用 [ludens-3ds-driver](https://github.com/luokerenx4/ludens-3ds-driver)（驱动 ID `azahar`）。该仓维护固定上游版本、原生桥、补丁、构建/启动脚本与专属测试；默认桥端口为 `47673`。按该仓 README 准备带桥的模拟器后，RSA 可通过 manifest 启动游戏。
+使用 `ludens-3ds-driver`（驱动 ID `azahar`）。该包维护固定上游版本、原生桥、补丁、构建/启动脚本与专属测试；默认桥端口为 `47673`。按该包 README 准备带桥的模拟器后，RSA 可通过 manifest 启动游戏。
 
 原生能力包括 `pad.*`、`screen.top.capture`（上屏 `400×240`）、`screen.bottom.capture`（下屏 `320×240`）和 `touch.down / move / up`（下屏范围 `x = 0..319`、`y = 0..239`）。坐标换算与游戏策略由工作区实现。
 
@@ -55,6 +55,6 @@ rsa init --name my-task --driver <id> --driver-package 'github:org/repo#rev'
 
 | 驱动 ID | 可选包 |
 | --- | --- |
-| `mgba` | `github:luokerenx4/ludens-gba-driver#9c1a014be3d87fe6846fef8ad7eba1c13439e8a5` |
-| `azahar` | `github:luokerenx4/ludens-3ds-driver#5b9b1f4032a5973a8882aa23957c3c34da50af9e` |
-| `ryubing` | `github:luokerenx4/ludens-switch-driver#070edf662ba724e1a31c5b477f414d4da61bbd6f` |
+| `mgba` | `github:<org>/ludens-gba-driver#<rev>` |
+| `azahar` | `github:<org>/ludens-3ds-driver#<rev>` |
+| `ryubing` | `github:<org>/ludens-switch-driver#<rev>` |

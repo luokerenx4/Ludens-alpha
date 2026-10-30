@@ -7,18 +7,13 @@ optional community drivers remain governed by their respective licenses.
 Ludens 采用 [MIT License](LICENSE)。第三方代码和素材保留各自的版权与许可声明；
 安装的依赖和可选社区驱动仍遵循各自的许可证。
 
-## OpenAlice
+## DeepSeek Balance Whale Widget
 
-The OpenAlice-derived code and maintainer-provided assets included in Ludens
-are distributed under MIT with the copyright holder's authorization.
-The [provenance record](rsa-companion/upstream.json) preserves the original
-source revision and import-time hashes; it does not define the current license.
-Third-party material identified in the [asset notices](rsa-companion/ui/public/companion/NOTICE.md)
-retains its attribution and license.
+The desktop pet interaction model in `rsa-companion` retains the upstream
+[MIT License](rsa-companion/ui/public/companion/NOTICE.md).
 
-Ludens 中来自 OpenAlice 的代码及维护者提供的素材，已获版权所有者授权，以 MIT 发布。
-[来源记录](rsa-companion/upstream.json) 保留原始版本和移植时的哈希，不代表当前许可证。
-[素材声明](rsa-companion/ui/public/companion/NOTICE.md) 中标明的第三方内容继续保留其署名和许可。
+`rsa-companion` 中改编自 DeepSeek Balance Whale Widget 的桌宠交互模型保留其上游
+[MIT License](rsa-companion/ui/public/companion/NOTICE.md)。
 
 ## CUA Driver
 

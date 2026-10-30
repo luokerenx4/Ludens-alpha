@@ -1,6 +1,6 @@
 # Driver Bridge Protocol
 
-This spec defines the Baseware `bridge` transport layer (TCP socket) emulator communication protocol, implemented jointly by the optional standalone packages [mgba](https://github.com/luokerenx4/ludens-gba-driver), [azahar](https://github.com/luokerenx4/ludens-3ds-driver), and [ryubing](https://github.com/luokerenx4/ludens-switch-driver). When developing a new emulator driver, implement the Bridge server side of this protocol on the emulator side, and provide a matching Provider on the TypeScript side via `DriverRegistration.load` (for the package registration contract see [Baseware Philosophy and Capability Contracts](baseware.md#driver-packages-and-launch-description)). Note: the `cua` desktop driver uses `stdio` MCP transport and does not use this protocol.
+This spec defines the Baseware `bridge` transport layer (TCP socket) emulator communication protocol, implemented jointly by the optional standalone packages `ludens-gba-driver` (`mgba`), `ludens-3ds-driver` (`azahar`), and `ludens-switch-driver` (`ryubing`). When developing a new emulator driver, implement the Bridge server side of this protocol on the emulator side, and provide a matching Provider on the TypeScript side via `DriverRegistration.load` (for the package registration contract see [Baseware Philosophy and Capability Contracts](baseware.md#driver-packages-and-launch-description)). Note: the `cua` desktop driver uses `stdio` MCP transport and does not use this protocol.
 
 ## Transport
 

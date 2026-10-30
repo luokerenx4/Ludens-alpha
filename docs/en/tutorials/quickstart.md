@@ -63,7 +63,7 @@ Prepare the target environment per [Devices & driver setup](devices.md) first. T
 
 ```sh
 rsa init --name my-task --workspace /absolute/path/to/workspace --driver azahar \
-  --driver-package github:luokerenx4/ludens-3ds-driver#5b9b1f4032a5973a8882aa23957c3c34da50af9e \
+  --driver-package 'github:<org>/ludens-3ds-driver#<rev>' \
   --game /absolute/path/to/game.3ds --seconds 1800
 cd /absolute/path/to/workspace
 rsa up --dry-run

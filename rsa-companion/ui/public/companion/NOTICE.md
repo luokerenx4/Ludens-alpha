@@ -1,19 +1,3 @@
-# Ludens companion
-
-`ludens/` contains the maintainer-requested original 卢登斯 character assets generated
-with OpenAI image generation on October 21, 2026: 24 static poses, 3 portraits,
-8 effects and a tray icon. Generation prompts are in `ludens/prompts.json`.
-The runtime WebP copies are resized to 512 × 512 with full alpha quality;
-`source_sha256` in the manifest identifies the original PNGs. Nine SVG sources
-are included for the effects and tray icon. The tray also has a native PNG copy.
-
-Character and bubble PNGs supplied by the OpenAlice maintainer, September 2026.
-`click.wav` is an original procedural soft-double squeak synthesized for
-OpenAlice, without an external recording or upstream audio sample.
-The original bubble.png is retained as a source asset. The active
-bubble-speech.png was generated with the built-in image generation tool at the
-maintainer's request on September 18, 2026; see bubble-generation.md for its prompt.
-
 Press/release transforms, easing, pointer threshold, mirror timing and alpha
 hit-testing interaction adapted from MeteorNOX's DeepSeek Balance Whale Widget:
 https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget

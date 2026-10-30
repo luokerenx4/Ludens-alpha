@@ -63,7 +63,7 @@ OMP 原生 shell 会自动注入 `RSA_PYTHON`。在工作区脚本中若需复�
 
 ```sh
 rsa init --name my-task --workspace /absolute/path/to/workspace --driver azahar \
-  --driver-package github:luokerenx4/ludens-3ds-driver#5b9b1f4032a5973a8882aa23957c3c34da50af9e \
+  --driver-package 'github:<org>/ludens-3ds-driver#<rev>' \
   --game /absolute/path/to/game.3ds --seconds 1800
 cd /absolute/path/to/workspace
 rsa up --dry-run
