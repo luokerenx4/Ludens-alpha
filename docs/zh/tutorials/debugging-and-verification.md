@@ -31,9 +31,9 @@
 ```sh
 # 终端 1：启动设备服务
 cd /absolute/path/to/workspace
-baseware serve --driver azahar \
-  --driver-package 'github:<org>/ludens-3ds-driver#<rev>' \
-  --port 47673 --data-dir ./logs/baseware
+baseware serve --driver <id> \
+  --driver-package 'github:<org>/<driver-repo>#<rev>' \
+  --port 47111 --data-dir ./logs/baseware
 ```
 
 ```sh
@@ -129,10 +129,9 @@ node --expose-gc --max-old-space-size=1024 --import tsx scripts/check-index-memo
 
 | 测试项 | 前置准备 | 仓库根目录执行命令 |
 | --- | --- | --- |
-| mGBA 完整控制权交还 | 模拟器已加载 ROM 与 `bridge.lua`；另开终端运行该工作区的 Baseware 与 `rsa run --device-only` | `RSA_MGBA=1 RSA_WORKSPACE=/absolute/path/to/workspace bun test rsa/tests/device.live.test.ts` |
-| mGBA 连续断线恢复 | 模拟器与桥保持运行，停止占用该桥的 Host 与 Baseware | 在 `ludens-gba-driver` 包内按 README 运行实机测试，并显式指定端口。 |
-| Ryubing 按键/采样/长动作中断 | 游戏停在安全可输入画面，停止 Host 与 Baseware，模拟器桥保持运行（可用 `RSA_BRIDGE_PORT` 覆盖端口） | `RSA_SWITCH_DRIVER_PACKAGE='github:<org>/ludens-switch-driver#<rev>' RSA_SWITCH_TEST=1 bun test rsa/tests/switch.live.test.ts` |
-| Ryubing 系统键盘框 | 同上，且已打开限制八字符的系统命名框。测试会输入九字符并按 Enter 验证拒绝，再取消；不要在其他输入框执行，以免实际提交名字。 | `RSA_SWITCH_DRIVER_PACKAGE='github:<org>/ludens-switch-driver#<rev>' RSA_SWITCH_KEYBOARD_TEST=1 bun test rsa/tests/switch.live.test.ts` |
+| 实机控制权交还 | 目标环境与桥已就绪；另开终端运行该工作区的 Baseware 与 `rsa run --device-only` | `RSA_LIVE_DEVICE=1 RSA_WORKSPACE=/absolute/path/to/workspace bun test rsa/tests/device.live.test.ts` |
+| 外部桥按键/采样/长动作中断 | 目标环境停在安全可输入画面，停止 Host 与 Baseware，设备桥保持运行（可用 `RSA_BRIDGE_PORT` 覆盖端口） | `RSA_BRIDGE_DRIVER='<id>' RSA_BRIDGE_DRIVER_PACKAGE='github:<org>/<driver-repo>#<rev>' RSA_BRIDGE_TEST=1 bun test rsa/tests/bridge.live.test.ts` |
+| 外部桥系统键盘框 | 同上，且已打开限制八字符的系统命名框。测试会输入九字符并按 Enter 验证拒绝，再取消；不要在其他输入框执行，以免实际提交文本。 | `RSA_BRIDGE_DRIVER='<id>' RSA_BRIDGE_DRIVER_PACKAGE='github:<org>/<driver-repo>#<rev>' RSA_BRIDGE_KEYBOARD_TEST=1 bun test rsa/tests/bridge.live.test.ts` |
 
 ## WS 恢复测试依据
 

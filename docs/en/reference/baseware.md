@@ -7,7 +7,7 @@ Baseware is Ludens' standalone device-driver service: it connects to an emulator
 Baseware takes the CUA Driver's native tool contract as the structural model and maintains its protocol definitions independently in the repo (see [tool-contract.ts](../../baseware/src/tool-contract.ts) and [contracts.ts](../../baseware/src/contracts.ts)):
 
 - **Uniform structure**: every capability (`Controller`) is described by `name`, `description`, `inputSchema`, plus optional `outputSchema`, `annotations`, and `_meta`; call arguments are uniformly JSON objects, and native return bodies uniformly follow the MCP `CallToolResult` (with `content`, `structuredContent`, `isError`).
-- **Faithful semantics**: the unified call envelope does not blur hardware differences. CUA desktop tools keep their upstream names and parameter shapes; emulators declare their own hardware capabilities — gamepad timelines as `pad.play`, touchscreens as `touch.down / move / up`, and the 3DS dual screens as `screen.top.capture` and `screen.bottom.capture`. A PC mouse never masquerades as an emulator touchscreen, and emulator buttons never masquerade as a desktop keyboard; all coordinate bounds, button enumerations, and time units are directly discoverable from the live capability catalog.
+- **Faithful semantics**: the unified call envelope does not blur hardware differences. CUA desktop tools keep their upstream names and parameter shapes; emulators declare their own hardware capabilities — gamepad timelines as `pad.play`, touchscreens as `touch.down / move / up`, and dual-screen devices as `screen.top.capture` and `screen.bottom.capture`. A PC mouse never masquerades as an emulator touchscreen, and emulator buttons never masquerade as a desktop keyboard; all coordinate bounds, button enumerations, and time units are directly discoverable from the live capability catalog.
 
 ```mermaid
 flowchart LR
@@ -15,7 +15,7 @@ flowchart LR
     C --> B[Baseware: Capability Catalog + Control Arbitration + Device Log]
     B --> U[CUA Adapter]
     U --> N[Upstream CUA Driver Subprocess]
-    B --> E[mGBA / Azahar / Ryubing Adapter]
+    B --> E[External Bridge Adapter]
     E --> H[Emulator Native TCP Bridge]
 ```
 

@@ -117,7 +117,7 @@ class FakeServices implements LaunchIO {
   }
 }
 
-const plan = () => launchPlan(parseConfig({ driver: "bridge-fixture", game: "games/A game; $(touch BAD).nsp", pet: true }, manifestFor("bridge-fixture")),
+const plan = () => launchPlan(parseConfig({ driver: "bridge-fixture", game: "games/A game; $(touch BAD).rom", pet: true }, manifestFor("bridge-fixture")),
   "/tmp/Workspace with spaces", "/tmp/Source with spaces", "/tmp/baseware-test.sock", manifestFor("bridge-fixture"));
 
 test("up rejects unidentified and conflicting workspaces before loading drivers, including dry runs", async () => {
@@ -227,15 +227,15 @@ test("launch config keeps limits explicit and paths as literal argv entries", as
   // Default follows the selected model's native OMP compaction trigger; no flag is passed.
   expect(parseConfig({ driver: "prepared-fixture" }, manifestFor("prepared-fixture")).compactionThreshold).toBeUndefined();
   expect(value.commands.host).not.toContain("--compaction-threshold");
-  const explicit = await launchPlan(parseConfig({ driver: "bridge-fixture", game: "games/x.nsp", compactionThreshold: 200000 }, manifestFor("bridge-fixture")),
+  const explicit = await launchPlan(parseConfig({ driver: "bridge-fixture", game: "games/x.rom", compactionThreshold: 200000 }, manifestFor("bridge-fixture")),
     "/tmp/Workspace with spaces", "/tmp/Source with spaces", "/tmp/baseware-test.sock", manifestFor("bridge-fixture"));
   expect(explicit.commands.host).toEqual(expect.arrayContaining(["--compaction-threshold", "200000"]));
   expect(parseConfig({ driver: "prepared-fixture" }, manifestFor("prepared-fixture")).port).toBe(47990);
   expect(() => parseConfig({ driver: "bridge-fixture", second: 10 }, manifestFor("bridge-fixture"))).toThrow("Unknown");
-  expect(() => parseConfig({ driver: "prepared-fixture", game: "game.gba" }, manifestFor("prepared-fixture"))).toThrow("does not support launching a game");
+  expect(() => parseConfig({ driver: "prepared-fixture", game: "game.rom" }, manifestFor("prepared-fixture"))).toThrow("does not support launching a game");
   expect(value.commands.emulator).toEqual(["env", "FIXTURE_STACK_SIZE=200000", "RSA_BRIDGE_PORT=47991",
     ...manifestFor("bridge-fixture").launchCommand!,
-    "/tmp/Workspace with spaces/games/A game; $(touch BAD).nsp"]);
+    "/tmp/Workspace with spaces/games/A game; $(touch BAD).rom"]);
   expect(value.commands.baseware).toEqual(["/tmp/Source with spaces/baseware/bin/baseware", "serve",
     "--driver", "bridge-fixture", "--port", "47991", "--socket", "/tmp/baseware-test.sock",
     "--data-dir", "/tmp/Workspace with spaces/logs/baseware", "--diagnostics", "normal"]);
@@ -286,7 +286,7 @@ test("Cua launch config uses its native service without choosing a workspace obs
   expect(defaults.commands.baseware).not.toContain("--cua-command");
   expect(defaults.commands.baseware).not.toContain("--port");
   expect(() => parseConfig({ driver: "cua", port: 47991 }, manifestFor("cua"))).toThrow("bridge port");
-  expect(() => parseConfig({ driver: "cua", game: "game.nsp" }, manifestFor("cua"))).toThrow("game");
+  expect(() => parseConfig({ driver: "cua", game: "game.rom" }, manifestFor("cua"))).toThrow("game");
   expect(() => parseConfig({ driver: "prepared-fixture", cuaCommand: "cua-driver" }, manifestFor("prepared-fixture"))).toThrow("cuaCommand");
 });
 
@@ -306,16 +306,16 @@ test("Cua startup and shutdown only manage its services, without emulator bridge
 });
 
 test("an external bridge manifest launches its device without desktop dependencies", async () => {
-  const config = parseConfig({ driver: "dual-fixture", game: "games/3DS game.cci" }, manifestFor("dual-fixture"));
-  const value = await launchPlan(config, "/tmp/3DS workspace", "/tmp/Source", "/tmp/3ds-baseware.sock", manifestFor("dual-fixture"));
+  const config = parseConfig({ driver: "dual-fixture", game: "games/Dual game.rom" }, manifestFor("dual-fixture"));
+  const value = await launchPlan(config, "/tmp/Dual workspace", "/tmp/Source", "/tmp/dual-baseware.sock", manifestFor("dual-fixture"));
   expect(config.port).toBe(47992);
   expect(value.commands.emulator).toEqual(["env", "RSA_BRIDGE_PORT=47992",
-    "/fixture/Dual.app/Contents/MacOS/dual", "/tmp/3DS workspace/games/3DS game.cci"]);
+    "/fixture/Dual.app/Contents/MacOS/dual", "/tmp/Dual workspace/games/Dual game.rom"]);
   expect(value.commands.baseware).toContain("dual-fixture");
   expect(value.commands.baseware).toContain("47992");
   expect(value.commands.baseware).not.toContain("--cua-command");
   expect(value.commands.host).not.toContain("--auto-observe");
-  expect(() => parseConfig({ driver: "dual-fixture", game: "games/3DS game.cci", cuaCommand: "/tools/cua-driver" }, manifestFor("dual-fixture"))).toThrow("stdio driver");
+  expect(() => parseConfig({ driver: "dual-fixture", game: "games/Dual game.rom", cuaCommand: "/tools/cua-driver" }, manifestFor("dual-fixture"))).toThrow("stdio driver");
   const io = new FakeServices(value);
   io.bridgePort = 47992;
   expect((await new WorkspaceLauncher(value, io).up()).host?.mode).toBe("manual");
@@ -346,7 +346,7 @@ test("init and dry-run preserve existing workspace files and never invoke servic
     };
     const packagePath = join(directory, "external-driver.ts");
     await writeFile(packagePath, `export default { ...${JSON.stringify(fixtureManifests["bridge-fixture"])}, load() { throw new Error("init must not load the provider"); } };`);
-    expect((await run("init", "--driver", "bridge-fixture", "--driver-package", `file:${packagePath}`, "--game", "games/Uninstalled ; $ game.nsp", "--seconds", "600")).code).toBe(0);
+    expect((await run("init", "--driver", "bridge-fixture", "--driver-package", `file:${packagePath}`, "--game", "games/Uninstalled ; $ game.rom", "--seconds", "600")).code).toBe(0);
     const configBefore = await readFile(join(workspace, "rsa.json"), "utf8");
     const preview = await run("up", "--dry-run");
     expect(preview.code).toBe(0);
