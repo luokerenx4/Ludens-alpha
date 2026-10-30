@@ -11,3 +11,4 @@ Recursive Self-Adaptation Harness：连接 Shiori（当前为 OMP）、Baseware 
 - [Benchmark](../docs/en/reference/benchmark.md)
 - [OMP 后台压缩改造](../docs/en/insights/omp-compaction.md)
 - [WS 恢复测试依据](../docs/en/insights/ws-recovery.md)
+- [注入收敛为轮首单通道](../docs/en/insights/omp-injection.md)
