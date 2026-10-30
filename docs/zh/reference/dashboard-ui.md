@@ -5,7 +5,6 @@ Dashboard 使用 Next.js App Router、React、Tailwind CSS 4 与 shadcn/ui（Rad
 ## 组件归属
 
 - `rsa-dashboard/components/ui/` 保存通过官方 shadcn CLI 引入的组件源码。按钮、表单、开关、复选框、单选组、滑块、卡片、表格、对话框、反馈与页内标签应复用这里的原语。
-- shadcn/ui 源码采用 MIT License，许可文本保留在 [`licenses/shadcn-ui.txt`](../../../licenses/shadcn-ui.txt)。
 - 业务组件仍放在 `components/`；运行时间轴、活动证据、图表和桌宠动画由业务组件实现，不往 UI 原语里加入工作区或 RSA 调用。
 - 类名合并使用 `import { cn } from "cn"`，变体用 `class-variance-authority`；它们与当前 shadcn 注册表生成的源码保持一致。
 
