@@ -1,11 +1,11 @@
 # RSA Dashboard
 
-默认通过浏览器使用的运行、回放、Benchmark 和 Ludens Pet 控制台，读取运行日志并提供统一的数据投影和工作区选择。网页运行无需 Electron；可选 Ludens Pet 桌面端加载同一份控制台。
+Browser-first console for live runs, timeline replay, run analysis, Harbor benchmarks, and Ludens Pet settings. Reads run logs and provides unified projections and workspace management without requiring Electron; the optional Ludens Pet desktop app loads the same console.
 
-- [安装与工作区启停](../docs/en/tutorials/quickstart.md)
-- [控制台调试与验证](../docs/en/tutorials/debugging-and-verification.md#standalone-components-and-consoles)：站内文档浏览（`?view=docs`）、工作区能力目录（`?view=caps`）与全局设置（`?view=settings`，含 Ludens Pet 偏好）
-- [Loop 注入实验台](../docs/en/reference/architecture.md#1-omp-superset-assembly-and-outer-turn-continuation)：开发者面板（`?view=dev&panel=loop`）里模拟一次接管的上下文构成，对照 OMP 原生层、RSA 注入层与已删除的批次末注入通道
-- [日志与调用链](../docs/en/reference/logging.md)
-- [UI 组件与主题约定](../docs/en/reference/dashboard-ui.md)：shadcn/ui、Tailwind CSS 4 与共享控件
+- [Install and Workspace Lifecycle](../docs/en/tutorials/quickstart.md)
+- [Console Debugging and Verification](../docs/en/tutorials/debugging-and-verification.md#standalone-components-and-consoles): in-console docs (`?view=docs`), capability catalog (`?view=caps`), and global settings (`?view=settings`, including Ludens Pet preferences)
+- [Loop Injection Workbench](../docs/en/reference/architecture.md#1-omp-superset-assembly-and-outer-turn-continuation): developer panel (`?view=dev&panel=loop`) simulating takeover context composition across the native OMP layer, the RSA injection layer, and the removed end-of-batch channel
+- [Logging and Call Chains](../docs/en/reference/logging.md)
+- [Dashboard UI and Theme Conventions](../docs/en/reference/dashboard-ui.md): shadcn/ui, Tailwind CSS 4, and shared primitives
 - [Benchmark](../docs/en/reference/benchmark.md)
-- [架构与边界](../docs/en/reference/architecture.md)
+- [Architecture and Boundaries](../docs/en/reference/architecture.md)

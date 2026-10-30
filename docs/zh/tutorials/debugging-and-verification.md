@@ -65,7 +65,7 @@ rsa run --model openai-codex/gpt-6.1-sol --seconds 300 --requests 50
 - **能力目录与驱动校验（`?view=caps`）**：静态展示当前选中工作区的设备目录快照（`baseware.json`）、Python `@capability` 声明及 Harbor 评测任务，并提供外部驱动包的在线校验与 `rsa init` 命令生成。
 - **感知配置（`?view=perception`）**：配置所选工作区的热窗口秒数、视频分段时长与停采空闲收尾秒数（写入 `.rsa/settings.json`，执行 `rsa perception reload` 后生效）。
 - **工作区管理（`?view=workspaces`）**：创建新工作区（名称与可选目录）、登记已有目录、只移除索引，以及设置默认父目录；读取同一 `LUDENS_HOME` 下的配置与 `registry/<id>.json`。
-- **站内文档（`?view=docs`）**：直接在控制台内浏览 `docs/tutorials/`、`docs/reference/` 与 `docs/insights/`，支持跨篇与章节锚点跳转。
+- **站内文档（`?view=docs`）**：直接在控制台内浏览 `tutorials/`、`reference/` 与 `insights/`，支持跨篇与章节锚点跳转。
 - **全局设置（`?view=settings`）**：集中 Ludens Pet 陪伴偏好（跟随、气泡、声音）等不依赖具体运行的设置；工作区自身的设置在各自页面。
 - **开发者面板（`?view=dev`）**：原理展示工具容器，目前有 Loop 注入实验台（`?view=dev&panel=loop`），模拟一次接管的上下文构成并对照已删除的批次末注入通道，详见 [注入收敛为轮首单通道](../insights/omp-injection.md)。
 

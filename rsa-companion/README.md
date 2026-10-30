@@ -1,12 +1,12 @@
 # Ludens Pet Companion
 
-可选的原生桌宠与 Electron 壳（角色：卢登斯），提供角色、气泡、音频和窗口交互；主窗口加载同一份 RSA Dashboard，气泡消费同一套活动日志。默认网页控制台独立运行，无需安装本组件。
+Optional native desktop pet and Electron shell (character: Ludens) providing pose reactions, speech bubbles, audio, and window interaction; the main window loads the same RSA Dashboard while speech bubbles consume the shared activity log. The web console runs standalone by default without installing this component.
 
-使用 Node.js 22.x（22.13 起）或 24+、pnpm 11，按 [可选桌宠安装](../docs/en/tutorials/quickstart.md#optional-pet) 安装并构建。新工作区在 `rsa init --name <name>` 命令中追加 `--pet`；已有 `rsa.json` 中的 `pet: true` 保持启用，可改为 `pet: false`。也可用 `rsa up --pet` / `--no-pet` 仅覆盖一次启动，不改配置；`--no-pet` 不会关闭已运行的共享桌宠。
+Requires Node.js 22.x (22.13+) or 24+ and pnpm 11; install and build per [Optional pet setup](../docs/en/tutorials/quickstart.md#optional-pet). Pass `--pet` to `rsa init --name <name>` for new workspaces; an existing `pet: true` in `rsa.json` stays enabled and can be set to `false`. Use `rsa up --pet` / `--no-pet` to override a single launch without modifying `rsa.json`; `--no-pet` does not close an already-running shared pet.
 
-默认偏好目录为 `$LUDENS_HOME/pet/profile/`，未设置 `LUDENS_HOME` 时使用 `~/.ludens`；跟随目标由同一 home 的 Dashboard 管理。工作区身份读取 `<workspace>/.rsa/workspace.json`，移动后重新登记即可继续跟随。完整目录和导入步骤见 [工作区指南](../docs/en/tutorials/workspace.md)。
+Preferences live in `$LUDENS_HOME/pet/profile/` (defaulting to `~/.ludens` when `LUDENS_HOME` is unset), and the follow target is managed by the Dashboard sharing the same home. Workspace identity is read from `<workspace>/.rsa/workspace.json`, so moving and re-registering a directory preserves following. See the [Workspace guide](../docs/en/tutorials/workspace.md) for layout and import details.
 
-- [安装与工作区启停](../docs/en/tutorials/quickstart.md)
-- [Ludens Pet 桌面伴侣与验证](../docs/en/tutorials/debugging-and-verification.md)
-- [日志消费与跟随工作区](../docs/en/reference/logging.md)
-- [组件边界](../docs/en/reference/architecture.md)
+- [Install and Workspace Lifecycle](../docs/en/tutorials/quickstart.md)
+- [Ludens Pet Desktop Companion and Verification](../docs/en/tutorials/debugging-and-verification.md)
+- [Log Consumption and Workspace Following](../docs/en/reference/logging.md)
+- [Architecture and Component Boundaries](../docs/en/reference/architecture.md)

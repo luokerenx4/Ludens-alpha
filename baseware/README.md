@@ -1,11 +1,11 @@
 # Baseware
 
-独立设备服务：注册 driver，将统一 Controller 能力通过 CLI、API 和 MCP 提供给调用方，负责设备协议和控制权仲裁。
+Standalone device service: registers drivers, exposes unified `Controller` capabilities over CLI, API, and MCP, and owns device protocols and control-lease arbitration.
 
-- [Baseware 设计理念与能力契约](../docs/en/reference/baseware.md)
-- [Driver Bridge 协议](../docs/en/reference/driver-bridge-protocol.md)
-- [架构与边界](../docs/en/reference/architecture.md)
-- [设备与驱动准备](../docs/en/tutorials/devices.md)
-- [安装与工作区启停](../docs/en/tutorials/quickstart.md)
-- [工作区与能力编程](../docs/en/tutorials/workspace.md)
-- [日志与调用链](../docs/en/reference/logging.md)
+- [Baseware Design Philosophy and Capability Contract](../docs/en/reference/baseware.md)
+- [Driver Bridge Protocol](../docs/en/reference/driver-bridge-protocol.md)
+- [Architecture and Boundaries](../docs/en/reference/architecture.md)
+- [Devices and Driver Setup](../docs/en/tutorials/devices.md)
+- [Install and Workspace Lifecycle](../docs/en/tutorials/quickstart.md)
+- [Workspaces and Capability Programming](../docs/en/tutorials/workspace.md)
+- [Logging and Call Chains](../docs/en/reference/logging.md)
