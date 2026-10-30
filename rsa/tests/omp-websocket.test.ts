@@ -7,9 +7,8 @@ import { scheduler } from "node:timers/promises";
 import {
   getOpenAICodexTransportDetails,
   resetOpenAICodexHistoryAfterCompaction,
-  streamOpenAICodexResponses,
-  type OpenAICodexResponsesOptions,
-} from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
+} from "@oh-my-pi/pi-ai/providers/openai-codex-state";
+import { streamOpenAICodexResponses, type OpenAICodexResponsesOptions } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import type { Context, FetchImpl, ProviderSessionState } from "@oh-my-pi/pi-ai/types";
 
 /**

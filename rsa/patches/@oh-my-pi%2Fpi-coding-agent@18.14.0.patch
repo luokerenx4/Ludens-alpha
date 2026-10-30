@@ -1,5 +1,5 @@
 diff --git a/src/session/session-maintenance.ts b/src/session/session-maintenance.ts
-index 6cfe40635e3f152cab63bd94062249ea469b47e7..483b5794080b8d62185beb5dfb8f41a5d2b9fb21 100644
+index 9e6908a..69ea6d1 100644
 --- a/src/session/session-maintenance.ts
 +++ b/src/session/session-maintenance.ts
 @@ -1,5 +1,6 @@
@@ -9,16 +9,16 @@ index 6cfe40635e3f152cab63bd94062249ea469b47e7..483b5794080b8d62185beb5dfb8f41a5
  import { scheduler } from "node:timers/promises";
  import {
  	type Agent,
-@@ -63,7 +64,7 @@ import * as AIError from "@oh-my-pi/pi-ai/error";
+@@ -70,7 +71,7 @@ import { sendsImageInputOnWire } from "@oh-my-pi/pi-ai/providers/vision-guard";
  import { resolvePromptCacheLookback } from "@oh-my-pi/pi-catalog/compat/prompt-cache-lookback";
- import { preferredDialect } from "@oh-my-pi/pi-catalog/identity";
  import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
+ import type { CatalogPolicyInputs } from "@oh-my-pi/pi-catalog/types";
 -import { isRecord, logger, prompt, Snowflake } from "@oh-my-pi/pi-utils";
 +import { isRecord, logger, prompt, Snowflake, untilAborted } from "@oh-my-pi/pi-utils";
  import * as snapcompact from "@oh-my-pi/snapcompact";
  import { writeArtifact } from "./artifacts";
  import type { ModelRegistry } from "../config/model-registry";
-@@ -339,15 +340,19 @@ const SNAPCOMPACT_POST_COMPACTION_TARGET = 0.6;
+@@ -336,15 +337,19 @@ const SNAPCOMPACT_POST_COMPACTION_TARGET = 0.6;
   *  occupancy stays under this ceiling (≥10% headroom) and reported usage stays within the window (#9235). */
  const PAYLOAD_REJECTION_OCCUPANCY_CEILING = 0.9;
  
@@ -39,7 +39,7 @@ index 6cfe40635e3f152cab63bd94062249ea469b47e7..483b5794080b8d62185beb5dfb8f41a5
  	contextTokensAtStart: number;
  }
  
-@@ -364,6 +369,9 @@ type CompactionProjectionArgs = {
+@@ -361,6 +366,9 @@ type CompactionProjectionArgs = {
  
  /** One background speculative-compaction run and (once resolved) its armed result. */
  interface SpeculationRun {
@@ -49,7 +49,7 @@ index 6cfe40635e3f152cab63bd94062249ea469b47e7..483b5794080b8d62185beb5dfb8f41a5
  	controller: AbortController;
  	promise: Promise<void>;
  	contextTokensAtStart: number;
-@@ -641,10 +649,20 @@ export class SessionMaintenance {
+@@ -661,10 +669,20 @@ export class SessionMaintenance {
  	}
  
  	/** Abort and discard any in-flight or armed speculative compaction. */
@@ -71,7 +71,7 @@ index 6cfe40635e3f152cab63bd94062249ea469b47e7..483b5794080b8d62185beb5dfb8f41a5
  		run.controller.abort();
  	}
  
-@@ -2101,17 +2119,13 @@ export class SessionMaintenance {
+@@ -2248,17 +2266,13 @@ export class SessionMaintenance {
  		const current = this.#speculation;
  		if (current) {
  			if (!current.armed) return; // one run at a time
@@ -96,7 +96,7 @@ index 6cfe40635e3f152cab63bd94062249ea469b47e7..483b5794080b8d62185beb5dfb8f41a5
  		}
  		const model = this.#model;
  		if (!model) return;
-@@ -2125,32 +2139,51 @@ export class SessionMaintenance {
+@@ -2272,32 +2286,51 @@ export class SessionMaintenance {
  	/** Install and launch one background speculation run for `method`. */
  	#startSpeculationRun(contextTokens: number, method: "remote" | "handoff" | "soft"): void {
  		const controller = new AbortController();
@@ -170,7 +170,7 @@ index 6cfe40635e3f152cab63bd94062249ea469b47e7..483b5794080b8d62185beb5dfb8f41a5
  	}
  
  	/** Identity of `model`'s native speculation in the current session. */
-@@ -2204,7 +2237,7 @@ export class SessionMaintenance {
+@@ -2351,7 +2384,7 @@ export class SessionMaintenance {
  		if (run) {
  			if (run.armed) {
  				if (!this.#armedSpeculationValid(run.armed, contextTokens)) {
@@ -179,7 +179,7 @@ index 6cfe40635e3f152cab63bd94062249ea469b47e7..483b5794080b8d62185beb5dfb8f41a5
  					return false;
  				}
  				return false; // ready — the real pass splices it in now
-@@ -2233,6 +2266,14 @@ export class SessionMaintenance {
+@@ -2380,6 +2413,14 @@ export class SessionMaintenance {
  		if (!snapshotLeafId) return clear();
  		const preparation = prepareCompaction(branch, effectiveSettings, model, this.#tokenizer);
  		if (!preparation) return clear();
@@ -194,7 +194,7 @@ index 6cfe40635e3f152cab63bd94062249ea469b47e7..483b5794080b8d62185beb5dfb8f41a5
  		const signal = run.controller.signal;
  		let armed: ArmedSpeculation;
  		if (method === "handoff") {
-@@ -2243,6 +2284,7 @@ export class SessionMaintenance {
+@@ -2390,6 +2431,7 @@ export class SessionMaintenance {
  			if (!generated) return clear();
  			const { summary, details } = handoffSummaryFromDocument(generated.document, preparation);
  			armed = {
@@ -202,7 +202,7 @@ index 6cfe40635e3f152cab63bd94062249ea469b47e7..483b5794080b8d62185beb5dfb8f41a5
  				result: {
  					summary,
  					shortSummary: undefined,
-@@ -2285,11 +2327,13 @@ export class SessionMaintenance {
+@@ -2432,11 +2474,13 @@ export class SessionMaintenance {
  					// sticky provider sessions by sessionId, and a speculation
  					// overlapping the live stream must never interleave with it.
  					sessionId: `${this.#host.sessionId()}:spec:${Snowflake.next()}`,
@@ -216,7 +216,7 @@ index 6cfe40635e3f152cab63bd94062249ea469b47e7..483b5794080b8d62185beb5dfb8f41a5
  				result: {
  					...result,
  					preserveData: mergeLlmCompactionPreserveData(compactionPrep.preserveData, result.preserveData),
-@@ -2304,8 +2348,11 @@ export class SessionMaintenance {
+@@ -2451,8 +2495,11 @@ export class SessionMaintenance {
  		if (signal.aborted || this.#speculation !== run) return;
  		run.armed = armed;
  		logger.debug("Speculative compaction armed", {
@@ -228,7 +228,7 @@ index 6cfe40635e3f152cab63bd94062249ea469b47e7..483b5794080b8d62185beb5dfb8f41a5
  			tokensBefore: armed.result.tokensBefore,
  		});
  	}
-@@ -2393,21 +2440,20 @@ export class SessionMaintenance {
+@@ -2562,21 +2609,20 @@ export class SessionMaintenance {
  	#claimArmedSpeculation(triggerContextTokens?: number, pendingContextTokens?: number): ArmedSpeculation | undefined {
  		const run = this.#speculation;
  		if (!run) return undefined;
@@ -257,24 +257,29 @@ index 6cfe40635e3f152cab63bd94062249ea469b47e7..483b5794080b8d62185beb5dfb8f41a5
  		return run.armed;
  	}
  
-@@ -3510,10 +3556,12 @@ export class SessionMaintenance {
+@@ -3708,7 +3754,9 @@ export class SessionMaintenance {
  						// (xai-oauth/grok-build) don't trip requireSupportedEffort.
  						thinkingLevel: this.#host.thinkingLevel(),
  						tools: this.#host.agent.state.tools,
 -						sessionId: this.#host.sessionId(),
-+						// Background speculation supplies an isolated session and disables
-+						// WebSockets so it cannot interleave with the live turn's chain.
-+						sessionId: options?.sessionId ?? this.#host.sessionId(),
- 						promptCacheKey: this.#host.agent.promptCacheKey ?? this.#host.agent.sessionId,
++					// Background speculation supplies an isolated session and disables
++					// WebSockets so it cannot interleave with the live turn's chain.
++					sessionId: options?.sessionId ?? this.#host.sessionId(),
+ 						// Explicit cache keys only (never a sessionId fallback): V2
+ 						// treats any truthy key as provenance for x-opencode-session.
+ 						// Conventional summaries run on `candidate`; remote compaction
+@@ -3716,7 +3764,7 @@ export class SessionMaintenance {
+ 						promptCacheKey: this.#host.getPromptCacheKeyForModel(candidate),
+ 						remotePromptCacheKey: this.#host.getPromptCacheKeyForModel(remoteCompactionPolicyModel(candidate)),
  						providerSessionState: this.#host.providerSessionState,
 -						preferWebsockets: this.#host.preferWebsockets(),
 +						preferWebsockets: options?.preferWebsockets ?? this.#host.preferWebsockets(),
  						// Route every summarization HTTP request through the
  						// session's side-stream transport so the provider
  						// concurrency cap (e.g. providers.ollama-cloud.maxConcurrency)
-@@ -4464,14 +4512,24 @@ export class SessionMaintenance {
- 
- 		if (!method) return COMPACTION_CHECK_NONE;
+@@ -4981,14 +5029,24 @@ export class SessionMaintenance {
+ 				: COMPACTION_CHECK_NONE;
+ 		}
  
 -		// A speculative pass may have already produced this compaction's summary
 -		// in the background. Claiming consumes the slot either way: an in-flight
@@ -303,7 +308,7 @@ index 6cfe40635e3f152cab63bd94062249ea469b47e7..483b5794080b8d62185beb5dfb8f41a5
  
  		const effectiveSettings = resolveMethodSettings(compactionSettings, method);
  		const fallbackFromShake = options.fallbackFromShake === true;
-@@ -4520,6 +4578,28 @@ export class SessionMaintenance {
+@@ -5037,6 +5095,28 @@ export class SessionMaintenance {
  			// queue, not the core steering queue (which handoff's agent.reset() would wipe).
  			const startEvent = { type: "auto_compaction_start" as const, reason, action };
  			await this.#emitLifecycleEvent(startEvent, false);
@@ -332,7 +337,7 @@ index 6cfe40635e3f152cab63bd94062249ea469b47e7..483b5794080b8d62185beb5dfb8f41a5
  			if (armedSpec) {
  				// A background speculation already produced this compaction's
  				// summary; splice it in instead of paying for a blocking
-@@ -4527,7 +4607,10 @@ export class SessionMaintenance {
+@@ -5044,7 +5124,10 @@ export class SessionMaintenance {
  				// known — the armed value measured the smaller prefix at compute
  				// time.
  				logger.debug("Applying armed speculative compaction", {
@@ -344,7 +349,7 @@ index 6cfe40635e3f152cab63bd94062249ea469b47e7..483b5794080b8d62185beb5dfb8f41a5
  					reason,
  				});
 diff --git a/src/session/speculation-lead.ts b/src/session/speculation-lead.ts
-index 8bf314ccac7134e8091be11669777c31a7de3d91..5de9647900f47bdd317c20454844e17a2fba2f39 100644
+index 8bf314c..5de9647 100644
 --- a/src/session/speculation-lead.ts
 +++ b/src/session/speculation-lead.ts
 @@ -11,7 +11,7 @@

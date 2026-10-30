@@ -8,7 +8,7 @@ Ludens (RSA, Recursive Self-Adaptation) decouples device drivers, the Agent exec
 | --- | --- |
 | `baseware/` | **Standalone device service**: loads built-in or external Drivers, provides a unified Controller capability catalog, control-lease (`epoch`) arbitration, input cancellation, and device fact logs; exposed via CLI, TS/Python APIs, and MCP. |
 | `rsa/` | **Adaptive Harness**: manages workspace configuration and lifecycle, capability discovery and routing, resident perception (`perception.py`) and resident action (`action.py`) Python subprocesses, Harbor evaluation, and run-log archiving. |
-| **Shiori** | **Sole execution kernel (role name)**: implemented by the RSA Host Runtime; uniformly governs control cycles, time/request budgets, signal cancellation, and exit cleanup. Agent mode mounts **OMP 18.9.1**; plain evaluation programs, Verifiers, and Metrics share the same lifecycle without starting a model. |
+| **Shiori** | **Sole execution kernel (role name)**: implemented by the RSA Host Runtime; uniformly governs control cycles, time/request budgets, signal cancellation, and exit cleanup. Agent mode mounts **OMP 18.14.0**; plain evaluation programs, Verifiers, and Metrics share the same lifecycle without starting a model. |
 | `rsa-dashboard/` | **Local console service**: builds and queries log indexes through a dedicated Node Worker, serving realtime activity streams, spacetime video replay, run statistics, doc browsing, the capability catalog, and human-handover entry points. |
 | `rsa-companion/` | **Optional desktop companion (Ludens Pet)**: Electron desktop shell; the main window reuses the same Dashboard view, while the native transparent pet window and audio engine incrementally consume the same activity log. |
 

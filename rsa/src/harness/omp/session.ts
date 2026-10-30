@@ -2,7 +2,6 @@ import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { createAgentSession, discoverAuthStorage, ModelRegistry, SessionManager, Settings, type AgentSession } from "@oh-my-pi/pi-coding-agent";
 import type { Model } from "@oh-my-pi/pi-ai";
-import { PROVIDER_IMAGE_BUDGETS } from "@oh-my-pi/snapcompact";
 import type { AgentRunner, Runtime } from "../runtime.ts";
 import { Workspace } from "../workspace.ts";
 import type { WorkspaceState } from "../workspace-state.ts";
@@ -34,14 +33,15 @@ export async function consolidateOmpSession(
   }
 }
 
-// OMP 18.9.1 drops old images above its provider count cap (DeepSeek: fallback 5;
-// Codex: 200). The 2026-10-13 wire trace exposed prefix rewrites despite stable
-// session history, taking DeepSeek cache hits from 71.9% to 19.9% in one turn.
-// Apply one Harness policy to every selected provider, including future ones:
-// retain images until compaction. Token/body budgets and server limits remain.
-// The SDK table is process-local; no provider allowlist or dependency patch.
+// OMP clamps each request to the deployment's image-count budget (catalog
+// `image-count-budget`, unknown providers fall back to 5). The 2026-10-13
+// wire trace exposed prefix rewrites despite stable session history, taking
+// DeepSeek cache hits from 71.9% to 19.9% in one turn. Harness policy for
+// every selected provider, including future ones: set the model's
+// `imageCountBudget` to Infinity (applied where the model is selected below)
+// and retain images until compaction. Token/body budgets and server limits
+// remain; no dependency patch.
 export async function createOmpSession(options: Parameters<typeof createAgentSession>[0] & { model: Model }) {
-  PROVIDER_IMAGE_BUDGETS[options.model.provider] = Infinity;
   const result = await createAgentSession(options);
   // The CustomTool adapter does not expose concurrency. Set it on the actual
   // AgentTools: an observation must wait for preceding environment actions.
@@ -92,8 +92,10 @@ export async function createOmpAgent(options: {
     const slash = options.model.indexOf("/");
     const provider = options.model.slice(0, slash);
     const id = options.model.slice(slash + 1);
-    const model = modelRegistry.find(provider, id);
-    if (!model || !model.input.includes("image")) throw new Error(`An image-capable model is required: ${options.model}`);
+    const found = modelRegistry.find(provider, id);
+    if (!found || !found.input.includes("image")) throw new Error(`An image-capable model is required: ${options.model}`);
+    // Harness image policy: win over every catalog budget without patching.
+    const model = { ...found, imageCountBudget: Infinity };
     const extensionPath = resolve(import.meta.dir, "extension.ts");
     const instructionsPath = join(options.workspace, "AGENTS.md");
     const instructions = await readFile(instructionsPath, "utf8").catch(error => {
