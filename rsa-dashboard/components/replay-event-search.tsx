@@ -110,7 +110,7 @@ export function ReplayEventSearch({ scope, startAt, itemUrl, onSelect, selectedI
       <ol className="replay-search-results">
         {state.items.map(item => <li key={item.id}><a href={itemUrl(item)} onClick={event => follow(event, item)}
           aria-current={item.id === selectedId ? "true" : undefined} data-replay-item={item.id}>
-          <div className="replay-search-result-meta"><time className="font-mono tabular-nums">{replayElapsedInput(item.startAt - startAt)}</time>
+          <div className="replay-search-result-meta"><time className="font-mono tabular-nums">{replayElapsedInput(item.startAt - startAt, "seconds")}</time>
             <Badge variant="outline" className="whitespace-normal text-xs">{timeline(`track.${item.track}`)}</Badge>
             {item.status && <span className="replay-search-result-status">{["completed","failed","cancelled","running","success","error","pending"].includes(item.status)
               ? timeline(`status.${({success:"completed",error:"failed",pending:"pending"} as Record<string,string>)[item.status] ?? item.status}`) : item.status}</span>}

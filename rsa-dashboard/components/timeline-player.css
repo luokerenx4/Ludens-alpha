@@ -47,7 +47,7 @@
 .replay-time { margin-left: 4px; font-size: 13px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .replay-time small { color: var(--muted-foreground); font-size: 11px; }
 .replay-clock { margin-left: auto; gap: 10px; font-size: 11px; color: var(--muted-foreground); }
-.replay-time-jump { display: grid; grid-template-columns: auto 8.5rem auto minmax(0, 1fr); align-items: center; gap: 9px; margin-top: 14px; border-top: 1px solid var(--border); padding-top: 14px; }
+.replay-time-jump { display: grid; grid-template-columns: auto 10rem auto minmax(0, 1fr); align-items: center; gap: 9px; margin-top: 14px; border-top: 1px solid var(--border); padding-top: 14px; }
 .replay-time-jump input { min-width: 0; max-width: 100%; }
 .replay-jump-hint { min-width: 0; line-height: 1.5; overflow-wrap: anywhere; }
 .replay-time-jump:has([aria-invalid="true"]) .replay-jump-hint { color: var(--destructive); }
@@ -132,7 +132,8 @@
 }
 @media (max-width: 800px) {
   .replay-context-grid { grid-template-columns: minmax(0, 1fr); }
-  .replay-time-jump { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .replay-time-jump { grid-template-columns: minmax(0, 1fr) auto; }
+  .replay-time-jump label { grid-column: 1 / -1; }
   .replay-jump-hint { grid-column: 1 / -1; }
 }
 @media (max-width: 620px) {
