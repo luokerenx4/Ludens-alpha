@@ -28,7 +28,7 @@ The desktop environment uses the stock upstream [Cua Driver](https://github.com/
 2. Baseware attaches the driver through a persistent `cua-driver mcp` child process (stdio transport); no `game` or bridge port is needed. If `cua-driver` is not on `PATH`, specify the absolute path via `rsa init --cua-command` or the `rsa.json` `cuaCommand` field.
 3. All tools keep their upstream names and JSON parameter shapes (e.g. `rsa controller controller/get_desktop_state --args '{}'`); for contract boundaries see [Baseware design & capability contracts](../reference/baseware.md).
 
-**Desktop environment boundaries**: multiple Cua workspaces share the same host's real desktop (including melonDS and other emulators running on the desktop that lack a dedicated native bridge yet); use a separate OS session or VM for an isolated desktop. Handing control back to a human immediately rejects new inputs and requests cancellation, but a single native call already inside the OS may still finish; `rsa down` does not close the shared `CuaDriver.app` or the user's desktop apps.
+**Desktop environment boundaries**: multiple Cua workspaces share the same host's real desktop (including desktop emulators that do not yet have a dedicated native bridge); use a separate OS session or VM for an isolated desktop. Handing control back to a human immediately rejects new inputs and requests cancellation, but a single native call already inside the OS may still finish; `rsa down` does not close the shared `CuaDriver.app` or the user's desktop apps.
 
 ## Discovering & connecting external driver packages
 

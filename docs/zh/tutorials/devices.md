@@ -28,7 +28,7 @@
 2. Baseware 通过持久 `cua-driver mcp` 子进程（stdio 传输）接入驱动，无需设置 `game` 或桥端口；若 `cua-driver` 不在 `PATH` 中，可在 `rsa init --cua-command` 或 `rsa.json` 的 `cuaCommand` 指定绝对路径。
 3. 所有工具保持上游原生命名与 JSON 参数结构（如 `rsa controller controller/get_desktop_state --args '{}'`），契约边界见 [Baseware 设计理念与能力契约](../reference/baseware.md)。
 
-**桌面环境边界**：多个 Cua 工作区共享同一宿主机真实桌面（包括运行在桌面上的 melonDS 等尚未提供独立原生桥的模拟器），如需隔离桌面请使用独立 OS 会话或虚拟机。人工交还控制权会立即拒绝新输入并请求取消，但已进入操作系统底层的单次原生调用可能先执行完毕；`rsa down` 不会关闭共享的 `CuaDriver.app` 或用户的桌面应用。
+**桌面环境边界**：多个 Cua 工作区共享同一宿主机真实桌面（包括运行在桌面上尚未提供独立原生桥的模拟器），如需隔离桌面请使用独立 OS 会话或虚拟机。人工交还控制权会立即拒绝新输入并请求取消，但已进入操作系统底层的单次原生调用可能先执行完毕；`rsa down` 不会关闭共享的 `CuaDriver.app` 或用户的桌面应用。
 
 ## 外部驱动包发现与接入
 
