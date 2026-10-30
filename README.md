@@ -70,7 +70,7 @@ Ludens separates device access, the agent harness, and the workspace code evolve
 | Component | Responsibility |
 | --- | --- |
 | [Baseware](baseware/README.md) | Device drivers, screen/audio observation, control leases, and CLI / API / MCP access. |
-| [RSA](rsa/README.md) | Agent harness powered by **Shiori** and **OMP 18.9.1**: session lifecycle, resident perception/action, benchmarks, and logging. |
+| [RSA](rsa/README.md) | Agent harness powered by **Shiori** and **OMP 18.14.0**: session lifecycle, resident perception/action, benchmarks, and logging. |
 | [Dashboard](rsa-dashboard/README.md) | Local web console for live runs, timeline replay, trace analysis, and benchmark comparison. |
 | [Ludens Pet](rsa-companion/README.md) | Optional Electron companion shell, native desktop pet, tray controls, and audio. |
 
@@ -104,4 +104,4 @@ Documentation is maintained in English ([`docs/en/`](docs/en/)) and Chinese ([`d
 
 ## License
 
-Licensed under the [MIT License](LICENSE). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for third-party notices.
+Licensed under the [MIT License](LICENSE).
