@@ -9,10 +9,11 @@ import { createTestDeviceSession } from "./runtime-fixture.ts";
 import type { ToolArguments, ControllerContext, ToolExecutionResult } from "@ludens/baseware/contracts";
 import { Runtime } from "../src/harness/runtime.ts";
 
-async function createSwitchProvider(options: DriverCreateOptions) {
-  const spec = process.env.RSA_SWITCH_DRIVER_PACKAGE;
-  if (!spec) throw new Error("Set RSA_SWITCH_DRIVER_PACKAGE to the external Ryubing driver package before live tests");
-  const registration = await resolveDriver("ryubing", spec, defaultDriverCacheRoot());
+async function createBridgeProvider(options: DriverCreateOptions) {
+  const id = process.env.RSA_BRIDGE_DRIVER;
+  const spec = process.env.RSA_BRIDGE_DRIVER_PACKAGE;
+  if (!id || !spec) throw new Error("Set RSA_BRIDGE_DRIVER and RSA_BRIDGE_DRIVER_PACKAGE to the external bridge driver package before live tests");
+  const registration = await resolveDriver(id, spec, defaultDriverCacheRoot());
   return registration.load(options);
 }
 
@@ -22,10 +23,10 @@ function imageBytes(capture: ToolExecutionResult): Buffer {
   return Buffer.from(block.data, "base64");
 }
 
-test.skipIf(process.env.RSA_SWITCH_TEST !== "1")("Ryubing captures frames, interrupts long actions, hands back control, rejects stale epochs and clears disconnects", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "rsa-switch-"));
+test.skipIf(process.env.RSA_BRIDGE_TEST !== "1")("external bridge captures frames, interrupts long actions, hands back control, rejects stale epochs and clears disconnects", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "rsa-bridge-"));
   const port = Number(process.env.RSA_BRIDGE_PORT ?? 47663);
-  const connect = () => createSwitchProvider({ port, clock: { id: "switch-test", now: () => performance.now() } });
+  const connect = () => createBridgeProvider({ port, clock: { id: "bridge-test", now: () => performance.now() } });
   let provider = await connect();
   const signal = new AbortController().signal;
   try {
@@ -133,9 +134,9 @@ test.skipIf(process.env.RSA_SWITCH_TEST !== "1")("Ryubing captures frames, inter
   } finally { provider.close(); await rm(directory, { recursive: true }); }
 }, 40000);
 
-test.skipIf(process.env.RSA_SWITCH_KEYBOARD_TEST !== "1")("foreground keyboard can be captured while the game is paused, edited, cancelled and handed back", async () => {
+test.skipIf(process.env.RSA_BRIDGE_KEYBOARD_TEST !== "1")("foreground keyboard can be captured while the game is paused, edited, cancelled and handed back", async () => {
   const directory = await mkdtemp(join(tmpdir(), "rsa-keyboard-"));
-  const provider = await createSwitchProvider({ port: Number(process.env.RSA_BRIDGE_PORT ?? 47663),
+  const provider = await createBridgeProvider({ port: Number(process.env.RSA_BRIDGE_PORT ?? 47663),
     clock: { id: "keyboard-test", now: () => performance.now() } });
   const signal = new AbortController().signal;
   const epoch = crypto.randomUUID();

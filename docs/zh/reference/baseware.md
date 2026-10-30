@@ -7,7 +7,7 @@ Baseware 是 Ludens 的独立设备驱动服务：负责连接模拟器或桌面
 Baseware 以 CUA Driver 的原生工具契约为结构蓝本，在仓库内独立维护协议定义（见 [tool-contract.ts](../../baseware/src/tool-contract.ts) 与 [contracts.ts](../../baseware/src/contracts.ts)）：
 
 - **结构统一**：每项能力（`Controller`）均由 `name`、`description`、`inputSchema` 以及可选的 `outputSchema`、`annotations`、`_meta` 描述；调用入参统一为 JSON 对象，原生返回体统一遵循 MCP `CallToolResult`（含 `content`、`structuredContent`、`isError`）。
-- **语义保真**：统一调用信封并不抹平硬件差异。CUA 桌面工具保留上游原名与参数结构；模拟器则声明各自的硬件能力——手柄时间表为 `pad.play`，触屏为 `touch.down / move / up`，3DS 双屏为 `screen.top.capture` 与 `screen.bottom.capture`。电脑鼠标不会伪装成模拟器触屏，模拟器按键也不会伪装成桌面键盘；所有坐标边界、按键枚举与时间单位均可从实时能力目录中直接查得。
+- **语义保真**：统一调用信封并不抹平硬件差异。CUA 桌面工具保留上游原名与参数结构；模拟器则声明各自的硬件能力——手柄时间表为 `pad.play`，触屏为 `touch.down / move / up`，双屏设备为 `screen.top.capture` 与 `screen.bottom.capture`。电脑鼠标不会伪装成模拟器触屏，模拟器按键也不会伪装成桌面键盘；所有坐标边界、按键枚举与时间单位均可从实时能力目录中直接查得。
 
 ```mermaid
 flowchart LR
@@ -15,7 +15,7 @@ flowchart LR
     C --> B[Baseware：能力目录 + 控制权仲裁 + 设备日志]
     B --> U[CUA Adapter]
     U --> N[原装 CUA Driver 子进程]
-    B --> E[mGBA / Azahar / Ryubing Adapter]
+    B --> E[External Bridge Adapter]
     E --> H[模拟器原生 TCP Bridge]
 ```
 

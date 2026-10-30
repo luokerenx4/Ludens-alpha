@@ -59,12 +59,10 @@ The pet needs a working Dashboard and shares the same console and logs as the br
 
 ### 1. Init and lifecycle commands
 
-Prepare the target environment per [Devices & driver setup](devices.md) first. This example creates an Azahar workspace at an explicit path with a pinned external driver package; mGBA and Ryubing use their respective [optional packages](devices.md#discovering-connecting-external-driver-packages), and the built-in desktop driver uses `--driver cua`:
+Prepare the target environment per [Devices & driver setup](devices.md) first. The example below initializes a workspace at an explicit path with the built-in desktop driver (`--driver cua`); external emulator or bridge drivers additionally pass `--driver <id> --driver-package '<spec>'` (see [external driver packages](devices.md#discovering-connecting-external-driver-packages)):
 
 ```sh
-rsa init --name my-task --workspace /absolute/path/to/workspace --driver azahar \
-  --driver-package 'github:<org>/ludens-3ds-driver#<rev>' \
-  --game /absolute/path/to/game.3ds --seconds 1800
+rsa init --name my-task --workspace /absolute/path/to/workspace --driver cua --seconds 1800
 cd /absolute/path/to/workspace
 rsa up --dry-run
 rsa up
@@ -75,7 +73,7 @@ rsa auto on
 
 Without `--workspace`, `rsa init --name my-task --driver ...` uses the global `workspaceRoot/my-task`; the initial parent is `$LUDENS_HOME/workspaces`. Explicit relative paths resolve from the current shell directory. To initialize the current directory, use `rsa init --workspace . --driver ...` or `rsa --workspace . init --driver ...`. Use `open` or `import` below for existing workspaces instead of initializing them again. When using a name without an explicit path, unset `RSA_WORKSPACE` if your shell inherited it from another workspace.
 
-For an existing emulator workspace, add `driverPackage` per the [external driver migration notes](devices.md#discovering-connecting-external-driver-packages). The default launch path comes from each driver's build cache; when reusing an already-installed app, pass `RSA_AZAHAR_APP` or `RSA_RYUBING_APP` on every `up` (including `--dry-run`).
+For an existing external-driver workspace, add `driverPackage` per the [external driver migration notes](devices.md#discovering-connecting-external-driver-packages).
 
 Quick reference for common workspace and control commands:
 
@@ -136,8 +134,8 @@ Import only brings in sessions, session selection, and skill version snapshots; 
 | --- | --- | --- |
 | `driver` | required | Driver ID; only `cua` is built in, emulator IDs must match the `id` exported by the external package. |
 | `driverPackage` | none | External driver package address (npm spec, `github:org/repo#rev`, or `file:path`); required for emulator drivers, omittable for `cua`. See [Devices & driver setup](devices.md#discovering-connecting-external-driver-packages) for how to connect. |
-| `game` | none | Optional for bridge drivers that support auto-launch (path relative to the workspace); omit to attach to an already manually started emulator. The `mgba` and stdio drivers reject this field. |
-| `port` | per driver | An explicit port wins; otherwise the driver manifest's `defaultPort` applies (current external packages: mGBA `47653`, Ryubing `47663`, Azahar `47673`); stdio drivers do not use it. |
+| `game` | none | Optional for bridge drivers that support auto-launch (`needsGame: true`, path relative to the workspace); omit to attach to an already manually started emulator. Drivers without auto-launch and stdio drivers reject this field. |
+| `port` | per driver | An explicit port wins; otherwise the driver manifest's `defaultPort` applies; stdio drivers do not use it. |
 | `cuaCommand` | `"cua-driver"` | Only valid for stdio drivers; specifies the backend executable path or command name. |
 | `model` | `"openai-codex/gpt-6.1-sol"` | OMP `provider/model` identifier with image-input support. |
 | `seconds` | `1800` | Time budget (seconds) per `auto on` control cycle, reset on each takeover. |

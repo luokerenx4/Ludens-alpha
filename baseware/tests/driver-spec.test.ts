@@ -33,7 +33,7 @@ test("parseDriverSpec accepts file paths for development", () => {
 });
 
 test("driverCacheDir rejects traversal", () => {
-  expect(driverCacheDir("/tmp/cache/", "mgba")).toBe("/tmp/cache/mgba");
+  expect(driverCacheDir("/tmp/cache/", "custom-emu")).toBe("/tmp/cache/custom-emu");
   expect(() => driverCacheDir("/tmp/cache", "../evil")).toThrow("Invalid driver id");
 });
 

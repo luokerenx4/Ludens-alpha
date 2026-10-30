@@ -59,12 +59,10 @@ OMP 原生 shell 会自动注入 `RSA_PYTHON`。在工作区脚本中若需复�
 
 ### 1. 初始化与生命周期命令
 
-先按 [设备与驱动准备](devices.md) 准备好目标环境。以下以 Azahar 为例，在显式目录创建工作区并选择固定提交的外部驱动包；mGBA、Ryubing 使用各自的 [可选包](devices.md#外部驱动包发现与接入)，内置桌面驱动使用 `--driver cua`：
+先按 [设备与驱动准备](devices.md) 准备好目标环境。以下以内置桌面驱动（`--driver cua`）为例在显式目录创建工作区；外部模拟器或桥接驱动需额外传入 `--driver <id> --driver-package '<spec>'`（见 [外部驱动包发现与接入](devices.md#外部驱动包发现与接入)）：
 
 ```sh
-rsa init --name my-task --workspace /absolute/path/to/workspace --driver azahar \
-  --driver-package 'github:<org>/ludens-3ds-driver#<rev>' \
-  --game /absolute/path/to/game.3ds --seconds 1800
+rsa init --name my-task --workspace /absolute/path/to/workspace --driver cua --seconds 1800
 cd /absolute/path/to/workspace
 rsa up --dry-run
 rsa up
@@ -75,7 +73,7 @@ rsa auto on
 
 省略 `--workspace` 时，`rsa init --name my-task --driver ...` 使用全局配置的 `workspaceRoot/my-task`；初始父目录为 `$LUDENS_HOME/workspaces`。显式相对路径以当前 shell 目录解析；要初始化当前目录，请使用 `rsa init --workspace . --driver ...`，也支持前置 `rsa --workspace . init --driver ...`。已有工作区使用下文的 `open` 或 `import`，不要重新初始化。只指定名称而不传显式目录时，如 shell 从另一工作区继承了 `RSA_WORKSPACE`，请先取消该变量。
 
-已有模拟器工作区还需按 [外部驱动迁移说明](devices.md#外部驱动包发现与接入) 添加 `driverPackage`。默认启动路径来自各驱动的构建缓存；沿用已安装应用时，每次 `up`（含 `--dry-run`）需传入 `RSA_AZAHAR_APP` 或 `RSA_RYUBING_APP`。
+已有外部驱动工作区还需按 [外部驱动迁移说明](devices.md#外部驱动包发现与接入) 添加 `driverPackage`。
 
 常用工作区与控制命令速查：
 
@@ -136,8 +134,8 @@ rsa workspace import /absolute/path/to/workspace \
 | --- | --- | --- |
 | `driver` | 必填 | 驱动 ID；当前仅 `cua` 内置，模拟器 ID 须与外部包导出的 `id` 一致。 |
 | `driverPackage` | 无 | 外部驱动包地址（npm spec、`github:org/repo#rev` 或 `file:path`）；模拟器驱动必填，`cua` 可省略。接入方式见 [设备与驱动准备](devices.md#外部驱动包发现与接入)。 |
-| `game` | 无 | 支持自动启动的 bridge 驱动可选（路径相对工作区）；省略时连接已手动启动的模拟器。`mgba` 与 stdio 驱动不接受此字段。 |
-| `port` | 随驱动 | 显式端口优先，否则取驱动 manifest 的 `defaultPort`（现有外部包：mGBA `47653`、Ryubing `47663`、Azahar `47673`）；stdio 驱动不使用。 |
+| `game` | 无 | 支持自动启动的 bridge 驱动可选（`needsGame: true`，路径相对工作区）；省略时连接已手动启动的模拟器。不支持自动启动的驱动与 stdio 驱动不接受此字段。 |
+| `port` | 随驱动 | 显式端口优先，否则取驱动 manifest 的 `defaultPort`；stdio 驱动不使用。 |
 | `cuaCommand` | `"cua-driver"` | 仅 stdio 驱动有效，指定后端可执行文件路径或命令名。 |
 | `model` | `"openai-codex/gpt-6.1-sol"` | 具备图像输入能力的 OMP `provider/model` 标识。 |
 | `seconds` | `1800` | 单次 `auto on` 控制周期的时长预算（秒），每次接管重置。 |

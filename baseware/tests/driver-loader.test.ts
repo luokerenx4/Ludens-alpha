@@ -21,7 +21,7 @@ test("default driver cache uses Ludens home independently of checkout and XDG st
 test("serve has no implicit emulator and requires a package for emulator ids", async () => {
   const root = await mkdtemp(join(tmpdir(), "driver-explicit-"));
   try {
-    for (const id of [undefined, "mgba", "azahar", "ryubing"]) {
+    for (const id of [undefined, "bridge-one", "bridge-two", "custom-emu"]) {
       const child = Bun.spawn([process.execPath, join(import.meta.dir, "../src/main.ts"), "serve",
         ...(id ? ["--driver", id] : []), "--socket", join(root, "service.sock"), "--data-dir", join(root, "data")],
         { stdout: "pipe", stderr: "pipe" });
