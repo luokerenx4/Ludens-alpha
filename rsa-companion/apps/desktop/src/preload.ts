@@ -6,7 +6,7 @@ function on(channel: string, callback: (value: any) => void) {
   return () => ipcRenderer.removeListener(channel, listener)
 }
 
-// The original Pet settings contract; no Guardian or general filesystem bridge.
+// Narrow Pet settings and activity IPC bridge; no general filesystem access.
 contextBridge.exposeInMainWorld('ludens', {
   companion: {
     getSound: () => ipcRenderer.invoke('ludens:companion:sound:get'),

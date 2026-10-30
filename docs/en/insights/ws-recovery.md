@@ -1,23 +1,23 @@
 # WS Recovery Test Rationale
 
-Why would a game-agent project spend so much effort patching the OpenAI Codex WebSocket transport layer and writing a fault matrix for it?
+This note explains why Ludens patches the OpenAI Codex WebSocket transport layer and maintains an offline fault matrix for connection recovery.
 
-The answer is one sentence: **multimodal payloads are just too big. Without delta transport, every request body balloons like a snowball and kills any long run.**
+The reason is straightforward: **multimodal payloads are large. Without delta transport, request bodies grow rapidly with session history and degrade long-horizon runs.**
 
-## Why the multimodal loop depends on WebSocket to survive
+## Why multimodal loops rely on WebSocket delta transport
 
-In a plain-text agent, a few hundred rounds of text add up to a few hundred KB — resending the full history over stateless HTTP SSE every round is painless.
+In a plain-text agent, several hundred turns of text total only a few hundred KB — resending the full history over stateless HTTP SSE each turn adds minimal overhead.
 
-But in Ludens, the agent looks at game frames and reads perception images every round. Even compressed, a single base64 image is tens to hundreds of KB; after tens or hundreds of rounds, session history full of multimodal images balloons to megabytes or tens of megabytes.
+In Ludens, the agent reads perception images every turn. Even compressed, a single base64 image is tens to hundreds of KB; after tens or hundreds of turns, a multimodal session history reaches multiple megabytes or tens of megabytes.
 
-Falling back to classic HTTP SSE then means **every model inference round and every tool-call return re-serializes and re-uploads the entire image history accumulated since round one, verbatim**:
+Falling back to stateless HTTP SSE means **every model inference round and tool-call return must re-serialize and re-upload the entire image history accumulated since turn one**:
 
-- E.g. 2 MB at round 10, 8 MB at round 50, 15 MB at round 100… (illustrative growth only, not measured data.)
-- Every round re-uploads images the previous round just uploaded; serialization cost and upload time explode linearly with round count, and late in a run just sending the request takes forever.
+- For example, 2 MB at turn 10, 8 MB at turn 50, 15 MB at turn 100… (illustrative growth only, not measured data.)
+- Every turn re-uploads previously sent images, causing serialization overhead and upload latency to grow linearly with turn count.
 
-The OpenAI Codex Responses API's **WebSocket mode supports delta transport**: as long as the connection stays alive, the server remembers the previous round's state, and the client only needs to send, chained on `previous_response_id`, **the tiny increment produced by the latest step (e.g. one freshly sampled image, one just-finished tool result)**.
+The OpenAI Codex Responses API's **WebSocket mode supports delta transport**: as long as the connection remains open, the server retains the previous turn's state, and the client only sends, chained on `previous_response_id`, **the incremental payload produced by the latest step (such as a newly sampled image or tool result)**.
 
-So for us, WebSocket is not some "nice performance optimization" — it is **the lifeline that decides whether multimodal long-horizon runs can survive at all**. If a network jitter or edge case drops WS mid-run and it never comes back — permanently degrading to HTTP full retransmission — the rest of the experiment is essentially ruined.
+WebSocket delta transport is therefore **essential for sustaining throughput in long-horizon multimodal runs**. If a transient disconnect permanently degrades the session to full HTTP retransmission, transport overhead escalates for the remainder of the run.
 
 ## Three disconnect scenarios observed in long runs (R1 / R2 / R3)
 
@@ -31,19 +31,19 @@ Across six- to eight-hour continuous runs, three distinct disconnect boundary co
   In run `2026-10-20T14-57-50.713Z`, the connection expired while the model was streaming `custom_tool_call_input.delta` (tool-call JSON arguments partially emitted, `done` not yet reached). To guard against replay side effects we had initially added a rule stricter than stock OMP: "if this round has emitted any visible output, never replay on disconnect, just error out" — which aborted the running agent.
   Reviewing the execution boundary clarified the invariant: **partially emitted `text` / `thinking` content, or incomplete tool-argument deltas, means the tool has not started executing.** Replaying the current request over SSE at that point is safe. The actual non-replayable boundary is **`toolcall_end` (the tool call has been fully delivered for execution)** — only past that point must replay be blocked to prevent duplicate execution of side-effecting tools. We removed the extra guard and aligned with stock OMP's `canSafelyReplayWebsocketOverSse`.
 
-## How the patches established the recovery rules
+## Transport recovery rules
 
-To make this multimodal delta artery pick itself up no matter how it falls, we fully decoupled the connection-recovery state machine from the replay boundary and set a few iron rules:
+To ensure reliable recovery, we decoupled the connection-recovery state machine from the replay boundary under three rules:
 
-1. **Transient disconnect (retry WS after a 60 s cooldown)**: explicit expiry, mid-stream close codes `1000 / 1001 / 1006 / 1011 / 1012 / 1013`, handshake timeouts, `send` errors, or first-packet timeouts all count as transient. The current request is rescued via SSE as long as no tool has been fully delivered, then a 60 s cooldown follows (no blind handshake attempts during it); once it passes, one full-history attempt establishes a new WS connection, and the next round resumes delta transport on success.
-2. **Frame size over limit (> 15 MiB or remote `1009`; recover WS only after compaction slims things down)**: if the actual outbound WS frame exceeds 15 MiB (note: this checks the actual frame to send — if cumulative history is fat but this round's delta is small, incremental WS continues as usual), fall back to SSE and raise a "size-blocked" flag; once OMP context compaction later slims the volume, the block clears automatically and WS resumes.
-3. **Protocol and auth hard rejections (permanently disable WS)**: only explicit protocol, data-format, or auth rejections — `1002 / 1003 / 1007 / 1008 / 1010` or `3000 / 3003` — shut WS off for the rest of the session.
+1. **Transient disconnect (retry WS after a 60 s cooldown)**: explicit expiry, mid-stream close codes `1000 / 1001 / 1006 / 1011 / 1012 / 1013`, handshake timeouts, `send` errors, or first-packet timeouts are classified as transient faults. The current request falls back to SSE as long as no tool has been fully delivered, followed by a 60 s cooldown (with no handshake retries during cooldown); once the cooldown expires, a single full-history request establishes a new WS connection, and subsequent turns resume delta transport.
+2. **Frame size over limit (> 15 MiB or remote `1009`; recover WS after context compaction)**: if the actual outbound WS frame exceeds 15 MiB (evaluated on the outbound frame size — if cumulative history is large but the current delta is small, incremental WS continues), the transport falls back to SSE and sets a size-blocked flag; once OMP context compaction reduces the history size, the block clears and WS resumes.
+3. **Protocol and auth hard rejections (permanently disable WS)**: explicit protocol, data-format, or auth rejections (`1002 / 1003 / 1007 / 1008 / 1010` or `3000 / 3003`) disable WS for the remainder of the session.
 
 ## Why a dedicated offline fault matrix?
 
 Network edge cases that take five or six hours to trigger cannot be debugged by running an eight-hour live session after every code change.
 
-So, exceptionally during construction, we took a TDD approach and wrote a fully offline transport-layer suite ([rsa/tests/omp-websocket.test.ts](../../rsa/tests/omp-websocket.test.ts)) plus a companion dashboard benchmark ([ws-recovery.ts](../../rsa/src/benchmark/cases/ws-recovery.ts)): in-process fixtures take over the WebSocket and HTTP layers beneath `streamOpenAICodexResponses`, and a virtual clock fast-forwards the 60 s cooldown in seconds — no real model connection, not a cent of tokens spent:
+During implementation we built an offline transport-layer test suite ([rsa/tests/omp-websocket.test.ts](../../rsa/tests/omp-websocket.test.ts)) and a companion benchmark ([ws-recovery.ts](../../rsa/src/benchmark/cases/ws-recovery.ts)): in-process fixtures stub the WebSocket and HTTP layers beneath `streamOpenAICodexResponses`, and a virtual clock advances the 60 s cooldown without live model calls:
 
 ```sh
 (cd rsa && bun run omp:test:transport)
@@ -53,7 +53,7 @@ So, exceptionally during construction, we took a TDD approach and wrote a fully 
 rsa/bin/rsa --workspace /absolute/path/to/workspace bench run ludens/ws-recovery
 ```
 
-The suite pins down **13 scenario classes** in one pass (from an initial 19 pass / 18 fail all the way to green, with the R3 `Agent.prompt` end-to-end single-execution tool-callback regression added on Oct 21):
+The suite covers **13 scenario classes** (including the R3 `Agent.prompt` end-to-end single-execution tool-callback regression):
 
 | Scenario class | Simulated scene / injection point | Required behavior |
 | --- | --- | --- |
@@ -67,7 +67,7 @@ The suite pins down **13 scenario classes** in one pass (from an initial 19 pass
 | Disconnect after a tool fully delivered (`toolcall_end`) | Tool already dispatched for execution | Current request must error — **never replay the tool over SSE**; later requests keep the cooldown WS-recovery chance. |
 | Disconnect mid tool-argument streaming (`delta`) | R3 · arguments incomplete (pre-`done`) at disconnect | Rescued via SSE replay within the same `Agent.prompt`; the complete tool callback executes **exactly once** and its result is submitted. |
 | Single frame `> 15 MiB` or remote `1009` | Single outbound frame over limit | Switch to SSE and flag size-blocked (no repeated handshakes while blocked); only a completed native context compaction clears the block and restores WS. |
-| Cumulative history `> 15 MiB` but tiny round delta | Fat history, small current increment | Judge by the actual incremental frame size — keep happily running incremental WS. |
+| Cumulative history `> 15 MiB` but small round delta | Large history, small current increment | Evaluated by actual outbound frame size — continues using incremental WS. |
 | `1009` after a tool was delivered | Size over-limit hit after tool submission | Current request does not replay the tool, and records the size block; SSE continues until compaction completes, then WS recovers. |
 | Human handoff or budget-expiry cancellation | `AbortSignal` fires mid-handshake / mid-output / mid-error | Exit immediately as `aborted` — no extra SSE requests, no pollution of the next round's transport state machine. |
 
